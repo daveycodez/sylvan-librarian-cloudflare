@@ -36,10 +36,10 @@ use card_engine::{fnv1a64_oracle_id, BufferStore, CollectionScope, QueryOptions}
 use serde_json::{Map, Value};
 use sylvan_store_builder::transform::{face_flavor_name_folded, name_routing_keys_of};
 
-/// A reply's rank, as the router compares it: `(served, tier, score)`.
-type Rank = (u8, u8, f64);
+/// A reply's rank, as the router compares it: `(tier, name, served, score)`.
+type Rank = (u8, String, u8, f64);
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 struct Reply {
     rank: Option<Rank>,
     present: bool,
@@ -49,14 +49,17 @@ struct Reply {
 enum Hint {
     None,
     Sole(usize),
-    Served(usize),
+    /// The one served holder, and the highest tier any other partition's extras hold the name on
+    /// (`N + 3s + t`, ROUTING_FEATURE_NAME_TIERS — the filter today's builders publish).
+    Served(usize, u8),
 }
 
-/// `beatsExactRank`: lexicographic, strictly greater.
-fn beats(a: Rank, b: Option<Rank>) -> bool {
+/// `beatsExactRank`: the higher tier, then the LOWER name, then served, then the higher score —
+/// strictly.
+fn beats(a: &Rank, b: Option<&Rank>) -> bool {
     match b {
         None => true,
-        Some(b) => (a.0, a.1).cmp(&(b.0, b.1)).then(a.2.partial_cmp(&b.2).unwrap()).is_gt(),
+        Some(b) => a.0.cmp(&b.0).then_with(|| b.1.cmp(&a.1)).then(a.2.cmp(&b.2)).then(a.3.partial_cmp(&b.3).unwrap()).is_gt(),
     }
 }
 
@@ -64,20 +67,31 @@ fn beats(a: Rank, b: Option<Rank>) -> bool {
 fn merge(replies: &[Reply]) -> Option<(usize, Rank)> {
     let mut best: Option<(usize, Rank)> = None;
     for (p, r) in replies.iter().enumerate() {
-        if let Some(rank) = r.rank
-            && beats(rank, best.map(|b| b.1))
+        if let Some(rank) = &r.rank
+            && beats(rank, best.as_ref().map(|b| &b.1))
         {
-            best = Some((p, rank));
+            best = Some((p, rank.clone()));
         }
     }
     best
 }
 
+/// `nameReplySettles`: whether the hinted partition's reply alone is the answer.
+fn settles(hint: Hint, replies: &[Reply]) -> bool {
+    match hint {
+        Hint::Sole(p) => replies[p].rank.is_some() || replies[p].present,
+        Hint::Served(s, rival) => replies[s]
+            .rank
+            .as_ref()
+            .is_some_and(|&(tier, _, served, _)| tier > rival || (tier == rival && tier == TIER_WHOLE && served == 1)),
+        Hint::None => false,
+    }
+}
+
 /// The router: the hinted partition's reply when it settles the name, else the merge.
 fn route(hint: Hint, replies: &[Reply]) -> Option<(usize, Rank)> {
     match hint {
-        Hint::Sole(p) if replies[p].rank.is_some() || replies[p].present => replies[p].rank.map(|r| (p, r)),
-        Hint::Served(s) if replies[s].rank.is_some_and(|r| r.0 == 1) => replies[s].rank.map(|r| (s, r)),
+        Hint::Sole(p) | Hint::Served(p, _) if settles(hint, replies) => replies[p].rank.clone().map(|r| (p, r)),
         _ => merge(replies),
     }
 }
@@ -93,20 +107,29 @@ fn router_key(folded: &str) -> Option<String> {
     (!collated.is_empty()).then(|| format!("nm:{collated}"))
 }
 
-/// What the sealed filter holds for one name key: which partitions emitted it, which served.
+/// The engine's whole-name tier, the top one (core_api's `TIER_WHOLE_NAME`).
+const TIER_WHOLE: u8 = 3;
+
+/// What the sealed filter holds for one name key: which partitions emitted it, which served, and
+/// which emitted it as an extra on each tier (index = tier: 1 flavor, 2 face, 3 whole; an art
+/// series, `na:`, is an owner on none).
 #[derive(Default, Clone, Copy)]
 struct Owners {
     all: u64,
     served: u64,
+    extra: [u64; 4],
 }
 
 impl Owners {
-    /// The seal's rule (`RoutingKeyAccumulator.seal`).
+    /// The seal's rule (`NameRun.value` in src/engine/routing-filter.ts, tiered).
     fn hint(self) -> Hint {
         if self.all.count_ones() == 1 {
             Hint::Sole(self.all.trailing_zeros() as usize)
         } else if self.served.count_ones() == 1 {
-            Hint::Served(self.served.trailing_zeros() as usize)
+            let s = self.served.trailing_zeros() as usize;
+            let others = !(1u64 << s);
+            let rival = (1..4).rev().find(|&t| self.extra[t] & others != 0).unwrap_or(0) as u8;
+            Hint::Served(s, rival)
         } else {
             Hint::None
         }
@@ -125,6 +148,8 @@ struct RowNames {
     is_canonical: bool,
     #[serde(default)]
     card_is_tags: Map<String, Value>,
+    #[serde(default)]
+    card_layout: Option<String>,
     #[serde(default)]
     card_set_code: Option<String>,
     #[serde(default)]
@@ -211,19 +236,22 @@ fn name_routes_match_the_all_partition_merge() {
             face_flavor.as_deref(),
             row.is_canonical,
             extra,
+            row.card_layout.as_deref() == Some("art_series"),
             &mut keys,
         );
         raw_lines += keys.len();
         for key in &keys {
             lines_per_partition[p].insert(key.clone());
-            let (served, bare) = match key.strip_prefix("ns:") {
-                Some(k) => (true, k),
-                None => (false, key.strip_prefix("nm:").unwrap()),
-            };
+            let (prefix, bare) = key.split_at(3);
             let o = owners.entry(format!("nm:{bare}")).or_default();
             o.all |= 1 << p;
-            if served {
-                o.served |= 1 << p;
+            match prefix {
+                "ns:" => o.served |= 1 << p,
+                "nw:" => o.extra[3] |= 1 << p,
+                "nm:" => o.extra[2] |= 1 << p,
+                "nf:" => o.extra[1] |= 1 << p,
+                "na:" => {}
+                other => panic!("{other:?} is no name key prefix: {key}"),
             }
         }
         let set = row.card_set_code.clone().unwrap_or_default();
@@ -256,7 +284,7 @@ fn name_routes_match_the_all_partition_merge() {
     for o in owners.values() {
         match o.hint() {
             Hint::Sole(_) => sole += 1,
-            Hint::Served(_) => served += 1,
+            Hint::Served(..) => served += 1,
             Hint::None => ambiguous += 1,
         }
     }
@@ -322,8 +350,11 @@ fn name_routes_match_the_all_partition_merge() {
                 s.spawn(move || {
                     let present = |needle: &str| store.exact_name_rank(needle, None).is_some();
                     let exact = |(needle, set): &(String, Option<String>)| {
-                        let rank = store.exact_name_rank(needle, set.as_deref()).map(|(a, b, c)| (a, b, f64::from(c)));
-                        Reply { rank, present: rank.is_some() || (set.is_some() && present(needle)) }
+                        let rank = store
+                            .exact_name_rank(needle, set.as_deref())
+                            .map(|(tier, name, served, score)| (tier, name, served, f64::from(score)));
+                        let present = rank.is_some() || (set.is_some() && present(needle));
+                        Reply { rank, present }
                     };
                     let collection = |scope: Option<&CollectionScope>| {
                         let idents: Vec<(&str, Option<&str>)> =
@@ -333,7 +364,10 @@ fn name_routes_match_the_all_partition_merge() {
                             .unwrap()
                             .into_iter()
                             .zip(cases)
-                            .map(|(rank, (needle, _))| Reply { rank, present: rank.is_some() || present(needle) })
+                            .map(|(rank, (needle, _))| {
+                                let present = rank.is_some() || present(needle);
+                                Reply { rank, present }
+                            })
                             .collect::<Vec<_>>()
                     };
                     (
@@ -352,10 +386,13 @@ fn name_routes_match_the_all_partition_merge() {
     // ── the router against the merge ─────────────────────────────────────────
     type Pick = fn(&PartitionReplies) -> &Vec<Reply>;
     let column = |pick: Pick, i: usize| -> Vec<Reply> {
-        replies.iter().map(|r| pick(r)[i]).collect()
+        replies.iter().map(|r| pick(r)[i].clone()).collect()
     };
     let mut mismatches: Vec<String> = Vec::new();
     let mut single = [0usize; 3];
+    // What the served route's rule before x26 (a served reply settles) would have settled, for the
+    // price of the tier rule — and how many of those it would have answered WRONG.
+    let (mut untiered, mut untiered_wrong) = ([0usize; 3], [0usize; 3]);
     let mut face_settled = 0usize;
     let surfaces: [(&str, Pick); 3] =
         [("exact", |r| &r.0), ("collection", |r| &r.1), ("collection+scope", |r| &r.2)];
@@ -364,15 +401,19 @@ fn name_routes_match_the_all_partition_merge() {
         for (s, (surface, pick)) in surfaces.iter().enumerate() {
             let col = column(*pick, i);
             let (routed, merged) = (route(hint, &col), merge(&col));
-            if routed.map(|r| r.0) != merged.map(|m| m.0) || routed.map(|r| r.1) != merged.map(|m| m.1) {
+            if routed.as_ref().map(|r| r.0) != merged.as_ref().map(|m| m.0) || routed.as_ref().map(|r| &r.1) != merged.as_ref().map(|m| &m.1) {
                 mismatches.push(format!("{surface} {needle:?} set={set:?} hint={hint:?}: routed {routed:?} merged {merged:?}"));
             }
-            let settled = match hint {
-                Hint::Sole(p) => col[p].rank.is_some() || col[p].present,
-                Hint::Served(p) => col[p].rank.is_some_and(|r| r.0 == 1),
-                Hint::None => false,
-            };
+            let settled = settles(hint, &col);
             single[s] += usize::from(settled);
+            if let Hint::Served(p, _) = hint
+                && col[p].rank.as_ref().is_some_and(|r| r.2 == 1)
+            {
+                untiered[s] += 1;
+                untiered_wrong[s] += usize::from(merged.as_ref().map(|m| m.0) != Some(p));
+            } else {
+                untiered[s] += usize::from(settled);
+            }
             // A face-level flavor key, asked whole with no set, is answered by its ONE partition.
             if s == 0 && set.is_none() && face_needles.contains(needle) {
                 if settled && col.iter().any(|r| r.rank.is_some()) {
@@ -389,11 +430,19 @@ fn name_routes_match_the_all_partition_merge() {
         {
             let o = owners.get(&key).copied().unwrap_or_default();
             for (p, r) in replies.iter().enumerate() {
-                if let Some(rank) = r.0[i].rank {
+                if let Some(rank) = &r.0[i].rank {
                     if o.all & (1 << p) == 0 {
                         mismatches.push(format!("{needle:?}: partition {p} ranks it {rank:?} but emitted no key"));
-                    } else if rank.0 == 1 && o.served & (1 << p) == 0 {
+                    } else if rank.2 == 1 && o.served & (1 << p) == 0 {
                         mismatches.push(format!("{needle:?}: partition {p} ranks it served but emitted it unserved"));
+                    } else if rank.2 == 0
+                        && rank.0 > 0
+                        && o.served & (1 << p) == 0
+                        && (rank.0..4).all(|t| o.extra[usize::from(t)] & (1 << p) == 0)
+                    {
+                        // An extras-only holder ranks it no higher than the tier its keys say: the
+                        // rival tier the filter stores is an upper bound.
+                        mismatches.push(format!("{needle:?}: partition {p} ranks it {rank:?} above every tier it emitted"));
                     }
                 }
             }
@@ -410,12 +459,15 @@ fn name_routes_match_the_all_partition_merge() {
             still_names += 1;
             vec![hint_of(needle)]
         } else {
-            std::iter::once(Hint::None).chain((0..n).map(Hint::Sole)).chain((0..n).map(Hint::Served)).collect()
+            std::iter::once(Hint::None)
+                .chain((0..n).map(Hint::Sole))
+                .chain((0..n).flat_map(|s| (0..4).map(move |t| Hint::Served(s, t))))
+                .collect()
         };
         for hint in hints {
             misspelled_checks += 1;
             let routed = route(hint, &col);
-            if routed.map(|r| r.0) != merged.map(|m| m.0) {
+            if routed.as_ref().map(|r| r.0) != merged.as_ref().map(|m| m.0) {
                 mismatches.push(format!("misspelling {needle:?} set={set:?} hint={hint:?}: routed {routed:?} merged {merged:?}"));
             }
         }
@@ -428,6 +480,13 @@ fn name_routes_match_the_all_partition_merge() {
         100.0 * single[0] as f64 / cases.len() as f64,
         100.0 * single[1] as f64 / cases.len() as f64,
         100.0 * single[2] as f64 / cases.len() as f64,
+    );
+    eprintln!(
+        "settled by one partition, cases: {single:?}; the untiered served rule would settle {untiered:?}, \
+         answering {} / {} / {} of them from the wrong partition",
+        untiered_wrong[0],
+        untiered_wrong[1],
+        untiered_wrong[2],
     );
     // Every other one is a mismatch above.
     eprintln!("face flavor keys: {face_settled} of {} answered by one partition", face_needles.len());

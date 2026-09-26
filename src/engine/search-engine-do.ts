@@ -107,6 +107,7 @@ import type {
 	NamedFuzzyBundle,
 	NamedFuzzyOwnBundle,
 	NamedFuzzyPlanReply,
+	NameRank,
 	ResultShape,
 	ScryfallFuzzyResult,
 	SearchPageEnvelope,
@@ -743,7 +744,7 @@ export class SearchEngine extends DurableObject<Env> {
 		folded: string,
 		setCode: string,
 		reportedShards?: number,
-	): Promise<{ rank: number[] | null } & SearchTelemetry> {
+	): Promise<{ rank: NameRank | null } & SearchTelemetry> {
 		return this.instrumented(reportedShards, async (engine) => ({
 			rank: await engine.scryfallExactNameRank(folded, setCode),
 		}));

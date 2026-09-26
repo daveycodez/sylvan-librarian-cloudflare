@@ -141,6 +141,7 @@ import {
 	type NamedFuzzyBundle,
 	type NamedFuzzyPlan,
 	type NameIdentifier,
+	type NameRank,
 	type ResultShape,
 	type ScryfallFuzzyResult,
 	type SearchPageEnvelope,
@@ -291,18 +292,24 @@ export function flavorKeyOf(card: Record<string, unknown>): string | undefined {
 }
 
 /**
- * Whether exact-name rank `a` beats `b` — TIER first, then prefer_score, with null losing to
- * anything. The pair is compared, never interpreted; see core_api's `exact_name_rank`.
+ * Whether exact-name rank `a` beats `b`, with null losing to anything — card_engine's
+ * `NameHit::outranks` over the wire form `[tier, name, served, score]` (core_api's
+ * `exact_name_rank`): element by element in the order the engine emits them, a NUMBER higher-wins
+ * and a STRING — the collated card name — lower-wins.
+ *
+ * The tier leads: a partition holding an extras-only card the needle names WHOLE beats one holding
+ * a served card it names by a face (`exact=chaos`: the fj25 front card Chaos over Order // Chaos,
+ * api.scryfall.com 2026-09-26). On one tier the first name wins (`exact=day`: the Day // Night token
+ * over Night // Day), and of one name the served card (`exact=Earth Rumble`: the tla sorcery over
+ * the jtla front card).
  */
-function beatsExactRank(a: number[], b: number[] | null): boolean {
+export function beatsExactRank(a: NameRank, b: NameRank | null): boolean {
 	if (b === null) return true;
-	// Lexicographic over the engine's `[served, tier, score]` — compared element by element in
-	// the order the engine emits them, never interpreted. Served leads: a partition holding a
-	// served card the needle names beats one holding an extras-only card it names exactly
-	// (`exact=Earth Rumble`: the tla sorcery over the jtla front card), whatever the tiers.
 	for (let i = 0; i < Math.max(a.length, b.length); i++) {
 		const [x, y] = [a[i] ?? 0, b[i] ?? 0];
-		if (x !== y) return x > y;
+		if (x === y) continue;
+		if (typeof x === "string" && typeof y === "string") return x < y;
+		return Number(x) > Number(y);
 	}
 	return false;
 }
@@ -327,16 +334,36 @@ function soleHint(hint: NameHint | null): number | null {
  *   sole p     p answered (it holds the name, so it emitted the key, so the value is exact and no
  *              other partition holds it) — or it missed, but holds the name without the set or
  *              scope (`present`): the same proof, and every other partition misses too.
- *   served s   s answered with a SERVED rank (so it holds the name served, and the value says no
- *              other partition does — theirs can only rank served 0, and served leads the rank).
+ *   served s   s answered (it holds the name, so the value is exact: s is its one served holder,
+ *   rival t    and every other partition holds it only as an extra — on tier t at most, 0 when
+ *              only as an art series, which ranks below everything), and s's `[tier, name, served,
+ *              …]` beats every one of theirs whatever their names and scores: a HIGHER tier than
+ *              t, or the whole-name tier served (every whole-name candidate has the needle for its
+ *              name, so the served flag decides). `delver of secrets` (a face of the served card,
+ *              its art-series faces elsewhere, t = 0) settles; `chaos` (Order // Chaos's face, t = 3
+ *              from the fj25 front card Chaos) and `night` (Night // Day's face, t = 2 from the Day
+ *              // Night token, whose name comes first) do not, and the merge answers the extra.
+ *   served s   a filter built before the builders spelled tiers (no `rival`): s answered SERVED —
+ *              the rule before x26, when served led the rank. Until the next build publishes a
+ *              tiered filter it answers exactly as it did, a whole-name extra in another
+ *              partition included (`chaos`); a reply it does not settle is merged tier-first.
  *
- * Anything else — a miss from a served route, an extras-only answer, an absent name under a
- * garbage hint — settles nothing, and the caller asks the rest and merges every reply.
+ * Anything else — a miss from a served route, a reply another partition's extras can beat, an
+ * absent name under a garbage hint — settles nothing, and the caller asks the rest and merges
+ * every reply.
  */
-export function nameReplySettles(hint: NameHint, rank: number[] | null, present: boolean): boolean {
+export function nameReplySettles(hint: NameHint, rank: NameRank | null, present: boolean): boolean {
 	if ("sole" in hint) return rank !== null || present;
-	return rank !== null && rank[0] === 1;
+	if (rank === null) return false;
+	const tier = Number(rank[0] ?? 0);
+	const served = Number(rank[2] ?? 0);
+	if (hint.rival === undefined) return served === 1;
+	return tier > hint.rival || (tier === hint.rival && tier === NAME_TIER_WHOLE && served === 1);
 }
+
+/** The engine's whole-name tier (core_api's `TIER_WHOLE_NAME`): on it every candidate's name IS the
+ * needle, so of two replies the served one wins. */
+const NAME_TIER_WHOLE = 3;
 
 // ── The routing filter (src/engine/routing-filter.ts) ─────────────────────────
 //
@@ -1234,9 +1261,9 @@ export class PartitionedEngine implements Engine {
 		// rank-then-materialize was N + 1. And when the routing filter knows the name, the one
 		// partition it names is asked first: its reply alone is the answer whenever it settles the
 		// name (`nameReplySettles`) — ONE call for a name only one partition holds, and for a name
-		// several hold but only one holds SERVED, which is every popular card whose name an
-		// art-series card shares. Otherwise the rest are asked and every reply merged in partition
-		// order, the hinted one included: exactly the fan-out's answer.
+		// several hold but only one holds SERVED and no other holds on a higher tier, which is every
+		// popular card whose name an art-series card shares. Otherwise the rest are asked and every
+		// reply merged in partition order, the hinted one included: exactly the fan-out's answer.
 		await this.routed();
 		const hint = this.nameHintOf(folded);
 		const probe = (p: number) => this.probeExactName(p, folded, setCode, baseUrl);
@@ -1254,7 +1281,7 @@ export class PartitionedEngine implements Engine {
 				replies[p] = await probe(p);
 			}),
 		);
-		let best: number[] | null = null;
+		let best: NameRank | null = null;
 		let card: Record<string, unknown> | null = null;
 		for (const reply of replies) {
 			// Strictly greater, so an exact tie keeps the LOWEST partition index — the same
@@ -1281,9 +1308,9 @@ export class PartitionedEngine implements Engine {
 	}
 
 	/** The best rank any partition holds — the whole store's answer, for an Engine asked directly. */
-	async scryfallExactNameRank(folded: string, setCode: string): Promise<number[] | null> {
+	async scryfallExactNameRank(folded: string, setCode: string): Promise<NameRank | null> {
 		const ranks = await this.all((e) => e.scryfallExactNameRank(folded, setCode));
-		let best: number[] | null = null;
+		let best: NameRank | null = null;
 		for (const rank of ranks) {
 			if (rank !== null && beatsExactRank(rank, best)) {
 				best = rank;
@@ -1360,7 +1387,7 @@ export class PartitionedEngine implements Engine {
 		// Each name's route, and every reply it gets, whichever round: merged at the end, in
 		// partition order.
 		const nameHints = batch.names.map(({ folded }) => this.nameHintOf(folded));
-		const nameReplies: { p: number; rank: number[] | null; card: Uint8Array | null; present: boolean }[][] =
+		const nameReplies: { p: number; rank: NameRank | null; card: Uint8Array | null; present: boolean }[][] =
 			batch.names.map(() => []);
 		// Which partitions each name has been asked of, whichever round — a name is never asked of
 		// one twice, and one asked of all N is settled by construction.
@@ -1750,7 +1777,7 @@ export function mergeNamedFuzzyBundles(
 		// typo stage, and the stages are the only faithful answer.
 		if (replies.some((r) => r.exact.rank !== null)) return null;
 	} else {
-		let best: number[] | null = null;
+		let best: NameRank | null = null;
 		let card: Record<string, unknown> | null = null;
 		for (const reply of replies) {
 			if (reply.exact.rank !== null && beatsExactRank(reply.exact.rank, best)) {

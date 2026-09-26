@@ -6,6 +6,11 @@
 //
 // Only the construction half is here (accumulate, comparator seal, peel, pack); lookup never changed.
 // Edits to this file defeat its purpose: it changes only if the published format changes on purpose.
+//
+// CHANGED ON PURPOSE, x26 (2026-09-26): an extras row's name key spells its tier (`nw:` whole, `nm:`
+// face, `nf:` flavor; `na:` an art series, no tier), and a TIERED seal values a served name
+// `N + 4s + t`, t the highest tier (3/2/1, 0 for none) any other partition's extras hold it on. The
+// untiered seal — every filter before x26 — is unchanged.
 
 const ROUTING_FILTER_MAGIC = 0x53524632; // "SRF2"
 
@@ -30,9 +35,11 @@ const CELL_FLOOR = 32;
 /** The widest cell value: one byte per cell, so up to 255 partitions. */
 const VALUE_MASK = 0xff;
 
-/** `ns:` marks a SERVED row's name key in the build input and hashes as `nm:`. */
-const SERVED_NAME_PREFIX = "ns:";
+/** `ns:` marks a SERVED row's name key in the build input, `nw:`/`nm:`/`nf:` an extras row's whole,
+ * face and flavor name, `na:` an art series'; all five hash as `nm:`. */
 const NAME_PREFIX = "nm:";
+/** An extras name prefix's tier. */
+const EXTRA_TIER_OF: Record<string, number> = { "nw:": 3, "nm:": 2, "nf:": 1 };
 
 /** The name-key value meaning "no single partition decides this name". */
 const NAME_AMBIGUOUS = 255;
@@ -114,10 +121,12 @@ interface RoutingFilterIdentity {
 	partitionHash: string;
 }
 
-/** Accumulator flag: the entry is a NAME key (`nm:`/`ns:`), sealed by the name rule. */
+/** Accumulator flag: the entry is a NAME key (`ns:`/`nw:`/`nm:`/`nf:`), sealed by the name rule. */
 const FLAG_NAME = 1;
 /** Accumulator flag: a SERVED row emitted it (`ns:`). */
 const FLAG_SERVED = 2;
+/** Accumulator flag of an extras row's key on tier t: `2 << t` (flavor 4, face 8, whole 16). */
+const FLAG_EXTRA_TIER_BASE = 2;
 
 /** The sealed columns a filter is built from. `nameKeys` counts the distinct name keys among them. */
 interface SealedRoutingKeys {
@@ -156,11 +165,12 @@ export class ReferenceAccumulator {
 	add(key: string, partition: number): void {
 		let flags = 0;
 		let hashed = key;
-		if (key.startsWith(NAME_PREFIX)) flags = FLAG_NAME;
-		else if (key.startsWith(SERVED_NAME_PREFIX)) {
-			flags = FLAG_NAME | FLAG_SERVED;
-			hashed = NAME_PREFIX + key.slice(SERVED_NAME_PREFIX.length);
-		}
+		const prefix = key.slice(0, 3);
+		const tier = EXTRA_TIER_OF[prefix];
+		if (tier !== undefined) flags = FLAG_NAME | (FLAG_EXTRA_TIER_BASE << tier);
+		else if (prefix === "ns:") flags = FLAG_NAME | FLAG_SERVED;
+		else if (prefix === "na:") flags = FLAG_NAME;
+		if (flags !== 0) hashed = NAME_PREFIX + key.slice(3);
 		const h = routingHash(hashed);
 		this.addHashed(h.lo, h.hi, partition, flags);
 	}
@@ -193,10 +203,11 @@ export class ReferenceAccumulator {
 
 	/**
 	 * Sorted, deduplicated hash columns: an id key's LOWEST partition; a name key's one partition,
-	 * `partitionCount + s` for its one SERVED partition `s`, or 255 (see the name-key section).
+	 * `partitionCount + s` for its one SERVED partition `s` (`partitionCount + 4s + t` with `tiers`,
+	 * t the other partitions' highest extras tier), or 255 (see the name-key section).
 	 * `partitionCount` is required once any name key was added.
 	 */
-	seal(partitionCount?: number): SealedRoutingKeys {
+	seal(partitionCount?: number, tiers = false): SealedRoutingKeys {
 		const order = new Uint32Array(this.n);
 		for (let i = 0; i < this.n; i++) order[i] = i;
 		const lo = this.lo;
@@ -220,13 +231,21 @@ export class ReferenceAccumulator {
 		let owners = 0;
 		let served = -1;
 		let serveds = 0;
+		// Every (partition, tier) an extras entry of the run carried, decided when the run closes.
+		let extras: [number, number][] = [];
 		const closeRun = () => {
 			if (m === 0 || !runName) return;
 			nameKeys++;
 			if (partitionCount === undefined) throw new Error("routing filter: name keys need the partition count to seal");
 			if (owners === 1) outValues[m - 1] = owner;
-			else if (serveds === 1 && partitionCount + served < NAME_AMBIGUOUS) outValues[m - 1] = partitionCount + served;
-			else outValues[m - 1] = NAME_AMBIGUOUS;
+			else if (serveds !== 1) outValues[m - 1] = NAME_AMBIGUOUS;
+			else if (!tiers)
+				outValues[m - 1] = partitionCount + served < NAME_AMBIGUOUS ? partitionCount + served : NAME_AMBIGUOUS;
+			else {
+				const rival = Math.max(0, ...extras.filter(([p]) => p !== served).map(([, t]) => t));
+				const value = partitionCount + 4 * served + rival;
+				outValues[m - 1] = value < NAME_AMBIGUOUS ? value : NAME_AMBIGUOUS;
+			}
 		};
 		// "Distinct" counted against the first partition seen: a second one makes the run
 		// multi-owner (2), and nothing after that can make it sole again.
@@ -241,6 +260,7 @@ export class ReferenceAccumulator {
 					serveds = 1;
 				} else if (v !== served) serveds = 2;
 			}
+			for (let t = 1; t <= 3; t++) if ((f & (FLAG_EXTRA_TIER_BASE << t)) !== 0) extras.push([v, t]);
 		};
 		for (const i of sorted) {
 			const l = lo[i] as number;
@@ -263,6 +283,7 @@ export class ReferenceAccumulator {
 			owners = 0;
 			served = -1;
 			serveds = 0;
+			extras = [];
 			noteName(v, f);
 		}
 		closeRun();

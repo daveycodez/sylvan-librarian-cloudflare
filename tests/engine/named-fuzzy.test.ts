@@ -19,6 +19,7 @@ import {
 	type NameHint,
 	nameKey,
 	ROUTING_FEATURE_NAME_KEYS,
+	ROUTING_FEATURE_NAME_TIERS,
 	RoutingFilter,
 } from "../../src/engine/routing-filter";
 import {
@@ -26,6 +27,7 @@ import {
 	FUZZY_WEAK_BELOW,
 	type FuzzyCandidateWire,
 	type NamedFuzzyOwnBundle,
+	type NameRank,
 	type ScryfallFuzzyResult,
 	type StoreManifest,
 } from "../../src/engine/types";
@@ -37,7 +39,7 @@ type Card = Record<string, unknown>;
 
 /** One partition's answer to each stage, for one needle. */
 interface Stages {
-	rank: number[] | null;
+	rank: NameRank | null;
 	present: boolean;
 	exact: Card | null;
 	candidates: FuzzyCandidateWire[];
@@ -109,18 +111,22 @@ function manifestOf(n: number): StoreManifest {
 	};
 }
 
-/** A name filter that answers `hint` for `folded`'s key. */
+/** A name filter that answers `hint` for `folded`'s key — with tiers when the hint has a `rival`. */
 function filterFor(folded: string, hint: NameHint, n: number): RoutingFilter {
 	const collated = (nameKey(folded) as string).slice("nm:".length);
+	const rival = "sole" in hint ? undefined : hint.rival;
+	// The extras spelling of the rival's tier: `na:` none (an art series), `nf:` flavor, `nm:` face, `nw:` whole.
+	const extra = rival === undefined ? "nm" : (["na", "nf", "nm", "nw"][rival] as string);
 	const entries =
 		"sole" in hint
 			? [{ key: `ns:${collated}`, partition: hint.sole }]
 			: [
 					{ key: `ns:${collated}`, partition: hint.served },
-					{ key: `nm:${collated}`, partition: (hint.served + 1) % n },
+					{ key: `${extra}:${collated}`, partition: (hint.served + 1) % n },
 				];
 	const identity = { builtAt: "100", partitionCount: n, partitionHash: "fnv1a64/oracle_id/v1" };
-	const parsed = RoutingFilter.parse(buildRoutingFilter(entries, identity, ROUTING_FEATURE_NAME_KEYS), identity);
+	const features = ROUTING_FEATURE_NAME_KEYS | (rival === undefined ? 0 : ROUTING_FEATURE_NAME_TIERS);
+	const parsed = RoutingFilter.parse(buildRoutingFilter(entries, identity, features), identity);
 	if ("reason" in parsed) throw new Error(parsed.reason);
 	expect(parsed.filter.lookupName(nameKey(folded) as string)).toEqual(hint);
 	return parsed.filter;
@@ -216,11 +222,11 @@ describe("the merge's corner cases", () => {
 	const N = 4;
 
 	test("exact: the best rank wins, a tie keeps the lowest partition, and nothing else is computed", async () => {
-		const face = { rank: [1, 1, 9.9], present: true, exact: named("Emeritus of Conflict // Lightning Bolt") };
-		const whole = { rank: [1, 2, 0.1], present: true, exact: named("Lightning Bolt") };
+		const face = { rank: [2, "", 1, 9.9], present: true, exact: named("Emeritus of Conflict // Lightning Bolt") };
+		const whole = { rank: [3, "", 1, 0.1], present: true, exact: named("Lightning Bolt") };
 		expect((await both(at(N, { 1: face, 3: whole }), "Lightning Bolt")).json.name).toBe("Lightning Bolt");
-		const lower = { rank: [1, 1, 0.5], present: true, exact: named("Lower") };
-		const higher = { rank: [1, 1, 0.5], present: true, exact: named("Higher") };
+		const lower = { rank: [2, "", 1, 0.5], present: true, exact: named("Lower") };
+		const higher = { rank: [2, "", 1, 0.5], present: true, exact: named("Higher") };
 		const tie = await both(at(N, { 1: lower, 3: higher }), "tie");
 		expect(tie.json.name).toBe("Lower");
 		expect(tie.calls.length).toBe(N);
@@ -468,7 +474,7 @@ describe("the merge's corner cases", () => {
 
 	test("a routed exact name its partition settles is ONE call", async () => {
 		const routing = filterFor("lightning bolt", { sole: 2 }, N);
-		const hit = { rank: [1, 2, 0], present: true, exact: named("Lightning Bolt") };
+		const hit = { rank: [3, "", 1, 0], present: true, exact: named("Lightning Bolt") };
 		const got = await both(at(N, { 2: hit }), "Lightning Bolt", "", routing);
 		expect(got.calls).toEqual(["bundle:2"]);
 		expect(got.oldCalls).toEqual(["probe:2"]);
@@ -517,7 +523,7 @@ describe("the merge's corner cases", () => {
 		// A needle an exact-settled partition says nobody holds, but another ranks: refused too.
 		const ranked = {
 			...bundle({ status: "miss", card: null }, []),
-			exact: { rank: [1, 2, 0], present: true, card: null },
+			exact: { rank: [3, "", 1, 0], present: true, card: null },
 		};
 		expect(mergeNamedFuzzyBundles([ranked], ["x"], 2, true)).toBeNull();
 

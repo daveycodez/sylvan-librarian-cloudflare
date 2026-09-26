@@ -3,7 +3,7 @@
 //
 // The packet is what engine/wasm's `collection_batch` writes, little-endian:
 //
-//   header_len: u32, header: header_len bytes of JSON — one rank per name, [served, tier, score] or null
+//   header_len: u32, header: header_len bytes of JSON — one rank per name, [tier, name, served, score] or null
 //     (or, when the batch asked for `presence`, {"ranks": [...], "present": [bool per name]})
 //   then for each key, each tree, each name, in that order: len: u32, card: len bytes (0 = none)
 //
@@ -11,7 +11,7 @@
 // into the response — however many layers carry them there.
 
 import { CARD_OBJECT_FIELDS } from "../routes/scryfall-compat/objects";
-import type { CollectionBatch, CollectionBatchAnswer, CollectionScope } from "./types";
+import type { CollectionBatch, CollectionBatchAnswer, CollectionScope, NameRank } from "./types";
 
 /**
  * How a `{set, collector_number}` tree is answered: its first printing under these options, the
@@ -50,8 +50,8 @@ export function decodeCollectionPacket(packet: Uint8Array, batch: CollectionBatc
 	// Two header shapes: the plain rank array, and `{ranks, present}` for a batch that asked for
 	// presence — which a store on the previous build ignores, answering the plain array.
 	const header = JSON.parse(decoder.decode(packet.subarray(4, 4 + headerLen))) as
-		| (number[] | null)[]
-		| { ranks: (number[] | null)[]; present: boolean[] };
+		| (NameRank | null)[]
+		| { ranks: (NameRank | null)[]; present: boolean[] };
 	const nameRanks = Array.isArray(header) ? header : header.ranks;
 	const namePresent = Array.isArray(header) ? undefined : header.present;
 	let at = 4 + headerLen;
@@ -83,6 +83,6 @@ export function emptyCollectionAnswer(batch: CollectionBatch): CollectionBatchAn
 		keys: none(batch.keys.length),
 		trees: none(batch.trees.length),
 		names: none(batch.names.length),
-		nameRanks: new Array<number[] | null>(batch.names.length).fill(null),
+		nameRanks: new Array<NameRank | null>(batch.names.length).fill(null),
 	};
 }

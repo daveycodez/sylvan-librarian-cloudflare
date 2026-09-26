@@ -881,15 +881,18 @@ pub fn exact_card_by_name(folded: &str, set_code: &str, fields_json: &str) -> Re
     })
 }
 
-/// How well this partition's best `exact=` candidate matches, as `[served, tier, score]`, or
-/// `null`.
+/// How well this partition's best `exact=` candidate matches, as `[tier, name, served, score]`, or
+/// `null` — card_engine's `exact_name_rank`, whose order the router's `beatsExactRank` applies.
 ///
-/// Served is 1 when the printing answered is one a default search shows and 0 when the name
-/// exists only in the extras class (a memorabilia front card, a token, an art-series card);
-/// tier descends 2 (the needle IS a card's whole name) > 1 (it matches a FACE) > 0 (a FLAVOR
-/// name); ties break on prefer_score. Compared lexicographically, in that order — served leads,
-/// so `exact=Earth Rumble` answers the tla sorcery over the jtla front card of the same name
-/// whatever partition each hashed to. Compare these, do not interpret them.
+/// The HIGHER tier wins: 3 (the needle IS a card's whole name) > 2 (it matches a FACE) > 1 (a
+/// FLAVOR name) > 0 (an art-series card, a collection identifier only). Then the LOWER name — the
+/// card's collated name, a string, empty on the two lower tiers. Then served, 1 when the printing
+/// answered is one a default search shows and 0 when the name exists only in the extras class;
+/// then the higher prefer_score. So `exact=chaos` answers the fj25 front card Chaos (whole) over
+/// Order // Chaos (a face), `exact=day` the Day // Night token over Night // Day (both faces, and
+/// "daynight" comes first), and `exact=Earth Rumble` the tla sorcery over the jtla front card of
+/// the same name — whatever partition each hashed to. The router reads one reply's tier and served
+/// flag to decide whether a served name route's single reply is final (`nameReplySettles`).
 ///
 /// EXISTS FOR THE PARTITIONED ROUTER. `exact_card_by_name` ranks its candidates, but with the
 /// corpus cut into partitions that ranking is LOCAL — and more than one partition can answer,
@@ -900,12 +903,16 @@ pub fn exact_card_by_name(folded: &str, set_code: &str, fields_json: &str) -> Re
 #[wasm_bindgen]
 pub fn exact_name_rank(folded: &str, set_code: &str) -> Result<String, JsError> {
     let set = if set_code.is_empty() { None } else { Some(set_code) };
-    with_store(|store| {
-        Ok(match store.exact_name_rank(folded, set) {
-            Some((served, tier, score)) => format!("[{served},{tier},{score}]"),
-            None => "null".to_string(),
-        })
-    })
+    with_store(|store| Ok(rank_text(store.exact_name_rank(folded, set))))
+}
+
+/// An `exact_name_rank` as the wire's JSON — `exact_name_rank` and `exact_name_probe` both write it
+/// here, so the router compares the two exports' ranks as the same values.
+fn rank_text(rank: Option<(u8, String, u8, f32)>) -> String {
+    match rank {
+        Some((tier, name, served, score)) => format!("[{tier},{},{served},{score}]", serde_json::Value::String(name)),
+        None => "null".to_string(),
+    }
 }
 
 /// `exact_name_rank` and `exact_card_by_name` in ONE call, plus whether this store holds the
@@ -920,8 +927,8 @@ pub fn exact_name_rank(folded: &str, set_code: &str) -> Result<String, JsError> 
 /// partition does is exact, rather than an arbitrary value for a key it never held. So `present`
 /// is computed, without the set, only when the restricted scan found nothing.
 ///
-/// `rank` is written by the same `format!` as `exact_name_rank`, so the router compares the two
-/// exports' ranks as the same numbers.
+/// `rank` is written by the same `rank_text` as `exact_name_rank`, so the router compares the two
+/// exports' ranks as the same values.
 #[wasm_bindgen]
 pub fn exact_name_probe(folded: &str, set_code: &str, fields_json: &str) -> Result<String, JsError> {
     let fields = parse_fields(fields_json)?;
@@ -933,10 +940,7 @@ pub fn exact_name_probe(folded: &str, set_code: &str, fields_json: &str) -> Resu
             Some(_) => store.exact_card_by_name(folded, set, fields).map_err(js_err)?,
             None => None,
         };
-        let rank_text = match rank {
-            Some((served, tier, score)) => format!("[{served},{tier},{score}]"),
-            None => "null".to_string(),
-        };
+        let rank_text = rank_text(rank);
         Ok(format!(
             r#"{{"rank":{rank_text},"present":{present},"card":{}}}"#,
             card.unwrap_or(serde_json::Value::Null)
@@ -1004,7 +1008,7 @@ fn parse_scope(prefer: &str, scope_json: &str) -> Result<Option<card_engine::Col
 }
 
 /// How well this partition's best collection-identifier candidate matches, as
-/// `[served, tier, score]` or `null` per identifier — the batched twin of `exact_name_rank`, and
+/// `[tier, name, served, score]` or `null` per identifier — the batched twin of `exact_name_rank`, and
 /// there for the same partitioned router. Under a scope the score is the scope's prefer score
 /// and served is always 1 (the scope's pool holds no extras).
 #[wasm_bindgen]
@@ -1018,7 +1022,7 @@ pub fn collection_name_ranks(identifiers_json: &str, prefer: &str, scope_json: &
         let out: Vec<serde_json::Value> = ranks
             .into_iter()
             .map(|r| match r {
-                Some((served, tier, score)) => serde_json::json!([served, tier, score]),
+                Some((tier, name, served, score)) => serde_json::json!([tier, name, served, score]),
                 None => serde_json::Value::Null,
             })
             .collect();
@@ -1059,7 +1063,7 @@ pub fn card_by_illustration_id(illustration_id: &str, fields_json: &str) -> Resu
 /// The answer is little-endian bytes:
 ///
 /// ```text
-/// header_len: u32, header: header_len bytes of JSON — one rank per name, [served, tier, score] or null
+/// header_len: u32, header: header_len bytes of JSON — one rank per name, [tier, name, served, score] or null
 /// then for each key, each tree, each name, in that order: len: u32, card: len bytes (0 = none)
 /// ```
 ///
@@ -1099,7 +1103,7 @@ pub fn collection_batch(request_json: &str, fields_json: &str, base_url: &str) -
         let rank_list: Vec<serde_json::Value> = ranks
             .iter()
             .map(|r| match r {
-                Some((served, tier, score)) => serde_json::json!([served, tier, score]),
+                Some((tier, name, served, score)) => serde_json::json!([tier, name, served, score]),
                 None => serde_json::Value::Null,
             })
             .collect();

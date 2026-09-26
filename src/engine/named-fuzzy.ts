@@ -11,6 +11,7 @@ import {
 	type FuzzyCandidateWire,
 	type NamedFuzzyAnswer,
 	type NamedFuzzyBundle,
+	type NameRank,
 	type ScryfallFuzzyResult,
 } from "./types";
 
@@ -119,7 +120,7 @@ export async function bundleFromStages(
 
 /** `named_fuzzy_bundle`'s packet with its engine rows still rows — the store maps them to cards. */
 export interface NamedFuzzyPacket<Row> {
-	exact: { rank: number[] | null; present: boolean; card: Row | null };
+	exact: { rank: NameRank | null; present: boolean; card: Row | null };
 	fuzzy: { status: ScryfallFuzzyResult["status"]; card: Row | null } | null;
 	candidates: FuzzyCandidateWire[];
 	contained: Row[] | null;

@@ -10,7 +10,7 @@
 			"expect": "card:Lightning Bolt",
 			"partitions": [
 				{
-					"rank": [1, 2, 2098330.3],
+					"rank": [3, "lightningbolt", 1, 2098330.3],
 					"present": true,
 					"exact": {
 						"name": "Lightning Bolt",
@@ -122,7 +122,7 @@
 					"contained": []
 				},
 				{
-					"rank": [1, 1, 2098332.8],
+					"rank": [2, "emeritusofconflictlightningbolt", 1, 2098332.8],
 					"present": true,
 					"exact": {
 						"name": "Emeritus of Conflict // Lightning Bolt",
@@ -198,7 +198,7 @@
 			"expect": "card:Fire // Ice",
 			"partitions": [
 				{
-					"rank": [0, 1, 2098327.8],
+					"rank": [2, "startfire", 0, 2098327.8],
 					"present": true,
 					"exact": {
 						"name": "Start // Fire",
@@ -356,7 +356,7 @@
 					]
 				},
 				{
-					"rank": [1, 1, 2098351.3],
+					"rank": [2, "fireice", 1, 2098351.3],
 					"present": true,
 					"exact": {
 						"name": "Fire // Ice",
@@ -514,7 +514,7 @@
 					"contained": []
 				},
 				{
-					"rank": [1, 2, 1956012],
+					"rank": [3, "counterspell", 1, 1956012],
 					"present": true,
 					"exact": {
 						"name": "Counterspell",
@@ -5938,6 +5938,1004 @@
 				}
 			],
 			"expect": "miss"
+		},
+		{
+			"label": "a whole-name extra outranks a served face (x26)",
+			"fuzzy": "chaos",
+			"set": "",
+			"hint": {
+				"served": 5,
+				"rival": 3
+			},
+			"expect": "card:Chaos",
+			"partitions": [
+				{
+					"rank": null,
+					"present": false,
+					"exact": null,
+					"candidates": [],
+					"fuzzy": {
+						"status": "miss",
+						"card": null
+					},
+					"contained": [
+						{
+							"name": "Chaos Spewer",
+							"set": "ecl",
+							"collector_number": "210"
+						},
+						{
+							"name": "Chaos Maw",
+							"set": "hou",
+							"collector_number": "87"
+						}
+					]
+				},
+				{
+					"rank": null,
+					"present": false,
+					"exact": null,
+					"candidates": [],
+					"fuzzy": {
+						"status": "miss",
+						"card": null
+					},
+					"contained": [
+						{
+							"name": "Coronation of Chaos",
+							"set": "clb",
+							"collector_number": "168"
+						},
+						{
+							"name": "Chaos Warp",
+							"set": "mbc",
+							"collector_number": "72"
+						}
+					]
+				},
+				{
+					"rank": [3, "chaos", 0, 2098340],
+					"present": true,
+					"exact": {
+						"name": "Chaos",
+						"set": "fj25",
+						"collector_number": "46"
+					},
+					"candidates": [
+						{
+							"score": 1,
+							"served": false,
+							"oracleId": "56502146-a5c7-437e-ae90-2d96becbcec8",
+							"vpid": 3904,
+							"foldedName": "chaos",
+							"firstReleased": 20241115
+						}
+					],
+					"fuzzy": {
+						"status": "hit",
+						"card": {
+							"name": "Chaos",
+							"set": "fj25",
+							"collector_number": "46"
+						}
+					},
+					"contained": [
+						{
+							"name": "Plargg, Dean of Chaos // Augusta, Dean of Order",
+							"set": "stx",
+							"collector_number": "155"
+						},
+						{
+							"name": "Zurzoth, Chaos Rider",
+							"set": "ncc",
+							"collector_number": "278"
+						}
+					]
+				},
+				{
+					"rank": null,
+					"present": false,
+					"exact": null,
+					"candidates": [],
+					"fuzzy": {
+						"status": "miss",
+						"card": null
+					},
+					"contained": [
+						{
+							"name": "Sower of Chaos",
+							"set": "fdn",
+							"collector_number": "95"
+						},
+						{
+							"name": "Game of Chaos",
+							"set": "5ed",
+							"collector_number": "232"
+						}
+					]
+				},
+				{
+					"rank": null,
+					"present": false,
+					"exact": null,
+					"candidates": [],
+					"fuzzy": {
+						"status": "miss",
+						"card": null
+					},
+					"contained": [
+						{
+							"name": "Chaos Wand",
+							"set": "otc",
+							"collector_number": "254"
+						},
+						{
+							"name": "Chaos Dragon",
+							"set": "clb",
+							"collector_number": "784"
+						}
+					]
+				},
+				{
+					"rank": [2, "orderchaos", 1, 2098350],
+					"present": true,
+					"exact": {
+						"name": "Order // Chaos",
+						"set": "dmr",
+						"collector_number": "212"
+					},
+					"candidates": [],
+					"fuzzy": {
+						"status": "miss",
+						"card": null
+					},
+					"contained": [
+						{
+							"name": "Chaos Imps",
+							"set": "rtr",
+							"collector_number": "90"
+						},
+						{
+							"name": "Chaos Lord",
+							"set": "ice",
+							"collector_number": "178"
+						}
+					]
+				},
+				{
+					"rank": null,
+					"present": false,
+					"exact": null,
+					"candidates": [],
+					"fuzzy": {
+						"status": "miss",
+						"card": null
+					},
+					"contained": [
+						{
+							"name": "Averna, the Chaos Bloom",
+							"set": "cmr",
+							"collector_number": "269"
+						},
+						{
+							"name": "Okaun, Eye of Chaos",
+							"set": "bbd",
+							"collector_number": "6"
+						}
+					]
+				},
+				{
+					"rank": null,
+					"present": false,
+					"exact": null,
+					"candidates": [],
+					"fuzzy": {
+						"status": "miss",
+						"card": null
+					},
+					"contained": [
+						{
+							"name": "Garland, Knight of Cornelia // Chaos, the Endless",
+							"set": "fin",
+							"collector_number": "221"
+						},
+						{
+							"name": "Chaos Is My Plaything",
+							"set": "dsc",
+							"collector_number": "329"
+						}
+					]
+				},
+				{
+					"rank": null,
+					"present": false,
+					"exact": null,
+					"candidates": [],
+					"fuzzy": {
+						"status": "miss",
+						"card": null
+					},
+					"contained": [
+						{
+							"name": "Chaos Terminator Lord",
+							"set": "40k",
+							"collector_number": "74"
+						},
+						{
+							"name": "Chaos Defiler",
+							"set": "40k",
+							"collector_number": "110"
+						}
+					]
+				},
+				{
+					"rank": null,
+					"present": false,
+					"exact": null,
+					"candidates": [],
+					"fuzzy": {
+						"status": "miss",
+						"card": null
+					},
+					"contained": [
+						{
+							"name": "Lady Loki, Agent of Chaos",
+							"set": "msc",
+							"collector_number": "54"
+						},
+						{
+							"name": "Gauntlets of Chaos",
+							"set": "me3",
+							"collector_number": "196"
+						}
+					]
+				}
+			]
+		},
+		{
+			"label": "a whole-name token outranks a served face (x26)",
+			"fuzzy": "blood",
+			"set": "",
+			"hint": {
+				"served": 1,
+				"rival": 3
+			},
+			"expect": "card:Blood",
+			"partitions": [
+				{
+					"rank": null,
+					"present": false,
+					"exact": null,
+					"candidates": [],
+					"fuzzy": {
+						"status": "miss",
+						"card": null
+					},
+					"contained": [
+						{
+							"name": "Shadowblood Ridge",
+							"set": "dsc",
+							"collector_number": "296"
+						},
+						{
+							"name": "Spoils of Blood",
+							"set": "c14",
+							"collector_number": "30"
+						}
+					]
+				},
+				{
+					"rank": [2, "fleshblood", 1, 2098329.8],
+					"present": true,
+					"exact": {
+						"name": "Flesh // Blood",
+						"set": "dgm",
+						"collector_number": "128"
+					},
+					"candidates": [],
+					"fuzzy": {
+						"status": "miss",
+						"card": null
+					},
+					"contained": [
+						{
+							"name": "Bloodrite Invoker",
+							"set": "ddp",
+							"collector_number": "45"
+						},
+						{
+							"name": "Rageblood Shaman",
+							"set": "jmp",
+							"collector_number": "357"
+						}
+					]
+				},
+				{
+					"rank": null,
+					"present": false,
+					"exact": null,
+					"candidates": [],
+					"fuzzy": {
+						"status": "miss",
+						"card": null
+					},
+					"contained": [
+						{
+							"name": "Creeping Bloodsucker",
+							"set": "j25",
+							"collector_number": "415"
+						},
+						{
+							"name": "Colossus of the Blood Age",
+							"set": "sos",
+							"collector_number": "181"
+						}
+					]
+				},
+				{
+					"rank": [3, "blood", 0, 2098353],
+					"present": true,
+					"exact": {
+						"name": "Blood",
+						"set": "tinr",
+						"collector_number": "21"
+					},
+					"candidates": [
+						{
+							"score": 1,
+							"served": false,
+							"oracleId": "03f45075-9423-454f-a256-94dcafb2a779",
+							"vpid": 221,
+							"foldedName": "blood",
+							"firstReleased": 20211119
+						}
+					],
+					"fuzzy": {
+						"status": "hit",
+						"card": {
+							"name": "Blood",
+							"set": "tinr",
+							"collector_number": "21"
+						}
+					},
+					"contained": [
+						{
+							"name": "Blood",
+							"set": "tinr",
+							"collector_number": "21"
+						}
+					]
+				},
+				{
+					"rank": [2, "goblinblood", 0, 2098328.3],
+					"present": true,
+					"exact": {
+						"name": "Goblin // Blood",
+						"set": "q07",
+						"collector_number": "T12"
+					},
+					"candidates": [],
+					"fuzzy": {
+						"status": "miss",
+						"card": null
+					},
+					"contained": [
+						{
+							"name": "Bloodrock Cyclops",
+							"set": "jmp",
+							"collector_number": "297"
+						},
+						{
+							"name": "Bloodthorn Flail",
+							"set": "lci",
+							"collector_number": "93"
+						}
+					]
+				},
+				{
+					"rank": null,
+					"present": false,
+					"exact": null,
+					"candidates": [],
+					"fuzzy": {
+						"status": "miss",
+						"card": null
+					},
+					"contained": [
+						{
+							"name": "Extus, Oriq Overlord // Awaken the Blood Avatar",
+							"set": "stx",
+							"collector_number": "149"
+						},
+						{
+							"name": "Lyzolda, the Blood Witch",
+							"set": "dis",
+							"collector_number": "117"
+						}
+					]
+				},
+				{
+					"rank": null,
+					"present": false,
+					"exact": null,
+					"candidates": [
+						{
+							"score": 0.625,
+							"served": false,
+							"oracleId": "c3a53131-bf70-49cc-b2dc-8b397b0023aa",
+							"vpid": 8995,
+							"foldedName": "bloody",
+							"firstReleased": 20241115
+						}
+					],
+					"fuzzy": {
+						"status": "hit",
+						"card": {
+							"name": "Bloody",
+							"set": "fj25",
+							"collector_number": "28"
+						}
+					},
+					"contained": [
+						{
+							"name": "Blood Petal Celebrant",
+							"set": "inr",
+							"collector_number": "144"
+						},
+						{
+							"name": "Blood Glutton",
+							"set": "m21",
+							"collector_number": "90"
+						}
+					]
+				},
+				{
+					"rank": null,
+					"present": false,
+					"exact": null,
+					"candidates": [],
+					"fuzzy": {
+						"status": "miss",
+						"card": null
+					},
+					"contained": [
+						{
+							"name": "New Blood",
+							"set": "lcc",
+							"collector_number": "202"
+						},
+						{
+							"name": "Sarkhan, Fireblood",
+							"set": "m19",
+							"collector_number": "154"
+						}
+					]
+				},
+				{
+					"rank": null,
+					"present": false,
+					"exact": null,
+					"candidates": [],
+					"fuzzy": {
+						"status": "miss",
+						"card": null
+					},
+					"contained": [
+						{
+							"name": "Thraben Foulbloods",
+							"set": "emn",
+							"collector_number": "108"
+						},
+						{
+							"name": "Bankrupt in Blood",
+							"set": "rna",
+							"collector_number": "62"
+						}
+					]
+				},
+				{
+					"rank": null,
+					"present": false,
+					"exact": null,
+					"candidates": [],
+					"fuzzy": {
+						"status": "miss",
+						"card": null
+					},
+					"contained": [
+						{
+							"name": "Barbed Bloodletter",
+							"set": "ecl",
+							"collector_number": "86"
+						},
+						{
+							"name": "Blood Age Muster",
+							"set": "ysos",
+							"collector_number": "16"
+						}
+					]
+				}
+			]
+		},
+		{
+			"label": "on the face tier the first name wins, served or not (x26)",
+			"fuzzy": "night",
+			"set": "",
+			"hint": {
+				"served": 3,
+				"rival": 2
+			},
+			"expect": "card:Day // Night",
+			"partitions": [
+				{
+					"rank": [2, "daynight", 0, 2098346.8],
+					"present": true,
+					"exact": {
+						"name": "Day // Night",
+						"set": "tvow",
+						"collector_number": "21"
+					},
+					"candidates": [],
+					"fuzzy": {
+						"status": "miss",
+						"card": null
+					},
+					"contained": [
+						{
+							"name": "Nightsquad Commando",
+							"set": "iko",
+							"collector_number": "98"
+						},
+						{
+							"name": "Blighted Nightmare",
+							"set": "yecl",
+							"collector_number": "8"
+						}
+					]
+				},
+				{
+					"rank": null,
+					"present": false,
+					"exact": null,
+					"candidates": [],
+					"fuzzy": {
+						"status": "miss",
+						"card": null
+					},
+					"contained": [
+						{
+							"name": "Vela the Night-Clad",
+							"set": "c17",
+							"collector_number": "201"
+						},
+						{
+							"name": "Last Night Together",
+							"set": "who",
+							"collector_number": "140"
+						}
+					]
+				},
+				{
+					"rank": null,
+					"present": false,
+					"exact": null,
+					"candidates": [],
+					"fuzzy": {
+						"status": "miss",
+						"card": null
+					},
+					"contained": [
+						{
+							"name": "Strength of Night",
+							"set": "apc",
+							"collector_number": "86"
+						},
+						{
+							"name": "Strands of Night",
+							"set": "7ed",
+							"collector_number": "165"
+						}
+					]
+				},
+				{
+					"rank": [2, "nightday", 1, 2098348.8],
+					"present": true,
+					"exact": {
+						"name": "Night // Day",
+						"set": "dmr",
+						"collector_number": "214"
+					},
+					"candidates": [],
+					"fuzzy": {
+						"status": "miss",
+						"card": null
+					},
+					"contained": [
+						{
+							"name": "Knight of Glory",
+							"set": "m13",
+							"collector_number": "21"
+						},
+						{
+							"name": "Nightmares and Daydreams",
+							"set": "tle",
+							"collector_number": "94"
+						}
+					]
+				},
+				{
+					"rank": null,
+					"present": false,
+					"exact": null,
+					"candidates": [],
+					"fuzzy": {
+						"status": "miss",
+						"card": null
+					},
+					"contained": [
+						{
+							"name": "Midnight Crusader Shuttle",
+							"set": "who",
+							"collector_number": "179"
+						},
+						{
+							"name": "Skulking Knight",
+							"set": "tsp",
+							"collector_number": "130"
+						}
+					]
+				},
+				{
+					"rank": null,
+					"present": false,
+					"exact": null,
+					"candidates": [],
+					"fuzzy": {
+						"status": "miss",
+						"card": null
+					},
+					"contained": [
+						{
+							"name": "Vodalian Wave-Knight",
+							"set": "moc",
+							"collector_number": "43"
+						},
+						{
+							"name": "Maha, Its Feathers Night",
+							"set": "blb",
+							"collector_number": "100"
+						}
+					]
+				},
+				{
+					"rank": null,
+					"present": false,
+					"exact": null,
+					"candidates": [],
+					"fuzzy": {
+						"status": "miss",
+						"card": null
+					},
+					"contained": [
+						{
+							"name": "Corpse Knight",
+							"set": "moc",
+							"collector_number": "321"
+						},
+						{
+							"name": "Chime of Night",
+							"set": "uds",
+							"collector_number": "56"
+						}
+					]
+				},
+				{
+					"rank": null,
+					"present": false,
+					"exact": null,
+					"candidates": [],
+					"fuzzy": {
+						"status": "miss",
+						"card": null
+					},
+					"contained": [
+						{
+							"name": "Midnight Scavengers",
+							"set": "inr",
+							"collector_number": "123"
+						},
+						{
+							"name": "Midnight Entourage",
+							"set": "aer",
+							"collector_number": "66"
+						}
+					]
+				},
+				{
+					"rank": null,
+					"present": false,
+					"exact": null,
+					"candidates": [],
+					"fuzzy": {
+						"status": "miss",
+						"card": null
+					},
+					"contained": [
+						{
+							"name": "Tolsimir, Midnight's Light",
+							"set": "mkm",
+							"collector_number": "236"
+						},
+						{
+							"name": "Nightdrinker Moroii",
+							"set": "mkm",
+							"collector_number": "96"
+						}
+					]
+				},
+				{
+					"rank": null,
+					"present": false,
+					"exact": null,
+					"candidates": [],
+					"fuzzy": {
+						"status": "miss",
+						"card": null
+					},
+					"contained": [
+						{
+							"name": "Lyev Skyknight",
+							"set": "2x2",
+							"collector_number": "246"
+						},
+						{
+							"name": "Night Brushwagg Ringmaster",
+							"set": "sunf",
+							"collector_number": "3"
+						}
+					]
+				}
+			]
+		},
+		{
+			"label": "on the face tier the first name wins, the other way round (x26)",
+			"fuzzy": "day",
+			"set": "",
+			"hint": {
+				"served": 3,
+				"rival": 2
+			},
+			"expect": "card:Day // Night",
+			"partitions": [
+				{
+					"rank": [2, "daynight", 0, 2098346.8],
+					"present": true,
+					"exact": {
+						"name": "Day // Night",
+						"set": "tvow",
+						"collector_number": "21"
+					},
+					"candidates": [],
+					"fuzzy": {
+						"status": "miss",
+						"card": null
+					},
+					"contained": [
+						{
+							"name": "Snow Day",
+							"set": "clu",
+							"collector_number": "100"
+						},
+						{
+							"name": "Daybreak Coronet",
+							"set": "uma",
+							"collector_number": "14"
+						}
+					]
+				},
+				{
+					"rank": null,
+					"present": false,
+					"exact": null,
+					"candidates": [],
+					"fuzzy": {
+						"status": "miss",
+						"card": null
+					},
+					"contained": [
+						{
+							"name": "Daysquad Marshal",
+							"set": "iko",
+							"collector_number": "8"
+						},
+						{
+							"name": "Doomsday Excruciator",
+							"set": "dsk",
+							"collector_number": "94"
+						}
+					]
+				},
+				{
+					"rank": null,
+					"present": false,
+					"exact": null,
+					"candidates": [],
+					"fuzzy": {
+						"status": "miss",
+						"card": null
+					},
+					"contained": [
+						{
+							"name": "Birthday Escape",
+							"set": "ltr",
+							"collector_number": "43"
+						},
+						{
+							"name": "Lost Days",
+							"set": "tla",
+							"collector_number": "62"
+						}
+					]
+				},
+				{
+					"rank": [2, "nightday", 1, 2098348.8],
+					"present": true,
+					"exact": {
+						"name": "Night // Day",
+						"set": "dmr",
+						"collector_number": "214"
+					},
+					"candidates": [],
+					"fuzzy": {
+						"status": "miss",
+						"card": null
+					},
+					"contained": [
+						{
+							"name": "Daybreak Ranger // Nightfall Predator",
+							"set": "isd",
+							"collector_number": "176"
+						},
+						{
+							"name": "Nightmares and Daydreams",
+							"set": "tle",
+							"collector_number": "94"
+						}
+					]
+				},
+				{
+					"rank": null,
+					"present": false,
+					"exact": null,
+					"candidates": [],
+					"fuzzy": {
+						"status": "miss",
+						"card": null
+					},
+					"contained": [
+						{
+							"name": "Done for the Day",
+							"set": "unf",
+							"collector_number": "136"
+						},
+						{
+							"name": "Doomsday",
+							"set": "msc",
+							"collector_number": "796"
+						}
+					]
+				},
+				{
+					"rank": null,
+					"present": false,
+					"exact": null,
+					"candidates": [],
+					"fuzzy": {
+						"status": "miss",
+						"card": null
+					},
+					"contained": [
+						{
+							"name": "Graduation Day",
+							"set": "sos",
+							"collector_number": "16"
+						},
+						{
+							"name": "Rising of the Day",
+							"set": "ltr",
+							"collector_number": "145"
+						}
+					]
+				},
+				{
+					"rank": null,
+					"present": false,
+					"exact": null,
+					"candidates": [],
+					"fuzzy": {
+						"status": "miss",
+						"card": null
+					},
+					"contained": [
+						{
+							"name": "Daydream",
+							"set": "sos",
+							"collector_number": "9"
+						},
+						{
+							"name": "Day of Destiny",
+							"set": "dmc",
+							"collector_number": "99"
+						}
+					]
+				},
+				{
+					"rank": null,
+					"present": false,
+					"exact": null,
+					"candidates": [],
+					"fuzzy": {
+						"status": "miss",
+						"card": null
+					},
+					"contained": [
+						{
+							"name": "First Day of Class",
+							"set": "stx",
+							"collector_number": "102"
+						},
+						{
+							"name": "Day of the Moon",
+							"set": "who",
+							"collector_number": "79"
+						}
+					]
+				},
+				{
+					"rank": null,
+					"present": false,
+					"exact": null,
+					"candidates": [],
+					"fuzzy": {
+						"status": "miss",
+						"card": null
+					},
+					"contained": [
+						{
+							"name": "Love Song of Night and Day",
+							"set": "cmm",
+							"collector_number": "827"
+						},
+						{
+							"name": "Sage of Days",
+							"set": "lci",
+							"collector_number": "73"
+						}
+					]
+				},
+				{
+					"rank": null,
+					"present": false,
+					"exact": null,
+					"candidates": [],
+					"fuzzy": {
+						"status": "miss",
+						"card": null
+					},
+					"contained": [
+						{
+							"name": "Holy Day",
+							"set": "10e",
+							"collector_number": "21"
+						},
+						{
+							"name": "Doomsday Confluence",
+							"set": "who",
+							"collector_number": "67"
+						}
+					]
+				}
+			]
 		}
 	]
 }

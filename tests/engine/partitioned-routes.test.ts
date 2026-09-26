@@ -11,8 +11,10 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { edgeCacheUrl } from "../../src/engine/edge-cache";
 import { gatherPartitionOf, partitionOfOracleId } from "../../src/engine/partition";
 import {
+	beatsExactRank,
 	firstDecided,
 	mergeAutocomplete,
+	nameReplySettles,
 	PartitionedEngine,
 	raceFuzzyCandidates,
 	resetCatalogMemoForTests,
@@ -25,6 +27,7 @@ import {
 	illustrationIdKey,
 	nameKey,
 	ROUTING_FEATURE_NAME_KEYS,
+	ROUTING_FEATURE_NAME_TIERS,
 	RoutingFilter,
 	scryfallIdKey,
 	setNumberKey,
@@ -32,6 +35,7 @@ import {
 import {
 	type CollectionBatch,
 	type CollectionScope,
+	type NameRank,
 	StaleModulusError,
 	type StoreManifest,
 } from "../../src/engine/types";
@@ -159,7 +163,7 @@ function fakeRemote(partition: number, calls: string[], answers: Record<string, 
 			count("scryfallExactNameProbe");
 			// The same answers the rank and the card give, in one reply; `present` overrides whether
 			// this partition holds the name at all (defaults to "it answered").
-			const rank = val<number[] | null>("exactRank", "exact" in answers ? [1, 2, 0] : null);
+			const rank = val<NameRank | null>("exactRank", "exact" in answers ? [3, "", 1, 0] : null);
 			return {
 				rank,
 				present: val<boolean>("present", rank !== null),
@@ -170,7 +174,7 @@ function fakeRemote(partition: number, calls: string[], answers: Record<string, 
 			count("scryfallExactNameRank");
 			// A partition that can answer ranks; `exactRank` overrides the tier/score so a test
 			// can make a LATER partition win.
-			return val<number[] | null>("exactRank", "exact" in answers ? [1, 2, 0] : null);
+			return val<NameRank | null>("exactRank", "exact" in answers ? [3, "", 1, 0] : null);
 		},
 		scryfallAutocomplete: async () => {
 			count("scryfallAutocomplete");
@@ -195,7 +199,7 @@ function fakeRemote(partition: number, calls: string[], answers: Record<string, 
 			// `byKey` maps a key's id to this partition's card; `firstOfEach` answers every tree;
 			// `collectionRanks` ranks each name and `collectionCard` is its local winner.
 			const held = val<Record<string, Record<string, unknown>>>("byKey", {});
-			const ranks = val<(number[] | null)[]>("collectionRanks", []);
+			const ranks = val<(NameRank | null)[]>("collectionRanks", []);
 			const tree = val<Record<string, unknown> | null>("firstOfEach", null);
 			// `byTree` answers per tree string, for a test that needs the English tree to miss.
 			const byTree = val<Record<string, Record<string, unknown>> | null>("byTree", null);
@@ -203,7 +207,7 @@ function fakeRemote(partition: number, calls: string[], answers: Record<string, 
 			// `rankByName` ranks a name by its folded text — for the routed tests, where a partition is
 			// sent only some of the names, so position is not identity; `presentNames` are the names
 			// this partition holds even where it ranks none.
-			const byName = val<Record<string, number[] | null> | null>("rankByName", null);
+			const byName = val<Record<string, NameRank | null> | null>("rankByName", null);
 			const present = val<string[]>("presentNames", []);
 			const nameRanks = batch.names.map((n, i) => (byName ? (byName[n.folded] ?? null) : (ranks[i] ?? null)));
 			return {
@@ -707,11 +711,15 @@ describe("a collection batch is ONE round of at most N calls", () => {
 		]);
 		const { engine, calls } = build(
 			{
-				1: { byKey: { a: { id: "a" }, b: { id: "b" } }, collectionRanks: [[1, 1, 0], null], collectionCard: { p: 1 } },
+				1: {
+					byKey: { a: { id: "a" }, b: { id: "b" } },
+					collectionRanks: [[2, "", 1, 0], null],
+					collectionCard: { p: 1 },
+				},
 				2: {
 					collectionRanks: [
-						[1, 2, 0],
-						[1, 2, 0],
+						[3, "", 1, 0],
+						[3, "", 1, 0],
 					],
 					collectionCard: { p: 2 },
 					firstOfEach: { tree: 2 },
@@ -736,8 +744,8 @@ describe("a collection batch is ONE round of at most N calls", () => {
 			names: [{ p: 2 }, { p: 2 }],
 		});
 		expect(got.nameRanks).toEqual([
-			[1, 2, 0],
-			[1, 2, 0],
+			[3, "", 1, 0],
+			[3, "", 1, 0],
 		]);
 	});
 
@@ -793,8 +801,8 @@ describe("a collection batch is ONE round of at most N calls", () => {
 
 	test("a name tie keeps the LOWEST partition, and that partition's card", async () => {
 		const { engine } = build({
-			1: { collectionRanks: [[1, 2, 5]], collectionCard: { p: 1 } },
-			3: { collectionRanks: [[1, 2, 5]], collectionCard: { p: 3 } },
+			1: { collectionRanks: [[3, "", 1, 5]], collectionCard: { p: 1 } },
+			3: { collectionRanks: [[3, "", 1, 5]], collectionCard: { p: 3 } },
 		});
 		const got = await engine.scryfallCollectionBatch({ keys: [], trees: [], names: names("x") }, "https://x");
 		expect(answer(got).names).toEqual([{ p: 1 }]);
@@ -966,8 +974,8 @@ describe("batches and catalogs", () => {
 
 	test("collection names: each identifier comes back from the partition that won IT", async () => {
 		const { engine, calls } = build({
-			1: { collectionRanks: [[1, 2, 0], null], collectionCard: { name: "p1" } },
-			2: { collectionRanks: [null, [1, 2, 0]], collectionCard: { name: "p2" } },
+			1: { collectionRanks: [[3, "", 1, 0], null], collectionCard: { name: "p1" } },
+			2: { collectionRanks: [null, [3, "", 1, 0]], collectionCard: { name: "p2" } },
 		});
 		const got = await engine.scryfallCollectionBatch(
 			{
@@ -1244,8 +1252,11 @@ describe("name-route combination rules", () => {
 		// `Harmonized Trio // Brainstorm`, while single-archive production answered both
 		// correctly because there the ranking was global by construction.
 		const { engine, of } = build({
-			1: { exact: { name: "Emeritus of Ideation // Ancestral Recall" }, exactRank: [1, 1, 9.9] },
-			3: { exact: { name: "Ancestral Recall" }, exactRank: [1, 2, 0.1] },
+			1: {
+				exact: { name: "Emeritus of Ideation // Ancestral Recall" },
+				exactRank: [2, "emeritusofideationancestralrecall", 1, 9.9],
+			},
+			3: { exact: { name: "Ancestral Recall" }, exactRank: [3, "ancestralrecall", 1, 0.1] },
 		});
 		expect(await engine.scryfallExactName("ancestralrecall", "", "https://x")).toEqual({
 			name: "Ancestral Recall",
@@ -1255,40 +1266,80 @@ describe("name-route combination rules", () => {
 		expect(of("scryfallExactNameProbe").length).toBe(N);
 	});
 
-	test("exact: with no whole-name match anywhere, the best prefer_score wins", async () => {
-		// `exact=Fire` — no card is named just "Fire", so every candidate is a face match and the
-		// answer turns on prefer_score alone. Scryfall answers `Fire // Ice`; the port answered
+	test("exact: with no whole-name match anywhere, the first name in order wins, then the best prefer_score", async () => {
+		// `exact=Fire` — no card is named just "Fire", so every candidate is a face match, and
+		// "fireice" comes before "startfire". Scryfall answers `Fire // Ice`; the port answered
 		// `Start // Fire` purely because it hashed to a lower partition.
 		const { engine } = build({
-			0: { exact: { name: "Start // Fire" }, exactRank: [1, 1, 0.2] },
-			3: { exact: { name: "Fire // Ice" }, exactRank: [1, 1, 0.7] },
+			0: { exact: { name: "Start // Fire" }, exactRank: [2, "startfire", 0, 9.9] },
+			3: { exact: { name: "Fire // Ice" }, exactRank: [2, "fireice", 1, 0.7] },
 		});
 		expect(await engine.scryfallExactName("fire", "", "https://x")).toEqual({ name: "Fire // Ice" });
+		// One name in two partitions: the score decides.
+		const scored = build({
+			0: { exact: { name: "Lower score" }, exactRank: [2, "x", 1, 0.2] },
+			3: { exact: { name: "Higher score" }, exactRank: [2, "x", 1, 0.7] },
+		});
+		expect(await scored.engine.scryfallExactName("x", "", "https://x")).toEqual({ name: "Higher score" });
 	});
 
 	test("exact: an exact tie keeps the lowest partition index", async () => {
 		const { engine } = build({
-			1: { exact: { name: "Lower" }, exactRank: [1, 1, 0.5] },
-			3: { exact: { name: "Higher" }, exactRank: [1, 1, 0.5] },
+			1: { exact: { name: "Lower" }, exactRank: [2, "tie", 1, 0.5] },
+			3: { exact: { name: "Higher" }, exactRank: [2, "tie", 1, 0.5] },
 		});
 		expect(await engine.scryfallExactName("tie", "", "https://x")).toEqual({ name: "Lower" });
 	});
 
-	test("exact: a SERVED card the needle names beats an extras-only card it names exactly, whatever the tiers", async () => {
+	test("exact: on ONE tier a served card beats an extras-only card, whatever the scores", async () => {
 		// `exact=Earth Rumble` on the ten-partition store: the jtla memorabilia front card is a
 		// whole-name match with the higher prefer_score in the lower partition, and it is what
-		// production answered on every name route (2026-09-15). The rank's leading element is
-		// the served flag, so the served card wins even from a face-match tier.
+		// production answered on every name route (2026-09-15). Both are whole names, and the
+		// served flag breaks the tier's tie: the tla sorcery.
 		const { engine, of } = build({
-			0: { exact: { name: "Earth Rumble (jtla front card)" }, exactRank: [0, 2, 9.9] },
-			3: { exact: { name: "Earth Rumble" }, exactRank: [1, 1, 0.1] },
+			0: { exact: { name: "Earth Rumble (jtla front card)" }, exactRank: [3, "earthrumble", 0, 9.9] },
+			3: { exact: { name: "Earth Rumble" }, exactRank: [3, "earthrumble", 1, 0.1] },
 		});
 		expect(await engine.scryfallExactName("earthrumble", "", "https://x")).toEqual({ name: "Earth Rumble" });
 		expect(of("scryfallExactNameProbe").length).toBe(N);
 		// With NO served card anywhere the extras-only card still answers: a fallback, not an
 		// exclusion (`exact=Cabbages` is jtla/39 on api.scryfall.com).
-		const alone = build({ 2: { exact: { name: "Cabbages" }, exactRank: [0, 2, 9.9] } });
+		const alone = build({ 2: { exact: { name: "Cabbages" }, exactRank: [3, "cabbages", 0, 9.9] } });
 		expect(await alone.engine.scryfallExactName("cabbages", "", "https://x")).toEqual({ name: "Cabbages" });
+	});
+
+	test("exact: ACROSS tiers the tier decides — an extras-only WHOLE name beats a served FACE in another partition", async () => {
+		// `exact=chaos` (and `fuzzy=chaos`, and `{"name":"Chaos"}`) is the fj25 front card Chaos on
+		// api.scryfall.com, 2026-09-26 — not Order // Chaos, which the port answered while served led
+		// the rank. The two hash apart (dmr/212 and fj25/46 are in partitions 5 and 2 of the 09-25
+		// build), the face match scores higher, and it sits in the higher partition, so neither the
+		// score nor partition order can answer the front card by accident.
+		const { engine, of } = build({
+			1: { exact: { name: "Chaos" }, exactRank: [3, "chaos", 0, 0.1] },
+			3: { exact: { name: "Order // Chaos" }, exactRank: [2, "orderchaos", 1, 9.9] },
+		});
+		expect(await engine.scryfallExactName("chaos", "", "https://x")).toEqual({ name: "Chaos" });
+		expect(of("scryfallExactNameProbe").length).toBe(N);
+		// `exact=blood`: the tinr Blood token (whole) over Flesh // Blood (served, a face) — the
+		// same shape the other way round in partition order.
+		const blood = build({
+			1: { exact: { name: "Flesh // Blood" }, exactRank: [2, "fleshblood", 1, 9.9] },
+			3: { exact: { name: "Blood" }, exactRank: [3, "blood", 0, 0.1] },
+		});
+		expect(await blood.engine.scryfallExactName("blood", "", "https://x")).toEqual({ name: "Blood" });
+		// `exact=jump`: Jump m10/59 (whole) over Encouraging Aviator // Jump (a back face, whose
+		// name comes first), and `exact=start`: Start // Finish over Start // Fire (both faces;
+		// "startfinish" comes first).
+		const jump = build({
+			0: { exact: { name: "Encouraging Aviator // Jump" }, exactRank: [2, "encouragingaviatorjump", 1, 9.9] },
+			3: { exact: { name: "Jump" }, exactRank: [3, "jump", 1, 0.1] },
+		});
+		expect(await jump.engine.scryfallExactName("jump", "", "https://x")).toEqual({ name: "Jump" });
+		const start = build({
+			0: { exact: { name: "Start // Fire" }, exactRank: [2, "startfire", 0, 9.9] },
+			3: { exact: { name: "Start // Finish" }, exactRank: [2, "startfinish", 1, 0.1] },
+		});
+		expect(await start.engine.scryfallExactName("start", "", "https://x")).toEqual({ name: "Start // Finish" });
 	});
 
 	// n8: a build that publishes card names is answered by ONE object — any partition can, from the
@@ -1453,9 +1504,13 @@ describe("name-route combination rules", () => {
 });
 
 describe("exact names route through the filter (backlog n6)", () => {
-	// A name key's value: its one partition, N + its one SERVED partition, or 255. The builders
-	// write `ns:` for a served row and `nm:` for an extra; both hash as `nm:`.
+	// A name key's value: its one partition, N + its one SERVED partition (N + 4s + t in a filter
+	// with tiers, t the other partitions' highest extras tier), or 255. The builders write `ns:` for
+	// a served row, `nw:`/`nm:`/`nf:` for an extra's whole, face and flavor names and `na:` for an art
+	// series' (`nm:` on every extra before x26); all hash as `nm:`.
 	const named = (entries: { key: string; partition: number }[]) => filterOf(entries, ROUTING_FEATURE_NAME_KEYS);
+	const tiered = (entries: { key: string; partition: number }[]) =>
+		filterOf(entries, ROUTING_FEATURE_NAME_KEYS | ROUTING_FEATURE_NAME_TIERS);
 	const SOLE = named([{ key: "ns:lightningbolt", partition: 2 }]);
 	// The real card in 2, its art-series face in 0: several hold it, one holds it served.
 	const SERVED = named([
@@ -1467,6 +1522,25 @@ describe("exact names route through the filter (backlog n6)", () => {
 		{ key: "ns:fire", partition: 1 },
 		{ key: "ns:fire", partition: 3 },
 	]);
+
+	// x26: Order // Chaos served in 3 and the fj25 front card Chaos (a whole-name extra) in 1; Night
+	// // Day served in 3 and the Day // Night token (an extra, a face) in 0; Delver of Secrets //
+	// Insectile Aberration served in 2 and its art-series faces in 0 — the keys the builders write for
+	// them (`name_routing_keys_are_spelled_like_the_router_spells_them`).
+	const CHAOS_KEYS = [
+		{ key: "ns:chaos", partition: 3 },
+		{ key: "nw:chaos", partition: 1 },
+		{ key: "ns:night", partition: 3 },
+		{ key: "nm:night", partition: 0 },
+		{ key: "ns:delverofsecrets", partition: 2 },
+		{ key: "na:delverofsecrets", partition: 0 },
+		{ key: "ns:lightningbolt", partition: 2 },
+	];
+	const CHAOS = tiered(CHAOS_KEYS);
+	const chaosStores = {
+		1: { exact: { name: "Chaos" }, exactRank: [3, "chaos", 0, 0.1] },
+		3: { exact: { name: "Order // Chaos" }, exactRank: [2, "orderchaos", 1, 9.9] },
+	};
 
 	test("the spelling: collated, and not routed when non-ASCII survives the fold", () => {
 		expect(nameKey("lim-dul's vault")).toBe("nm:limdulsvault");
@@ -1483,6 +1557,99 @@ describe("exact names route through the filter (backlog n6)", () => {
 		expect(TWO_SERVED.lookupName("nm:fire")).toBeNull();
 		const unstamped = filterOf([{ key: "ns:lightningbolt", partition: 2 }]);
 		expect(unstamped.lookupName("nm:lightningbolt")).toBeNull();
+		// With tiers, a served name also says how high any other partition's extras hold it.
+		expect(CHAOS.lookupName("nm:chaos")).toEqual({ served: 3, rival: 3 });
+		expect(CHAOS.lookupName("nm:night")).toEqual({ served: 3, rival: 2 });
+		expect(CHAOS.lookupName("nm:delverofsecrets")).toEqual({ served: 2, rival: 0 });
+		expect(CHAOS.lookupName("nm:lightningbolt")).toEqual({ sole: 2 });
+	});
+
+	test("exact: a served FACE answer another partition's WHOLE-name extra outranks asks the rest, and answers the extra", async () => {
+		// `exact=chaos` routes to 3, the one served holder — whose face answer is not final, because
+		// the filter says another partition holds `chaos` whole (rival 3). The merge answers fj25.
+		const { engine, calls } = build(chaosStores, undefined, CHAOS);
+		expect(await engine.scryfallExactName("chaos", "", "https://x")).toEqual({ name: "Chaos" });
+		expect(calls[0]).toBe("scryfallExactNameProbe:3");
+		expect(calls.length).toBe(N);
+	});
+
+	test("exact: a served FACE answer another partition's extra ties on its tier asks the rest — the first NAME wins", async () => {
+		// `exact=night` (and `day`) is the tvow Day // Night token on api.scryfall.com, 2026-09-26: both
+		// cards carry the needle as a face, "daynight" comes before "nightday", and the served flag
+		// and the score (Night // Day's is higher) never get a say.
+		const { engine, calls } = build(
+			{
+				0: { exact: { name: "Day // Night" }, exactRank: [2, "daynight", 0, 0.1] },
+				3: { exact: { name: "Night // Day" }, exactRank: [2, "nightday", 1, 9.9] },
+			},
+			undefined,
+			CHAOS,
+		);
+		expect(await engine.scryfallExactName("night", "", "https://x")).toEqual({ name: "Day // Night" });
+		expect(calls[0]).toBe("scryfallExactNameProbe:3");
+		expect(calls.length).toBe(N);
+	});
+
+	test("exact: a served FACE answer settles on ONE probe when the others hold only art series", async () => {
+		const { engine, calls } = build(
+			{
+				0: { exact: { name: "Delver of Secrets // Delver of Secrets (art series)" }, exactRank: [0, "", 0, 9.9] },
+				2: {
+					exact: { name: "Delver of Secrets // Insectile Aberration" },
+					exactRank: [2, "delverofsecretsinsectileaberration", 1, 0.1],
+				},
+			},
+			undefined,
+			CHAOS,
+		);
+		expect(await engine.scryfallExactName("delver of secrets", "", "https://x")).toEqual({
+			name: "Delver of Secrets // Insectile Aberration",
+		});
+		expect(calls).toEqual(["scryfallExactNameProbe:2"]);
+	});
+
+	test("exact: a filter built before the tiers keeps the served route's old rule until a build republishes it", async () => {
+		// The same keys, sealed without tiers (`#nm1` batches): the served holder's served reply
+		// settles as it always did — the face answer, one probe — and nothing else changes.
+		const { engine, calls } = build(
+			chaosStores,
+			undefined,
+			named(CHAOS_KEYS.map((e) => ({ ...e, key: e.key.replace(/^n[wa]:/, "nm:") }))),
+		);
+		expect(await engine.scryfallExactName("chaos", "", "https://x")).toEqual({ name: "Order // Chaos" });
+		expect(calls).toEqual(["scryfallExactNameProbe:3"]);
+	});
+
+	test("nameReplySettles: a served route with tiers settles on a HIGHER tier than the rival's — or on the whole-name tier served", () => {
+		const whole = { served: 3, rival: 3 };
+		const face = { served: 3, rival: 2 };
+		const flavor = { served: 3, rival: 1 };
+		const art = { served: 3, rival: 0 };
+		// On the whole-name tier every candidate's name is the needle, so served decides.
+		expect(nameReplySettles(whole, [3, "x", 1, 0], false)).toBe(true);
+		expect(nameReplySettles(whole, [3, "x", 0, 9], false)).toBe(false);
+		expect(nameReplySettles(whole, [2, "x", 1, 9], false)).toBe(false);
+		expect(nameReplySettles(face, [3, "x", 0, 0], true)).toBe(true);
+		// On a face tie a rival's name may come first, served or not.
+		expect(nameReplySettles(face, [2, "a", 1, 0], true)).toBe(false);
+		expect(nameReplySettles(flavor, [2, "x", 0, 9], true)).toBe(true);
+		expect(nameReplySettles(flavor, [1, "", 1, 0], true)).toBe(false);
+		expect(nameReplySettles(art, [1, "", 0, 0], true)).toBe(true);
+		expect(nameReplySettles(art, [0, "", 1, 0], true)).toBe(false);
+		// A miss never settles a served route; a filter without tiers keeps the served-only rule.
+		expect(nameReplySettles(whole, null, true)).toBe(false);
+		expect(nameReplySettles({ served: 3 }, [2, "x", 1, 0], false)).toBe(true);
+		expect(nameReplySettles({ served: 3 }, [3, "x", 0, 0], false)).toBe(false);
+	});
+
+	test("beatsExactRank: the higher tier, then the LOWER name, then served, then the higher score", () => {
+		expect(beatsExactRank([3, "chaos", 0, 0.1], [2, "orderchaos", 1, 9.9])).toBe(true);
+		expect(beatsExactRank([2, "daynight", 0, 0.1], [2, "nightday", 1, 9.9])).toBe(true);
+		expect(beatsExactRank([2, "nightday", 1, 9.9], [2, "daynight", 0, 0.1])).toBe(false);
+		expect(beatsExactRank([3, "earthrumble", 1, 0.1], [3, "earthrumble", 0, 9.9])).toBe(true);
+		expect(beatsExactRank([3, "x", 1, 0.2], [3, "x", 1, 0.1])).toBe(true);
+		expect(beatsExactRank([3, "x", 1, 0.1], [3, "x", 1, 0.1])).toBe(false);
+		expect(beatsExactRank([0, "", 0, 0], null)).toBe(true);
 	});
 
 	test("exact: a name ONE partition holds is ONE probe", async () => {
@@ -1509,8 +1676,8 @@ describe("exact names route through the filter (backlog n6)", () => {
 	test("exact: the one SERVED holder answering served is the answer, whatever the others hold", async () => {
 		const { engine, calls } = build(
 			{
-				0: { exact: { name: "Brainstorm // Brainstorm (art series)" }, exactRank: [0, 1, 9.9] },
-				2: { exact: { name: "Brainstorm" }, exactRank: [1, 2, 0.1] },
+				0: { exact: { name: "Brainstorm // Brainstorm (art series)" }, exactRank: [2, "", 0, 9.9] },
+				2: { exact: { name: "Brainstorm" }, exactRank: [3, "", 1, 0.1] },
 			},
 			undefined,
 			SERVED,
@@ -1524,8 +1691,8 @@ describe("exact names route through the filter (backlog n6)", () => {
 		// scores higher on the same served-0 footing and wins, as the fan-out would have said.
 		const { engine, calls } = build(
 			{
-				0: { exact: { name: "art series" }, exactRank: [0, 1, 9.9] },
-				2: { exact: { name: "memorabilia" }, exactRank: [0, 2, 0.1] },
+				0: { exact: { name: "art series" }, exactRank: [2, "", 0, 9.9] },
+				2: { exact: { name: "memorabilia" }, exactRank: [3, "", 0, 0.1] },
 			},
 			undefined,
 			SERVED,
@@ -1535,8 +1702,8 @@ describe("exact names route through the filter (backlog n6)", () => {
 		// A tie between the routed reply and a later one keeps the LOWER partition, routed or not.
 		const tie = build(
 			{
-				0: { exact: { name: "lower" }, exactRank: [0, 2, 5] },
-				2: { exact: { name: "routed" }, exactRank: [0, 2, 5] },
+				0: { exact: { name: "lower" }, exactRank: [3, "", 0, 5] },
+				2: { exact: { name: "routed" }, exactRank: [3, "", 0, 5] },
 			},
 			undefined,
 			SERVED,
@@ -1578,7 +1745,7 @@ describe("exact names route through the filter (backlog n6)", () => {
 	});
 
 	test("exact: an undecidable name, or a filter without name keys, probes every partition once", async () => {
-		const two = build({ 1: { exact: { name: "Fire // Ice" }, exactRank: [1, 1, 0.7] } }, undefined, TWO_SERVED);
+		const two = build({ 1: { exact: { name: "Fire // Ice" }, exactRank: [2, "", 1, 0.7] } }, undefined, TWO_SERVED);
 		expect(await two.engine.scryfallExactName("fire", "", "https://x")).toEqual({ name: "Fire // Ice" });
 		expect(two.calls.length).toBe(N);
 		const old = build(
@@ -1605,8 +1772,8 @@ describe("exact names route through the filter (backlog n6)", () => {
 		test("routed names go to their own partitions only, each asked for its own names — one round", async () => {
 			const { engine, calls } = build(
 				{
-					2: { rankByName: { "lightning bolt": [1, 2, 0], counterspell: [1, 2, 0] } },
-					3: { rankByName: { opt: [1, 2, 0] } },
+					2: { rankByName: { "lightning bolt": [3, "", 1, 0], counterspell: [3, "", 1, 0] } },
+					3: { rankByName: { opt: [3, "", 1, 0] } },
 				},
 				undefined,
 				MANY,
@@ -1625,7 +1792,7 @@ describe("exact names route through the filter (backlog n6)", () => {
 
 		test("a routed name its partition does not settle is asked of every other one, and merged in order", async () => {
 			const garbage = named([{ key: "ns:lightningbolt", partition: 1 }]);
-			const { engine, calls } = build({ 3: { rankByName: { "lightning bolt": [1, 2, 0] } } }, undefined, garbage);
+			const { engine, calls } = build({ 3: { rankByName: { "lightning bolt": [3, "", 1, 0] } } }, undefined, garbage);
 			const got = await engine.scryfallCollectionBatch(
 				{ keys: [], trees: [], names: names("lightning bolt") },
 				"https://x",
@@ -1633,6 +1800,36 @@ describe("exact names route through the filter (backlog n6)", () => {
 			expect(names0(got)).toEqual([{ p: 3, name: "lightning bolt" }]);
 			expect(calls.length).toBe(N);
 			expect(calls.filter((c) => c.endsWith(":1"))).toEqual(["scryfallCollectionBatch[|t0|n1]:1"]);
+		});
+
+		test("a served name another partition holds WHOLE as an extra is merged tier-first; a face-only rival settles", async () => {
+			// `{"name":"Chaos"}` is the fj25 front card on api.scryfall.com (2026-09-26), like `exact=`.
+			const { engine, calls } = build(
+				{
+					1: { rankByName: { chaos: [3, "", 0, 0] } },
+					2: { rankByName: { "delver of secrets": [2, "", 1, 0] } },
+					3: { rankByName: { chaos: [2, "", 1, 9] } },
+				},
+				undefined,
+				CHAOS,
+			);
+			const got = await engine.scryfallCollectionBatch(
+				{ keys: [], trees: [], names: names("chaos", "delver of secrets") },
+				"https://x",
+			);
+			expect(names0(got)).toEqual([
+				{ p: 1, name: "chaos" },
+				{ p: 2, name: "delver of secrets" },
+			]);
+			// Round 1 asks each name's route (3 and 2); only `chaos` is unsettled, and the repair
+			// round asks it of every partition round 1 did not ask it of — 0, 1 and 2.
+			expect(calls.sort()).toEqual([
+				"scryfallCollectionBatch[|t0|n1]:0",
+				"scryfallCollectionBatch[|t0|n1]:1",
+				"scryfallCollectionBatch[|t0|n1]:2",
+				"scryfallCollectionBatch[|t0|n1]:2",
+				"scryfallCollectionBatch[|t0|n1]:3",
+			]);
 		});
 
 		test("a sole partition's miss is settled by presence — no second round", async () => {
@@ -1648,8 +1845,8 @@ describe("exact names route through the filter (backlog n6)", () => {
 		test("one unrouted name calls every partition — but the routed names still go only to theirs", async () => {
 			const { engine, calls } = build(
 				{
-					1: { rankByName: { mystery: [1, 2, 0] } },
-					2: { rankByName: { "lightning bolt": [1, 2, 0] } },
+					1: { rankByName: { mystery: [3, "", 1, 0] } },
+					2: { rankByName: { "lightning bolt": [3, "", 1, 0] } },
 				},
 				undefined,
 				MANY,
@@ -1691,13 +1888,13 @@ describe("exact names route through the filter (backlog n6)", () => {
 			// extra passes, card 35's served card and its extra both pass.
 			const perPartition: Record<number, Record<string, unknown>> = {};
 			for (let p = 0; p < N; p++) perPartition[p] = { rankByName: {}, presentNames: [] };
-			const at = (p: number) => perPartition[p] as { rankByName: Record<string, number[]>; presentNames: string[] };
+			const at = (p: number) => perPartition[p] as { rankByName: Record<string, NameRank>; presentNames: string[] };
 			for (const [i, name] of deck.entries()) {
 				at(owner(i)).presentNames.push(name);
-				if (i % 5 === 0) at(owner(i)).rankByName[name] = [1, 2, 0];
+				if (i % 5 === 0) at(owner(i)).rankByName[name] = [3, "", 1, 0];
 			}
-			at((owner(7) + 1) % N).rankByName["card 7"] = [0, 2, 0];
-			at((owner(35) + 1) % N).rankByName["card 35"] = [0, 2, 9];
+			at((owner(7) + 1) % N).rankByName["card 7"] = [3, "", 0, 0];
+			at((owner(35) + 1) % N).rankByName["card 35"] = [3, "", 0, 9];
 
 			const routed = build(perPartition, undefined, routing);
 			const got = await routed.engine.scryfallCollectionBatch(
@@ -1723,7 +1920,7 @@ describe("exact names route through the filter (backlog n6)", () => {
 		});
 
 		test("a served name rides only calls round 1 makes anyway: alone it is its route, then the rest", async () => {
-			const { engine, calls } = build({ 0: { rankByName: { brainstorm: [0, 2, 0] } } }, undefined, SERVED);
+			const { engine, calls } = build({ 0: { rankByName: { brainstorm: [3, "", 0, 0] } } }, undefined, SERVED);
 			const got = await engine.scryfallCollectionBatch(
 				{ keys: [], trees: [], names: names("brainstorm") },
 				"https://x",
@@ -1747,7 +1944,10 @@ describe("exact names route through the filter (backlog n6)", () => {
 				{ key: "nm:brainstorm", partition: 0 },
 				{ key: "ns:opt", partition: 0 },
 			]);
-			const perPartition = { 0: { rankByName: { opt: [1, 2, 0] } }, 2: { rankByName: { brainstorm: [1, 2, 0] } } };
+			const perPartition = {
+				0: { rankByName: { opt: [3, "", 1, 0] } },
+				2: { rankByName: { brainstorm: [3, "", 1, 0] } },
+			};
 			const withSet = build(perPartition, undefined, routing);
 			await withSet.engine.scryfallCollectionBatch(
 				{ keys: [], trees: [], names: [...names("opt"), { folded: "brainstorm", setCode: "ice" }] },

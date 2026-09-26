@@ -262,13 +262,14 @@ export interface Engine {
 	 */
 	scryfallExactName(folded: string, setCode: string, baseUrl: string): Promise<Record<string, unknown> | null>;
 	/**
-	 * `[tier, score]` for this engine's best `exact=` candidate, or null; higher wins.
+	 * `[tier, name, served, score]` for this engine's best `exact=` candidate, or null (core_api's
+	 * `exact_name_rank`; see NameRank for how two compare).
 	 *
 	 * Only the partitioned router calls this, to rank partitions before materializing one — a
 	 * needle can match one card's whole name and another card's face name, and those cards live
-	 * in different partitions. Compare the pair; do not interpret either half.
+	 * in different partitions.
 	 */
-	scryfallExactNameRank(folded: string, setCode: string): Promise<number[] | null>;
+	scryfallExactNameRank(folded: string, setCode: string): Promise<NameRank | null>;
 	/**
 	 * `scryfallExactNameRank` and `scryfallExactName` in one reply, plus whether this store holds
 	 * the name at all — what the partitioned router asks a routed partition (see ExactNameProbe).
@@ -368,8 +369,8 @@ export interface CollectionBatchAnswer {
 	keys: (Uint8Array | null)[];
 	trees: (Uint8Array | null)[];
 	names: (Uint8Array | null)[];
-	/** `[served, tier, score]` per name, or null — what the partitioned router merges names by. */
-	nameRanks: (number[] | null)[];
+	/** `[tier, name, served, score]` per name, or null — what the partitioned router merges names by. */
+	nameRanks: (NameRank | null)[];
 	/**
 	 * Per name, whether this store holds it at all — no set, no scope, and `exact=`'s wider name
 	 * rule — when the batch asked for `presence` and the store understood; absent otherwise.
@@ -378,12 +379,19 @@ export interface CollectionBatchAnswer {
 }
 
 /**
+ * A name lookup's rank on the wire, `[tier, name, served, score]` — card_engine's `exact_name_rank`.
+ * The router compares two with `beatsExactRank`: a NUMBER element higher-wins, a STRING element (the
+ * collated card name) lower-wins, in order.
+ */
+export type NameRank = (number | string)[];
+
+/**
  * One store's whole answer to an `exact=` name — `scryfallExactNameRank` and `scryfallExactName`
  * in one reply, plus `present`: whether the store holds the name at all, set or no set. What the
  * partitioned router asks the partition the routing filter names for a name (backlog n6).
  */
 export interface ExactNameProbe {
-	rank: number[] | null;
+	rank: NameRank | null;
 	present: boolean;
 	card: Record<string, unknown> | null;
 }

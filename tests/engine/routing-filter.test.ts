@@ -22,6 +22,7 @@ import {
 	illustrationIdKey,
 	nameKey,
 	ROUTING_FEATURE_NAME_KEYS,
+	ROUTING_FEATURE_NAME_TIERS,
 	ROUTING_FILTER_MAGIC_V1,
 	type RoutingEntry,
 	RoutingFilter,
@@ -380,6 +381,69 @@ describe("name keys (backlog n6)", () => {
 			expect(filter.lookupName(`nm:sole${p}`)).toEqual({ sole: p });
 			expect(filter.lookupName(`nm:served${p}`)).toEqual({ served: p });
 		}
+	});
+
+	// x26: the builders spell an extras row's tier (`nw:` whole, `nm:` face, `nf:` flavor, `na:` an
+	// art series), and a filter built from batches that all do values a served name N + 4s + t — t
+	// the highest tier (3/2/1) any OTHER partition's extras hold it on, 0 for none but art series — so
+	// the router can tell a final served reply from one an extra elsewhere outranks (`exact=chaos`).
+	const tieredFilter = (entries: RoutingEntry[], identity = IDENTITY) =>
+		parse(buildRoutingFilter(entries, identity, ROUTING_FEATURE_NAME_KEYS | ROUTING_FEATURE_NAME_TIERS), identity);
+
+	test("tiers: a served name carries the other partitions' highest extras tier as `rival`", () => {
+		const entries: RoutingEntry[] = [
+			{ key: "ns:chaos", partition: 5 },
+			{ key: "nw:chaos", partition: 2 },
+			{ key: "ns:delverofsecrets", partition: 7 },
+			{ key: "na:delverofsecrets", partition: 6 },
+			{ key: "ns:night", partition: 3 },
+			{ key: "nm:night", partition: 0 },
+			{ key: "ns:lunch", partition: 1 },
+			{ key: "nf:lunch", partition: 4 },
+			// The served partition's own whole-name extra is not a rival: only 3's face is.
+			{ key: "ns:illusion", partition: 8 },
+			{ key: "nw:illusion", partition: 8 },
+			{ key: "nm:illusion", partition: 3 },
+			{ key: "nw:cabbages", partition: 7 },
+			{ key: "nw:token", partition: 0 },
+			{ key: "nf:token", partition: 8 },
+		];
+		const filter = tieredFilter(entries);
+		expect(filter.lookupName("nm:chaos")).toEqual({ served: 5, rival: 3 });
+		expect(filter.lookupName("nm:delverofsecrets")).toEqual({ served: 7, rival: 0 });
+		expect(filter.lookupName("nm:night")).toEqual({ served: 3, rival: 2 });
+		expect(filter.lookupName("nm:lunch")).toEqual({ served: 1, rival: 1 });
+		expect(filter.lookupName("nm:illusion")).toEqual({ served: 8, rival: 2 });
+		expect(filter.lookupName("nm:cabbages")).toEqual({ sole: 7 });
+		expect(filter.lookupName("nm:token")).toBeNull();
+		// The same keys in a filter without the tiers bit read as every filter before x26 did.
+		const untiered = named(entries);
+		expect(untiered.lookupName("nm:chaos")).toEqual({ served: 5 });
+		expect(untiered.lookupName("nm:illusion")).toEqual({ served: 8 });
+	});
+
+	test("tiers: every name spelling hashes as `nm:`", () => {
+		const acc = new RoutingKeyAccumulator(4);
+		for (const k of ["ns:opt", "nw:opt", "nm:opt", "nf:opt", "na:opt"]) acc.add(k, 1);
+		const sealed = acc.seal(IDENTITY.partitionCount, true);
+		expect(sealed.lo.length).toBe(1);
+		const h = routingHash("nm:opt");
+		expect([sealed.lo[0], sealed.hi[0]]).toEqual([h.lo, h.hi]);
+	});
+
+	test("tiers: at the build's partition ceiling every partition's served value fits, rival 3 included", () => {
+		// N + 4s + t reaches 5N - 1 for the last partition's whole-name rival, so tiers fit while
+		// N <= 51; MAX_PARTITION_COUNT raised past that fails here rather than silently fanning out.
+		const n = MAX_PARTITION_COUNT;
+		expect(5 * n - 1).toBeLessThan(255);
+		const identity = { ...IDENTITY, partitionCount: n };
+		const entries: RoutingEntry[] = [];
+		for (let p = 0; p < n; p++) {
+			entries.push({ key: `ns:served${p}`, partition: p });
+			entries.push({ key: `nw:served${p}`, partition: (p + 1) % n });
+		}
+		const filter = tieredFilter(entries, identity);
+		for (let p = 0; p < n; p++) expect(filter.lookupName(`nm:served${p}`)).toEqual({ served: p, rival: 3 });
 	});
 
 	test("the features word gates every name answer: a filter built without it — or before it — says nothing", () => {

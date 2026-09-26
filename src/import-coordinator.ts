@@ -148,6 +148,7 @@ import { REGION_HINTS } from "./engine/region";
 import {
 	buildRoutingFilterFromHashes,
 	ROUTING_FEATURE_NAME_KEYS,
+	ROUTING_FEATURE_NAME_TIERS,
 	RoutingKeyAccumulator,
 } from "./engine/routing-filter";
 import {
@@ -2927,19 +2928,25 @@ export class ImportCoordinator extends DurableObject<Env> {
 			// Name keys are claimed only if EVERY staged batch opened with the stamp: a run resumed
 			// across the deploy that added them has early batches without any, and a name missing
 			// from the filter must never read as "no other partition holds it".
+			// Their TIERS (x26) likewise only if every batch spelled them: a run resumed across the
+			// deploy that added them has early `#nm1` batches, whose extras keys are all `nm:`, and a
+			// tier read off those would understate a whole-name extra as a face.
 			let batches = 0;
 			let stampedBatches = 0;
+			let tieredBatches = 0;
 			for (const row of this.sqlIter<{ bytes: ArrayBuffer }>("SELECT bytes FROM routing_keys ORDER BY seq")) {
 				const read = acc.addBatch(unpackBlob(new Uint8Array(row.bytes)));
 				batches++;
 				if (read.stamped) stampedBatches++;
+				if (read.tiered) tieredBatches++;
 				lines += read.keys;
 			}
 			if (lines === 0) throw new Error("the scores phase staged no routing keys");
 			// Sorts in place and hands back exact copies of the distinct keys, releasing the
 			// accumulator's columns — see `seal` and backlog x2 for the memory this phase holds.
-			const sealed = acc.seal(pp.partitions.length);
 			const names = batches > 0 && stampedBatches === batches;
+			const tiers = names && tieredBatches === batches;
+			const sealed = acc.seal(pp.partitions.length, tiers);
 			const bytes = buildRoutingFilterFromHashes(
 				sealed,
 				{
@@ -2947,7 +2954,7 @@ export class ImportCoordinator extends DurableObject<Env> {
 					partitionCount: pp.partitions.length,
 					partitionHash: PARTITION_HASH_ALGO,
 				},
-				names ? ROUTING_FEATURE_NAME_KEYS : 0,
+				(names ? ROUTING_FEATURE_NAME_KEYS : 0) | (tiers ? ROUTING_FEATURE_NAME_TIERS : 0),
 			);
 			// The family is in flight from its FIRST key in KV, and this is that key: the lease was taken
 			// above (beginFamilyUpload). It used to be set at partition 0's first chunk, hours from
@@ -2957,7 +2964,8 @@ export class ImportCoordinator extends DurableObject<Env> {
 			await writeRoutingFilter(this.env, formatVersion, builtAt, bytes);
 			console.log(
 				`Routing filter published: ${sealed.lo.length} keys (${names ? sealed.nameKeys : 0} names` +
-					`${names ? "" : `, name routing OFF: ${stampedBatches}/${batches} batches stamped`}) from ${lines} ` +
+					`${names ? "" : `, name routing OFF: ${stampedBatches}/${batches} batches stamped`}` +
+					`${names && !tiers ? `, name tiers OFF: ${tieredBatches}/${batches} batches tiered` : ""}) from ${lines} ` +
 					`rows (sized for ${counted}, ${acc.grows} grows), ` +
 					`${(bytes.byteLength / 1024).toFixed(0)}KB — bare-id routes ask ONE of ` +
 					`${pp.partitions.length} partitions.`,

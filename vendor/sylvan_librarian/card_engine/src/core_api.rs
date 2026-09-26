@@ -2204,9 +2204,10 @@ impl BufferStore {
     ) -> Result<Option<Value>, EngineError> {
         let resolved_fields = resolve_fields_json(fields)?;
         let data = self.data();
-        let Some((_, _, _, cid, vpid)) = self.name_best(folded, set_code, NameScope::Exact, None) else {
+        let Some(hit) = self.name_best(folded, set_code, NameScope::Exact, None) else {
             return Ok(None);
         };
+        let (cid, vpid) = (hit.cid, hit.vpid);
         Ok(Some(card_to_json(
             &data.cards[cid],
             printing_at(data, vpid),
@@ -2218,17 +2219,38 @@ impl BufferStore {
 
     /// The RANK `exact_card_by_name` answers with, without materializing the card.
     ///
-    /// `(served, tier, prefer_score)`, higher wins, compared in that order: served 1 = the
-    /// printing answered is one a default search shows, 0 = the name exists only in the extras
-    /// class (see `preferred_served_vpid`); tier 2 = the needle IS this card's whole name, 1 = it
-    /// matches a FACE of this card, 0 = it matches a FLAVOR name; then prefer_score.
+    /// `(tier, name, served, prefer_score)`, compared in that order — see `outranks`: the higher
+    /// tier wins — 3 = the needle IS this card's whole name, 2 = it matches a FACE of this card, 1 =
+    /// it matches a FLAVOR name (`exact=` only), 0 = an ART-SERIES card's name (a collection
+    /// identifier only; `exact=` never answers one); then the LOWER collated card name, on the
+    /// whole-name and face tiers (empty on the other two); then served, 1 = the printing answered
+    /// is one a default search shows, 0 = the name exists only in the extras class (see
+    /// `preferred_served_vpid`); then the higher prefer_score.
     ///
-    /// SERVED LEADS THE TIER. Measured on api.scryfall.com 2026-09-15: `exact=Earth Rumble` is
-    /// the tla sorcery, never the jtla memorabilia front card of the same name — two oracle
-    /// cards on the same whole-name tier, which a `(tier, prefer_score)` rank left to the score
-    /// and, on a tie, to store order, and answered the front card (production, every name
-    /// route, 2026-09-15). A served card the needle names, on any tier, outranks an
-    /// extras-only card the needle names exactly.
+    /// THE TIER LEADS. Measured on api.scryfall.com 2026-09-26, `exact=`, `fuzzy=` and a collection
+    /// `{"name"}` alike: `chaos` is the fj25 memorabilia front card Chaos (fj25/46), not the served
+    /// split card Order // Chaos; `blood` the tinr Blood token (tinr/21), not Flesh // Blood;
+    /// `armed` the fmsc front card, not Armed // Dangerous; `illusion` an Illusion token (tsoc/7),
+    /// not Illusion // Reality — an extras-only card the needle names WHOLE outranks a served card
+    /// it names by one face.
+    ///
+    /// INSIDE A TIER, THE NAME, IN ORDER — not the served flag, not the score, not the collector
+    /// number. Every needle probed that is a face of two differently named cards (seven of the
+    /// corpus's eight; the same day): `day` and `night`
+    /// are both the tvow Day // Night double-faced TOKEN (tvow/21), not the served Apocalypse split
+    /// card Night // Day that outscores it — on `exact=`, `fuzzy=` and `{"name"}`; `monster` is
+    /// Monster // Sorcerer (twoe/15) over Monster // Virtuous, `royal` Royal // Virtuous (twoc/2)
+    /// over Royal // Young Hero, `wanted` Bounty: Eriana, Wrecking Ball // Wanted! (totc/30) over
+    /// eleven other bounties — equal prefer scores, where the port answered whichever partition
+    /// came first; `fire` is Fire // Ice over Start // Fire and `start` Start // Finish over Start //
+    /// Fire, which the served flag also explained. The first name in order wins each one; the lowest
+    /// collector number does not (Monster // Virtuous is twoc/1, Start // Fire cmb2/101).
+    ///
+    /// SERVED, THEN SCORE, BREAK A TIE OF NAMES — the whole-name tier's every tie, since there every
+    /// candidate's collated name IS the needle: `exact=Earth Rumble` is the tla sorcery, never the
+    /// jtla front card of the same name (2026-09-15), and `illusion` the best-scored of six Illusion
+    /// tokens. The rank was `(served, tier, score)` from the Earth Rumble fix until 2026-09-26, which
+    /// answered Order // Chaos for `chaos` and Night // Day for `day`.
     ///
     /// WHY THIS IS PUBLIC. With a partitioned store the scan runs once per partition, and MORE
     /// THAN ONE PARTITION CAN ANSWER: a needle is often one card's whole name and another card's
@@ -2252,9 +2274,9 @@ impl BufferStore {
     /// The last two are the reason a bare "is it the whole name?" flag is not enough to merge on:
     /// neither candidate is a whole-name match, so the answer turns on prefer_score, which only
     /// the owning partition can compute.
-    pub fn exact_name_rank(&self, folded: &str, set_code: Option<&str>) -> Option<(u8, u8, f32)> {
+    pub fn exact_name_rank(&self, folded: &str, set_code: Option<&str>) -> Option<(u8, String, u8, f32)> {
         self.name_best(folded, set_code, NameScope::Exact, None)
-            .map(|(served, tier, score, _, _)| (served, tier, score as f32))
+            .map(|hit| (hit.tier, hit.name.to_owned(), hit.served, hit.score as f32))
     }
 
     /// The best printing a COLLECTION IDENTIFIER's `name` resolves to -- `POST /cards/collection`'s
@@ -2310,8 +2332,8 @@ impl BufferStore {
         Ok(identifiers
             .iter()
             .map(|&(folded, set_code)| {
-                self.name_best(folded, set_code, NameScope::Collection, bound.as_ref()).map(|(_, _, _, cid, vpid)| {
-                    card_to_json(&data.cards[cid], printing_at(data, vpid), &data.strings, &data.coll_vocab, &resolved_fields)
+                self.name_best(folded, set_code, NameScope::Collection, bound.as_ref()).map(|hit| {
+                    card_to_json(&data.cards[hit.cid], printing_at(data, hit.vpid), &data.strings, &data.coll_vocab, &resolved_fields)
                 })
             })
             .collect())
@@ -2343,13 +2365,13 @@ impl BufferStore {
             .iter()
             .map(|&(folded, set_code)| {
                 self.name_best(folded, set_code, NameScope::Collection, bound.as_ref())
-                    .map(|(served, tier, score, _, _)| (served, tier, score))
+                    .map(|hit| (hit.tier, hit.name.to_owned(), hit.served, hit.score))
             })
             .collect())
     }
 
-    /// The shared scan behind all four name entry points: `(served, tier, score, cid, vpid)`,
-    /// the first three being the rank `exact_name_rank` documents.
+    /// The shared scan behind all four name entry points: the winner's rank, as `exact_name_rank`
+    /// documents it, and its card and printing.
     ///
     /// `folded` is COLLATED here and compared against collated names, because that is what
     /// Scryfall compares — on `exact=` and on a collection `{"name"}` identifier alike. Measured
@@ -2365,10 +2387,10 @@ impl BufferStore {
         set_code: Option<&str>,
         scope: NameScope,
         restrict: Option<&BoundScope>,
-    ) -> Option<(u8, u8, f64, usize, u32)> {
+    ) -> Option<NameHit<'_>> {
         let needle = crate::collate_name(folded);
         let data = self.data();
-        // Ranked on (served, whole-name match, prefer_score), in that order.
+        // Ranked on (tier, name, served, prefer_score), in that order — `outranks`.
         //
         // DELIBERATE DIVERGENCE from upstream, which orders on prefer_score alone. On this corpus
         // that returns `Emeritus of Conflict // Lightning Bolt` for `exact=Lightning Bolt`,
@@ -2378,14 +2400,20 @@ impl BufferStore {
         // TIER, not a bool, because the flavor-name fallback below is a third rank and the
         // partition merge has to order all three against each other with one comparison.
         //
-        // SERVED FIRST, ahead of the tier: the printing a candidate answers with is its best
-        // printing a default search would show, falling back to an extra only when the card has
-        // none (`preferred_served_vpid`), and a card answering with an extra ranks below every
-        // card answering with a served printing. `exact=Earth Rumble` names two oracle cards on
-        // the whole-name tier — the tla sorcery and a jtla memorabilia front card — and the
-        // score alone picked the front card; api.scryfall.com answers the sorcery on every name
+        // THE NAME SECOND, inside the tier: of two cards the needle names by a face, the one whose
+        // collated name comes first — `day` is the Day // Night token, not Night // Day (see
+        // `exact_name_rank` for the 2026-09-26 measurements).
+        //
+        // SERVED THIRD: the printing a candidate answers with is its best printing a default
+        // search would show, falling back to an extra only when the card has none
+        // (`preferred_served_vpid`), and of two cards of ONE name, one answering with an extra
+        // ranks below one answering with a served printing. `exact=Earth Rumble` names two oracle
+        // cards on the whole-name tier — the tla sorcery and a jtla memorabilia front card — and
+        // the score alone picked the front card; api.scryfall.com answers the sorcery on every name
         // surface, and the front card only for a name nothing else carries (`exact=Cabbages`).
-        let mut best: Option<(u8, u8, f64, usize, u32)> = None;
+        // ACROSS tiers the tier decides, extra or not: `exact=chaos` is the fj25 front card Chaos,
+        // whole, over Order // Chaos, a face.
+        let mut best: Option<NameHit<'_>> = None;
         for cid in name_scan_candidates(data, &needle) {
             let cid = cid as usize;
             let card = &data.cards[cid];
@@ -2403,13 +2431,23 @@ impl BufferStore {
             // `/cards/named` NEVER ANSWERS AN ART-SERIES CARD BY NAME (LOCAL PATCH, Cloudflare
             // port). Measured on api.scryfall.com 2026-09-25: `exact=Minion of the Mighty // Kobold`
             // and `exact=Lightning Bolt // Lightning Bolt` are both 404s, and `fuzzy=` with either
-            // spelling answers the real card. A collection identifier is not measured and keeps them.
-            if scope == NameScope::Exact && layout_of(data, pid as u32) == Some("art_series") {
-                continue;
-            }
-            let served = u8::from(served);
-            if best.is_none_or(|(bv, bt, bs, _, _)| (served, tier, score) > (bv, bt, bs)) {
-                best = Some((served, tier, score, cid, pid as u32));
+            // spelling answers the real card.
+            //
+            // A COLLECTION IDENTIFIER keeps them, BELOW every other card it names: `{"name":"Delver
+            // of Secrets"}` is Delver of Secrets // Insectile Aberration on api.scryfall.com
+            // (2026-08-31), where the name order would otherwise answer the art series ("Delver of
+            // Secrets // Delver of Secrets" comes first). The served flag used to keep it there.
+            let (tier, name) = if layout_of(data, pid as u32) == Some("art_series") {
+                if scope == NameScope::Exact {
+                    continue;
+                }
+                (TIER_ART_SERIES, "")
+            } else {
+                (tier, crate::collated_name(card, &data.strings))
+            };
+            let hit = NameHit { tier, name, served: u8::from(served), score, cid, vpid: pid as u32 };
+            if best.as_ref().is_none_or(|b| hit.outranks(b)) {
+                best = Some(hit);
             }
         }
         // EXACT NEVER READS PRINTED NAMES — verified against api.scryfall.com on 2026-08-16,
@@ -2466,11 +2504,18 @@ impl BufferStore {
     ///
     /// Extras count here: `exact=Egg Pawn` is the Myr token carrying it, `exact=Lunch 1:00 PM` the
     /// Food token. Only containment leaves them out.
-    fn flavor_name_best(&self, folded: &str, needle: &str, set_code: Option<&str>) -> Option<(u8, u8, f64, usize, u32)> {
+    fn flavor_name_best(&self, folded: &str, needle: &str, set_code: Option<&str>) -> Option<NameHit<'_>> {
         let data = self.data();
         let idx = &data.indexes.flavor_names;
-        let as_rank = |(vpid, score, served): (u32, f32, bool)| {
-            (u8::from(served), TIER_FLAVOR_NAME, f64::from(score), card_of_vpid(data, vpid) as usize, vpid)
+        // No name in the rank: which of two flavor-name carriers answers is unmeasured, and stays
+        // what it was — the served one, then the better score.
+        let as_rank = |(vpid, score, served): (u32, f32, bool)| NameHit {
+            tier: TIER_FLAVOR_NAME,
+            name: "",
+            served: u8::from(served),
+            score: f64::from(score),
+            cid: card_of_vpid(data, vpid) as usize,
+            vpid,
         };
         if let Some(rec) = record_of_exact_name(idx, &data.strings, folded)
             && let Some(hit) = self.best_vpid_of_record_in(idx, rec, set_code)
@@ -3785,17 +3830,44 @@ fn contains_unseparated(hay: &str, needle: &str) -> bool {
     false
 }
 
-/// Descending precedence for the name scan. These values cross the wasm boundary and are compared
-/// — never interpreted — by the partition merge, so their ORDER is the contract and their
-/// magnitudes are not. They are the SECOND element of the rank: a served/extras-only flag (1/0)
-/// leads them, see `exact_name_rank`.
-const TIER_WHOLE_NAME: u8 = 2;
-const TIER_FACE_NAME: u8 = 1;
-const TIER_FLAVOR_NAME: u8 = 0;
+/// Descending precedence for the name scan. These values cross the wasm boundary and LEAD the rank
+/// the partition merge compares, see `exact_name_rank` — and the router reads them: a served name
+/// route settles on one partition's reply only when that reply's tier is above every tier another
+/// partition's extras hold the name on (`nameReplySettles` in src/engine/partitioned-engine.ts,
+/// against the builder's per-tier name keys in engine/builder/src/transform.rs, which spell these
+/// same values).
+const TIER_WHOLE_NAME: u8 = 3;
+const TIER_FACE_NAME: u8 = 2;
+const TIER_FLAVOR_NAME: u8 = 1;
+/// A collection identifier naming an art-series card: kept, below every other card it names.
+const TIER_ART_SERIES: u8 = 0;
 
-/// A name lookup's rank, `(served, tier, score)`, compared lexicographically — see
-/// `exact_name_rank` for each element. The wire form the partitioned router merges on.
-pub type NameRank = (u8, u8, f64);
+/// A name lookup's rank, `(tier, name, served, score)` — see `exact_name_rank` for each element
+/// and `NameHit::outranks` for the order. The wire form the partitioned router merges on.
+pub type NameRank = (u8, String, u8, f64);
+
+/// One candidate of the name scan: its rank's four elements, and the card and printing it answers.
+#[derive(Debug, Clone, Copy)]
+struct NameHit<'a> {
+    tier: u8,
+    /// The card's collated name on the whole-name and face tiers, empty on the others.
+    name: &'a str,
+    served: u8,
+    score: f64,
+    cid: usize,
+    vpid: u32,
+}
+
+impl NameHit<'_> {
+    /// The rank's order: the HIGHER tier, then the LOWER name, then served, then the higher score —
+    /// the order `beatsExactRank` in src/engine/partitioned-engine.ts applies to the wire form.
+    fn outranks(&self, other: &Self) -> bool {
+        match self.tier.cmp(&other.tier).then_with(|| other.name.cmp(self.name)).then_with(|| self.served.cmp(&other.served)) {
+            std::cmp::Ordering::Equal => self.score > other.score,
+            order => order.is_gt(),
+        }
+    }
+}
 
 /// Which name keys a lookup may match. `/cards/named?exact=` reads a strict SUPERSET of what a
 /// `POST /cards/collection` `{"name"}` identifier does — see `collection_card_by_name` for the
@@ -5137,8 +5209,8 @@ mod tests {
         // The rank the partitioned router merges on is the scope's own score: under
         // `prefer:atypical` the promo outranks the plain printing, so a partition holding only
         // the plain one loses to a partition holding the promo.
-        let (_, _, unscoped) = store.collection_name_rank("clive, ifrit's dominant", None, None).expect("rank").expect("hit");
-        let (_, _, scoped_rank) =
+        let (_, _, _, unscoped) = store.collection_name_rank("clive, ifrit's dominant", None, None).expect("rank").expect("hit");
+        let (_, _, _, scoped_rank) =
             store.collection_name_rank("clive, ifrit's dominant", None, Some(&atypical)).expect("rank").expect("hit");
         assert!(scoped_rank > unscoped, "the atypical class bonus is in the merged rank");
     }
@@ -5672,10 +5744,11 @@ mod tests {
         assert_eq!(coll("earth rumble").as_deref(), Some("174"), "a collection identifier answers the sorcery");
         assert_eq!(fuzzy("earth rumbel"), ("hit", Some("174".to_owned())), "the typo stage answers the sorcery");
         assert_eq!(contained(&["earth", "rumble"]), vec!["174"], "the containment stage answers the sorcery");
-        // The rank the partitioned router merges on LEADS with the served flag: the sorcery's
-        // (1, whole name, 100) beats the front card's (0, whole name, 900) where a (tier, score)
-        // rank lost — and the cross-partition fuzzy race breaks its score tie the same way.
-        assert_eq!(store.exact_name_rank("earth rumble", None), Some((1, 2, 100.0)));
+        // The rank the partitioned router merges on breaks a tie of tier AND name on the served
+        // flag: the sorcery's (whole, "earthrumble", 1, 100) beats the front card's (whole,
+        // "earthrumble", 0, 900) where a (tier, score) rank lost — and the cross-partition fuzzy
+        // race breaks its score tie the same way.
+        assert_eq!(store.exact_name_rank("earth rumble", None), Some((3, "earthrumble".to_owned(), 1, 100.0)));
         let cands = store.fuzzy_candidates("earth rumbel", 0.4, 8);
         assert_eq!(cands.len(), 2, "two (card, name) classes, one per oracle card");
         assert!(cands[0].served && !cands[1].served, "the served class leads on the tie");
@@ -5685,9 +5758,101 @@ mod tests {
         assert_eq!(exact("cabbages", None).as_deref(), Some("39"));
         assert_eq!(coll("cabbages").as_deref(), Some("39"));
         assert_eq!(fuzzy("cabbage"), ("hit", Some("39".to_owned())));
-        assert_eq!(store.exact_name_rank("cabbages", None), Some((0, 2, 900.0)));
+        assert_eq!(store.exact_name_rank("cabbages", None), Some((3, "cabbages".to_owned(), 0, 900.0)));
         // And the set filter reaches the front card when it names its set.
         assert_eq!(exact("earth rumble", Some("jtla")).as_deref(), Some("41"));
+    }
+
+    /// THE TIER LEADS THE RANK, THEN THE NAME IN ORDER, THEN SERVED — api.scryfall.com, 2026-09-26,
+    /// the same answer on `exact=`, `fuzzy=` and a collection `{"name"}`:
+    ///
+    ///   chaos    -> Chaos fj25/46 (an extras-only front card, WHOLE)  over Order // Chaos (served, a face)
+    ///   blood    -> Blood tinr/21 (a token, WHOLE)                    over Flesh // Blood (served, a face)
+    ///   jump     -> Jump m10/59 (WHOLE)                   over Encouraging Aviator // Jump (a back face)
+    ///   bind     -> Bind inv/182 (WHOLE)                  over Bind // Liberate (a front face)
+    ///   day      -> Day // Night tvow/21 (a token, a face, FIRST BY NAME) over Night // Day (served)
+    ///   night    -> Day // Night tvow/21, the same
+    ///   fire     -> Fire // Ice dmr/215 (first by name)   over Start // Fire (a cmb1 playtest extra)
+    ///   ice      -> Fire // Ice dmr/215
+    ///   start    -> Start // Finish akh/215 (first by name) over Start // Fire
+    ///   monster  -> Monster // Sorcerer twoe/15 (first by name) over Monster // Virtuous, equal scores
+    ///
+    /// `chaos`, `blood`, `day` and `night` are what a `(served, tier, score)` rank got wrong — it
+    /// answered the served card — and `monster` it left to store order. Every loser OUTSCORES its
+    /// winner and is staged first, so neither the score nor the card order can answer the winner.
+    #[test]
+    fn the_tier_leads_then_the_name_in_order_then_served() {
+        let row = |name: &str, set: &str, cn: &str, prefer: f64, extra: bool| {
+            let mut r = annex_row(name, &format!("oracle-{set}-{cn}"), &format!("row-{set}-{cn}"), "en", prefer);
+            r["card_set_code"] = json!(set);
+            r["collector_number"] = json!(cn);
+            if extra {
+                r["card_is_tags"] = json!({ "extra": true });
+            }
+            r
+        };
+        let mut art = row("Delver of Secrets // Delver of Secrets", "amid", "7", 900.0, true);
+        art["card_layout"] = json!("art_series");
+        let store = build_store(&[
+            row("Order // Chaos", "dmr", "212", 900.0, false),
+            row("Chaos", "fj25", "46", 10.0, true),
+            row("Flesh // Blood", "dgm", "128", 900.0, false),
+            row("Blood", "tinr", "21", 10.0, true),
+            row("Encouraging Aviator // Jump", "woe", "48", 900.0, false),
+            row("Jump", "m10", "59", 10.0, false),
+            row("Bind // Liberate", "uma", "225", 900.0, false),
+            row("Bind", "inv", "182", 10.0, false),
+            row("Night // Day", "dmr", "214", 900.0, false),
+            row("Day // Night", "tvow", "21", 10.0, true),
+            row("Start // Fire", "cmb1", "91", 900.0, true),
+            row("Fire // Ice", "dmr", "215", 100.0, false),
+            row("Start // Finish", "akh", "215", 100.0, false),
+            row("Monster // Virtuous", "twoc", "1", 50.0, true),
+            row("Monster // Sorcerer", "twoe", "15", 50.0, true),
+            art,
+            row("Delver of Secrets // Insectile Aberration", "isd", "51", 10.0, false),
+        ])
+        .1;
+
+        let fields = Some(vec!["set_code".to_owned(), "collector_number".to_owned()]);
+        let at = |c: Option<Value>| {
+            c.map(|c| format!("{}/{}", c["set_code"].as_str().unwrap(), c["collector_number"].as_str().unwrap()))
+        };
+        let exact = |n: &str| at(store.exact_card_by_name(n, None, fields.clone()).expect("exact"));
+        let coll = |n: &str| at(store.collection_card_by_name(n, None, fields.clone(), None).expect("coll"));
+        for (needle, want) in [
+            ("chaos", "fj25/46"),
+            ("blood", "tinr/21"),
+            ("jump", "m10/59"),
+            ("bind", "inv/182"),
+            ("day", "tvow/21"),
+            ("night", "tvow/21"),
+            ("fire", "dmr/215"),
+            ("ice", "dmr/215"),
+            ("start", "akh/215"),
+            ("monster", "twoe/15"),
+        ] {
+            assert_eq!(exact(needle).as_deref(), Some(want), "exact={needle}");
+            assert_eq!(coll(needle).as_deref(), Some(want), "{{\"name\":\"{needle}\"}}");
+        }
+        // The ranks the partitioned router merges on: a whole-name extra (3, _, 0, _) outranks a
+        // served face (2, _, 1, _) whatever the scores; on the face tier the first name wins.
+        assert_eq!(store.exact_name_rank("chaos", None), Some((3, "chaos".to_owned(), 0, 10.0)));
+        assert_eq!(store.exact_name_rank("day", None), Some((2, "daynight".to_owned(), 0, 10.0)));
+        assert_eq!(store.exact_name_rank("order // chaos", None), Some((3, "orderchaos".to_owned(), 1, 900.0)));
+        // A set filter still reaches the face match when it names the face card's set.
+        assert_eq!(at(store.exact_card_by_name("chaos", Some("dmr"), fields.clone()).expect("exact")).as_deref(), Some("dmr/212"));
+
+        // An art series keeps its place BELOW every other card a collection identifier names —
+        // `{"name":"Delver of Secrets"}` is the transform card (api.scryfall.com, 2026-08-31),
+        // though the art series' name comes first — and still answers when nothing else is left.
+        assert_eq!(coll("delver of secrets").as_deref(), Some("isd/51"));
+        assert_eq!(
+            at(store.collection_card_by_name("delver of secrets", Some("amid"), fields.clone(), None).expect("coll")).as_deref(),
+            Some("amid/7")
+        );
+        assert_eq!(exact("delver of secrets").as_deref(), Some("isd/51"));
+        assert_eq!(exact("delver of secrets // delver of secrets"), None, "exact= never answers an art series");
     }
 
     /// Inside ONE card the served printing leads whatever the extras printing scores, and a set
@@ -5717,10 +5882,10 @@ mod tests {
         );
         let (status, card) = store.fuzzy_card_by_name("counterspel", 0.4, 0.05, fields.clone()).unwrap();
         assert_eq!((status, cn(card).as_deref()), ("hit", Some("57")), "the typo stage materializes the served printing");
-        assert_eq!(store.exact_name_rank("counterspell", None), Some((1, 2, 100.0)));
+        assert_eq!(store.exact_name_rank("counterspell", None), Some((3, "counterspell".to_owned(), 1, 100.0)));
         // The memorabilia printing is still addressable by its set, and ranked as an extra.
         assert_eq!(cn(store.exact_card_by_name("counterspell", Some("wc98"), fields).unwrap()).as_deref(), Some("rb57"));
-        assert_eq!(store.exact_name_rank("counterspell", Some("wc98")), Some((0, 2, 500.0)));
+        assert_eq!(store.exact_name_rank("counterspell", Some("wc98")), Some((3, "counterspell".to_owned(), 0, 500.0)));
     }
 
     /// `exact=` is scoped to the ORACLE name and never reads printed names — the negative

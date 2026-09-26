@@ -396,8 +396,8 @@ export class FakeEngine implements Engine {
 			keys,
 			trees,
 			names: at.map((i) => bytes(i < 0 ? null : this.fixtureCard(i, baseUrl))),
-			// [served, tier, score]: every fixture name is a served whole-name match.
-			nameRanks: at.map((i) => (i < 0 ? null : [1, 2, 0])),
+			// [tier, served, score]: every fixture name is a served whole-name match.
+			nameRanks: at.map((i) => (i < 0 ? null : [3, "", 1, 0])),
 		};
 	}
 }

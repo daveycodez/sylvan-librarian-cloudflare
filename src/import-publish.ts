@@ -81,9 +81,9 @@ export const MIN_PARTITION_COUNT = 2;
  *     publishes);
  *   - stepNotify prepares and commits every live object in ONE alarm: ~2 x G x N calls against the
  *     free plan's 1,000 subrequests to Cloudflare services per invocation;
- *   - the routing filter's name keys store `N + s` for a name served in partition s, one byte a
- *     cell with 255 reserved, so N <= 127 (tests/engine/routing-filter.test.ts pins it at this
- *     ceiling);
+ *   - the routing filter's name keys store `N + 4s + t` for a name served in partition s (t the
+ *     other partitions' extras tier, x26), one byte a cell with 255 reserved, so N <= 51
+ *     (tests/engine/routing-filter.test.ts pins it at this ceiling);
  *   - the bucket phase holds one PackStream per partition, ~0.4MB each (6MB more at 48 than 32).
  *
  * The Rust builder's `MAX_PARTITIONS` (engine/builder/src/lib.rs) is the same number for the

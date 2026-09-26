@@ -38,13 +38,13 @@ const BATCH: CollectionBatch = {
 
 describe("the collection packet", () => {
 	test("decodes to per-slot views in key, tree, name order", () => {
-		const packet = packetOf([[1, 2, 0.5]], ['{"k":"a"}', null, null, '{"t":1}', '{"n":"bolt"}']);
+		const packet = packetOf([[3, "", 1, 0.5]], ['{"k":"a"}', null, null, '{"t":1}', '{"n":"bolt"}']);
 		const got = decodeCollectionPacket(packet, BATCH);
 		const read = (b: Uint8Array | null) => (b === null ? null : text.decode(b));
 		expect(got.keys.map(read)).toEqual(['{"k":"a"}', null]);
 		expect(got.trees.map(read)).toEqual([null, '{"t":1}']);
 		expect(got.names.map(read)).toEqual(['{"n":"bolt"}']);
-		expect(got.nameRanks).toEqual([[1, 2, 0.5]]);
+		expect(got.nameRanks).toEqual([[3, "", 1, 0.5]]);
 		// Views, not copies: every card shares the packet's buffer.
 		expect(got.keys[0]?.buffer).toBe(packet.buffer);
 	});

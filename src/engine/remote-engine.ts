@@ -22,6 +22,7 @@ import type {
 	NamedFuzzyBundle,
 	NamedFuzzyOwnBundle,
 	NamedFuzzyPlanReply,
+	NameRank,
 	ResultShape,
 	ScryfallFuzzyResult,
 	SearchPageEnvelope,
@@ -137,7 +138,7 @@ interface SearchEngineStub {
 		folded: string,
 		setCode: string,
 		reportedShards?: number,
-	): Promise<{ rank: number[] | null } & Telemetry>;
+	): Promise<{ rank: NameRank | null } & Telemetry>;
 	scryfallExactNameProbe(
 		folded: string,
 		setCode: string,
@@ -1083,7 +1084,7 @@ export class RemoteEngine implements Engine {
 		return bundle;
 	}
 
-	async scryfallExactNameRank(folded: string, setCode: string): Promise<number[] | null> {
+	async scryfallExactNameRank(folded: string, setCode: string): Promise<NameRank | null> {
 		const { rank } = await this.searchRpc("scryfallExactNameRank", (stub, shards) =>
 			stub.scryfallExactNameRank(folded, setCode, shards),
 		);

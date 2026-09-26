@@ -300,7 +300,7 @@ export function catalog() {
  * The answer is little-endian bytes:
  *
  * ```text
- * header_len: u32, header: header_len bytes of JSON — one rank per name, [served, tier, score] or null
+ * header_len: u32, header: header_len bytes of JSON — one rank per name, [tier, name, served, score] or null
  * then for each key, each tree, each name, in that order: len: u32, card: len bytes (0 = none)
  * ```
  *
@@ -380,7 +380,7 @@ export function collection_cards_by_names(identifiers_json, fields_json, prefer,
 
 /**
  * How well this partition's best collection-identifier candidate matches, as
- * `[served, tier, score]` or `null` per identifier — the batched twin of `exact_name_rank`, and
+ * `[tier, name, served, score]` or `null` per identifier — the batched twin of `exact_name_rank`, and
  * there for the same partitioned router. Under a scope the score is the scope's prefer score
  * and served is always 1 (the scope's pool holds no extras).
  * @param {string} identifiers_json
@@ -462,8 +462,8 @@ export function exact_card_by_name(folded, set_code, fields_json) {
  * partition does is exact, rather than an arbitrary value for a key it never held. So `present`
  * is computed, without the set, only when the restricted scan found nothing.
  *
- * `rank` is written by the same `format!` as `exact_name_rank`, so the router compares the two
- * exports' ranks as the same numbers.
+ * `rank` is written by the same `rank_text` as `exact_name_rank`, so the router compares the two
+ * exports' ranks as the same values.
  * @param {string} folded
  * @param {string} set_code
  * @param {string} fields_json
@@ -495,15 +495,18 @@ export function exact_name_probe(folded, set_code, fields_json) {
 }
 
 /**
- * How well this partition's best `exact=` candidate matches, as `[served, tier, score]`, or
- * `null`.
+ * How well this partition's best `exact=` candidate matches, as `[tier, name, served, score]`, or
+ * `null` — card_engine's `exact_name_rank`, whose order the router's `beatsExactRank` applies.
  *
- * Served is 1 when the printing answered is one a default search shows and 0 when the name
- * exists only in the extras class (a memorabilia front card, a token, an art-series card);
- * tier descends 2 (the needle IS a card's whole name) > 1 (it matches a FACE) > 0 (a FLAVOR
- * name); ties break on prefer_score. Compared lexicographically, in that order — served leads,
- * so `exact=Earth Rumble` answers the tla sorcery over the jtla front card of the same name
- * whatever partition each hashed to. Compare these, do not interpret them.
+ * The HIGHER tier wins: 3 (the needle IS a card's whole name) > 2 (it matches a FACE) > 1 (a
+ * FLAVOR name) > 0 (an art-series card, a collection identifier only). Then the LOWER name — the
+ * card's collated name, a string, empty on the two lower tiers. Then served, 1 when the printing
+ * answered is one a default search shows and 0 when the name exists only in the extras class;
+ * then the higher prefer_score. So `exact=chaos` answers the fj25 front card Chaos (whole) over
+ * Order // Chaos (a face), `exact=day` the Day // Night token over Night // Day (both faces, and
+ * "daynight" comes first), and `exact=Earth Rumble` the tla sorcery over the jtla front card of
+ * the same name — whatever partition each hashed to. The router reads one reply's tier and served
+ * flag to decide whether a served name route's single reply is final (`nameReplySettles`).
  *
  * EXISTS FOR THE PARTITIONED ROUTER. `exact_card_by_name` ranks its candidates, but with the
  * corpus cut into partitions that ranking is LOCAL — and more than one partition can answer,

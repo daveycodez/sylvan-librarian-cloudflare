@@ -18,7 +18,14 @@
 import { describe, expect, test } from "bun:test";
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
-import { buildRoutingFilterFromHashes, NAME_KEYS_STAMP, RoutingKeyAccumulator } from "../../src/engine/routing-filter";
+import {
+	buildRoutingFilterFromHashes,
+	NAME_KEYS_STAMP,
+	NAME_TIERS_STAMP,
+	RoutingKeyAccumulator,
+	routingHash,
+	type SealedRoutingKeys,
+} from "../../src/engine/routing-filter";
 import { ReferenceAccumulator, referenceBuild } from "./routing-filter-reference";
 
 const IDENTITY = { builtAt: "1790000000", partitionCount: 10, partitionHash: "fnv1a64/oracle_id/v1" };
@@ -34,8 +41,13 @@ function rng(seed: number): () => number {
 
 type Line = [partition: number, key: string];
 
-/** Both builds over the same lines: sealed columns and filter bytes must agree. */
-function expectSameBuild(lines: Iterable<Line>, partitionCount = IDENTITY.partitionCount, features = 0): void {
+/** Both builds over the same lines: sealed columns and filter bytes must agree. Answers the values. */
+function expectSameBuild(
+	lines: Iterable<Line>,
+	partitionCount = IDENTITY.partitionCount,
+	features = 0,
+	tiers = false,
+): SealedRoutingKeys {
 	const identity = { ...IDENTITY, partitionCount };
 	const ref = new ReferenceAccumulator(16);
 	const acc = new RoutingKeyAccumulator(16);
@@ -43,8 +55,8 @@ function expectSameBuild(lines: Iterable<Line>, partitionCount = IDENTITY.partit
 		ref.add(key, p);
 		acc.add(key, p);
 	}
-	const want = ref.seal(partitionCount);
-	const got = acc.seal(partitionCount);
+	const want = ref.seal(partitionCount, tiers);
+	const got = acc.seal(partitionCount, tiers);
 	expect(got.lo.length).toBe(want.lo.length);
 	expect(got.nameKeys).toBe(want.nameKeys);
 	expect(Buffer.from(got.lo.buffer, got.lo.byteOffset, got.lo.byteLength).equals(bytesOf(want.lo))).toBe(true);
@@ -53,6 +65,7 @@ function expectSameBuild(lines: Iterable<Line>, partitionCount = IDENTITY.partit
 	const wantBytes = referenceBuild(want, identity, features);
 	const gotBytes = buildRoutingFilterFromHashes(got, identity, features);
 	expect(Buffer.from(gotBytes).equals(Buffer.from(wantBytes))).toBe(true);
+	return got;
 }
 
 function bytesOf(a: Uint32Array): Buffer {
@@ -63,7 +76,8 @@ function bytesOf(a: Uint32Array): Buffer {
  * A synthetic corpus shaped like the real one where it matters to the seal: id keys repeated across
  * partitions (illustration ids, shared addresses), and name keys in every configuration the name
  * rule distinguishes — one partition, several with one served, several served, served in one
- * partition only through `ns:`, a partition count where N + s would reach 255.
+ * partition only through `ns:`, extras on every tier (`nw:`/`nm:`/`nf:`/`na:`), a partition count where
+ * N + s would reach 255.
  */
 function* syntheticLines(count: number, seed: number, partitions: number): Generator<Line> {
 	const rand = rng(seed);
@@ -82,10 +96,10 @@ function* syntheticLines(count: number, seed: number, partitions: number): Gener
 		} else if (r < 0.85) {
 			const name = `${Math.floor(rand() * 2 ** 32).toString(36)}`;
 			if (names.length < 5000) names.push(name);
-			yield [pick(), `${rand() < 0.5 ? "nm" : "ns"}:${name}`];
+			yield [pick(), `${rand() < 0.5 ? (["nm", "nw", "nf", "na"][Math.floor(rand() * 4)] as string) : "ns"}:${name}`];
 		} else if (names.length > 0) {
 			const name = names[Math.floor(rand() * names.length)] as string;
-			yield [pick(), `${rand() < 0.4 ? "ns" : "nm"}:${name}`];
+			yield [pick(), `${rand() < 0.4 ? "ns" : (["nm", "nw", "nf", "na"][Math.floor(rand() * 4)] as string)}:${name}`];
 		} else {
 			yield [pick(), `multiverse:${i}`];
 		}
@@ -143,6 +157,75 @@ describe("the rewritten build publishes the reference's bytes", () => {
 		);
 	});
 
+	// x26: a served name's value carries the highest tier any OTHER partition's extras hold it on —
+	// `N + 4s + t`, t 3 whole, 2 face, 1 flavor, 0 none but an art series — so one reply can tell
+	// whether another partition's extra outranks it.
+	test("the tiered name rule: the served partition, and the other partitions' highest extras tier", () => {
+		const N = IDENTITY.partitionCount;
+		const lines: Line[] = [
+			// `chaos`: Order // Chaos served in 5 (a face), the fj25 front card in 2 (whole) → t = 3
+			[5, "ns:chaos"],
+			[2, "nw:chaos"],
+			// `delverofsecrets`: the transform card served in 7, its art-series faces in 6 → t = 0
+			[7, "ns:delverofsecrets"],
+			[6, "na:delverofsecrets"],
+			// `night`: Night // Day served in 3, the Day // Night token in 0 (a face) → t = 2
+			[3, "ns:night"],
+			[0, "nm:night"],
+			// only a flavor name elsewhere → t = 1
+			[1, "ns:flavored"],
+			[4, "nf:flavored"],
+			// the served partition's OWN whole-name extra is its own reply's business, not a rival:
+			// only 3's face counts → t = 2
+			[8, "ns:ownextra"],
+			[8, "nw:ownextra"],
+			[3, "nm:ownextra"],
+			// the highest of several rivals, in any order → t = 3
+			[0, "nf:several"],
+			[9, "ns:several"],
+			[4, "nw:several"],
+			[6, "nm:several"],
+			[2, "na:several"],
+			// sole and ambiguous names are what they always were
+			[4, "nw:sole"],
+			[4, "ns:sole"],
+			[2, "ns:twoserved"],
+			[8, "ns:twoserved"],
+			[3, "nw:twoserved"],
+		];
+		const tiered = expectSameBuild(lines, N, 3, true);
+		expectSameBuild([...lines].reverse(), N, 3, true);
+		const untiered = expectSameBuild(lines, N, 1, false);
+		const sealedValue = (sealed: SealedRoutingKeys, key: string) => {
+			const { lo, hi } = routingHash(key);
+			for (let i = 0; i < sealed.lo.length; i++)
+				if (sealed.lo[i] === lo && sealed.hi[i] === hi) return sealed.values[i];
+			throw new Error(`no ${key}`);
+		};
+		expect(sealedValue(tiered, "nm:chaos")).toBe(N + 4 * 5 + 3);
+		expect(sealedValue(tiered, "nm:delverofsecrets")).toBe(N + 4 * 7 + 0);
+		expect(sealedValue(tiered, "nm:night")).toBe(N + 4 * 3 + 2);
+		expect(sealedValue(tiered, "nm:flavored")).toBe(N + 4 * 1 + 1);
+		expect(sealedValue(tiered, "nm:ownextra")).toBe(N + 4 * 8 + 2);
+		expect(sealedValue(tiered, "nm:several")).toBe(N + 4 * 9 + 3);
+		expect(sealedValue(tiered, "nm:sole")).toBe(4);
+		expect(sealedValue(tiered, "nm:twoserved")).toBe(255);
+		// Untiered, the same keys seal as every filter before x26 did: N + s.
+		expect(sealedValue(untiered, "nm:chaos")).toBe(N + 5);
+		expect(sealedValue(untiered, "nm:several")).toBe(N + 9);
+		// Where N + 4s + t would reach 255, the served value is refused for ambiguous.
+		const wide = expectSameBuild(
+			[
+				[1, "nw:wide"],
+				[60, "ns:wide"],
+			],
+			61,
+			3,
+			true,
+		);
+		expect([...wide.values]).toEqual([255]);
+	});
+
 	test("synthetic sets across the sort's size classes", () => {
 		// Sizes that land every radix bucket in the insertion-sort range, at the recursion cutoffs,
 		// and well past them.
@@ -155,6 +238,7 @@ describe("the rewritten build publishes the reference's bytes", () => {
 			[400_000, 6],
 		] as const) {
 			expectSameBuild(syntheticLines(count, seed, IDENTITY.partitionCount));
+			expectSameBuild(syntheticLines(count, seed, IDENTITY.partitionCount), IDENTITY.partitionCount, 3, true);
 		}
 	});
 
@@ -184,14 +268,21 @@ describe("the rewritten build publishes the reference's bytes", () => {
 
 describe("addBatch reads a staged batch exactly as the string path did", () => {
 	/** HEAD's stepRouting loop, verbatim: decode, split, `add` per line. */
-	function viaStrings(batches: Uint8Array[]): { acc: RoutingKeyAccumulator; keys: number; stamped: number } {
+	function viaStrings(batches: Uint8Array[]): {
+		acc: RoutingKeyAccumulator;
+		keys: number;
+		stamped: number;
+		tiered: number;
+	} {
 		const acc = new RoutingKeyAccumulator(16);
 		const decoder = new TextDecoder();
 		let keys = 0;
 		let stamped = 0;
+		let tiered = 0;
 		for (const bytes of batches) {
 			const text = decoder.decode(bytes);
-			if (text.startsWith(`${NAME_KEYS_STAMP}\n`)) stamped++;
+			if (text.startsWith(`${NAME_TIERS_STAMP}\n`)) tiered++;
+			if (text.startsWith(`${NAME_KEYS_STAMP}\n`) || text.startsWith(`${NAME_TIERS_STAMP}\n`)) stamped++;
 			let at = 0;
 			while (at < text.length) {
 				let end = text.indexOf("\n", at);
@@ -206,19 +297,26 @@ describe("addBatch reads a staged batch exactly as the string path did", () => {
 				at = end + 1;
 			}
 		}
-		return { acc, keys, stamped };
+		return { acc, keys, stamped, tiered };
 	}
 
-	function viaBytes(batches: Uint8Array[]): { acc: RoutingKeyAccumulator; keys: number; stamped: number } {
+	function viaBytes(batches: Uint8Array[]): {
+		acc: RoutingKeyAccumulator;
+		keys: number;
+		stamped: number;
+		tiered: number;
+	} {
 		const acc = new RoutingKeyAccumulator(16);
 		let keys = 0;
 		let stamped = 0;
+		let tiered = 0;
 		for (const bytes of batches) {
 			const read = acc.addBatch(bytes);
 			keys += read.keys;
 			if (read.stamped) stamped++;
+			if (read.tiered) tiered++;
 		}
-		return { acc, keys, stamped };
+		return { acc, keys, stamped, tiered };
 	}
 
 	function expectSameRead(texts: string[]): void {
@@ -228,9 +326,10 @@ describe("addBatch reads a staged batch exactly as the string path did", () => {
 		const b = viaBytes(batches);
 		expect(b.keys).toBe(a.keys);
 		expect(b.stamped).toBe(a.stamped);
+		expect(b.tiered).toBe(a.tiered);
 		expect(b.acc.size).toBe(a.acc.size);
-		const sa = a.acc.seal(255);
-		const sb = b.acc.seal(255);
+		const sa = a.acc.seal(80, true);
+		const sb = b.acc.seal(80, true);
 		expect(bytesOf(sb.lo).equals(bytesOf(sa.lo))).toBe(true);
 		expect(bytesOf(sb.hi).equals(bytesOf(sa.hi))).toBe(true);
 		expect(Buffer.from(sb.values).equals(Buffer.from(sa.values))).toBe(true);
@@ -241,6 +340,7 @@ describe("addBatch reads a staged batch exactly as the string path did", () => {
 		expectSameRead([
 			`${NAME_KEYS_STAMP}\n0\ti:00009878-d086-46f0-a964-15734d8368ac\n0\tl:e8a09f86\n3\tmultiverse:433932\n`,
 			`${NAME_KEYS_STAMP}\n7\tsn:m21/326\n7\tnm:lightningbolt\n9\tns:lightningbolt\n12\tns:x\n`,
+			`${NAME_TIERS_STAMP}\n2\tnw:chaos\n5\tns:chaos\n6\tna:delverofsecrets\n0\tnm:night\n4\tnf:lunch100pm\n`,
 			"4\tcardmarket:467859\n5\ttcgplayer:215418", // no stamp, no trailing newline
 		]);
 	});
@@ -254,12 +354,14 @@ describe("addBatch reads a staged batch exactly as the string path did", () => {
 			// non-ASCII keys (the Japanese flavor names), keys with tabs in them, CR before LF
 			"1\tnm:ドラゴン\n2\tns:café\n3\ti:has\ttab\n4\ti:crlf\r\n",
 			// `nm`/`ns` lookalikes that are not the name namespaces
-			"1\tnm\n2\tns\n3\tnmx:a\n4\tn:m\n5\tnq:a\n6\tns:\n7\tnm:\n",
+			"1\tnm\n2\tns\n3\tnmx:a\n4\tn:m\n5\tnq:a\n6\tns:\n7\tnm:\n8\tnw\n9\tnf:\n10\tnwx:a\n11\tna\n12\tnb:a\n",
 			// a stamp that is not the first line, and one without its newline
 			`1\ti:z\n${NAME_KEYS_STAMP}\n`,
 			NAME_KEYS_STAMP,
+			`1\ti:z\n${NAME_TIERS_STAMP}\n`,
+			NAME_TIERS_STAMP,
 			// an `ns:` key longer than the respelling scratch starts at
-			`8\tns:${"a".repeat(600)}\n9\tnm:${"a".repeat(600)}\n`,
+			`8\tns:${"a".repeat(600)}\n9\tnm:${"a".repeat(600)}\n10\tnw:${"a".repeat(700)}\n`,
 		]);
 	});
 });
@@ -293,8 +395,10 @@ describe.skipIf(!existsSync(REAL_TSV))(`the real key file (${REAL_TSV})`, () => 
 	for (const scale of REAL_SCALES) {
 		test(`${scale}× — staged in batches the way the scores pass stages them, built both ways`, () => {
 			const text = readFileSync(REAL_TSV, "utf8");
-			const stamped = text.startsWith(`${NAME_KEYS_STAMP}\n`);
-			const body = stamped ? text.slice(NAME_KEYS_STAMP.length + 1) : text;
+			const stamp = [NAME_TIERS_STAMP, NAME_KEYS_STAMP].find((st) => text.startsWith(`${st}\n`)) ?? null;
+			const stamped = stamp !== null;
+			const tiers = stamp === NAME_TIERS_STAMP;
+			const body = stamped ? text.slice(stamp.length + 1) : text;
 			const partitionCount = partitionCountOf(body);
 			// Batches of ~1,620 lines (1.91M lines / the scores pass's ~1,180 draft batches), each
 			// opening with the stamp when the file carries it. Copy c > 0 suffixes every key.
@@ -308,7 +412,7 @@ describe.skipIf(!existsSync(REAL_TSV))(`the real key file (${REAL_TSV})`, () => 
 					let end = at;
 					for (let k = 0; k < 1620 && end !== -1; k++) end = copy.indexOf("\n", end + 1);
 					if (end === -1) end = copy.length;
-					batches.push(enc.encode(`${stamped ? `${NAME_KEYS_STAMP}\n` : ""}${copy.slice(at, end + 1)}`));
+					batches.push(enc.encode(`${stamped ? `${stamp}\n` : ""}${copy.slice(at, end + 1)}`));
 					at = end + 1;
 				}
 			}
@@ -320,7 +424,7 @@ describe.skipIf(!existsSync(REAL_TSV))(`the real key file (${REAL_TSV})`, () => 
 			let refStamped = 0;
 			for (const b of batches) {
 				const t = decoder.decode(b);
-				if (t.startsWith(`${NAME_KEYS_STAMP}\n`)) refStamped++;
+				if (stamp !== null && t.startsWith(`${stamp}\n`)) refStamped++;
 				let at = 0;
 				while (at < t.length) {
 					let end = t.indexOf("\n", at);
@@ -332,9 +436,9 @@ describe.skipIf(!existsSync(REAL_TSV))(`the real key file (${REAL_TSV})`, () => 
 					at = end + 1;
 				}
 			}
-			const features = refStamped === batches.length ? 1 : 0;
+			const features = refStamped === batches.length ? (tiers ? 3 : 1) : 0;
 			const identity = { ...IDENTITY, partitionCount };
-			const want = referenceBuild(ref.seal(partitionCount), identity, features);
+			const want = referenceBuild(ref.seal(partitionCount, features === 3), identity, features);
 
 			// This branch: addBatch, the radix seal, the lean peel.
 			const acc = new RoutingKeyAccumulator(lines);
@@ -342,7 +446,7 @@ describe.skipIf(!existsSync(REAL_TSV))(`the real key file (${REAL_TSV})`, () => 
 			for (const b of batches) if (acc.addBatch(b).stamped) accStamped++;
 			expect(accStamped).toBe(refStamped);
 			expect(acc.grows).toBe(0);
-			const sealed = acc.seal(partitionCount);
+			const sealed = acc.seal(partitionCount, features === 3);
 			const got = buildRoutingFilterFromHashes(sealed, identity, features);
 			console.log(
 				`real key file ×${scale}: ${lines} lines, ${sealed.lo.length} distinct keys ` +

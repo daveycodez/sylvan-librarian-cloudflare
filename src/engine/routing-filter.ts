@@ -47,9 +47,10 @@
  * and fans out, which is the correct answer to any filter it cannot trust.
  *
  * The byte bounds N twice over: an id cell holds a partition (N <= 255), and a name cell holds
- * `N + s` for a name served in partition s with 255 reserved (N <= 127 for every partition to be
- * able to answer `served`). MAX_PARTITION_COUNT (48) sits well inside both, and
- * tests/engine/routing-filter.test.ts builds a filter AT that ceiling to prove it.
+ * `N + 4s + t` for a name served in partition s with 255 reserved (N <= 51 for every partition to
+ * be able to answer `served` with every rival tier t; `N + s`, N <= 127, in a filter without
+ * tiers). MAX_PARTITION_COUNT (48) sits inside both, and tests/engine/routing-filter.test.ts builds
+ * a filter AT that ceiling to prove it.
  */
 export const ROUTING_FILTER_MAGIC = 0x53524632; // "SRF2"
 /** The previous layout, still READ: the live filter at deploy time is last night's until the next publish. */
@@ -141,29 +142,54 @@ export function externalIdKey(namespace: string, id: number): string {
 // often an art-series card's — so a name key's value is not "the lowest owner" like an id's:
 //
 //   p            (< N)       exactly one partition holds the name
-//   N + s        (< 2N)      several do, but exactly ONE (s) holds a SERVED card of it — the
-//                            engine ranks served first, so s's served answer beats every other's
+//   N + 4s + t   (< 5N)      several do, but exactly ONE (s) holds a SERVED card of it, and t (0-3)
+//                            is the highest TIER on which any OTHER partition's extras hold it —
+//                            3 a whole name, 2 a face name, 1 a flavor name, 0 none but an art
+//                            series (the engine's TIER_* values) — in a filter with
+//                            ROUTING_FEATURE_NAME_TIERS; one without it spells this N + s, tier
+//                            unknown
 //   255                      no single partition decides it; ask them all
 //
 // and `lookupName` hands the router which of those it is. Both are HINTS in the same sense an id's
 // value is: a key never built in reads garbage, so the router trusts a reply only when the reply
 // itself proves the key was real (partitioned-engine.ts, `nameReplySettles`).
+//
+// WHY THE TIER (x26). The engine ranks a name `(tier, name, served, score)`: a WHOLE-name extra
+// outranks a served FACE match, and on one tier the first name in order wins, served or not —
+// `exact=chaos` is the fj25 front card Chaos, not Order // Chaos, and `exact=night` the Day // Night
+// token, not Night // Day, measured on api.scryfall.com 2026-09-26 — so "s is the one served holder"
+// no longer means s's answer is final. It is final when s answers on a tier above every other
+// partition's extras (or, on the whole-name tier, where every name is the needle, served). `t` is
+// what lets the one reply decide that: `delverofsecrets` (the transform card served in one
+// partition, its art-series faces in another, t = 0) still settles on one call, and `chaos` (t = 3,
+// s answering a face) asks the rest.
 
-/** Namespace of a name key; `ns:` marks a SERVED row's key in the build input and hashes as `nm:`. */
+/** Namespace of a name key. The build input spells the row's class and tier in the prefix — `ns:` a
+ * SERVED row's name, and an extras row's `nw:` whole name, `nm:` face name, `nf:` flavor name, `na:`
+ * an art series' whole or face name — and every one of them hashes as `nm:`, the only spelling the
+ * lookup side asks. */
 export const NAME_NAMESPACE = "nm";
-const SERVED_NAME_PREFIX = "ns:";
 const NAME_PREFIX = "nm:";
 
 /**
- * The first line of every routing-key batch a name-aware builder writes (`NAME_KEYS_STAMP` in
- * transform.rs). A filter claims name keys — `ROUTING_FEATURE_NAME_KEYS` — only when every batch it
- * was built from carried one: a name key's ABSENCE from a filter built partly from batches without
- * them would read as "one partition holds this", which is exactly the wrong answer.
+ * The first line of every routing-key batch a name-aware builder writes. A filter claims name keys —
+ * `ROUTING_FEATURE_NAME_KEYS` — only when every batch it was built from carried one: a name key's
+ * ABSENCE from a filter built partly from batches without them would read as "one partition holds
+ * this", which is exactly the wrong answer.
+ *
+ * `#nm1` is the builders before x26, whose extras rows wrote `nm:` on every tier; `#nm2`
+ * (`NAME_KEYS_STAMP` in transform.rs, today's builders) also spells the extras' TIER in the prefix.
+ * Both claim name keys; only a filter whose every batch is `#nm2` claims the tiers.
  */
 export const NAME_KEYS_STAMP = "#nm1";
+/** See `NAME_KEYS_STAMP`: the stamp of a batch whose extras name keys carry their tier. */
+export const NAME_TIERS_STAMP = "#nm2";
 
 /** Header features bit: the filter carries name keys, so `lookupName` may answer. */
 export const ROUTING_FEATURE_NAME_KEYS = 1;
+/** Header features bit: a served name key's value carries the other partitions' extras tier
+ * (`N + 4s + t`), so `lookupName` answers `{ served, rival }`. Only with ROUTING_FEATURE_NAME_KEYS. */
+export const ROUTING_FEATURE_NAME_TIERS = 2;
 
 /** The name-key value meaning "no single partition decides this name". */
 const NAME_AMBIGUOUS = 255;
@@ -195,8 +221,15 @@ export function nameKey(folded: string): string | null {
 	return collated === "" ? null : `${NAME_PREFIX}${collated}`;
 }
 
-/** What `lookupName` knows about a name: the one partition holding it, or the one holding it SERVED. */
-export type NameHint = { sole: number } | { served: number };
+/**
+ * What `lookupName` knows about a name: the one partition holding it, or the one holding it SERVED
+ * — with, from a filter that carries tiers, `rival`: the highest tier (3 whole, 2 face, 1 flavor, 0
+ * only an art series) on which any OTHER partition holds it, every one of them only as an extra.
+ */
+export type NameHint = { sole: number } | { served: number; rival?: number };
+
+/** How many rival values a served name key's value spells (0-3): `N + 4s + t`. */
+const NAME_RIVALS = 4;
 
 // ── Hashing ───────────────────────────────────────────────────────────────────
 //
@@ -295,10 +328,98 @@ export interface RoutingFilterIdentity {
 	partitionHash: string;
 }
 
-/** Accumulator flag: the entry is a NAME key (`nm:`/`ns:`), sealed by the name rule. */
+/** Accumulator flag: the entry is a NAME key (`ns:`/`nw:`/`nm:`/`nf:`/`na:`), sealed by the name rule. */
 const FLAG_NAME = 1;
 /** Accumulator flag: a SERVED row emitted it (`ns:`). */
 const FLAG_SERVED = 2;
+/** Accumulator flags: an EXTRAS row emitted it on this tier — `nf:` flavor (1), `nm:` face (2),
+ * `nw:` whole (3); index = tier. An art series (`na:`) is an owner and no rival. A `#nm1` batch's
+ * `nm:` reads as a face, which only a tiered seal ever reads. */
+const FLAG_EXTRA_TIER = [0, 4, 8, 16] as const;
+
+/** The flags a name key's prefix (`n?:`, by its second byte) carries, or 0 for a key of no name. */
+function nameFlags(second: number): number {
+	switch (second) {
+		case 115: // ns:
+			return FLAG_NAME | FLAG_SERVED;
+		case 119: // nw:
+			return FLAG_NAME | FLAG_EXTRA_TIER[3];
+		case 109: // nm:
+			return FLAG_NAME | FLAG_EXTRA_TIER[2];
+		case 102: // nf:
+			return FLAG_NAME | FLAG_EXTRA_TIER[1];
+		case 97: // na:
+			return FLAG_NAME;
+		default:
+			return 0;
+	}
+}
+
+/**
+ * The value a NAME run seals to, from which partitions hold it, which hold it served, and on which
+ * tiers each holds it as an extra — the name rule of the section above, shared by the accumulator's
+ * seal and the reference seal the tests hold it against. Order-independent: a run is folded in hash
+ * order, which says nothing about the order of its entries.
+ */
+export class NameRun {
+	private owner = -1;
+	private owners = 0;
+	private served = -1;
+	private serveds = 0;
+	/** Per tier (index = tier, 1-3), the first extras partition seen, and whether a second differed. */
+	private readonly tierOwner = [-1, -1, -1, -1];
+	private readonly tierOwners = [0, 0, 0, 0];
+
+	reset(): void {
+		this.owner = -1;
+		this.owners = 0;
+		this.served = -1;
+		this.serveds = 0;
+		this.tierOwner.fill(-1);
+		this.tierOwners.fill(0);
+	}
+
+	/** One entry of the run. "Distinct" is counted against the first partition seen: a second one
+	 * makes the count 2, and nothing after that can make it 1 again. */
+	note(partition: number, flags: number): void {
+		if (this.owners === 0) {
+			this.owner = partition;
+			this.owners = 1;
+		} else if (partition !== this.owner) this.owners = 2;
+		if ((flags & FLAG_SERVED) !== 0) {
+			if (this.serveds === 0) {
+				this.served = partition;
+				this.serveds = 1;
+			} else if (partition !== this.served) this.serveds = 2;
+		}
+		for (let t = 1; t < NAME_RIVALS; t++) {
+			if ((flags & (FLAG_EXTRA_TIER[t] as number)) === 0) continue;
+			if (this.tierOwners[t] === 0) {
+				this.tierOwner[t] = partition;
+				this.tierOwners[t] = 1;
+			} else if (partition !== this.tierOwner[t]) this.tierOwners[t] = 2;
+		}
+	}
+
+	/** The sealed value: `p`, `N + 4s + t` (tiered) or `N + s`, else NAME_AMBIGUOUS. */
+	value(partitionCount: number, tiers: boolean): number {
+		if (this.owners === 1) return this.owner;
+		if (this.serveds !== 1) return NAME_AMBIGUOUS;
+		if (!tiers) return partitionCount + this.served < NAME_AMBIGUOUS ? partitionCount + this.served : NAME_AMBIGUOUS;
+		// The highest tier any partition OTHER than the served one holds it on — every other holder
+		// is extras-only, since s is the one served holder — or 0 when they hold it only as art
+		// series, which rank below every other card.
+		let rival = 0;
+		for (let t = NAME_RIVALS - 1; t > 0; t--) {
+			if (this.tierOwners[t] === 2 || (this.tierOwners[t] === 1 && this.tierOwner[t] !== this.served)) {
+				rival = t;
+				break;
+			}
+		}
+		const value = partitionCount + NAME_RIVALS * this.served + rival;
+		return value < NAME_AMBIGUOUS ? value : NAME_AMBIGUOUS;
+	}
+}
 
 /** The sealed columns a filter is built from. `nameKeys` counts the distinct name keys among them. */
 export interface SealedRoutingKeys {
@@ -312,15 +433,25 @@ export interface SealedRoutingKeys {
 export interface RoutingBatchRead {
 	/** Key lines added (comment lines and lines without a tab are not keys). */
 	keys: number;
-	/** The batch opened with `NAME_KEYS_STAMP`. */
+	/** The batch opened with `NAME_KEYS_STAMP` or `NAME_TIERS_STAMP`. */
 	stamped: boolean;
+	/** The batch opened with `NAME_TIERS_STAMP`: its extras name keys spell their tier. */
+	tiered: boolean;
 }
 
 const EMPTY_U32 = new Uint32Array(0);
 const EMPTY_U8 = new Uint8Array(0);
 
-/** The stamp line's bytes, as a batch opens with them. */
+/** The stamp lines' bytes, as a batch opens with them. */
 const STAMP_LINE = encoder.encode(`${NAME_KEYS_STAMP}\n`);
+const TIERS_STAMP_LINE = encoder.encode(`${NAME_TIERS_STAMP}\n`);
+
+/** Whether `text` opens with `line`. */
+function opensWith(text: Uint8Array, line: Uint8Array): boolean {
+	if (text.length < line.length) return false;
+	for (let i = 0; i < line.length; i++) if (text[i] !== line[i]) return false;
+	return true;
+}
 
 /**
  * Accumulate hashed keys without ever holding the key strings.
@@ -376,17 +507,13 @@ export class RoutingKeyAccumulator {
 	grows = 0;
 
 	/**
-	 * One build-input line's key. `ns:<k>` (a SERVED row's name) and `nm:<k>` both hash as
-	 * `nm:<k>` — the lookup side only ever asks `nm:` — and carry their flags into `seal`.
+	 * One build-input line's key. Every name spelling — `ns:<k>` (a SERVED row's name), and an extras
+	 * row's `nw:`/`nm:`/`nf:`/`na:<k>` — hashes as `nm:<k>`, the only one the lookup side asks, and
+	 * carries its flags into `seal`.
 	 */
 	add(key: string, partition: number): void {
-		let flags = 0;
-		let hashed = key;
-		if (key.startsWith(NAME_PREFIX)) flags = FLAG_NAME;
-		else if (key.startsWith(SERVED_NAME_PREFIX)) {
-			flags = FLAG_NAME | FLAG_SERVED;
-			hashed = NAME_PREFIX + key.slice(SERVED_NAME_PREFIX.length);
-		}
+		const flags = key.length >= 3 && key[0] === "n" && key[2] === ":" ? nameFlags(key.charCodeAt(1)) : 0;
+		const hashed = flags !== 0 && !key.startsWith(NAME_PREFIX) ? NAME_PREFIX + key.slice(3) : key;
 		const h = routingHash(hashed);
 		this.addHashed(h.lo, h.hi, partition, flags);
 	}
@@ -403,8 +530,8 @@ export class RoutingKeyAccumulator {
 	 * partition field is decimal; anything else in it is read the way `Number()` reads it.
 	 */
 	addBatch(text: Uint8Array): RoutingBatchRead {
-		let stamped = text.length >= STAMP_LINE.length;
-		for (let i = 0; stamped && i < STAMP_LINE.length; i++) stamped = text[i] === STAMP_LINE[i];
+		const tiered = opensWith(text, TIERS_STAMP_LINE);
+		const stamped = tiered || opensWith(text, STAMP_LINE);
 		let keys = 0;
 		const len = text.length;
 		let at = 0;
@@ -420,24 +547,23 @@ export class RoutingKeyAccumulator {
 			}
 			at = end + 1;
 		}
-		return { keys, stamped };
+		return { keys, stamped, tiered };
 	}
 
 	/** `add` for a key lying in `bytes[start, end)`. */
 	private addKeyBytes(bytes: Uint8Array, start: number, end: number, partition: number): void {
-		// "nm:" / "ns:" — the name namespaces, told apart by their second byte.
+		// "ns:" / "nw:" / "nm:" / "nf:" / "na:" — the name spellings, told apart by their second byte.
 		let flags = 0;
 		let src = bytes;
 		let from = start;
 		let to = end;
 		if (end - start >= 3 && bytes[start] === 110 && bytes[start + 2] === 58) {
-			if (bytes[start + 1] === 109) flags = FLAG_NAME;
-			else if (bytes[start + 1] === 115) {
-				flags = FLAG_NAME | FLAG_SERVED;
+			flags = nameFlags(bytes[start + 1] as number);
+			if (flags !== 0 && bytes[start + 1] !== 109) {
 				const n = end - start;
 				if (this.respell.length < n) this.respell = new Uint8Array(n * 2);
 				this.respell.set(bytes.subarray(start, end));
-				this.respell[1] = 109; // ns: → nm:
+				this.respell[1] = 109; // ns:/nw:/nf:/na: → nm:
 				src = this.respell;
 				from = 0;
 				to = n;
@@ -473,8 +599,10 @@ export class RoutingKeyAccumulator {
 
 	/**
 	 * Sorted, deduplicated hash columns: an id key's LOWEST partition; a name key's one partition,
-	 * `partitionCount + s` for its one SERVED partition `s`, or 255 (see the name-key section).
-	 * `partitionCount` is required once any name key was added.
+	 * `partitionCount + 4s + t` for its one SERVED partition `s` and the other partitions' highest
+	 * extras tier `t` (with `tiers`; `partitionCount + s` without), or 255 (see the name-key
+	 * section). `partitionCount` is required once any name key was added. `tiers` is whether every
+	 * batch spelled its extras' tiers (`NAME_TIERS_STAMP`) — the filter's ROUTING_FEATURE_NAME_TIERS.
 	 *
 	 * IN PLACE, and that is the point (backlog x2). The comparator sort this replaced boxed an index
 	 * per line into a JS array and sorted THAT — 35/75/111MB of JS heap at 1×/2×/3× the corpus on
@@ -489,7 +617,7 @@ export class RoutingKeyAccumulator {
 	 * released as its successor lands, so the filter build that follows holds 9 bytes per DISTINCT
 	 * key (1.45M of 1.95M lines today) rather than 10 per line.
 	 */
-	seal(partitionCount?: number): SealedRoutingKeys {
+	seal(partitionCount?: number, tiers = false): SealedRoutingKeys {
 		if (this.sealed) throw new Error("routing filter: the accumulator is already sealed");
 		this.sealed = true;
 		const n = this.n;
@@ -506,31 +634,12 @@ export class RoutingKeyAccumulator {
 		let m = 0;
 		let nameKeys = 0;
 		let runName = false;
-		let owner = -1;
-		let owners = 0;
-		let served = -1;
-		let serveds = 0;
+		const run = new NameRun();
 		const closeRun = () => {
 			if (m === 0 || !runName) return;
 			nameKeys++;
 			if (partitionCount === undefined) throw new Error("routing filter: name keys need the partition count to seal");
-			if (owners === 1) values[m - 1] = owner;
-			else if (serveds === 1 && partitionCount + served < NAME_AMBIGUOUS) values[m - 1] = partitionCount + served;
-			else values[m - 1] = NAME_AMBIGUOUS;
-		};
-		// "Distinct" counted against the first partition seen: a second one makes the run
-		// multi-owner (2), and nothing after that can make it sole again.
-		const noteName = (v: number, f: number) => {
-			if (owners === 0) {
-				owner = v;
-				owners = 1;
-			} else if (v !== owner) owners = 2;
-			if ((f & FLAG_SERVED) !== 0) {
-				if (serveds === 0) {
-					served = v;
-					serveds = 1;
-				} else if (v !== served) serveds = 2;
-			}
+			values[m - 1] = run.value(partitionCount, tiers);
 		};
 		for (let i = 0; i < n; i++) {
 			const l = lo[i] as number;
@@ -540,7 +649,7 @@ export class RoutingKeyAccumulator {
 			if (m > 0 && lo[m - 1] === l && hi[m - 1] === h) {
 				if ((f & FLAG_NAME) !== 0) runName = true;
 				if (v < (values[m - 1] as number)) values[m - 1] = v;
-				noteName(v, f);
+				run.note(v, f);
 				continue;
 			}
 			closeRun();
@@ -549,11 +658,8 @@ export class RoutingKeyAccumulator {
 			values[m] = v;
 			m++;
 			runName = (f & FLAG_NAME) !== 0;
-			owner = -1;
-			owners = 0;
-			served = -1;
-			serveds = 0;
-			noteName(v, f);
+			run.reset();
+			run.note(v, f);
 		}
 		closeRun();
 
@@ -775,7 +881,11 @@ export function buildRoutingFilter(
 		}
 		acc.add(e.key, e.partition);
 	}
-	return buildRoutingFilterFromHashes(acc.seal(identity.partitionCount), identity, features);
+	return buildRoutingFilterFromHashes(
+		acc.seal(identity.partitionCount, (features & ROUTING_FEATURE_NAME_TIERS) !== 0),
+		identity,
+		features,
+	);
 }
 
 /** A peel queue entry whose slot had emptied by the time it was popped. */
@@ -802,7 +912,8 @@ export function buildRoutingFilterFromHashes(
 	sealed: { lo: Uint32Array; hi: Uint32Array; values: Uint8Array },
 	identity: RoutingFilterIdentity,
 	/** The header's features word — `ROUTING_FEATURE_NAME_KEYS` only when EVERY input batch carried
-	 * `NAME_KEYS_STAMP` (see there). */
+	 * `NAME_KEYS_STAMP` or `NAME_TIERS_STAMP`, and `ROUTING_FEATURE_NAME_TIERS` too only when every
+	 * one carried the second (see there). The seal's `tiers` must agree with the second bit. */
 	features = 0,
 ): Uint8Array {
 	if (identity.partitionCount > VALUE_MASK) {
@@ -1081,8 +1192,9 @@ export class RoutingFilter {
 
 	/**
 	 * What the filter says about a NAME key (`nameKey`): the one partition holding it (`sole`), the
-	 * one holding it SERVED (`served`), or null — ask them all. Always null on a filter without name
-	 * keys, where a name's value would be whatever its cells happen to XOR to.
+	 * one holding it SERVED (`served`, with the other partitions' extras tier as `rival` when the
+	 * filter carries tiers), or null — ask them all. Always null on a filter without name keys,
+	 * where a name's value would be whatever its cells happen to XOR to.
 	 *
 	 * A HINT, exactly like `lookup`: a name never built in reads an arbitrary byte, ~(256 − 2N)/256
 	 * of which land on 255 or beyond 2N and come back null here. The rest name some partition, and
@@ -1094,7 +1206,13 @@ export class RoutingFilter {
 		const value = this.valueOf(key);
 		const n = this.identity.partitionCount;
 		if (value < n) return { sole: value };
-		if (value < 2 * n && value !== NAME_AMBIGUOUS) return { served: value - n };
+		if (value === NAME_AMBIGUOUS) return null;
+		if ((this.features & ROUTING_FEATURE_NAME_TIERS) !== 0) {
+			if (value >= n + NAME_RIVALS * n) return null;
+			const at = value - n;
+			return { served: Math.floor(at / NAME_RIVALS), rival: at % NAME_RIVALS };
+		}
+		if (value < 2 * n) return { served: value - n };
 		return null;
 	}
 

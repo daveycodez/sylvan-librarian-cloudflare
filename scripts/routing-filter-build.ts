@@ -15,7 +15,9 @@ import { existsSync, readFileSync } from "node:fs";
 import {
 	buildRoutingFilterFromHashes,
 	NAME_KEYS_STAMP,
+	NAME_TIERS_STAMP,
 	ROUTING_FEATURE_NAME_KEYS,
+	ROUTING_FEATURE_NAME_TIERS,
 	RoutingKeyAccumulator,
 } from "../src/engine/routing-filter";
 import type { StoreManifest } from "../src/engine/types";
@@ -29,8 +31,9 @@ export const ROUTING_KEYS_FILE = "routing-keys.tsv";
  * text and the accumulator keeps four typed arrays instead of 1.9M strings,
  * sized to the file's own line count so it never has to grow.
  *
- * `#` lines are comments; a first line of `NAME_KEYS_STAMP` says the builder
- * wrote name keys, and only then does the filter claim them.
+ * `#` lines are comments; a first line of `NAME_KEYS_STAMP` or `NAME_TIERS_STAMP`
+ * says the builder wrote name keys, and only then does the filter claim them —
+ * and their extras tiers too, with the second (see routing-filter.ts).
  */
 export function routingFilterFromBuildDir(
 	dir: string,
@@ -43,7 +46,8 @@ export function routingFilterFromBuildDir(
 	let lines = 0;
 	for (let i = text.indexOf("\n"); i !== -1; i = text.indexOf("\n", i + 1)) lines++;
 	const acc = new RoutingKeyAccumulator(lines + 1);
-	const stamped = text.startsWith(`${NAME_KEYS_STAMP}\n`);
+	const tiered = text.startsWith(`${NAME_TIERS_STAMP}\n`);
+	const stamped = tiered || text.startsWith(`${NAME_KEYS_STAMP}\n`);
 	let at = 0;
 	let line = 0;
 	while (at < text.length) {
@@ -61,7 +65,7 @@ export function routingFilterFromBuildDir(
 		at = end + 1;
 		line++;
 	}
-	const sealed = acc.seal(n);
+	const sealed = acc.seal(n, tiered);
 	const bytes = buildRoutingFilterFromHashes(
 		sealed,
 		{
@@ -69,7 +73,7 @@ export function routingFilterFromBuildDir(
 			partitionCount: n,
 			partitionHash: manifest.partition_hash as string,
 		},
-		stamped ? ROUTING_FEATURE_NAME_KEYS : 0,
+		(stamped ? ROUTING_FEATURE_NAME_KEYS : 0) | (tiered ? ROUTING_FEATURE_NAME_TIERS : 0),
 	);
 	return { bytes, keys: sealed.lo.length, nameKeys: stamped ? sealed.nameKeys : 0 };
 }
