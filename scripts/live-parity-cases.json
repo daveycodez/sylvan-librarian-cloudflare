@@ -89,29 +89,6 @@
 			"paths": ["**.scryfall_uri"],
 			"normalize": "percent-decode",
 			"note": "Plan C3: the mirror does not UTF-8 percent-encode non-ASCII scryfall_uri slug bytes (joetun-grunt umlaut raw vs %C3%B6). Both sides must still agree percent-DECODED. FIX IN-TREE (2026-08-16): slug() in objects.ts/card_object.rs/objects.py now percent-encodes per the live rule; PRODUCTION still serves the old bytes until the next deploy, so this entry stays. At the first post-deploy run it flips to a plain byte-equal field — delete this entry then."
-		},
-		{
-			"name": "card-object-residue-pending-deploy",
-			"paths": [
-				"resource_id",
-				"game_changer",
-				"foil",
-				"nonfoil",
-				"artist_ids",
-				"**.card_faces.*.artist_id",
-				"image_updated_at",
-				"**.all_parts.*.uri",
-				"preview",
-				"card_back_id",
-				"variation_of",
-				"attraction_lights",
-				"content_warning",
-				"related_uris.tcgplayer_infinite_articles",
-				"related_uris.tcgplayer_infinite_decks",
-				"related_uris.edhrec",
-				"purchase_uris"
-			],
-			"note": "DEPLOY AND REBUILD LAG, not a parity definition (backlog x27, 2026-09-26). Nine of these paths were scryfall_only_keys ledger entries on the reading that upstream #912 has no column for them — which STRIPPED them from Scryfall's side, so their values were never compared. The serializers now emit every one (Scryfall's key order too, which this harness cannot see: it sorts keys), and a store built by generation 54 holds the data (`Printing::artist_ids_vid`, `Printing::extras_id`, `PrintingFace::artist_id_vid`): a 64-printing differential built from api.scryfall.com's own objects renders 64 of 64 byte-identical. PRODUCTION serves none of it until that deploy AND its store rebuild, so against the deployed origin these fire as missing-ours (and card_back_id / the content-warning links as value / missing-scryfall) diffs. Delete this entry at the first run against a generation-54 store; every path then byte-compares like any other."
 		}
 	],
 	"cases": [

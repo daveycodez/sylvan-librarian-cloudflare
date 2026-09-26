@@ -1282,7 +1282,10 @@ async function loadStore(env: Env, ctx?: LoadContext, known?: StoreManifest, fen
 					manifest = pushed;
 				}
 			} else {
-				console.error(
+				// A warning, not an error: during a format-bump deploy (x19) the old build's publish
+				// notify can still reach objects already on the new code, and refusing that push is
+				// the guard doing its job — the manifest is read from KV instead.
+				console.warn(
 					`${tag(ctx)}ignoring a pushed manifest this object cannot serve ` +
 						`(${pushed.store_key}, format ${pushed.format_version} vs this engine's ${ARCHIVE_FORMAT_VERSION}, ` +
 						`partition_count ${pushed.partition_count ?? "none"} vs own partition ` +
