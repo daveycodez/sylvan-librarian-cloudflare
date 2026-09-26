@@ -1034,16 +1034,24 @@ export class RemoteEngine implements Engine {
 		words: string[],
 		own?: NamedFuzzyOwnBundle,
 	): Promise<NamedFuzzyPlanReply> {
-		const { partitions, everywhere, stage, builtAt, bundle } = await this.searchRpc(
+		const { partitions, everywhere, stage, builtAt, bundle, printed } = await this.searchRpc(
 			"scryfallNamedFuzzyPlan",
 			(stub, shards) =>
 				own === undefined
 					? stub.scryfallNamedFuzzyPlan(folded, words, shards)
 					: stub.scryfallNamedFuzzyPlan(folded, words, shards, own),
 		);
-		return bundle === undefined
-			? { partitions, everywhere, stage, builtAt }
-			: { partitions, everywhere, stage, builtAt, bundle };
+		// Every field the plan carries is picked out by name (the telemetry riders stay behind), so a
+		// new one has to be named here too: x24's `printed` was left out and the route logged
+		// `printed=-` for every plan, including the ones its blob decided.
+		return {
+			partitions,
+			everywhere,
+			stage,
+			builtAt,
+			...(bundle === undefined ? {} : { bundle }),
+			...(printed === undefined ? {} : { printed }),
+		};
 	}
 
 	/** n8: the whole corpus's autocomplete from this one object's card-names blob (see the DO's
