@@ -514,6 +514,32 @@ describe("the page transport (the /cards/search and /search gathers)", () => {
 		expect("shards" in sent).toBe(false);
 	});
 
+	test("a stale-modulus refusal carried as a plain Error 503 is a StaleModulusError, never failed over (x39)", async () => {
+		// 2026-09-26 23:17, the 10 → 11 partition switch: the object's instrumented wrapper had
+		// already turned the refusal into the RPC marker string, the fetch transport sent it as a
+		// plain "Error" 503, and it was failed over to the neighbour (which refused the same way)
+		// instead of reaching the caller as the StaleModulusError that re-gathers at the loaded width.
+		setEngineHedgeForTests(60_000);
+		const { hedge, seen } = neighbour({ fetch: () => never() });
+		const engine = new RemoteEngine(
+			byId({
+				fetch: async () =>
+					gatherFailed("__STALE_MODULUS__:engine-enam-p3 serves a 11-partition store; the caller pinned against 10"),
+			}),
+			"wnam",
+			"SJC",
+			undefined,
+			false,
+			hedge,
+		);
+		const err = await engine
+			.scryfallSearchPage({ limit: 10 } as never, "https://x", envelope, {}, "cards2")
+			.catch((e: unknown) => e);
+		expect(err).toBeInstanceOf(StaleModulusError);
+		expect((err as Error).message).toBe("engine-enam-p3 serves a 11-partition store; the caller pinned against 10");
+		expect(seen.connects).toBe(0);
+	});
+
 	test("a gather that fails in the neighbour too surfaces this region's error", async () => {
 		setEngineHedgeForTests(60_000);
 		const { hedge, seen } = neighbour({ fetch: async () => gatherFailed("enam's own failure") });

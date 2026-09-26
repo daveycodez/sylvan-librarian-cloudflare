@@ -661,6 +661,18 @@ async function pageAttempt(stub: SearchEngineStub, body: string, ms: number): Pr
 	const message = await answer.text();
 	if (kind === "EngineUnavailableError") throw new EngineUnavailableError(message);
 	if (kind === "StaleModulusError") throw new StaleModulusError(message);
+	// The object's `instrumented` wrapper may already have turned the error into the RPC path's
+	// marker string (rethrowForRpc), which then arrives here as a plain "Error" 503 — so the
+	// markers are decoded from the message too, as `unwrap` does for RPC. Without this, the
+	// 2026-09-26 23:17 switch from 10 to 11 partitions answered 2 /cards/search 500s: a pin
+	// against the old width came back as a plain Error, was failed over to the neighbour (which
+	// refused the same way), and never fell back to the gather a StaleModulusError gets.
+	const stale = message.indexOf(STALE_MODULUS_MARKER);
+	if (stale >= 0) throw new StaleModulusError(message.slice(stale + STALE_MODULUS_MARKER.length + 1));
+	const unavailable = message.indexOf(ENGINE_UNAVAILABLE_MARKER);
+	if (unavailable >= 0) {
+		throw new EngineUnavailableError(message.slice(unavailable + ENGINE_UNAVAILABLE_MARKER.length + 1));
+	}
 	if (message.startsWith(BUILD_FILTER_ERROR_PREFIX)) throw new EngineQueryError(message);
 	throw new Error(message);
 }
