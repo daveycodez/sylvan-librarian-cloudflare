@@ -267,6 +267,7 @@ fn stub_printing(scryfall_id: u128, illustration_id: u128, prefer_score: Option<
         card_set_code: InlineStr::from_str(""),
         card_layout_id: NONE_STR,
         set_rank: 0,
+        release_set_key: 0,
         artist_rank: 0,
         card_border_id: NONE_STR,
         card_watermark_id: NONE_STR,

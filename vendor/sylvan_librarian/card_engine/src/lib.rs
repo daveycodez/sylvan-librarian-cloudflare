@@ -1054,7 +1054,15 @@ struct Printing {
     // Neither can be derived at sort time: a set code is a string, and card_artist_vid is intern
     // order (first seen), not alphabetical. Equal values share a rank so the sort secondaries break
     // their ties, and both stay far below 2^24 so the f32 sort-key conversion is exact.
-    set_rank: u32,
+    //
+    // `set_rank` is u16 and `release_set_key` rides the other half of the u32 it used to be
+    // (LOCAL PATCH, Cloudflare port): `order=released` breaks a date tie by a SET order that is
+    // not the code order (see `assign_set_ranks`), so the column needs a second per-set key, and
+    // the row has no padding left for one — two u16s in the old u32's four bytes keep
+    // `the_archived_row_sizes_stay_pinned` where it was. `set_rank` was already asserted to fit
+    // 16 bits, because `order=released` packed it into a 16-bit lane.
+    set_rank: u16,
+    release_set_key: u16,
     artist_rank: u32,
     card_border_id: u32,
     card_watermark_id: u32,
@@ -4525,14 +4533,63 @@ fn assign_printing_ranks<K: Ord>(
     }
 }
 
-/// Rank printings by set code, the sort key for `order=set` — and, since `order=released` breaks a
-/// date tie by set before collector number, the TOP HALF of that column's second key too.
+/// Scryfall's order of the SETS inside one release date, measured (LOCAL PATCH, Cloudflare port):
+/// `yyyymmdd <TAB> set <TAB> batch` rows, written by scripts/generate-release-batches.ts. A (date,
+/// set) the table does not name is batch 0. See `assign_set_ranks` for what a batch is.
+const RELEASE_BATCHES_TSV: &str = include_str!("release_batches.tsv");
+
+/// Bits of `Printing::release_set_key` that hold the set's CODE rank; the batch sits above them.
+/// 2^11 = 2,048 set codes in one archive against the 1,053 api.scryfall.com lists across the whole
+/// catalogue (2026-09-25), and a batch up to 31 against the largest measured, 4.
+const RELEASE_KEY_CODE_BITS: u32 = 11;
+
+/// The table, parsed once, by date. A malformed row is a build failure rather than a silently
+/// dropped batch.
+static RELEASE_BATCHES: LazyLock<HashMap<u32, Vec<(&'static str, u16)>>> = LazyLock::new(|| {
+    let mut by_date: HashMap<u32, Vec<(&'static str, u16)>> = HashMap::new();
+    for l in RELEASE_BATCHES_TSV.lines().filter(|l| !l.is_empty() && !l.starts_with('#')) {
+        let mut f = l.split('\t');
+        let parsed = (|| Some((f.next()?.parse::<u32>().ok()?, f.next()?, f.next()?.parse::<u16>().ok()?)))();
+        let (date, set, batch) = parsed.unwrap_or_else(|| panic!("release_batches.tsv: malformed row {l:?}"));
+        by_date.entry(date).or_default().push((set, batch));
+    }
+    by_date
+});
+
+/// The measured batch of `set` inside the release date `yyyymmdd` — 0 for a date or set the table
+/// does not name. Public because the builder's representative ranking breaks its own same-date
+/// ties by the same order (engine/builder/src/ranks.rs).
+pub fn release_batch(yyyymmdd: u32, set: &str) -> u16 {
+    RELEASE_BATCHES.get(&yyyymmdd).and_then(|sets| sets.iter().find(|(s, _)| *s == set)).map_or(0, |(_, b)| *b)
+}
+
+/// Rank printings by set code, the sort key for `order=set` — and give each one the SET half of
+/// `order=released`'s second key, which is NOT the code order.
 ///
-/// That packing is why the rank is asserted to fit 16 bits (`sort_col_secondary` shifts it left by
-/// 16 into a 32-bit lane it shares with `collector_rank`). The field stays `u32`, so this is a
-/// contract on the VALUE, not on the layout: 1,100-odd set codes across the whole corpus against
-/// 65,535, and a corpus that ever outgrew it would be a loud build failure rather than a rank that
-/// silently overwrote the collector number beside it.
+/// # `order=released` inside one date, measured against api.scryfall.com 2026-09-25
+///
+/// Cards sharing a release date come back set-grouped (every one of 360 probed dates), ordered by
+/// collector number inside the set, and `dir=desc` is the exact reversal. Which SET comes first is
+/// not a function of anything Scryfall publishes — the parity-sweep findings §16/§18 prove it over
+/// every `/sets` field — and it is not even one order over the sets: `prm` sorts before `sld` on
+/// 2020-07-31 and after it on 2022-11-04, both read in the same hour. What IS regular is its shape:
+/// a date's sets are the code order cut into BATCHES, each alphabetical, one after another —
+/// 2025-04-11 is `plg25 plst pspl spg tdm | tdc | atdm ptdm ttdc ttdm`, which is why this port put
+/// `ptdm` after `tdm` under the default `dir` and `tdc` before `tdm` ascending, both the wrong way
+/// round. The code order this used alone was right on 214 of the 350 dates that answered two or
+/// more sets, and on 2,702 of their 3,368 in-date set pairs; a `(batch, code)` key reproduces all
+/// 350 with 285 table rows over the 136 dates that need one, the largest batch 4.
+///
+/// So the batch is MEASURED, per (date, set) — `release_batches.tsv`, one request per date — and
+/// the set half is `(batch, code rank)`: exact on every measured date, and on a date or set the
+/// table has not seen, batch 0, i.e. the code order this column had before.
+///
+/// # The packing
+///
+/// `set_rank` is the dense code rank, asserted to fit `RELEASE_KEY_CODE_BITS`; `release_set_key` is
+/// `batch << RELEASE_KEY_CODE_BITS | set_rank`, so comparing two keys compares (batch, code), and
+/// `encode_sort_key` recovers the batch with a shift and spells the code out, which is what keeps
+/// the cross-partition bytes independent of any one archive's ranks.
 fn assign_set_ranks(printings: &mut [Printing], foreign: &mut [Printing]) {
     assign_printing_ranks(
         printings,
@@ -4540,12 +4597,21 @@ fn assign_set_ranks(printings: &mut [Printing], foreign: &mut [Printing]) {
         |p| p.card_set_code.as_str().to_owned(),
         |p, r| {
             assert!(
-                r <= u32::from(u16::MAX),
-                "set_rank outgrew the 16 bits order=released's second key packs it into — widen that lane"
+                r < 1 << RELEASE_KEY_CODE_BITS,
+                "set_rank outgrew the {RELEASE_KEY_CODE_BITS} bits release_set_key packs it into — widen that half"
             );
-            p.set_rank = r;
+            p.set_rank = r as u16;
         },
     );
+    for p in printings.iter_mut().chain(foreign.iter_mut()) {
+        let batch = p.released_at_int.map_or(0, |date| release_batch(date, p.card_set_code.as_str()));
+        assert!(
+            batch < 1 << (16 - RELEASE_KEY_CODE_BITS),
+            "a release batch outgrew release_set_key's {} bits",
+            16 - RELEASE_KEY_CODE_BITS
+        );
+        p.release_set_key = (batch << RELEASE_KEY_CODE_BITS) | p.set_rank;
+    }
 }
 
 /// Decide `OracleCard.single_set` — the whole of `is:unique` — for every card.
@@ -4759,17 +4825,66 @@ fn order_annex_by_language(foreign: &mut [Printing], foreign_offsets: &[u32], co
 /// `Option<u16>`'s own `Ord` puts a numberless collector number ("★") first ascending, and
 /// `push_collector_segment` reproduces exactly that with its presence byte, so the in-archive rank
 /// and the cross-partition bytes agree at the absent case as well as at every present one.
+///
+/// THE STRING HALF IS COLLATED, NOT BYTEWISE (see `collector_collation_key`), and each distinct
+/// collector number is collated once: the key is a function of the interned string alone, so the
+/// ~16k distinct numbers are sorted instead of the ~100k rows, and no key is built per comparison.
 fn assign_collector_ranks(printings: &mut [Printing], foreign: &mut [Printing], strings: &[String]) {
-    let text_of = |p: &Printing| strings.get(p.collector_number_id as usize).cloned().unwrap_or_default();
-    assign_printing_ranks(
-        printings,
-        foreign,
-        |p| (p.collector_number_int, text_of(p)),
-        |p, r| {
-            p.collector_rank =
-                u16::try_from(r).expect("collector_rank outgrew u16 — widen the field and bump ARCHIVE_FORMAT_VERSION");
-        },
-    );
+    let mut ids: Vec<(Option<u16>, u32)> =
+        printings.iter().chain(foreign.iter()).map(|p| (p.collector_number_int, p.collector_number_id)).collect();
+    ids.sort_unstable();
+    ids.dedup();
+    let text_of = |id: u32| strings.get(id as usize).map_or("", String::as_str);
+    let mut keyed: Vec<((Option<u16>, String), u32)> =
+        ids.into_iter().map(|(int, id)| ((int, collector_collation_key(text_of(id))), id)).collect();
+    keyed.sort_unstable();
+    // Dense over the (int, collation key) pairs. Distinct ids never share a key — the key ends in
+    // the raw string — so this is a rank per distinct collector number.
+    let rank_of: HashMap<u32, u16> = keyed
+        .iter()
+        .enumerate()
+        .map(|(r, (_, id))| {
+            let r = u16::try_from(r).expect("collector_rank outgrew u16 — widen the field and bump ARCHIVE_FORMAT_VERSION");
+            (*id, r)
+        })
+        .collect();
+    for p in printings.iter_mut().chain(foreign.iter_mut()) {
+        p.collector_rank = rank_of[&p.collector_number_id];
+    }
+}
+
+/// A collector number's TEXT as Scryfall collates it, spelled as a string whose plain byte order is
+/// that collation — the in-archive rank sorts by it and `push_collector_segment` sends it, so the
+/// two cannot disagree.
+///
+/// Measured against api.scryfall.com 2026-09-25, `order=set` over 65 same-number groups (every
+/// shape the corpus has: `★`, `†`, `Φ`, letter suffixes and prefixes, plst's `SET-N`, unk's
+/// letter-coded numbers): the text orders PUNCTUATION AND SYMBOLS before DIGITS before LETTERS,
+/// letters case-blind — the default Unicode collation, not the byte order. pgrn answers `123★`,
+/// `123p`, `123s` and 7ed `157`, `157★`, `157★s`, `157s`, where bytes put `★` (U+2605) after
+/// every ASCII letter; 6 of the 65 groups differ from the byte order and the collation fits all 65.
+/// 40 same-number groups in the 2026-09-24 corpus order differently under it.
+///
+/// Each character becomes a class marker and itself (letters lowercased), and the raw string
+/// follows a terminator below every marker: a prefix sorts first (`1389` before `1389★`), and two
+/// numbers differing only in case — none in the corpus — still get a total order.
+fn collector_collation_key(cn: &str) -> String {
+    let mut key = String::with_capacity(2 * cn.len() + 1 + cn.len());
+    for c in cn.chars() {
+        if c.is_ascii_digit() {
+            key.push('\u{3}');
+            key.push(c);
+        } else if c.is_alphabetic() {
+            key.push('\u{4}');
+            key.extend(c.to_lowercase());
+        } else {
+            key.push('\u{2}');
+            key.push(c);
+        }
+    }
+    key.push('\u{1}');
+    key.push_str(cn);
+    key
 }
 
 /// Rank printings by artist name, the sort key for `order=artist`.
@@ -10492,7 +10607,7 @@ fn sort_primary_f32(card: &AOracleCard, p: &APrinting, sort_col: SortCol) -> Opt
         SortCol::Color      => Some(color_sort_rank(card.card_colors, u16::from(card.card_types)) as f32),
         // Dense ranks assigned post-load; the stored code and artist id do not sort alphabetically
         // on their own (see assign_set_ranks / assign_artist_ranks).
-        SortCol::Set        => Some(u32::from(p.set_rank) as f32),
+        SortCol::Set        => Some(u32::from(u16::from(p.set_rank)) as f32),
         // Nullable, unlike `Set` beside it: `card_set_code` is non-null but an artist is not, and
         // `assign_artist_ranks` puts the artistless printings in a trailing rank block keyed on
         // `(name.is_none(), name)`. Reporting that block as a VALUE made `order=artist` the one
@@ -10509,7 +10624,7 @@ fn sort_primary_f32(card: &AOracleCard, p: &APrinting, sort_col: SortCol) -> Opt
 /// The sort column's SECOND key, where the column has one: `order=set`, whose second key is the
 /// collector number (see `assign_collector_ranks`), and `order=released`, whose second key is the
 /// SET and then the collector number inside it, packed into the one 32-bit lane as
-/// `(set_rank << 16) | collector_rank`.
+/// `(release_set_key << 16) | collector_rank`.
 ///
 /// Direction is folded in here as it is in `perm_primary_key`, because the second key belongs to
 /// the primary ordering rather than to the tiebreaks below it — `order=set&dir=desc&q=e:khm`
@@ -10535,7 +10650,7 @@ fn sort_primary_f32(card: &AOracleCard, p: &APrinting, sort_col: SortCol) -> Opt
 /// `card_count`, `printed_size`, `set_type`, `parent_set_code`, `block_code`, the /sets listing
 /// order and the set name (the code fits 36 of 48 sampled adjacent set pairs, the next best 30).
 ///
-/// So the code is what goes in, and the GROUPING it buys is the larger half. Replayed over 26
+/// So the code went in, and the GROUPING it bought was the larger half. Replayed over 26
 /// released-ordered pages (3,152 rows, every cached api.scryfall.com listing at or above the
 /// eight-distinct-date floor, 24 of them carrying a multi-set date tie), positional agreement is
 ///
@@ -10547,6 +10662,11 @@ fn sort_primary_f32(card: &AOracleCard, p: &APrinting, sort_col: SortCol) -> Opt
 /// grouped by set; it is two adjacent blocks that swap. That residual 1.11% is the whole of what
 /// Scryfall's private set order costs this column.
 ///
+/// 2026-09-25: that residual is closed. The private order turned out to have a shape — a date's
+/// sets are the code order cut into alphabetical BATCHES — and the set half is now `(batch, code)`
+/// with the batch measured per (date, set); `assign_set_ranks` has the measurement. The code order
+/// above is what an unmeasured date still gets.
+///
 /// Every other column returns 0, which costs those keys nothing: a constant segment cannot change
 /// any comparison, so their order is bit-for-bit what it was before this key existed.
 fn sort_col_secondary(p: &APrinting, sort_col: SortCol, descending: bool) -> u32 {
@@ -10557,9 +10677,9 @@ fn sort_col_secondary(p: &APrinting, sort_col: SortCol, descending: bool) -> u32
         // under `dir=asc`, so the collector number follows the primary's direction here exactly as
         // it does under `order=set`, and the set half above it follows it too.
         //
-        // `assign_set_ranks` is what holds the shift to 16 bits (it asserts the rank fits); the
-        // collector half is `u16` by declaration.
-        SortCol::Released => (u32::from(p.set_rank) << 16) | u32::from(u16::from(p.collector_rank)),
+        // The set half is `release_set_key` — (measured batch, code rank), not the code rank alone
+        // (see `assign_set_ranks`). Both halves are `u16` by declaration.
+        SortCol::Released => (u32::from(u16::from(p.release_set_key)) << 16) | u32::from(u16::from(p.collector_rank)),
         // `name` DELIBERATELY HAS NONE, and the attempt is recorded because the evidence for it
         // looked good and the measurement killed it.
         //
@@ -10661,7 +10781,12 @@ fn page_cmp(a: &Match, b: &Match) -> std::cmp::Ordering {
 /// was added or removed, so a version-1 key and a version-2 key are the same length and compare
 /// without complaint; they simply disagree about where those 81 rows belong, which is the silently
 /// wrong page order this byte exists to turn into an error.
-pub const SORT_KEY_VERSION: u8 = 2;
+/// 2 -> 3: `order=released`'s set half gains a BATCH byte ahead of the set code, and the collector
+/// segment of `set`/`released` sends the COLLATED number (`collector_collation_key`) where it sent
+/// the raw string. A version-2 key is a byte shorter under `released` and orders `★` after the
+/// letters, so a merge across the two would disagree about exactly the same-date and same-number
+/// rows this version exists to fix.
+pub const SORT_KEY_VERSION: u8 = 3;
 
 /// One string-primary segment. Present values are the raw bytes plus a terminator OUTSIDE the
 /// alphabet (names never contain NUL), so a prefix compares before its extensions; descending
@@ -10692,7 +10817,8 @@ fn push_str_segment(key: &mut Vec<u8>, value: Option<&str>, descending: bool) {
 }
 
 /// `order=set`'s second key as bytes: the UNDERLYING `(collector_number_int, collector_number)`
-/// pair, which is what `collector_rank` dense-ranks in-archive.
+/// pair, which is what `collector_rank` dense-ranks in-archive — the string as its collation key
+/// (`collector_collation_key`), the one `assign_collector_ranks` ranks.
 ///
 /// The rank itself cannot go on the wire for the reason the section header gives — partition A
 /// ranking `{1, 5, 9}` as `{0, 1, 2}` and partition B ranking `{2, 3}` as `{0, 1}` interleaves
@@ -10714,7 +10840,8 @@ fn push_collector_segment(key: &mut Vec<u8>, data: &Archived<CardData>, p: &APri
             key.extend_from_slice(&(!n).to_be_bytes());
         }
     }
-    push_str_segment(key, Some(str_at(&data.strings, u32::from(p.collector_number_id)).unwrap_or("")), descending);
+    let text = str_at(&data.strings, u32::from(p.collector_number_id)).unwrap_or("");
+    push_str_segment(key, Some(&collector_collation_key(text)), descending);
 }
 
 /// Encode one match's cross-partition sort key:
@@ -10727,8 +10854,8 @@ fn push_collector_segment(key: &mut Vec<u8>, data: &Archived<CardData>, p: &APri
 /// [second key, where the column has one: `set`, whose is the collector number
 ///  (push_collector_segment) — the underlying (int, string) pair rather than collector_rank,
 ///  for the same archive-local reason the primary spells set codes out; and `released`, whose
-///  is the SET CODE and then that same collector number, the two halves the in-archive key
-///  packs into one 32-bit lane]
+///  is the measured release BATCH (1 byte), the SET CODE and then that same collector number,
+///  the halves the in-archive key packs into one 32-bit lane]
 /// [collated name (push_str_segment, ALWAYS ascending)]  — page_cmp's third component, spelled out
 ///                                                    rather than sent as `name_rank`: that rank is
 ///                                                    archive-local. Ascending regardless of `dir`,
@@ -10783,12 +10910,16 @@ pub(crate) fn encode_sort_key(
     // key also gave `Released` one is precisely the divergence
     // `partitioned_key_streams_merge_to_the_unpartitioned_order` exists to catch, and did.
     //
-    // `released`'s second key is (set, collector number). The SET CODE spelled out, not `set_rank`
-    // — that rank is assigned over the sets of THIS archive, so a partition holding a set another
-    // one lacks numbers everything after it differently, which is the section header's whole
-    // argument. The in-archive key packs the same pair as `(set_rank << 16) | collector_rank` and
+    // `released`'s second key is (batch, set, collector number). The SET CODE spelled out, not
+    // `set_rank` — that rank is assigned over the sets of THIS archive, so a partition holding a set
+    // another one lacks numbers everything after it differently, which is the section header's
+    // whole argument. The batch is the measured table's value for (date, set), the same in every
+    // partition, read back off the top bits of `release_set_key`. The in-archive key packs the same
+    // triple as `((batch << RELEASE_KEY_CODE_BITS | set_rank) << 16) | collector_rank` and
     // `assign_set_ranks` ranks exactly `card_set_code`, so the two orders coincide.
     if matches!(sort_col, SortCol::Released) {
+        let batch = (u16::from(p.release_set_key) >> RELEASE_KEY_CODE_BITS) as u8;
+        key.push(if descending { !batch } else { batch });
         push_str_segment(&mut key, Some(p.card_set_code.as_str()), descending);
     }
     if matches!(sort_col, SortCol::Set | SortCol::Released) {
@@ -19563,7 +19694,17 @@ const ARCHIVE_MAGIC: [u8; 8] = *b"ATCARDS\0";
 //                against upstream's six remaps — a missed one compiles and answers wrong. The sorted
 //                index already gives `bind` the same O(log n) lookup. Layout unchanged, so the value
 //                stays 2026090301 and STORE_CONTENT_GENERATION stays 48.
-const ARCHIVE_FORMAT_VERSION: u32 = 2026090301;
+//   2026092501 — `order=released` AND `order=set` BREAK THEIR TIES LIKE SCRYFALL'S (LOCAL PATCH).
+//                `Printing::set_rank` narrows u32 -> u16 and `release_set_key` takes the other half
+//                of its four bytes: the measured (batch, code) order of the sets inside one release
+//                date (see `assign_set_ranks`). `collector_rank` keeps its width and changes its
+//                VALUES: the string half of the collector number is collated (`★` before letters,
+//                see `collector_collation_key`), not compared bytewise. `size_of::<APrinting>` does
+//                not move — the row is the same 304 bytes — so the header cannot see either change,
+//                and a reader pairing this code with a 2026090301 store would read the high half of
+//                an old `set_rank` (always zero) as every set's release key. Paired with
+//                STORE_CONTENT_GENERATION 53 and SORT_KEY_VERSION 3.
+const ARCHIVE_FORMAT_VERSION: u32 = 2026092501;
 const ARCHIVE_HEADER_LEN: usize = 16;
 
 fn archive_header() -> [u8; ARCHIVE_HEADER_LEN] {
@@ -20387,6 +20528,7 @@ fn build_card_data_sorted(
             // Placeholders, same shape as name_rank above: assigned after grouping, by
             // assign_set_ranks / assign_artist_ranks below (upstream #913).
             set_rank: 0,
+            release_set_key: 0,
             artist_rank: 0,
             // The art half of the same faces the OracleCard took the text from, so index i is
             // the same face in both. Art and flavor differ per printing where the text does not.

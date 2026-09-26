@@ -6628,6 +6628,29 @@ mod tests {
             r["edhrec_rank"] = json!(650);
             rows.push(r);
         }
+        // The SAME shape on a MEASURED date, where the set order is not the code order: Scryfall
+        // answers 2025-04-11 as `tdm`, then `tdc`, then `ptdm` (release_batches.tsv holds tdc in
+        // batch 1 and ptdm in batch 2), the code order's exact reverse. And `order=set`'s string
+        // half in the shape that separates a collation from bytes: pgrn's `123★`, `123p`, `123s`,
+        // Scryfall's order, where bytes put U+2605 after every letter. Distinct oracles again, so
+        // the cut splits both groups and the batch byte and the collated number are on trial in
+        // the merge as well as in one archive.
+        for (oracle, set, cn, date) in [
+            ("oracle-rb-1", "ptdm", "5p", "2025-04-11"),
+            ("oracle-rb-2", "tdc", "1", "2025-04-11"),
+            ("oracle-rb-3", "tdm", "5", "2025-04-11"),
+            ("oracle-co-1", "pgrn", "123s", "2018-10-05"),
+            ("oracle-co-2", "pgrn", "123p", "2018-10-05"),
+            ("oracle-co-3", "pgrn", "123★", "2018-10-05"),
+        ] {
+            let scry = format!("row-{oracle}-{set}");
+            let mut r = mk("Measured Tie Filler", oracle, &scry, "en", 150.0);
+            r["card_set_code"] = json!(set);
+            set_collector_number(&mut r, cn);
+            r["released_at"] = json!(date);
+            r["edhrec_rank"] = json!(660);
+            rows.push(r);
+        }
         // The near-tie name pairs the cross-partition NAME lanes are proven on, placed (by the
         // shared hash, checked in-test) so each pair SPLITS across partitions at N=3.
         for (name, oracle, edhrec) in [
@@ -6793,6 +6816,69 @@ mod tests {
         let mut reversed = asc.clone();
         reversed.reverse();
         assert_eq!(block("desc"), reversed, "dir=desc reverses the set with the date, and the number with the set");
+    }
+
+    /// On a MEASURED date the sets order by (batch, code), not by code: api.scryfall.com answers
+    /// 2025-04-11 as tdm, tdc, ptdm under `dir=asc` and ptdm, tdc, tdm under its default `dir`
+    /// (measured 2026-09-25), where the code order is ptdm, tdc, tdm ascending — so before the
+    /// batch table this port put `ptdm` last under the default `dir`, and every Tarkir: Dragonstorm
+    /// card with a prerelease stamp showed its promo AFTER the set printing on mtgseeker's Prints
+    /// strip. Rows of distinct cards, so this is the in-archive key; the cut is
+    /// `partitioned_key_streams_merge_to_the_unpartitioned_order`'s.
+    #[test]
+    fn order_released_orders_a_measured_date_by_its_set_batches() {
+        let (_b, store) = build_store(&differential_rows());
+        let block = |direction: &str| -> Vec<String> {
+            let opts = QueryOptions {
+                unique: "prints".to_owned(),
+                orderby: "released".to_owned(),
+                direction: direction.to_owned(),
+                limit: 10_000,
+                fields: Some(vec!["set_code".to_owned(), "collector_number".to_owned()]),
+                ..QueryOptions::default()
+            };
+            store
+                .query_value(&json!({ "node_type": "TrueNode" }), &opts)
+                .expect("query")
+                .rows
+                .iter()
+                .map(|r| format!("{}:{}", r["set_code"].as_str().unwrap_or_default(), r["collector_number"].as_str().unwrap_or_default()))
+                .filter(|s| ["tdm:", "tdc:", "ptdm:"].iter().any(|p| s.starts_with(p)))
+                .collect()
+        };
+        assert_eq!(block("asc"), ["tdm:5", "tdc:1", "ptdm:5p"], "Scryfall's 2025-04-11, not the code order");
+        assert_eq!(block("desc"), ["ptdm:5p", "tdc:1", "tdm:5"], "and its exact reversal");
+    }
+
+    /// `order=set` collates a collector number's text: symbols before digits before letters, so
+    /// pgrn is `123★`, `123p`, `123s` (api.scryfall.com, 2026-09-25) where bytes put the star last.
+    #[test]
+    fn order_set_collates_the_collector_number() {
+        let (_b, store) = build_store(&differential_rows());
+        let numbers = |direction: &str| -> Vec<String> {
+            let opts = QueryOptions {
+                unique: "prints".to_owned(),
+                orderby: "set".to_owned(),
+                direction: direction.to_owned(),
+                limit: 10_000,
+                fields: Some(vec!["set_code".to_owned(), "collector_number".to_owned()]),
+                ..QueryOptions::default()
+            };
+            store
+                .query_value(&json!({ "node_type": "TrueNode" }), &opts)
+                .expect("query")
+                .rows
+                .iter()
+                .filter(|r| r["set_code"] == json!("pgrn"))
+                .map(|r| r["collector_number"].as_str().expect("collector_number").to_owned())
+                .collect()
+        };
+        assert_eq!(numbers("asc"), ["123★", "123p", "123s"]);
+        assert_eq!(numbers("desc"), ["123s", "123p", "123★"]);
+        // The collation's other shapes, Scryfall's order for each (7ed/157, sld/1389, 9ed/7).
+        let mut shapes = vec!["157s", "157★s", "157", "157★", "1389★", "1389", "S7", "7★", "7"];
+        shapes.sort_by_key(|c| crate::collector_collation_key(c));
+        assert_eq!(shapes, ["1389", "1389★", "157", "157★", "157★s", "157s", "7", "7★", "S7"]);
     }
 
     /// `order=name` collates the way Scryfall does: accents folded, every non-alphanumeric removed.

@@ -856,6 +856,15 @@ The four misses are worth naming as the permanent cost, since they will not be f
 `snc`/`psnc`, `sos`/`psos`, `tdm`/`tdc`. Each puts one small set on the wrong side of one boundary
 inside one shared release date.
 
+**2026-09-25 (x17): fixed after all, by measurement rather than derivation.** The proof above
+stands — no function of visible fields reproduces the order — but the order has a SHAPE: a date's
+sets are the code order cut into alphabetical batches. One request per multi-set date (360) reads
+every batch off api.scryfall.com; `assign_set_ranks` orders a date by (batch, code) from the
+committed `release_batches.tsv` (scripts/generate-release-batches.ts), and an unmeasured date keeps
+the code order. It is not one order over the sets (`prm` before `sld` on 2020-07-31, after it on
+2022-11-04) and it drifts (`snc`/`psnc` above has since become `psnc` before `snc`), so the table is
+a snapshot to refresh, not a rule.
+
 ---
 
 # 17. Triage of the 78 NEW findings at generation 37, matrix 665

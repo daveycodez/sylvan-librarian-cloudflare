@@ -37,7 +37,8 @@
 //! THE TWO KEYS ADDED AFTER THIS HARVEST. The shipped order is five keys, not three:
 //!
 //! ```text
-//! pin ASC > NOT has_english > cn HAS AN ALPHABETIC PREFIX > released_at DESC > cn_sort_key ASC
+//! pin ASC > NOT has_english > cn HAS A SET-CODE PREFIX > released_at DESC > cn_sort_key ASC
+//!     (> the date's release order of the set > set > cn, which only make it total — see `seal`)
 //! ```
 //!
 //!   * `has_english` — A SLOT WITH NO ENGLISH PRINTING SORTS AFTER ONE WITH. The harvest above
@@ -73,6 +74,8 @@
 //!     `booster`, `digital`, `promo`, `promo_types` or `frame_effects` — `cn-prefix OR NOT
 //!     booster` scores higher on the fitting corpus and LOWER on the fresh scopes, which is what a
 //!     holdout drawn from the same scope family fails to catch.
+//!     A digit-led List code (`plst/10E-321`) is a prefix too since 2026-09-25 — see
+//!     [`cn_has_set_prefix`], which is where the key lives now.
 //!
 //! WHY LANGUAGE OUTRANKS THE PREFIX, which no measurement decides. Scryfall's default search is
 //! English-only, so every corpus the prefix key was fitted on is English throughout and cannot
@@ -171,6 +174,34 @@ pub fn cn_sort_key(cn: &str) -> (String, u64, String) {
     )
 }
 
+/// Whether a collector number carries a SET-CODE PREFIX — the `cn prefix` key of the module doc.
+///
+/// Leading non-digits (`USG-4`, `mb278`) are what `cn_sort_key` already splits off, and they were
+/// the whole test until 2026-09-25. The List also prints numbers whose set code STARTS with a digit
+/// — `10E-321`, `2XM-235`, `5DN-116`, 95 English printings — and those read as bare numbers, so a
+/// List reprint outranked the older printing it reprints: Doubling Cube's `order=name` prints were
+/// 10e, plst, 5dn, sld here against api.scryfall.com's 10e, 5dn, plst, sld. So a head before the
+/// first `-` that is a set code — a digit-led run of digits and capitals with at least one capital,
+/// followed by a number — is a prefix too. A dated head is not (`pmei/2010-1`, `ppro/2022-3`: no
+/// letter), nor a lettered suffix (`plg24/2J-b`: no number after the dash).
+///
+/// MEASURED against api.scryfall.com's `unique=prints order=name` answers of 2026-09-25 for EVERY
+/// card with such a printing (95), through stores built from one bulk by the old ranking and the
+/// new one (this key plus `seal`'s total tiebreak):
+/// the List printing sits on the right side of 623 of its 767 (List, other printing) pairs where it
+/// sat on the right side of 428, and 33 of the 95 cards' print orders are exact where 13 were. Of
+/// the 791 oracle ids re-measured for the extras gate, 2 become exact and none stops being so.
+pub fn cn_has_set_prefix(cn: &str) -> bool {
+    if !cn_sort_key(cn).0.is_empty() {
+        return true;
+    }
+    cn.split_once('-').is_some_and(|(head, tail)| {
+        head.chars().all(|c| c.is_ascii_digit() || c.is_ascii_uppercase())
+            && head.chars().any(|c| c.is_ascii_uppercase())
+            && tail.starts_with(|c: char| c.is_ascii_digit())
+    })
+}
+
 /// Split a finalized `prefer_score` back into `(rank, everything riding underneath it)`.
 ///
 /// The encoding's central claim, executable: because one rank step outweighs the ordinary score
@@ -225,14 +256,26 @@ impl PrintingRanks {
         self.sealed = true;
         for (oracle_id, slots) in std::mem::take(&mut self.slots) {
             let mut ordered: Vec<_> = slots.into_iter().collect();
+            // The last three keys make the order TOTAL, which it was not: two slots of one card on
+            // one date with one collector number in two sets (`war/223` and `pwar/223`, `ced/285`
+            // and `cei/285`) tied on all five keys above, and an unstable sort over a HashMap's
+            // iteration order ranked them differently from one build to the next. They break by
+            // Scryfall's own order of the sets inside that date (`card_engine::release_batch`,
+            // then the code) — the order `order=released` uses — which is how api.scryfall.com
+            // orders 101 of the 143 such pairs in its 2026-09-25 `order=name` answers for the 791
+            // re-measured oracle ids (the code order: 48; its reverse: 95).
             ordered.sort_unstable_by_key(|((released_at, set, cn), has_english)| {
                 let key: PinKey = (oracle_id.clone(), set.clone(), cn.clone());
+                let date = released_at.replace('-', "").parse::<u32>().unwrap_or(0);
                 (
                     u8::from(!pins.contains_key(&key)),
                     u8::from(!has_english),
-                    u8::from(!cn_sort_key(cn).0.is_empty()),
+                    u8::from(cn_has_set_prefix(cn)),
                     Reverse(released_at.clone()),
                     cn_sort_key(cn),
+                    card_engine::release_batch(date, set),
+                    set.clone(),
+                    cn.clone(),
                 )
             });
             for (rank, ((_, set, cn), _)) in ordered.into_iter().enumerate() {
@@ -333,6 +376,45 @@ mod tests {
         assert_eq!(
             ranked(&[("2010-12-01", "pmei", "2010-1", true), ("1998-10-12", "usg", "4", true)]),
             vec!["pmei/2010-1", "usg/4"],
+        );
+    }
+
+    #[test]
+    fn a_digit_led_list_prefix_is_a_prefix_and_a_date_is_not() {
+        // Doubling Cube, measured against api.scryfall.com 2026-09-25: `order=name` answers 10e,
+        // 5dn, plst — the List reprint (2021) behind the Fifth Dawn printing it outdates (2004).
+        assert_eq!(
+            ranked(&[
+                ("2007-07-13", "10e", "321", true),
+                ("2004-06-04", "5dn", "116", true),
+                ("2021-07-23", "plst", "10E-321", true),
+            ]),
+            vec!["10e/321", "5dn/116", "plst/10E-321"],
+        );
+        for cn in ["10E-321", "2XM-235", "5DN-116", "USG-4", "mb278"] {
+            assert!(cn_has_set_prefix(cn), "{cn}");
+        }
+        for cn in ["321", "2010-1", "2022-3", "2J-b", "123s", "100★"] {
+            assert!(!cn_has_set_prefix(cn), "{cn}");
+        }
+    }
+
+    #[test]
+    fn a_same_date_same_number_tie_breaks_by_the_release_order_of_the_sets() {
+        // War of the Spark's own printing and its promo-set twin share 2019-05-03 and number 223,
+        // and api.scryfall.com's `order=name` puts war/223 first (2026-09-25): pwar sits in a later
+        // batch of that date. Before the tiebreak the pair tied on every key and ranked by HashMap
+        // order, so repeating the build could swap them; it must not, in either input order.
+        for slots in [
+            [("2019-05-03", "war", "223", true), ("2019-05-03", "pwar", "223", true)],
+            [("2019-05-03", "pwar", "223", true), ("2019-05-03", "war", "223", true)],
+        ] {
+            assert_eq!(ranked(&slots), vec!["war/223", "pwar/223"]);
+        }
+        // Commander (2011) and its oversized twin: cmd, then ocmd (batch 1).
+        assert_eq!(
+            ranked(&[("2011-06-17", "ocmd", "191", true), ("2011-06-17", "cmd", "191", true)]),
+            vec!["cmd/191", "ocmd/191"],
         );
     }
 

@@ -1614,8 +1614,35 @@ export async function gzipBytes(bytes: Uint8Array): Promise<Uint8Array> {
  *      and answers exactly as before, but its filter has no name keys (features 0), so every name
  *      keeps fanning out until a publish writes one. Same call as 51: this bump is what makes the
  *      next deploy publish it rather than the nightly.
+ *
+ *   53 (2026-09-25): PRINT ORDER TIES BREAK LIKE SCRYFALL'S (backlog x17). Three stored things
+ *      move, all of them tie-breaks:
+ *
+ *      (1) Inside one release date, `order=released` orders the SETS by a measured (batch, code)
+ *      key instead of the code alone. Scryfall's in-date set order is not derivable from anything
+ *      it publishes, but it is the code order cut into alphabetical batches, and the batches are
+ *      measured per date into card_engine's `release_batches.tsv` (scripts/generate-release-batches.ts,
+ *      one request per date). mtgseeker's Prints strip (`oracleid:<id>&unique=prints
+ *      &order=released`) goes from 683 to 720 of 720 re-measured ids matching api.scryfall.com's
+ *      ORDER, and from 51 to 71 of 71 reversible ones, in both directions.
+ *      (2) The collector-number half of `order=set` and `order=released` collates the way
+ *      Scryfall's does — symbols before digits before letters, so `123★` precedes `123p` — where
+ *      it compared bytes.
+ *      (3) `prefer_score`'s per-card rank (engine/builder/src/ranks.rs) reads a digit-led List
+ *      number (`plst/10E-321`) as the set-code prefix it is, and breaks a same-date,
+ *      same-number tie between two sets by that date's release order instead of by HashMap
+ *      order — which made two builds of one bulk disagree on 8 of 720 cards' `order=name`
+ *      print order. Doubling Cube's name order is 10e, 5dn, plst, sld, as on Scryfall.
+ *
+ *      A FORMAT BUMP AS WELL (ARCHIVE_FORMAT_VERSION 2026092501): `Printing::set_rank` becomes two
+ *      u16s in the same four bytes, so the row size does not move and only the constant can tell a
+ *      reader the halves mean something new. Same pairing as 45 and 48, for the same reason —
+ *      store-age.ts rebuilds on THIS constant, so a format bump alone would leave the old store in
+ *      place and every reader refusing it. The running Worker refuses the new store between the
+ *      two steps of scripts/deploy.sh, as it did for 45 and 48. SORT_KEY_VERSION moves 2 -> 3 with
+ *      it, because the cross-partition key gains the batch byte and the collated number.
  */
-export const STORE_CONTENT_GENERATION = 52;
+export const STORE_CONTENT_GENERATION = 53;
 
 /**
  * Chunk key for a store. Keyed by store_key, so publishes never collide.

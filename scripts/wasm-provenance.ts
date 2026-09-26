@@ -76,6 +76,10 @@ const SOURCE_FILES = [
 	"Cargo.toml",
 	".cargo/config.toml",
 	"Cargo.lock",
+	// Not a `.rs`, and compiled into both blobs all the same: card_engine `include_str!`s the
+	// measured release-date set order (`assign_set_ranks`). Regenerating it without rebuilding would
+	// otherwise leave the blobs building every store with the old table and this guard green.
+	"vendor/sylvan_librarian/card_engine/src/release_batches.tsv",
 ];
 
 /** The committed blobs this record describes. */

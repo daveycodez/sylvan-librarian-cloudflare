@@ -27,6 +27,7 @@
     "typecheck": "tsc --noEmit",
     "sync-upstream": "scripts/sync-upstream.sh",
     "set-dates": "bun scripts/generate-set-dates.ts",
+    "release-batches": "bun scripts/generate-release-batches.ts",
     "seed:local": "scripts/seed-local.sh",
     "cf-typegen": "wrangler types"
   },

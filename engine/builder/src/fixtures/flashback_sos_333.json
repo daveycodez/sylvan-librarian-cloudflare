@@ -1,0 +1,133 @@
+{
+ "artist": "Flavio Greco Paglia",
+ "artist_ids": [
+  "9c5d82ee-a27b-47e4-8226-cd8647cc0b05"
+ ],
+ "booster": false,
+ "border_color": "black",
+ "card_back_id": "0aeebaf5-8c7d-4636-9e82-8c27447861f7",
+ "cardmarket_id": 882106,
+ "cmc": 1.0,
+ "collector_number": "333",
+ "color_identity": [
+  "R"
+ ],
+ "colors": [
+  "R"
+ ],
+ "digital": false,
+ "edhrec_rank": 1977,
+ "finishes": [
+  "nonfoil",
+  "foil"
+ ],
+ "flavor_text": "Quintorius found that every new discovery motivated him to keep exploring.",
+ "foil": true,
+ "frame": "2015",
+ "frame_effects": [
+  "extendedart"
+ ],
+ "full_art": false,
+ "game_changer": false,
+ "games": [
+  "paper",
+  "mtgo"
+ ],
+ "highres_image": true,
+ "id": "6b7eb857-6617-4672-85e4-f1f5e661db50",
+ "illustration_id": "afd1d45d-f9ae-4708-962d-702a4ba350b7",
+ "image_status": "highres_scan",
+ "image_updated_at": "2026-07-13T00:46:33Z",
+ "image_uris": {
+  "art": "https://cards.scryfall.io/art/front/6/b/6b7eb857-6617-4672-85e4-f1f5e661db50.webp?1783903593",
+  "art_crop": "https://cards.scryfall.io/art_crop/front/6/b/6b7eb857-6617-4672-85e4-f1f5e661db50.jpg?1783903593",
+  "border_crop": "https://cards.scryfall.io/border_crop/front/6/b/6b7eb857-6617-4672-85e4-f1f5e661db50.jpg?1783903593",
+  "crop": "https://cards.scryfall.io/crop/front/6/b/6b7eb857-6617-4672-85e4-f1f5e661db50.webp?1783903593",
+  "display": "https://cards.scryfall.io/display/front/6/b/6b7eb857-6617-4672-85e4-f1f5e661db50.webp?1783903593",
+  "grid": "https://cards.scryfall.io/grid/front/6/b/6b7eb857-6617-4672-85e4-f1f5e661db50.webp?1783903593",
+  "large": "https://cards.scryfall.io/large/front/6/b/6b7eb857-6617-4672-85e4-f1f5e661db50.jpg?1783903593",
+  "normal": "https://cards.scryfall.io/normal/front/6/b/6b7eb857-6617-4672-85e4-f1f5e661db50.jpg?1783903593",
+  "png": "https://cards.scryfall.io/png/front/6/b/6b7eb857-6617-4672-85e4-f1f5e661db50.png?1783903593",
+  "small": "https://cards.scryfall.io/small/front/6/b/6b7eb857-6617-4672-85e4-f1f5e661db50.jpg?1783903593",
+  "thumb": "https://cards.scryfall.io/thumb/front/6/b/6b7eb857-6617-4672-85e4-f1f5e661db50.webp?1783903593"
+ },
+ "keywords": [],
+ "lang": "en",
+ "layout": "normal",
+ "legalities": {
+  "alchemy": "legal",
+  "brawl": "legal",
+  "commander": "legal",
+  "competitivebrawl": "legal",
+  "duel": "legal",
+  "future": "legal",
+  "gladiator": "legal",
+  "historic": "legal",
+  "legacy": "legal",
+  "modern": "legal",
+  "oathbreaker": "legal",
+  "oldschool": "not_legal",
+  "pauper": "not_legal",
+  "paupercommander": "not_legal",
+  "penny": "not_legal",
+  "pioneer": "legal",
+  "predh": "not_legal",
+  "premodern": "not_legal",
+  "standard": "legal",
+  "standardbrawl": "legal",
+  "timeless": "legal",
+  "tlr": "legal",
+  "vintage": "legal"
+ },
+ "mana_cost": "{R}",
+ "mtgo_id": 150169,
+ "multiverse_ids": [],
+ "name": "Flashback",
+ "nonfoil": true,
+ "object": "card",
+ "oracle_id": "02070488-9203-4304-9392-a111d20218c5",
+ "oracle_text": "Target instant or sorcery card in your graveyard gains flashback until end of turn. The flashback cost is equal to its mana cost. (You may cast that card from your graveyard for its flashback cost. Then exile it.)",
+ "oversized": false,
+ "prices": {
+  "eur": "6.57",
+  "eur_foil": "8.95",
+  "tix": "2.71",
+  "usd": "6.52",
+  "usd_etched": null,
+  "usd_foil": "9.36"
+ },
+ "prints_search_uri": "https://api.scryfall.com/cards/search?order=released&q=oracleid%3A02070488-9203-4304-9392-a111d20218c5&unique=prints",
+ "promo": false,
+ "purchase_uris": {
+  "cardhoarder": "https://www.cardhoarder.com/cards/150169?affiliate_id=scryfall&ref=card-profile&utm_campaign=affiliate&utm_medium=card&utm_source=scryfall",
+  "cardmarket": "https://www.cardmarket.com/en/Magic/Products?idProduct=882106&referrer=scryfall&utm_campaign=card_prices&utm_medium=text&utm_source=scryfall",
+  "tcgplayer": "https://partner.tcgplayer.com/c/4931599/1830156/21018?subId1=api&u=https%3A%2F%2Fwww.tcgplayer.com%2Fproduct%2F688522%3Fpage%3D1"
+ },
+ "rarity": "rare",
+ "related_uris": {
+  "edhrec": "https://edhrec.com/route/?cc=Flashback",
+  "tcgplayer_infinite_articles": "https://partner.tcgplayer.com/c/4931599/1830156/21018?subId1=api&trafcat=tcgplayer.com%2Fsearch%2Farticles&u=https%3A%2F%2Fwww.tcgplayer.com%2Fsearch%2Farticles%3FproductLineName%3Dmagic%26q%3DFlashback",
+  "tcgplayer_infinite_decks": "https://partner.tcgplayer.com/c/4931599/1830156/21018?subId1=api&trafcat=tcgplayer.com%2Fsearch%2Fdecks&u=https%3A%2F%2Fwww.tcgplayer.com%2Fsearch%2Fdecks%3FproductLineName%3Dmagic%26q%3DFlashback"
+ },
+ "released_at": "2026-04-24",
+ "reprint": false,
+ "reserved": false,
+ "resource_id": "9E1E4C03BB2F5252E8BAEB1E3B72816CE09C4782A8237DB905328F42B30652C3",
+ "rulings_uri": "https://api.scryfall.com/cards/6b7eb857-6617-4672-85e4-f1f5e661db50/rulings",
+ "scryfall_set_uri": "https://scryfall.com/sets/sos?utm_source=api",
+ "scryfall_uri": "https://scryfall.com/card/sos/333/flashback?utm_source=api",
+ "security_stamp": "oval",
+ "set": "sos",
+ "set_id": "e487c9ce-5e76-4756-bcd0-e4b7db5c38a3",
+ "set_name": "Secrets of Strixhaven",
+ "set_search_uri": "https://api.scryfall.com/cards/search?order=set&q=e%3Asos&unique=prints",
+ "set_type": "expansion",
+ "set_uri": "https://api.scryfall.com/sets/e487c9ce-5e76-4756-bcd0-e4b7db5c38a3",
+ "story_spotlight": false,
+ "tcgplayer_id": 688522,
+ "textless": false,
+ "type_line": "Instant",
+ "uri": "https://api.scryfall.com/cards/6b7eb857-6617-4672-85e4-f1f5e661db50",
+ "variation": false,
+ "watermark": "lorehold"
+}
