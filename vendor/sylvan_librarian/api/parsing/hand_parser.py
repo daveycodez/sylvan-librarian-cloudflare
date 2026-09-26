@@ -138,6 +138,20 @@ class Token:
     value: str | int | float
     pos: int
     space_before: bool
+    # A NUMBER's spelling in the query, which `value` does not keep: `0796` lexes as the int 796 and
+    # `1.50` as the float 1.5. Only NUMBER tokens set it; see `text`.
+    raw: str | None = None
+
+    @property
+    def text(self) -> str:
+        """The token read as TEXT: a NUMBER as the query spelled it, anything else as its value.
+
+        A text value is glued back together from the lexer's pieces, and a hyphen splits a UUID into
+        WORD and NUMBER tokens -- `9afd8f12-0796-4500-aaa3-10b4a46ef6ec` lexes WORD MINUS NUMBER MINUS
+        NUMBER MINUS WORD MINUS WORD. Gluing `str(tok.value)` dropped `0796`'s leading zero and searched
+        for `9afd8f12-796-...`, an id that does not exist. Numeric contexts keep reading `value`.
+        """
+        return self.raw if self.raw is not None else str(self.value)
 
 
 _ARITH_OPS: frozenset[TT] = frozenset({TT.PLUS, TT.MINUS, TT.STAR, TT.SLASH})
@@ -406,9 +420,9 @@ def tokenize(src: str) -> list[Token]:  # noqa: C901, PLR0912, PLR0915
                 j = _scan_word_end(src, n, j)
                 tokens.append(Token(TT.WORD, src[pos:j], start, sb))
             elif "." in src[pos:j]:
-                tokens.append(Token(TT.NUMBER, float(src[pos:j]), start, sb))
+                tokens.append(Token(TT.NUMBER, float(src[pos:j]), start, sb, raw=src[pos:j]))
             else:
-                tokens.append(Token(TT.NUMBER, int(src[pos:j]), start, sb))
+                tokens.append(Token(TT.NUMBER, int(src[pos:j]), start, sb, raw=src[pos:j]))
             pos = j
             continue
 
@@ -822,11 +836,11 @@ class Parser:
                 # Only reachable ACROSS a star (``*ft``): the lexer scans adjacent word characters
                 # into one token, so two of them never touch on their own.
                 self.consume()
-                word += str(nxt.value)
+                word += nxt.text
                 continue
             if nxt.type == TT.MINUS and self.peek(1).type in (TT.WORD, TT.NUMBER) and not self.peek(1).space_before:
                 self.consume()  # MINUS
-                word += "-" + str(self.consume().value)
+                word += "-" + self.consume().text
                 continue
             break
         return _bare_name_node(word)
@@ -864,7 +878,7 @@ class Parser:
             return RegexValueNode(str(tok.value))
         if tok.type in (TT.WORD, TT.NUMBER, TT.STAR):
             self.consume()
-            word = "*" if tok.type == TT.STAR else str(tok.value)
+            word = "*" if tok.type == TT.STAR else tok.text
             # Greedily consume hyphenated and STARRED continuation (no space on either side).
             #
             # ``*`` IS AN ORDINARY CHARACTER IN A VALUE, not a wildcard and not an error. Scryfall
@@ -887,11 +901,11 @@ class Parser:
                     continue
                 if nxt.type in (TT.WORD, TT.NUMBER):
                     self.consume()
-                    word += str(nxt.value)
+                    word += nxt.text
                     continue
                 if nxt.type == TT.MINUS and self.peek(1).type in (TT.WORD, TT.NUMBER) and not self.peek(1).space_before:
                     self.consume()
-                    word += "-" + str(self.consume().value)
+                    word += "-" + self.consume().text
                     continue
                 break
             return StringValueNode(word)

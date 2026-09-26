@@ -156,7 +156,8 @@ const ARITH_OPS: ReadonlySet<TT> = new Set([TT.PLUS, TT.MINUS, TT.STAR, TT.SLASH
  * MINUS WORD. Gluing the NUMBERs by value dropped `0796`'s leading zero, so `oracleid:` asked for
  * `9afd8f12-796-…`, which is no id: a 404 where api.scryfall.com answers Doubling Cube's four
  * printings, and one oracle id in every ~54 of the 2026-08-16 corpus (720 of 38,626) broken the
- * same way. Upstream's hand_parser.py glues `str(tok.value)` and carries the same bug.
+ * same way. Upstream's hand_parser.py had the same glue; upstream PR #1103 fixes it with
+ * `Token.raw` / `Token.text`, and vendor/ carries that ahead of the pin.
  */
 function textOf(tok: Token): string {
 	return tok.raw ?? pyStr(tok.value);
