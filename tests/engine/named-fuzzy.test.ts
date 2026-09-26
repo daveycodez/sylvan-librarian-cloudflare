@@ -20,7 +20,13 @@ import {
 	ROUTING_FEATURE_NAME_KEYS,
 	RoutingFilter,
 } from "../../src/engine/routing-filter";
-import type { Engine, FuzzyCandidateWire, ScryfallFuzzyResult, StoreManifest } from "../../src/engine/types";
+import {
+	type Engine,
+	FUZZY_WEAK_BELOW,
+	type FuzzyCandidateWire,
+	type ScryfallFuzzyResult,
+	type StoreManifest,
+} from "../../src/engine/types";
 import { foldAccents } from "../../src/parser/pystr";
 import { makeCtx, testDispatch } from "../routes/harness";
 import recorded from "./named-fuzzy-recorded.json";
@@ -252,6 +258,101 @@ describe("the merge's corner cases", () => {
 			"shok",
 		);
 		expect(got.json.type).toBe("ambiguous");
+	});
+
+	// THE WEAK LINE (backlog n14), measured on api.scryfall.com 2026-09-25 either side of it: a typo
+	// winner at 0.714 answers over the one card containing every word, one at 0.703 loses to it. The
+	// winner and the containing card sit in different partitions, as they do in the real store.
+	test("typo: a winner at or above the weak line beats the one containing card (inquisitor serr, 0.714)", async () => {
+		const got = await both(
+			at(N, {
+				0: {
+					candidates: [cand(0.7143, "o-ox", "inquisitor's ox")],
+					fuzzy: { status: "hit", card: named("Inquisitor's Ox") },
+				},
+				2: { contained: [named("Serra Inquisitors")] },
+			}),
+			"inquisitor serr",
+		);
+		expect(got.json.name).toBe("Inquisitor's Ox");
+		expect(got.calls.length).toBe(N);
+	});
+
+	test("typo: a WEAK winner loses to the one containing card (hyd disintegrat, 0.703)", async () => {
+		const got = await both(
+			at(N, {
+				1: {
+					candidates: [cand(0.7033, "o-dis", "disintegrate")],
+					fuzzy: { status: "weak", card: named("Disintegrate") },
+					contained: [],
+				},
+				3: { contained: [named("HYDRA Disintegrator")] },
+			}),
+			"hyd disintegrat",
+		);
+		expect(got.json.name).toBe("HYDRA Disintegrator");
+		// Still one round of N; the staged path asks containment after the race.
+		expect(got.calls.length).toBe(N);
+		expect(got.oldCalls.length).toBe(3 * N + 1);
+	});
+
+	test("typo: a weak winner still answers over several containing names, and over none", async () => {
+		// api.scryfall.com 2026-09-25: `fuzzy=bolt lightning` is Blightning (0.676), though Lightning
+		// Bolt and "Emeritus of Conflict // Lightning Bolt" both carry the words.
+		const blightning = {
+			candidates: [cand(0.6763, "o-bl", "blightning")],
+			fuzzy: { status: "weak" as const, card: named("Blightning") },
+		};
+		const several = await both(
+			at(N, {
+				0: blightning,
+				1: { contained: [named("Lightning Bolt")] },
+				2: { contained: [named("Emeritus of Conflict // Lightning Bolt")] },
+			}),
+			"bolt lightning",
+		);
+		expect(several.json.name).toBe("Blightning");
+		const none = await both(at(N, { 0: blightning }), "bolt lightning");
+		expect(none.json.name).toBe("Blightning");
+	});
+
+	test("the merge reads the line on the winner, wherever the containing card is", () => {
+		const reply = (p: Partial<Stages>) => {
+			const s = { ...MISS, ...p };
+			return {
+				exact: { rank: s.rank, present: s.present, card: s.exact },
+				fuzzy: s.fuzzy,
+				candidates: s.candidates,
+				contained: p.contained ?? null,
+			};
+		};
+		const winner = (status: "hit" | "weak", score: number) =>
+			reply({ candidates: [cand(score, "o-w", "winner")], fuzzy: { status, card: named("Winner") } });
+		const containing = reply({ contained: [named("Containing")] });
+		const merged = (first: ReturnType<typeof reply>) => mergeNamedFuzzyBundles([first, containing], ["w"], 2);
+		expect(merged(winner("hit", 0.7143))).toEqual({ status: "card", card: named("Winner") });
+		// A weak winner's partition computed containment beside its race: here, none of its own.
+		expect(merged({ ...winner("weak", 0.7033), contained: [] })).toEqual({ status: "card", card: named("Containing") });
+		// A weak winner whose partition skipped containment cannot be read: the stages answer instead.
+		expect(merged(winner("weak", 0.7033))).toBeNull();
+	});
+
+	test("the bundle skips containment only beside a candidate at or above the weak line", async () => {
+		const asked: string[] = [];
+		const stages = (score: number): NamedFuzzyStages => ({
+			...stagesOf({ ...MISS, candidates: [cand(score, "o", "x"), cand(0.63, "o2", "y")] }),
+			scryfallNamesContaining: async () => {
+				asked.push(String(score));
+				return [named("Containing")];
+			},
+		});
+		const run = (score: number) => bundleFromStages(stages(score), "x", "", ["x"], 2, "https://x");
+		// Exactly at the line (as the engine sees it, in f32) is strong.
+		expect((await run(Math.fround(FUZZY_WEAK_BELOW))).contained).toBeNull();
+		expect((await run(0.7143)).contained).toBeNull();
+		expect(asked).toEqual([]);
+		expect((await run(0.7033)).contained).toEqual([named("Containing")]);
+		expect(asked).toEqual(["0.7033"]);
 	});
 
 	test("containment: two distinct names are ambiguous; one is the card", async () => {

@@ -622,6 +622,61 @@
 			"path": "/cards/named?fuzzy=countersp"
 		},
 		{
+			"name": "named-fuzzy-weak-hyd-disintegrat",
+			"method": "GET",
+			"path": "/cards/named?fuzzy=hyd+disintegrat"
+		},
+		{
+			"name": "named-fuzzy-weak-lightnin-weave",
+			"method": "GET",
+			"path": "/cards/named?fuzzy=lightnin+weave"
+		},
+		{
+			"name": "named-fuzzy-weak-moderator",
+			"method": "GET",
+			"path": "/cards/named?fuzzy=moderator"
+		},
+		{
+			"name": "named-fuzzy-weak-oppressor",
+			"method": "GET",
+			"path": "/cards/named?fuzzy=oppressor"
+		},
+		{
+			"name": "named-fuzzy-weak-prophesi",
+			"method": "GET",
+			"path": "/cards/named?fuzzy=prophesi"
+		},
+		{
+			"name": "named-fuzzy-weak-setes-train",
+			"method": "GET",
+			"path": "/cards/named?fuzzy=setes+train"
+		},
+		{
+			"name": "named-fuzzy-weak-shadowfa",
+			"method": "GET",
+			"path": "/cards/named?fuzzy=shadowfa"
+		},
+		{
+			"name": "named-fuzzy-weak-soil-shake",
+			"method": "GET",
+			"path": "/cards/named?fuzzy=soil+shake"
+		},
+		{
+			"name": "named-fuzzy-weak-sunbringer",
+			"method": "GET",
+			"path": "/cards/named?fuzzy=sunbringer"
+		},
+		{
+			"name": "named-fuzzy-weak-talaria",
+			"method": "GET",
+			"path": "/cards/named?fuzzy=talaria"
+		},
+		{
+			"name": "named-fuzzy-weak-tuk-returned",
+			"method": "GET",
+			"path": "/cards/named?fuzzy=tuk+returned"
+		},
+		{
 			"name": "cards-prm-80925-flavor-name",
 			"method": "GET",
 			"path": "/cards/prm/80925"
@@ -821,7 +876,7 @@
 			"method": "GET",
 			"path": "/cards/named?fuzzy=ugin+spirit",
 			"known_deviation": {
-				"reason": "THE STAGE ORDER, where the typo stage's lead is weak. The mirror runs typo before containment (the primeval-titanoth rule), and here the typo race has a clear winner: `uginspirit` scores 0.775 against Inspirit. api.scryfall.com answers Ugin, the Spirit Dragon, the one card whose names carry both words. Measured 2026-09-25 over 33 needles where exactly one card contains every word and the typo race picks a different card: Scryfall answered the TYPO winner for all 20 scoring 0.714 or more on this port's metric (soulcatchers 0.908, reminiscen, suspende, channeli, invigorato, fungusa, shriekmas, snorti, stranglero, righteousnes surg, archaeomancer spa, plagu engineere, weaknes she, trailblazer boo, fir concentrate, rebirt hym, necro plag, griselbran mas, inquisitor serr 0.714, countersp) and the CONTAINED card for all 11 scoring 0.703 or less (hyd disintegrat 0.703, tuk returned, lightnin weave, soil shake, moderator, oppressor, talaria, sunbringer, setes train, shadowfa, prophesi 0.625). The two exceptions sit above the line: this needle (0.775) and `mindstat` (0.795 for Mindstab; Scryfall answers Mindstatic). So the evidence reads as a threshold near 0.71, below which a unique containment answer beats the typo winner. It is not reproduced here yet: it is a fitted rule over an approximate metric, and it moves the bundle's skip rule (containment is then needed wherever no local candidate clears the threshold). Replayed offline over the 147 probed needles it fixes those 11 and changes nothing else. THIS needle stays wrong even under it.",
+				"reason": "THE STAGE ORDER, where the typo stage's lead is weak. The mirror runs typo before containment (the primeval-titanoth rule), and here the typo race has a clear winner: `uginspirit` scores 0.775 against Inspirit. api.scryfall.com answers Ugin, the Spirit Dragon, the one card whose names carry both words. Measured 2026-09-25 over 33 needles where exactly one card contains every word and the typo race picks a different card: Scryfall answered the TYPO winner for all 20 scoring 0.714 or more on this port's metric (soulcatchers 0.908, reminiscen, suspende, channeli, invigorato, fungusa, shriekmas, snorti, stranglero, righteousnes surg, archaeomancer spa, plagu engineere, weaknes she, trailblazer boo, fir concentrate, rebirt hym, necro plag, griselbran mas, inquisitor serr 0.714, countersp) and the CONTAINED card for all 11 scoring 0.703 or less (hyd disintegrat 0.703, tuk returned, lightnin weave, soil shake, moderator, oppressor, talaria, sunbringer, setes train, shadowfa, prophesi 0.625). The two exceptions sit above the line: this needle (0.775) and `mindstat` (0.795 for Mindstab; Scryfall answers Mindstatic). So the evidence reads as a threshold near 0.71, below which a unique containment answer beats the typo winner. That rule is reproduced now (backlog n14, FUZZY_WEAK_BELOW in src/engine/types.ts; the bundle computes containment wherever no local candidate clears the line): over the 206 cached answers, run through the ten-partition path, it fixes those 11 (each pinned as a named-fuzzy-weak-* case) and changes nothing else. THIS needle stays wrong: at 0.775 it sits above the line, and so does `mindstat`.",
 				"scryfall": {
 					"status": 200,
 					"expect": {

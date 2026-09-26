@@ -257,17 +257,23 @@ export function finish_store_load_lz4(): void;
 export function fuzzy_candidates(name: string, set_code: string, floor: number, k: number): Uint8Array;
 
 /**
- * Scryfall's `?fuzzy=` name lookup. Returns `{"status": "hit"|"ambiguous"|"miss", "card": ...}`.
+ * Scryfall's `?fuzzy=` name lookup. Returns
+ * `{"status": "hit"|"weak"|"ambiguous"|"miss", "card": ...}`.
  *
  * `ambiguous` stays distinct from `miss` because Scryfall reports it, and answering 404 would
  * tell the client the card does not exist.
+ *
+ * `weak` is a hit scoring under `weak_below` (the port's FUZZY_WEAK_BELOW, src/engine/types.ts),
+ * with its card: api.scryfall.com answers a weak typo winner only when no SINGLE card carries
+ * every query word, so the router asks the containment stage before answering it (card_engine's
+ * `FuzzyOutcome::status`; backlog n14). 0.0 reports every hit as `hit`.
  *
  * `set_code` ("" for none) scopes the candidate POOL: only cards with a printing in the set race,
  * and a hit is the card's best printing there — `fuzzy=lightning bolt&set=war` is Scryfall's 404
  * and `fuzzy=lightning blow&set=m11` its M11 Lightning Bolt (see card_engine's
  * `preferred_served_vpid_in`).
  */
-export function fuzzy_card_by_name(name: string, set_code: string, floor: number, lead: number, fields_json: string): string;
+export function fuzzy_card_by_name(name: string, set_code: string, floor: number, lead: number, weak_below: number, fields_json: string): string;
 
 /**
  * One-shot load for callers that already hold the whole archive (tests,
@@ -302,7 +308,7 @@ export function load_names(gz: Uint8Array): number;
  * ```text
  * header_len: u32 LE, header: header_len bytes of JSON —
  *   {"exact": <exact_name_probe(folded, set_code, fields)>,
- *    "fuzzy": <fuzzy_card_by_name(folded, set_code, floor, lead, fields)> or null,
+ *    "fuzzy": <fuzzy_card_by_name(folded, set_code, floor, lead, weak_below, fields)> or null,
  *    "contained": <cards_containing_all_words(words, set_code, limit, fields)> or null}
  * then the fuzzy_candidates(folded, set_code, floor, k) packet unchanged, or nothing
  * ```
@@ -314,9 +320,17 @@ export function load_names(gz: Uint8Array): number;
  *   partition then has an exact rank, so the router's exact stage is certain to answer, and the
  *   typo and containment stages never run anywhere. `fuzzy` and `contained` are null and there
  *   are no candidate bytes.
- * - Otherwise the candidates are always computed (the router races every partition's). If there
- *   is at least one, containment is skipped: the global race then has a leader, so it is a hit or
- *   ambiguous and never falls through to containment. `contained` is null.
+ * - Otherwise the candidates are always computed (the router races every partition's). If the
+ *   best of them scores at or above `weak_below`, containment is skipped: the global winner
+ *   scores at least that much, so the global race is a STRONG hit or ambiguous, and neither ever
+ *   asks containment. `contained` is null. (Candidates are score-descending, so the best is the
+ *   first.)
+ * - If every local candidate is WEAK (backlog n14), containment runs too, beside the typo stage:
+ *   the global winner may be weak as well, and a weak winner loses to the one card that carries
+ *   every query word — which the router can only tell from EVERY partition's containment, in the
+ *   same single round. Which partitions compute it is decided locally, without a second round: a
+ *   partition holding a strong candidate knows the global winner is strong; one holding only
+ *   weak ones cannot know it is not, so it computes containment.
  * - With NO candidate, the local race is a miss by construction (`fuzzy_name_match` and
  *   `fuzzy_candidates` offer the same scores against the same floor), so `fuzzy` is the miss
  *   `fuzzy_card_by_name` would write, built by the same `json!` — without a second scan — and
@@ -327,12 +341,12 @@ export function load_names(gz: Uint8Array): number;
  * materialize call the three-round router made to the winning partition.
  *
  * `set_code` scopes all three stages alike — the typo stage's candidate pool included, which is
- * what keeps the skip rules sound under a set: a candidate here is a card IN the set, so a global
- * leader is still an answer in the set and containment is still unreachable.
+ * what keeps the skip rules sound under a set: a candidate here is a card IN the set, so a strong
+ * global leader is still an answer in the set and containment is still unreachable.
  *
  * `limit` is containment's; the route asks for 2 and reads two DISTINCT names as ambiguous.
  */
-export function named_fuzzy_bundle(folded: string, set_code: string, floor: number, lead: number, k: number, words_json: string, limit: number, fields_json: string): Uint8Array;
+export function named_fuzzy_bundle(folded: string, set_code: string, floor: number, lead: number, weak_below: number, k: number, words_json: string, limit: number, fields_json: string): Uint8Array;
 
 /**
  * Scryfall's autocomplete catalog for the WHOLE corpus, from the loaded names — the answer the

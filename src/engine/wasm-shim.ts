@@ -223,7 +223,14 @@ export interface EngineHandle {
 	cards_by_scryfall_ids(idsJson: string, fieldsJson: string): string;
 	printings_of_oracle_id(oracleId: string, fieldsJson: string): string;
 	card_by_external_id(namespace: string, externalId: bigint, fieldsJson: string): string;
-	fuzzy_card_by_name(name: string, setCode: string, floor: number, lead: number, fieldsJson: string): string;
+	fuzzy_card_by_name(
+		name: string,
+		setCode: string,
+		floor: number,
+		lead: number,
+		weakBelow: number,
+		fieldsJson: string,
+	): string;
 	fuzzy_candidates(name: string, setCode: string, floor: number, k: number): Uint8Array;
 	autocomplete(prefix: string, limit: number): string;
 	/** n8: the corpus-wide card names (a gzipped blob), replacing any loaded before. Returns the pair count. */
@@ -246,6 +253,7 @@ export interface EngineHandle {
 		setCode: string,
 		floor: number,
 		lead: number,
+		weakBelow: number,
 		k: number,
 		wordsJson: string,
 		limit: number,

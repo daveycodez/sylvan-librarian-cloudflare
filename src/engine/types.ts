@@ -420,6 +420,39 @@ export interface CollectionScope {
  */
 export const FUZZY_SIMILARITY_LEAD = 0.002;
 
+/**
+ * The score below which a typo winner no longer outranks the containment stage (backlog n14):
+ * a "weak" winner loses to the ONE card whose names carry every query word, and is the answer
+ * only when no single card does. api.scryfall.com runs the typo stage first, but not
+ * unconditionally.
+ *
+ * MEASURED on api.scryfall.com 2026-09-25, on the engine's own metric (card_engine's
+ * `fuzzy_name_match`), over the needles where exactly one card contains every word and the typo
+ * race picks another: the typo winner answered 20 of the 22 scoring 0.714 or more
+ * (`inquisitor serr`, Inquisitor's Ox over Serra Inquisitors, is the lowest) and the containing
+ * card all 11 scoring 0.703 or less (`hyd disintegrat`, HYDRA Disintegrator over Disintegrate,
+ * the highest; `prophesi`, 0.625, the lowest). 0.71 sits between. Over the port's 206 cached
+ * `fuzzy=` answers run through the ten-partition path it takes 182 identical answers to 193 and
+ * changes nothing else; every line from 0.705 to 0.712 scores the same.
+ *
+ * Two needles sit on the wrong side and stay there: `ugin spirit` (Inspirit, 0.775) and
+ * `mindstat` (Mindstab, 0.795) answer the containing card on Scryfall, and no line takes them
+ * without giving up `stranglero` (0.775), `snorti` (0.792), `primeval titanoth` (0.799) and more.
+ *
+ * NOT ADOPTED: upstream PR #928's second line, under which a winner also yields to SEVERAL
+ * containing cards and reads `ambiguous` (`FUZZY_FAINT_BELOW`, 0.67). On the port's answers it is
+ * a wash, 193 either way: it puts `assaultron` (0.667) and `jace sculpt` (0.628) right and
+ * `ancestral` (0.664) and `paralyzing` (0.641) wrong. The scores interleave, so no line separates
+ * the two outcomes, and `sculptor` (0.633) is neither: Scryfall answers Storm Sculptor, one of
+ * its several containing cards.
+ *
+ * Lives here, on the seam, because both sides apply it: the engine reads a hit under it as "weak"
+ * and its bundle skips containment only at or above it (engine/wasm `named_fuzzy_bundle`), and the
+ * partitioned merge answers the containing card over a weak winner. The engine compares in f32,
+ * which is how the value crosses the boundary.
+ */
+export const FUZZY_WEAK_BELOW = 0.71;
+
 /** One cross-partition fuzzy candidate, decoded off the wasm `fuzzy_candidates` packet.
  * `oracleId` is the global card identity the race's "a card never competes with itself" rule
  * keys on; `vpid` is partition-local and unused by the race. */
@@ -435,9 +468,12 @@ export interface FuzzyCandidateWire {
 	foldedName: string;
 }
 
-/** What a `?fuzzy=` lookup resolved to. */
+/**
+ * What a `?fuzzy=` lookup resolved to. "weak" is a hit scoring under FUZZY_WEAK_BELOW, with its
+ * card: the answer only when the containment stage has no single card instead.
+ */
 export interface ScryfallFuzzyResult {
-	status: "hit" | "ambiguous" | "miss";
+	status: "hit" | "weak" | "ambiguous" | "miss";
 	card: Record<string, unknown> | null;
 }
 
@@ -450,6 +486,7 @@ export interface ScryfallFuzzyResult {
  *   fuzzy       this store's own `scryfallFuzzyName` — null when it ranks the needle exactly
  *   candidates  `fuzzyCandidates` — empty when it ranks the needle exactly
  *   contained   `scryfallNamesContaining` — null unless the store has no rank and no candidate
+ *               scoring at or above FUZZY_WEAK_BELOW (a strong one)
  */
 export interface NamedFuzzyBundle {
 	exact: ExactNameProbe;

@@ -649,10 +649,16 @@ export function fuzzy_candidates(name, set_code, floor, k) {
 }
 
 /**
- * Scryfall's `?fuzzy=` name lookup. Returns `{"status": "hit"|"ambiguous"|"miss", "card": ...}`.
+ * Scryfall's `?fuzzy=` name lookup. Returns
+ * `{"status": "hit"|"weak"|"ambiguous"|"miss", "card": ...}`.
  *
  * `ambiguous` stays distinct from `miss` because Scryfall reports it, and answering 404 would
  * tell the client the card does not exist.
+ *
+ * `weak` is a hit scoring under `weak_below` (the port's FUZZY_WEAK_BELOW, src/engine/types.ts),
+ * with its card: api.scryfall.com answers a weak typo winner only when no SINGLE card carries
+ * every query word, so the router asks the containment stage before answering it (card_engine's
+ * `FuzzyOutcome::status`; backlog n14). 0.0 reports every hit as `hit`.
  *
  * `set_code` ("" for none) scopes the candidate POOL: only cards with a printing in the set race,
  * and a hit is the card's best printing there — `fuzzy=lightning bolt&set=war` is Scryfall's 404
@@ -662,10 +668,11 @@ export function fuzzy_candidates(name, set_code, floor, k) {
  * @param {string} set_code
  * @param {number} floor
  * @param {number} lead
+ * @param {number} weak_below
  * @param {string} fields_json
  * @returns {string}
  */
-export function fuzzy_card_by_name(name, set_code, floor, lead, fields_json) {
+export function fuzzy_card_by_name(name, set_code, floor, lead, weak_below, fields_json) {
     let deferred5_0;
     let deferred5_1;
     try {
@@ -675,7 +682,7 @@ export function fuzzy_card_by_name(name, set_code, floor, lead, fields_json) {
         const len1 = WASM_VECTOR_LEN;
         const ptr2 = passStringToWasm0(fields_json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
         const len2 = WASM_VECTOR_LEN;
-        const ret = wasm.fuzzy_card_by_name(ptr0, len0, ptr1, len1, floor, lead, ptr2, len2);
+        const ret = wasm.fuzzy_card_by_name(ptr0, len0, ptr1, len1, floor, lead, weak_below, ptr2, len2);
         var ptr4 = ret[0];
         var len4 = ret[1];
         if (ret[3]) {
@@ -756,7 +763,7 @@ export function load_names(gz) {
  * ```text
  * header_len: u32 LE, header: header_len bytes of JSON —
  *   {"exact": <exact_name_probe(folded, set_code, fields)>,
- *    "fuzzy": <fuzzy_card_by_name(folded, set_code, floor, lead, fields)> or null,
+ *    "fuzzy": <fuzzy_card_by_name(folded, set_code, floor, lead, weak_below, fields)> or null,
  *    "contained": <cards_containing_all_words(words, set_code, limit, fields)> or null}
  * then the fuzzy_candidates(folded, set_code, floor, k) packet unchanged, or nothing
  * ```
@@ -768,9 +775,17 @@ export function load_names(gz) {
  *   partition then has an exact rank, so the router's exact stage is certain to answer, and the
  *   typo and containment stages never run anywhere. `fuzzy` and `contained` are null and there
  *   are no candidate bytes.
- * - Otherwise the candidates are always computed (the router races every partition's). If there
- *   is at least one, containment is skipped: the global race then has a leader, so it is a hit or
- *   ambiguous and never falls through to containment. `contained` is null.
+ * - Otherwise the candidates are always computed (the router races every partition's). If the
+ *   best of them scores at or above `weak_below`, containment is skipped: the global winner
+ *   scores at least that much, so the global race is a STRONG hit or ambiguous, and neither ever
+ *   asks containment. `contained` is null. (Candidates are score-descending, so the best is the
+ *   first.)
+ * - If every local candidate is WEAK (backlog n14), containment runs too, beside the typo stage:
+ *   the global winner may be weak as well, and a weak winner loses to the one card that carries
+ *   every query word — which the router can only tell from EVERY partition's containment, in the
+ *   same single round. Which partitions compute it is decided locally, without a second round: a
+ *   partition holding a strong candidate knows the global winner is strong; one holding only
+ *   weak ones cannot know it is not, so it computes containment.
  * - With NO candidate, the local race is a miss by construction (`fuzzy_name_match` and
  *   `fuzzy_candidates` offer the same scores against the same floor), so `fuzzy` is the miss
  *   `fuzzy_card_by_name` would write, built by the same `json!` — without a second scan — and
@@ -781,21 +796,22 @@ export function load_names(gz) {
  * materialize call the three-round router made to the winning partition.
  *
  * `set_code` scopes all three stages alike — the typo stage's candidate pool included, which is
- * what keeps the skip rules sound under a set: a candidate here is a card IN the set, so a global
- * leader is still an answer in the set and containment is still unreachable.
+ * what keeps the skip rules sound under a set: a candidate here is a card IN the set, so a strong
+ * global leader is still an answer in the set and containment is still unreachable.
  *
  * `limit` is containment's; the route asks for 2 and reads two DISTINCT names as ambiguous.
  * @param {string} folded
  * @param {string} set_code
  * @param {number} floor
  * @param {number} lead
+ * @param {number} weak_below
  * @param {number} k
  * @param {string} words_json
  * @param {number} limit
  * @param {string} fields_json
  * @returns {Uint8Array}
  */
-export function named_fuzzy_bundle(folded, set_code, floor, lead, k, words_json, limit, fields_json) {
+export function named_fuzzy_bundle(folded, set_code, floor, lead, weak_below, k, words_json, limit, fields_json) {
     const ptr0 = passStringToWasm0(folded, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
     const len0 = WASM_VECTOR_LEN;
     const ptr1 = passStringToWasm0(set_code, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
@@ -804,7 +820,7 @@ export function named_fuzzy_bundle(folded, set_code, floor, lead, k, words_json,
     const len2 = WASM_VECTOR_LEN;
     const ptr3 = passStringToWasm0(fields_json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
     const len3 = WASM_VECTOR_LEN;
-    const ret = wasm.named_fuzzy_bundle(ptr0, len0, ptr1, len1, floor, lead, k, ptr2, len2, limit, ptr3, len3);
+    const ret = wasm.named_fuzzy_bundle(ptr0, len0, ptr1, len1, floor, lead, weak_below, k, ptr2, len2, limit, ptr3, len3);
     if (ret[3]) {
         throw takeFromExternrefTable0(ret[2]);
     }

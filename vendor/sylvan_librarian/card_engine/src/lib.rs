@@ -5562,14 +5562,35 @@ pub(crate) enum FuzzyOutcome {
     /// The card that won outright, and the printing that carries the matched name: the card's
     /// preferred printing for an English-name hit, the best printing of the matched printed
     /// name for a foreign hit — which is how "ego à deriva" materializes the Portuguese
-    /// printing object rather than the English card.
-    Hit { cid: u32, vpid: u32 },
+    /// printing object rather than the English card. `score` is the winner's own, which says how
+    /// STRONG the hit is (`FuzzyOutcome::status`; LOCAL PATCH, Cloudflare port).
+    Hit { cid: u32, vpid: u32, score: f32 },
     /// Two distinct names on two distinct CARDS scored too close to choose between; Scryfall
     /// answers `ambiguous`. A card's own English and foreign names never read ambiguous, and
     /// neither do two cards sharing one name (they are one answer, the pre-multilingual rule).
     Ambiguous,
     /// Nothing cleared the floor.
     Miss,
+}
+
+impl FuzzyOutcome {
+    /// The status `fuzzy_card_by_name` reports (LOCAL PATCH, Cloudflare port; the shape of
+    /// jbylund/sylvan_librarian#928's): "hit", "weak" (a winner scoring under `weak_below`),
+    /// "ambiguous" or "miss". A weak winner still carries its card; what makes it weak is that it
+    /// no longer outranks the containment stage. api.scryfall.com runs the typo stage first, but a
+    /// WEAK winner loses to the card that alone carries every query word — `fuzzy=hyd disintegrat`
+    /// is HYDRA Disintegrator there, not Disintegrate (0.703), while `fuzzy=inquisitor serr` is
+    /// Inquisitor's Ox (0.714) over Serra Inquisitors. The line is the caller's, like `floor` and
+    /// `lead` (the port's FUZZY_WEAK_BELOW, 0.71, in src/engine/types.ts, with its measurements);
+    /// 0.0 reads every hit as "hit".
+    pub(crate) fn status(&self, weak_below: f32) -> &'static str {
+        match *self {
+            FuzzyOutcome::Miss => "miss",
+            FuzzyOutcome::Ambiguous => "ambiguous",
+            FuzzyOutcome::Hit { score, .. } if score < weak_below => "weak",
+            FuzzyOutcome::Hit { .. } => "hit",
+        }
+    }
 }
 
 /// The running best and runner-up of the fuzzy scan, under the competition rule above: a
@@ -5610,7 +5631,7 @@ impl<'a> FuzzyRace<'a> {
         match (self.best, self.runner_up) {
             (None, _) => FuzzyOutcome::Miss,
             (Some((score, _, _, _, _)), Some(second)) if score - second < lead => FuzzyOutcome::Ambiguous,
-            (Some((_, _, cid, vpid, _)), _) => FuzzyOutcome::Hit { cid, vpid },
+            (Some((score, _, cid, vpid, _)), _) => FuzzyOutcome::Hit { cid, vpid, score },
         }
     }
 }
@@ -21277,7 +21298,7 @@ impl QueryEngine {
         match fuzzy_name_match(data, name, floor, lead) {
             FuzzyOutcome::Miss => Ok(("miss".to_string(), None)),
             FuzzyOutcome::Ambiguous => Ok(("ambiguous".to_string(), None)),
-            FuzzyOutcome::Hit { cid, vpid } => {
+            FuzzyOutcome::Hit { cid, vpid, .. } => {
                 // The card's preferred printing for an English hit; the matched printed name's
                 // best printing for a foreign one — the vpid encodes which.
                 let dict = card_to_pydict(

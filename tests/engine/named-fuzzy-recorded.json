@@ -1,5 +1,5 @@
 {
-	"note": "Per-partition answers of each /cards/named?fuzzy= stage (exact_name_probe, fuzzy_candidates, fuzzy_card_by_name, cards_containing_all_words with limit 2), recorded off the ten-partition store-build of built_at below with the committed wasm engine; card objects slimmed to name/printed_name/flavor_name/set/collector_number. hint is the n6 name filter's word on the needle. expect is the three-stage answer. Replayed by named-fuzzy.test.ts.",
+	"note": "Per-partition answers of each /cards/named?fuzzy= stage (exact_name_probe, fuzzy_candidates, fuzzy_card_by_name with the FUZZY_WEAK_BELOW line of 0.71, cards_containing_all_words with limit 2), recorded off the ten-partition store-build of built_at below with the committed wasm engine; card objects slimmed to name/printed_name/flavor_name/set/collector_number. hint is the n6 name filter's word on the needle. expect is the three-stage answer. Replayed by named-fuzzy.test.ts.",
 	"built_at": "1790294946",
 	"cases": [
 		{
@@ -79,7 +79,7 @@
 						}
 					],
 					"fuzzy": {
-						"status": "hit",
+						"status": "weak",
 						"card": {
 							"name": "Lightning Wolf",
 							"set": "vow",
@@ -127,7 +127,7 @@
 						}
 					],
 					"fuzzy": {
-						"status": "hit",
+						"status": "weak",
 						"card": {
 							"name": "Lightning Blow",
 							"set": "me3",
@@ -725,7 +725,7 @@
 						}
 					],
 					"fuzzy": {
-						"status": "hit",
+						"status": "weak",
 						"card": {
 							"name": "Lightning Bolt",
 							"set": "msc",
@@ -876,7 +876,7 @@
 						}
 					],
 					"fuzzy": {
-						"status": "hit",
+						"status": "weak",
 						"card": {
 							"name": "Counters",
 							"set": "ftla",
@@ -1910,7 +1910,7 @@
 						}
 					],
 					"fuzzy": {
-						"status": "hit",
+						"status": "weak",
 						"card": {
 							"name": "Lightning Bolt",
 							"set": "m11",
@@ -2391,6 +2391,620 @@
 					"fuzzy": {
 						"status": "miss",
 						"card": null
+					},
+					"contained": []
+				}
+			]
+		},
+		{
+			"label": "a weak typo winner loses to the one containing card",
+			"fuzzy": "hyd disintegrat",
+			"set": "",
+			"hint": null,
+			"expect": "card:HYDRA Disintegrator",
+			"partitions": [
+				{
+					"rank": null,
+					"present": false,
+					"exact": null,
+					"candidates": [
+						{
+							"score": 0.7032967209815979,
+							"served": true,
+							"oracleId": "92d6af2f-728e-4e41-87cb-5c90878a2f2f",
+							"vpid": 6473,
+							"foldedName": "disintegrate"
+						}
+					],
+					"fuzzy": {
+						"status": "weak",
+						"card": {
+							"name": "Disintegrate",
+							"set": "tsb",
+							"collector_number": "58"
+						}
+					},
+					"contained": []
+				},
+				{
+					"rank": null,
+					"present": false,
+					"exact": null,
+					"candidates": [],
+					"fuzzy": {
+						"status": "miss",
+						"card": null
+					},
+					"contained": []
+				},
+				{
+					"rank": null,
+					"present": false,
+					"exact": null,
+					"candidates": [
+						{
+							"score": 0.6666666865348816,
+							"served": true,
+							"oracleId": "cf16702d-9a0e-4e4c-82cb-d9b0b1e23f15",
+							"vpid": 10428,
+							"foldedName": "hydra disintegrator"
+						}
+					],
+					"fuzzy": {
+						"status": "weak",
+						"card": {
+							"name": "HYDRA Disintegrator",
+							"set": "msc",
+							"collector_number": "660"
+						}
+					},
+					"contained": [
+						{
+							"name": "HYDRA Disintegrator",
+							"set": "msc",
+							"collector_number": "660"
+						}
+					]
+				},
+				{
+					"rank": null,
+					"present": false,
+					"exact": null,
+					"candidates": [],
+					"fuzzy": {
+						"status": "miss",
+						"card": null
+					},
+					"contained": []
+				},
+				{
+					"rank": null,
+					"present": false,
+					"exact": null,
+					"candidates": [],
+					"fuzzy": {
+						"status": "miss",
+						"card": null
+					},
+					"contained": []
+				},
+				{
+					"rank": null,
+					"present": false,
+					"exact": null,
+					"candidates": [],
+					"fuzzy": {
+						"status": "miss",
+						"card": null
+					},
+					"contained": []
+				},
+				{
+					"rank": null,
+					"present": false,
+					"exact": null,
+					"candidates": [],
+					"fuzzy": {
+						"status": "miss",
+						"card": null
+					},
+					"contained": []
+				},
+				{
+					"rank": null,
+					"present": false,
+					"exact": null,
+					"candidates": [],
+					"fuzzy": {
+						"status": "miss",
+						"card": null
+					},
+					"contained": []
+				},
+				{
+					"rank": null,
+					"present": false,
+					"exact": null,
+					"candidates": [],
+					"fuzzy": {
+						"status": "miss",
+						"card": null
+					},
+					"contained": []
+				},
+				{
+					"rank": null,
+					"present": false,
+					"exact": null,
+					"candidates": [],
+					"fuzzy": {
+						"status": "miss",
+						"card": null
+					},
+					"contained": []
+				}
+			]
+		},
+		{
+			"label": "a strong typo winner beats the one containing card",
+			"fuzzy": "inquisitor serr",
+			"set": "",
+			"hint": null,
+			"expect": "card:Inquisitor's Ox",
+			"partitions": [
+				{
+					"rank": null,
+					"present": false,
+					"exact": null,
+					"candidates": [],
+					"fuzzy": {
+						"status": "miss",
+						"card": null
+					},
+					"contained": []
+				},
+				{
+					"rank": null,
+					"present": false,
+					"exact": null,
+					"candidates": [],
+					"fuzzy": {
+						"status": "miss",
+						"card": null
+					},
+					"contained": []
+				},
+				{
+					"rank": null,
+					"present": false,
+					"exact": null,
+					"candidates": [],
+					"fuzzy": {
+						"status": "miss",
+						"card": null
+					},
+					"contained": []
+				},
+				{
+					"rank": null,
+					"present": false,
+					"exact": null,
+					"candidates": [],
+					"fuzzy": {
+						"status": "miss",
+						"card": null
+					},
+					"contained": []
+				},
+				{
+					"rank": null,
+					"present": false,
+					"exact": null,
+					"candidates": [
+						{
+							"score": 0.6397058963775635,
+							"served": true,
+							"oracleId": "55e3dfcb-0999-401a-ae59-9804e12f4cfe",
+							"vpid": 3839,
+							"foldedName": "inquisitor's snare"
+						}
+					],
+					"fuzzy": {
+						"status": "weak",
+						"card": {
+							"name": "Inquisitor's Snare",
+							"set": "shm",
+							"collector_number": "8"
+						}
+					},
+					"contained": []
+				},
+				{
+					"rank": null,
+					"present": false,
+					"exact": null,
+					"candidates": [],
+					"fuzzy": {
+						"status": "miss",
+						"card": null
+					},
+					"contained": []
+				},
+				{
+					"rank": null,
+					"present": false,
+					"exact": null,
+					"candidates": [],
+					"fuzzy": {
+						"status": "miss",
+						"card": null
+					},
+					"contained": [
+						{
+							"name": "Serra Inquisitors",
+							"set": "hml",
+							"collector_number": "16"
+						}
+					]
+				},
+				{
+					"rank": null,
+					"present": false,
+					"exact": null,
+					"candidates": [
+						{
+							"score": 0.7142857313156128,
+							"served": true,
+							"oracleId": "224788aa-3876-4844-949e-918e6273151d",
+							"vpid": 1456,
+							"foldedName": "inquisitor's ox"
+						}
+					],
+					"fuzzy": {
+						"status": "hit",
+						"card": {
+							"name": "Inquisitor's Ox",
+							"set": "soi",
+							"collector_number": "24"
+						}
+					},
+					"contained": []
+				},
+				{
+					"rank": null,
+					"present": false,
+					"exact": null,
+					"candidates": [],
+					"fuzzy": {
+						"status": "miss",
+						"card": null
+					},
+					"contained": []
+				},
+				{
+					"rank": null,
+					"present": false,
+					"exact": null,
+					"candidates": [],
+					"fuzzy": {
+						"status": "miss",
+						"card": null
+					},
+					"contained": []
+				}
+			]
+		},
+		{
+			"label": "a weak typo winner loses to a containing token",
+			"fuzzy": "tuk returned",
+			"set": "",
+			"hint": null,
+			"expect": "card:Tuktuk the Returned",
+			"partitions": [
+				{
+					"rank": null,
+					"present": false,
+					"exact": null,
+					"candidates": [],
+					"fuzzy": {
+						"status": "miss",
+						"card": null
+					},
+					"contained": []
+				},
+				{
+					"rank": null,
+					"present": false,
+					"exact": null,
+					"candidates": [],
+					"fuzzy": {
+						"status": "miss",
+						"card": null
+					},
+					"contained": [
+						{
+							"name": "Tuktuk the Returned",
+							"set": "t2xm",
+							"collector_number": "28"
+						}
+					]
+				},
+				{
+					"rank": null,
+					"present": false,
+					"exact": null,
+					"candidates": [],
+					"fuzzy": {
+						"status": "miss",
+						"card": null
+					},
+					"contained": []
+				},
+				{
+					"rank": null,
+					"present": false,
+					"exact": null,
+					"candidates": [],
+					"fuzzy": {
+						"status": "miss",
+						"card": null
+					},
+					"contained": []
+				},
+				{
+					"rank": null,
+					"present": false,
+					"exact": null,
+					"candidates": [],
+					"fuzzy": {
+						"status": "miss",
+						"card": null
+					},
+					"contained": []
+				},
+				{
+					"rank": null,
+					"present": false,
+					"exact": null,
+					"candidates": [],
+					"fuzzy": {
+						"status": "miss",
+						"card": null
+					},
+					"contained": []
+				},
+				{
+					"rank": null,
+					"present": false,
+					"exact": null,
+					"candidates": [
+						{
+							"score": 0.696969747543335,
+							"served": false,
+							"oracleId": "3cc4032e-b8f5-4f52-8b59-2f8d47c51ecb",
+							"vpid": 2793,
+							"foldedName": "returned"
+						}
+					],
+					"fuzzy": {
+						"status": "weak",
+						"card": {
+							"name": "Returned",
+							"set": "fmsc",
+							"collector_number": "37"
+						}
+					},
+					"contained": []
+				},
+				{
+					"rank": null,
+					"present": false,
+					"exact": null,
+					"candidates": [],
+					"fuzzy": {
+						"status": "miss",
+						"card": null
+					},
+					"contained": []
+				},
+				{
+					"rank": null,
+					"present": false,
+					"exact": null,
+					"candidates": [],
+					"fuzzy": {
+						"status": "miss",
+						"card": null
+					},
+					"contained": []
+				},
+				{
+					"rank": null,
+					"present": false,
+					"exact": null,
+					"candidates": [],
+					"fuzzy": {
+						"status": "miss",
+						"card": null
+					},
+					"contained": []
+				}
+			]
+		},
+		{
+			"label": "a weak typo winner over two containing names",
+			"fuzzy": "bolt lightning",
+			"set": "",
+			"hint": null,
+			"expect": "card:Blightning",
+			"partitions": [
+				{
+					"rank": null,
+					"present": false,
+					"exact": null,
+					"candidates": [],
+					"fuzzy": {
+						"status": "miss",
+						"card": null
+					},
+					"contained": [
+						{
+							"name": "Lightning Bolt",
+							"set": "msc",
+							"collector_number": "806"
+						}
+					]
+				},
+				{
+					"rank": null,
+					"present": false,
+					"exact": null,
+					"candidates": [],
+					"fuzzy": {
+						"status": "miss",
+						"card": null
+					},
+					"contained": []
+				},
+				{
+					"rank": null,
+					"present": false,
+					"exact": null,
+					"candidates": [
+						{
+							"score": 0.6595238447189331,
+							"served": true,
+							"oracleId": "ac2086fe-98ee-4280-9c7c-c5c2d6548a8b",
+							"vpid": 7948,
+							"foldedName": "burst lightning"
+						}
+					],
+					"fuzzy": {
+						"status": "weak",
+						"card": {
+							"name": "Burst Lightning",
+							"set": "fdn",
+							"collector_number": "192"
+						}
+					},
+					"contained": []
+				},
+				{
+					"rank": null,
+					"present": false,
+					"exact": null,
+					"candidates": [],
+					"fuzzy": {
+						"status": "miss",
+						"card": null
+					},
+					"contained": []
+				},
+				{
+					"rank": null,
+					"present": false,
+					"exact": null,
+					"candidates": [
+						{
+							"score": 0.6643356680870056,
+							"served": false,
+							"oracleId": "2284420f-1773-409f-b330-964a1267b13d",
+							"vpid": 1578,
+							"foldedName": "lightning"
+						}
+					],
+					"fuzzy": {
+						"status": "weak",
+						"card": {
+							"name": "Lightning",
+							"set": "fjmp",
+							"collector_number": "21"
+						}
+					},
+					"contained": []
+				},
+				{
+					"rank": null,
+					"present": false,
+					"exact": null,
+					"candidates": [],
+					"fuzzy": {
+						"status": "miss",
+						"card": null
+					},
+					"contained": [
+						{
+							"name": "Emeritus of Conflict // Lightning Bolt",
+							"set": "sos",
+							"collector_number": "113"
+						}
+					]
+				},
+				{
+					"rank": null,
+					"present": false,
+					"exact": null,
+					"candidates": [],
+					"fuzzy": {
+						"status": "miss",
+						"card": null
+					},
+					"contained": []
+				},
+				{
+					"rank": null,
+					"present": false,
+					"exact": null,
+					"candidates": [
+						{
+							"score": 0.656410276889801,
+							"served": true,
+							"oracleId": "7485cf25-eb41-4397-be13-7f0b8c10c70a",
+							"vpid": 5171,
+							"foldedName": "ball lightning"
+						}
+					],
+					"fuzzy": {
+						"status": "weak",
+						"card": {
+							"name": "Ball Lightning",
+							"set": "fdn",
+							"collector_number": "618"
+						}
+					},
+					"contained": []
+				},
+				{
+					"rank": null,
+					"present": false,
+					"exact": null,
+					"candidates": [],
+					"fuzzy": {
+						"status": "miss",
+						"card": null
+					},
+					"contained": []
+				},
+				{
+					"rank": null,
+					"present": false,
+					"exact": null,
+					"candidates": [
+						{
+							"score": 0.6762820482254028,
+							"served": true,
+							"oracleId": "a6496440-dc0c-4d9b-bf37-f537b6f0187b",
+							"vpid": 8458,
+							"foldedName": "blightning"
+						}
+					],
+					"fuzzy": {
+						"status": "weak",
+						"card": {
+							"name": "Blightning",
+							"set": "a25",
+							"collector_number": "198"
+						}
 					},
 					"contained": []
 				}

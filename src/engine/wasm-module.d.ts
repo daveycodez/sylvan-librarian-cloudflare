@@ -67,7 +67,14 @@ declare module "sylvan-engine-wasm" {
 		cards_by_scryfall_ids(idsJson: string, fieldsJson: string): string;
 		printings_of_oracle_id(oracleId: string, fieldsJson: string): string;
 		card_by_external_id(namespace: string, externalId: bigint, fieldsJson: string): string;
-		fuzzy_card_by_name(name: string, setCode: string, floor: number, lead: number, fieldsJson: string): string;
+		fuzzy_card_by_name(
+			name: string,
+			setCode: string,
+			floor: number,
+			lead: number,
+			weakBelow: number,
+			fieldsJson: string,
+		): string;
 		autocomplete(prefix: string, limit: number): string;
 		load_names(gz: Uint8Array): number;
 		names_autocomplete(prefix: string, limit: number): string;
@@ -86,6 +93,7 @@ declare module "sylvan-engine-wasm" {
 			setCode: string,
 			floor: number,
 			lead: number,
+			weakBelow: number,
 			k: number,
 			wordsJson: string,
 			limit: number,
@@ -114,12 +122,13 @@ declare module "sylvan-engine-wasm" {
 	export function cards_by_scryfall_ids(idsJson: string, fieldsJson: string): string;
 	export function printings_of_oracle_id(oracleId: string, fieldsJson: string): string;
 	export function card_by_external_id(namespace: string, externalId: bigint, fieldsJson: string): string;
-	/** `{"status": "hit"|"ambiguous"|"miss", "card": ...}`. */
+	/** `{"status": "hit"|"weak"|"ambiguous"|"miss", "card": ...}` — "weak" is a hit under `weakBelow`. */
 	export function fuzzy_card_by_name(
 		name: string,
 		setCode: string,
 		floor: number,
 		lead: number,
+		weakBelow: number,
 		fieldsJson: string,
 	): string;
 	/** Printed card names matching a partial name, prefix matches first. JSON array. */
@@ -180,6 +189,7 @@ declare module "sylvan-engine-wasm" {
 		setCode: string,
 		floor: number,
 		lead: number,
+		weakBelow: number,
 		k: number,
 		wordsJson: string,
 		limit: number,

@@ -830,21 +830,34 @@ pub fn card_by_external_id(namespace: &str, external_id: u64, fields_json: &str)
     })
 }
 
-/// Scryfall's `?fuzzy=` name lookup. Returns `{"status": "hit"|"ambiguous"|"miss", "card": ...}`.
+/// Scryfall's `?fuzzy=` name lookup. Returns
+/// `{"status": "hit"|"weak"|"ambiguous"|"miss", "card": ...}`.
 ///
 /// `ambiguous` stays distinct from `miss` because Scryfall reports it, and answering 404 would
 /// tell the client the card does not exist.
+///
+/// `weak` is a hit scoring under `weak_below` (the port's FUZZY_WEAK_BELOW, src/engine/types.ts),
+/// with its card: api.scryfall.com answers a weak typo winner only when no SINGLE card carries
+/// every query word, so the router asks the containment stage before answering it (card_engine's
+/// `FuzzyOutcome::status`; backlog n14). 0.0 reports every hit as `hit`.
 ///
 /// `set_code` ("" for none) scopes the candidate POOL: only cards with a printing in the set race,
 /// and a hit is the card's best printing there — `fuzzy=lightning bolt&set=war` is Scryfall's 404
 /// and `fuzzy=lightning blow&set=m11` its M11 Lightning Bolt (see card_engine's
 /// `preferred_served_vpid_in`).
 #[wasm_bindgen]
-pub fn fuzzy_card_by_name(name: &str, set_code: &str, floor: f32, lead: f32, fields_json: &str) -> Result<String, JsError> {
+pub fn fuzzy_card_by_name(
+    name: &str,
+    set_code: &str,
+    floor: f32,
+    lead: f32,
+    weak_below: f32,
+    fields_json: &str,
+) -> Result<String, JsError> {
     let fields = parse_fields(fields_json)?;
     let set = if set_code.is_empty() { None } else { Some(set_code) };
     with_store(|store| {
-        let (status, card) = store.fuzzy_card_by_name_in(name, set, floor, lead, fields).map_err(js_err)?;
+        let (status, card) = store.fuzzy_card_by_name_in(name, set, floor, lead, weak_below, fields).map_err(js_err)?;
         Ok(serde_json::json!({ "status": status, "card": card }).to_string())
     })
 }
@@ -1959,7 +1972,7 @@ pub fn fuzzy_candidates(name: &str, set_code: &str, floor: f32, k: u32) -> Resul
 /// ```text
 /// header_len: u32 LE, header: header_len bytes of JSON —
 ///   {"exact": <exact_name_probe(folded, set_code, fields)>,
-///    "fuzzy": <fuzzy_card_by_name(folded, set_code, floor, lead, fields)> or null,
+///    "fuzzy": <fuzzy_card_by_name(folded, set_code, floor, lead, weak_below, fields)> or null,
 ///    "contained": <cards_containing_all_words(words, set_code, limit, fields)> or null}
 /// then the fuzzy_candidates(folded, set_code, floor, k) packet unchanged, or nothing
 /// ```
@@ -1971,9 +1984,17 @@ pub fn fuzzy_candidates(name: &str, set_code: &str, floor: f32, k: u32) -> Resul
 ///   partition then has an exact rank, so the router's exact stage is certain to answer, and the
 ///   typo and containment stages never run anywhere. `fuzzy` and `contained` are null and there
 ///   are no candidate bytes.
-/// - Otherwise the candidates are always computed (the router races every partition's). If there
-///   is at least one, containment is skipped: the global race then has a leader, so it is a hit or
-///   ambiguous and never falls through to containment. `contained` is null.
+/// - Otherwise the candidates are always computed (the router races every partition's). If the
+///   best of them scores at or above `weak_below`, containment is skipped: the global winner
+///   scores at least that much, so the global race is a STRONG hit or ambiguous, and neither ever
+///   asks containment. `contained` is null. (Candidates are score-descending, so the best is the
+///   first.)
+/// - If every local candidate is WEAK (backlog n14), containment runs too, beside the typo stage:
+///   the global winner may be weak as well, and a weak winner loses to the one card that carries
+///   every query word — which the router can only tell from EVERY partition's containment, in the
+///   same single round. Which partitions compute it is decided locally, without a second round: a
+///   partition holding a strong candidate knows the global winner is strong; one holding only
+///   weak ones cannot know it is not, so it computes containment.
 /// - With NO candidate, the local race is a miss by construction (`fuzzy_name_match` and
 ///   `fuzzy_candidates` offer the same scores against the same floor), so `fuzzy` is the miss
 ///   `fuzzy_card_by_name` would write, built by the same `json!` — without a second scan — and
@@ -1984,8 +2005,8 @@ pub fn fuzzy_candidates(name: &str, set_code: &str, floor: f32, k: u32) -> Resul
 /// materialize call the three-round router made to the winning partition.
 ///
 /// `set_code` scopes all three stages alike — the typo stage's candidate pool included, which is
-/// what keeps the skip rules sound under a set: a candidate here is a card IN the set, so a global
-/// leader is still an answer in the set and containment is still unreachable.
+/// what keeps the skip rules sound under a set: a candidate here is a card IN the set, so a strong
+/// global leader is still an answer in the set and containment is still unreachable.
 ///
 /// `limit` is containment's; the route asks for 2 and reads two DISTINCT names as ambiguous.
 #[wasm_bindgen]
@@ -1995,6 +2016,7 @@ pub fn named_fuzzy_bundle(
     set_code: &str,
     floor: f32,
     lead: f32,
+    weak_below: f32,
     k: u32,
     words_json: &str,
     limit: u32,
@@ -2008,7 +2030,13 @@ pub fn named_fuzzy_bundle(
     } else {
         let candidates = fuzzy_candidates(folded, set_code, floor, k)?;
         if candidates.get(..4).is_some_and(|n| n != [0u8; 4]) {
-            (Some(fuzzy_card_by_name(folded, set_code, floor, lead, fields_json)?), None, candidates)
+            let fuzzy = fuzzy_card_by_name(folded, set_code, floor, lead, weak_below, fields_json)?;
+            let contained = if best_candidate_score(&candidates) < weak_below {
+                Some(cards_containing_all_words(words_json, set_code, limit, fields_json)?)
+            } else {
+                None
+            };
+            (Some(fuzzy), contained, candidates)
         } else {
             let miss = serde_json::json!({ "status": "miss", "card": serde_json::Value::Null }).to_string();
             let contained = cards_containing_all_words(words_json, set_code, limit, fields_json)?;
@@ -2028,12 +2056,20 @@ pub fn named_fuzzy_bundle(
     Ok(buf)
 }
 
+/// The best score in a non-empty `fuzzy_candidates` packet: its first candidate's, the f32 right
+/// after the count, since the packet is score-descending.
+fn best_candidate_score(packet: &[u8]) -> f32 {
+    packet.get(4..8).map_or(0.0, |b| f32::from_le_bytes([b[0], b[1], b[2], b[3]]))
+}
+
 #[cfg(all(test, not(target_arch = "wasm32")))]
 mod named_fuzzy_bundle_tests {
     use super::*;
 
     const FLOOR: f32 = 0.625;
     const LEAD: f32 = 0.002;
+    /// The port's FUZZY_WEAK_BELOW (src/engine/types.ts).
+    const WEAK: f32 = 0.71;
     const K: u32 = 8;
     const LIMIT: u32 = 2;
     const FIELDS: &str = r#"["name", "scryfall_id", "oracle_id", "set_code", "collector_number"]"#;
@@ -2089,7 +2125,19 @@ mod named_fuzzy_bundle_tests {
     enum Ran {
         ExactOnly,
         ExactAndFuzzy,
+        /// Every local candidate is weak: the typo stage AND containment (backlog n14).
+        WeakFuzzyAndContainment,
         AllThree,
+    }
+
+    /// The best local candidate's score, from the store itself rather than the packet.
+    fn best_score(folded: &str, set: &str) -> Option<f32> {
+        let set = if set.is_empty() { None } else { Some(set) };
+        with_store(|store| Ok(store.fuzzy_candidates_in(folded, set, FLOOR, K as usize)))
+            .expect("candidates")
+            .iter()
+            .map(|c| c.score)
+            .reduce(f32::max)
     }
 
     /// THE BUNDLE IS THE SEPARATE EXPORTS, byte for byte: its header's sections are exactly what
@@ -2103,11 +2151,11 @@ mod named_fuzzy_bundle_tests {
             ("lightning bolt", ""),     // a whole name: exact only
             ("lightning bolt", "lea"),  // ... within its set
             ("lightning bolt", "m19"),  // a set it is not in: no rank, and no candidate IN m19
-            ("lihgtning bolt", ""),     // a typo
+            ("lihgtning bolt", ""),     // a WEAK typo (0.656): containment too
             ("lihgtning bolt", "lea"),  // a typo within a set the card is in
             ("lihgtning bolt", "rav"),  // ... and one it is not: Lightning Helix is, but too far
             ("shokc", "m19"),           // a set-scoped typo race between two near names
-            ("counterspel", ""),        // a typo
+            ("counterspel", ""),        // a strong typo (0.908)
             ("shock", "m19"),           // exact, beside a near name
             ("shokc", ""),              // a typo between two near names
             ("lightning", ""),          // no typo candidate: containment, two names
@@ -2118,22 +2166,28 @@ mod named_fuzzy_bundle_tests {
         let mut seen = Vec::new();
         for (folded, set) in needles {
             let words = words_of(folded);
-            let bundle = named_fuzzy_bundle(folded, set, FLOOR, LEAD, K, &words, LIMIT, FIELDS).expect("bundle");
+            let bundle =
+                named_fuzzy_bundle(folded, set, FLOOR, LEAD, WEAK, K, &words, LIMIT, FIELDS).expect("bundle");
             let header_len = u32::from_le_bytes(bundle[..4].try_into().expect("u32")) as usize;
             let header = std::str::from_utf8(&bundle[4..4 + header_len]).expect("utf8 header");
             let tail = &bundle[4 + header_len..];
 
             let probe = exact_name_probe(folded, set, FIELDS).expect("probe");
             let candidates = fuzzy_candidates(folded, set, FLOOR, K).expect("candidates");
-            let fuzzy = fuzzy_card_by_name(folded, set, FLOOR, LEAD, FIELDS).expect("fuzzy");
+            let fuzzy = fuzzy_card_by_name(folded, set, FLOOR, LEAD, WEAK, FIELDS).expect("fuzzy");
             let contained = cards_containing_all_words(&words, set, LIMIT, FIELDS).expect("contained");
             let rank_is_null = serde_json::from_str::<serde_json::Value>(&probe).expect("probe JSON")["rank"].is_null();
-            let has_candidates = u32::from_le_bytes(candidates[..4].try_into().expect("u32")) > 0;
+            let best = best_score(folded, set);
 
             let (ran, expected) = if !rank_is_null {
                 (Ran::ExactOnly, (format!(r#"{{"exact":{probe},"fuzzy":null,"contained":null}}"#), Vec::new()))
-            } else if has_candidates {
+            } else if best.is_some_and(|b| b >= WEAK) {
                 (Ran::ExactAndFuzzy, (format!(r#"{{"exact":{probe},"fuzzy":{fuzzy},"contained":null}}"#), candidates))
+            } else if best.is_some() {
+                (
+                    Ran::WeakFuzzyAndContainment,
+                    (format!(r#"{{"exact":{probe},"fuzzy":{fuzzy},"contained":{contained}}}"#), candidates),
+                )
             } else {
                 // The skipped fuzzy_card_by_name would have answered exactly the miss written.
                 (Ran::AllThree, (format!(r#"{{"exact":{probe},"fuzzy":{fuzzy},"contained":{contained}}}"#), candidates))
@@ -2149,10 +2203,38 @@ mod named_fuzzy_bundle_tests {
             seen.push(ran);
         }
         unload_store().expect("unload");
-        // Every skip rule was exercised, so none of the three branches is untested.
-        for branch in [Ran::ExactOnly, Ran::ExactAndFuzzy, Ran::AllThree] {
+        // Every skip rule was exercised, so none of the branches is untested.
+        for branch in [Ran::ExactOnly, Ran::ExactAndFuzzy, Ran::WeakFuzzyAndContainment, Ran::AllThree] {
             assert!(seen.contains(&branch), "no needle took the {branch:?} branch: {seen:?}");
         }
+    }
+
+    /// THE SKIP RULE IS THE WEAK LINE (backlog n14): a partition skips containment only when its
+    /// best typo candidate scores at or above `weak_below`, and then its own race reads "hit"; under
+    /// it the bundle carries containment beside a "weak" race. The same needle moves across the
+    /// rule as the line moves across its score.
+    #[test]
+    fn a_partition_skips_containment_only_at_or_above_the_weak_line() {
+        load_names_store();
+        let section = |folded: &str, weak_below: f32| {
+            let bundle =
+                named_fuzzy_bundle(folded, "", FLOOR, LEAD, weak_below, K, &words_of(folded), LIMIT, FIELDS).expect("bundle");
+            let header_len = u32::from_le_bytes(bundle[..4].try_into().expect("u32")) as usize;
+            let header: serde_json::Value = serde_json::from_slice(&bundle[4..4 + header_len]).expect("header JSON");
+            (header["fuzzy"]["status"].as_str().unwrap_or("").to_owned(), header["contained"].is_array())
+        };
+        let best = best_score("lihgtning bolt", "").expect("a candidate");
+        assert!(best < WEAK, "{best}");
+        // Weak: the race still names its card, and containment rides along.
+        assert_eq!(section("lihgtning bolt", WEAK), ("weak".to_owned(), true));
+        // At the line exactly the candidate is strong: no containment.
+        assert_eq!(section("lihgtning bolt", best), ("hit".to_owned(), false));
+        // No line (0.0) is the n7 bundle: any candidate skips containment.
+        assert_eq!(section("lihgtning bolt", 0.0), ("hit".to_owned(), false));
+        // A strong typo skips it under the port's line.
+        assert!(best_score("counterspel", "").expect("a candidate") >= WEAK);
+        assert_eq!(section("counterspel", WEAK), ("hit".to_owned(), false));
+        unload_store().expect("unload");
     }
 }
 
@@ -2504,7 +2586,7 @@ mod tests {
         assert_eq!(v.as_array().unwrap().len(), 1);
 
         let v: serde_json::Value =
-            serde_json::from_str(&fuzzy_card_by_name("chunk test", "", 0.4, 0.05, "null").expect("fuzzy")).expect("valid JSON");
+            serde_json::from_str(&fuzzy_card_by_name("chunk test", "", 0.4, 0.05, 0.0, "null").expect("fuzzy")).expect("valid JSON");
         assert_eq!(v["status"], "hit");
         assert_eq!(v["card"]["name"], "Chunk Test");
 

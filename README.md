@@ -597,20 +597,32 @@ The complete list of intentional differences:
   (23 needles, no exception). With `set=` the typo race runs over that set's
   cards alone: `lightning bolt&set=war` is a 404, `lightning blow&set=m11` is
   M11's Lightning Bolt, and `mind scul&set=wwk` falls through to containment
-  in the set. What is left: a TYPO winner that scores weakly loses on Scryfall
-  to a card that uniquely contains every word — below about 0.71 on this
-  port's metric in 31 of 33 probes, pinned as the `ugin spirit` KNOWN_DEVIATION
-  with the evidence, not yet reproduced — and the metric's own resolution,
-  pinned as `lightning blast&set=m11` (0.6595 here, a 404 there). Seen in the
-  probe and not pinned: `jace sculpt` and `assaultron` (a weak typo winner
-  against an ambiguous containment) and `sculptor` (Storm Sculptor there, Soul
-  Sculptor here).
+  in the set. A WEAK typo winner — under 0.71 on this port's metric,
+  `FUZZY_WEAK_BELOW` — loses to the one card that contains every word, as on
+  Scryfall: `hyd disintegrat` is HYDRA Disintegrator (Disintegrate scores
+  0.703) and `tuk returned` Tuktuk the Returned, while `inquisitor serr` (0.714)
+  stays Inquisitor's Ox over Serra Inquisitors and `bolt lightning` (0.676)
+  Blightning over its two containing names. That took the 206 cached `fuzzy=`
+  answers from 182 identical to 193 and changed nothing else; it is still one
+  round of N partition calls, the bundle computing containment wherever no
+  local candidate clears the line. What is left: the two probes the line gets
+  wrong, `ugin spirit` (Inspirit, 0.775; pinned as a KNOWN_DEVIATION with the
+  evidence) and `mindstat` (Mindstab, 0.795), both Scryfall's containing card;
+  the metric's own resolution, pinned as `lightning blast&set=m11` (0.6595
+  here, a 404 there); and a weak winner against SEVERAL containing cards, which
+  Scryfall answers either way — `jace sculpt` and `assaultron` are ambiguous
+  there, `ancestral` and `paralyzing` the typo winner, as here, and `sculptor`
+  Storm Sculptor (Soul Sculptor here). Upstream #928's second line (0.67, a
+  faint winner loses to an ambiguous containment) is a wash on these answers
+  and is not adopted.
 - **A flavor name is a name on `/cards/named`, keyed the way Scryfall keys
   it.** Measured on api.scryfall.com 2026-09-25 (about 100 probes; 99 of the
-  101 cached answers now match on the local ten-partition store, the other two
-  being the weak-typo-winner line above). The key is a printing's top-level
-  `flavor_name`, or, when the flavor names sit on its faces, those names joined
-  " // " over the faces that carry one: `exact=Megatron // Megatron` is
+  101 cached answers now match on the local ten-partition store; the other two
+  are `assaultron`, a weak typo winner against several containing cards above,
+  and `walking ballista assaultron`, the right card in another printing). The
+  key is a printing's top-level `flavor_name`, or, when the flavor names sit
+  on its faces, those names joined " // " over the faces that carry one:
+  `exact=Megatron // Megatron` is
   Blightsteel Colossus sld/1079 and `exact=Megatron` a 404, `exact=Chucky` is
   Kardur sld/1807 (one face carries one), and `fuzzy=recyclops` and `lord of
   bats` answer the faces' printings. `exact=` compares it collated, after the

@@ -99,7 +99,7 @@ import type {
 	SearchPageEnvelope,
 	StoreManifest,
 } from "./types";
-import { EngineUnavailableError, FUZZY_SIMILARITY_LEAD, type FuzzyCandidateWire } from "./types";
+import { EngineUnavailableError, FUZZY_SIMILARITY_LEAD, FUZZY_WEAK_BELOW, type FuzzyCandidateWire } from "./types";
 
 /**
  * The FLOOR of the typo-tolerant stage of `?fuzzy=`: a candidate scoring below this is not a
@@ -633,6 +633,7 @@ class WasmEngine implements Engine {
 				setCode,
 				FUZZY_SIMILARITY_FLOOR,
 				FUZZY_SIMILARITY_LEAD,
+				FUZZY_WEAK_BELOW,
 				JSON.stringify(CARD_OBJECT_FIELDS),
 			),
 		) as { status: ScryfallFuzzyResult["status"]; card: EngineRow | null };
@@ -704,6 +705,7 @@ class WasmEngine implements Engine {
 				setCode,
 				FUZZY_SIMILARITY_FLOOR,
 				FUZZY_SIMILARITY_LEAD,
+				FUZZY_WEAK_BELOW,
 				FUZZY_CANDIDATE_CLASSES,
 				JSON.stringify(words),
 				limit,

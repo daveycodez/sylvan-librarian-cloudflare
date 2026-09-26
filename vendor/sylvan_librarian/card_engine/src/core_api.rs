@@ -2033,32 +2033,39 @@ impl BufferStore {
         lead: f32,
         fields: Option<Vec<String>>,
     ) -> Result<(&'static str, Option<Value>), EngineError> {
-        self.fuzzy_card_by_name_in(name, None, floor, lead, fields)
+        // No weak line: the pyo3 mirror reports every hit as "hit".
+        self.fuzzy_card_by_name_in(name, None, floor, lead, 0.0, fields)
     }
 
     /// `fuzzy_card_by_name` with its candidate pool scoped to one set (LOCAL PATCH, Cloudflare
     /// port): only cards with a canonical printing in `set_code` compete, and a hit is that
     /// card's best printing there. `None` is `fuzzy_card_by_name`. See
     /// `crate::preferred_served_vpid_in` for the api.scryfall.com measurements.
+    ///
+    /// It also reports the winner's STRENGTH (LOCAL PATCH, Cloudflare port): a hit scoring under
+    /// `weak_below` is `("weak", card)`, which the caller answers only when the containment stage
+    /// has no single card instead. See `FuzzyOutcome::status`; 0.0 reports every hit as "hit".
     pub fn fuzzy_card_by_name_in(
         &self,
         name: &str,
         set_code: Option<&str>,
         floor: f32,
         lead: f32,
+        weak_below: f32,
         fields: Option<Vec<String>>,
     ) -> Result<(&'static str, Option<Value>), EngineError> {
         let resolved_fields = resolve_fields_json(fields)?;
         let data = self.data();
-        match fuzzy_name_match_in(data, name, floor, lead, set_code) {
-            FuzzyOutcome::Miss => Ok(("miss", None)),
-            FuzzyOutcome::Ambiguous => Ok(("ambiguous", None)),
-            FuzzyOutcome::Hit { cid, vpid } => {
+        let outcome = fuzzy_name_match_in(data, name, floor, lead, set_code);
+        let status = outcome.status(weak_below);
+        match outcome {
+            FuzzyOutcome::Miss | FuzzyOutcome::Ambiguous => Ok((status, None)),
+            FuzzyOutcome::Hit { cid, vpid, .. } => {
                 // The card's default-preferred printing for an English hit; the matched printed
                 // name's best printing for a foreign one (the FOREIGN printing object, which is
                 // what Scryfall answers for "ego à deriva") — the vpid encodes which.
                 Ok((
-                    "hit",
+                    status,
                     Some(card_to_json(
                         &data.cards[cid as usize],
                         printing_at(data, vpid),
@@ -5698,8 +5705,9 @@ mod tests {
         let (_b, store) = build_store(&[bolt_lea, bolt_m11, blow, minion, art]);
         let (floor, lead) = (crate::FUZZY_SCORE_FLOOR, crate::FUZZY_SCORE_LEAD);
         let fields = Some(vec!["name".to_owned(), "set_code".to_owned()]);
+        // No weak line (0.0): this is about the pool, and the winner's strength has its own test.
         let ask = |needle: &str, set: Option<&str>| {
-            let (status, card) = store.fuzzy_card_by_name_in(needle, set, floor, lead, fields.clone()).expect("fuzzy");
+            let (status, card) = store.fuzzy_card_by_name_in(needle, set, floor, lead, 0.0, fields.clone()).expect("fuzzy");
             (status, card.map(|c| format!("{} ({})", c["name"].as_str().unwrap_or(""), c["set_code"].as_str().unwrap_or(""))))
         };
         assert_eq!(ask("lightning blow", None), ("hit", Some("Lightning Blow (ice)".to_owned())));

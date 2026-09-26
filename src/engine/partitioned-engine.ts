@@ -53,7 +53,9 @@
 //   named fuzzy (scryfallNamedFuzzy)   ONE round of N bundles — exact probe,
 //                                      typo candidates and local race, and
 //                                      containment from each partition at once,
-//                                      each skipped where it cannot matter; 1
+//                                      each skipped where it cannot matter
+//                                      (containment beside a WEAK typo winner
+//                                      too, n14); 1
 //                                      for an exact name the routing filter
 //                                      places, whose partition is asked first
 //                                      (a settled miss or a typo then asks the
@@ -81,7 +83,7 @@ import { collateName, foldAccents } from "../parser/pystr";
 import { cardNamesOf } from "./card-names";
 import { emptyCollectionAnswer } from "./collection-batch";
 import { edgeCacheUrl, readThroughEdgeCache } from "./edge-cache";
-import { NAMED_CONTAINMENT_LIMIT, resolveNamedFuzzyStaged } from "./named-fuzzy";
+import { NAMED_CONTAINMENT_LIMIT, resolveNamedFuzzyStaged, weakWinnerOrContained } from "./named-fuzzy";
 import { gatherPartitionOf, partitionOfOracleId } from "./partition";
 import { pinnedExactName, pinnedOracleId } from "./pinned-oracle";
 import { EngineCallTimeoutError, isTransientEngineFailure, type RemoteEngine } from "./remote-engine";
@@ -1561,11 +1563,14 @@ export function mergeContained(
  *   2. TYPO: `raceFuzzyCandidates` over every partition's candidates; ambiguous is the answer, and
  *      a hit is the WINNING partition's own local race, which is what the stage's materialize call
  *      to that partition returned — its local race is a sub-race the global winner also leads.
+ *      A WEAK hit (the winner scores under FUZZY_WEAK_BELOW, which its partition's race reports)
+ *      answers only when containment has no single card instead (`weakWinnerOrContained`, n14).
  *   3. CONTAINMENT: `mergeContained`, where two distinct names are ambiguous.
  *
  * Each stage is reached only where the previous one fell through, so the skip rules guarantee its
  * inputs: no partition ranked the needle (else stage 1 answered), so every one raced; and no
- * partition had a candidate (else stage 2 answered), so every one ran containment.
+ * partition had a STRONG candidate (else the global winner is strong, or the race ambiguous, and
+ * stage 2 answered), so every one ran containment — beside a weak candidate or with none.
  */
 export function mergeNamedFuzzyBundles(
 	replies: NamedFuzzyBundle[],
@@ -1595,10 +1600,12 @@ export function mergeNamedFuzzyBundles(
 		FUZZY_SIMILARITY_LEAD,
 	);
 	if (race.status === "ambiguous") return { status: "ambiguous" };
+	let weak: Record<string, unknown> | null = null;
 	if (race.status === "hit" && race.winner !== undefined) {
 		const local = replies[race.winner]?.fuzzy ?? null;
 		if (local?.status === "ambiguous") return { status: "ambiguous" };
 		if (local?.status === "hit" && local.card) return { status: "card", card: local.card };
+		if (local?.status === "weak" && local.card) weak = local.card;
 	}
 
 	const contained: Record<string, unknown>[][] = [];
@@ -1607,6 +1614,7 @@ export function mergeNamedFuzzyBundles(
 		contained.push(reply.contained);
 	}
 	const found = mergeContained(contained, words, limit);
+	if (weak !== null) return weakWinnerOrContained(weak, found);
 	if (found.length > 1) return { status: "ambiguous" };
 	const only = found[0];
 	return only ? { status: "card", card: only } : { status: "miss" };

@@ -18631,7 +18631,7 @@ fn a_typo_resolves_to_the_intended_card() {
     let a = rkyv::access::<Archived<CardData>, Error>(&bytes).expect("access");
 
     match fuzzy_name_match(a, "lightnig bolt", crate::FUZZY_SCORE_FLOOR, crate::FUZZY_SCORE_LEAD) {
-        FuzzyOutcome::Hit { cid, vpid } => {
+        FuzzyOutcome::Hit { cid, vpid, .. } => {
             assert_eq!(cid, 0, "a one-letter typo still finds Lightning Bolt");
             assert_eq!(vpid, 0, "an English hit carries the card's preferred printing");
         }
@@ -18655,6 +18655,53 @@ fn two_close_names_are_ambiguous_not_a_guess() {
     let bytes = rkyv::to_bytes::<Error>(&data).expect("serialize");
     let a = rkyv::access::<Archived<CardData>, Error>(&bytes).expect("access");
     assert!(matches!(fuzzy_name_match(a, "fire dragen", crate::FUZZY_SCORE_FLOOR, crate::FUZZY_SCORE_LEAD), FuzzyOutcome::Ambiguous));
+}
+
+/// A typo winner's STRENGTH (LOCAL PATCH, Cloudflare port), which decides whether the containment
+/// stage outranks it: under the weak line a winner is "weak" and still carries its card. Needles
+/// measured on api.scryfall.com 2026-09-25 either side of the port's line (0.71, FUZZY_WEAK_BELOW
+/// in src/engine/types.ts), each winner the one the real corpus picks and alone here so the score
+/// is its own.
+#[test]
+fn a_typo_winners_strength_is_read_against_the_weak_line() {
+    const WEAK_BELOW: f32 = 0.71;
+    let names = ["primeval titan", "inquisitor's ox", "disintegrate", "returned", "prophecy"];
+    let data = named_cards_store(&names);
+    let bytes = rkyv::to_bytes::<Error>(&data).expect("serialize");
+    let a = rkyv::access::<Archived<CardData>, Error>(&bytes).expect("access");
+    let strength = |needle: &str, weak_below: f32| {
+        let outcome = fuzzy_name_match(a, needle, crate::FUZZY_SCORE_FLOOR, crate::FUZZY_SCORE_LEAD);
+        let (winner, score) = match outcome {
+            FuzzyOutcome::Hit { cid, score, .. } => (names[cid as usize], score),
+            _ => ("", 0.0),
+        };
+        (winner, outcome.status(weak_below), (score * 1000.0).round() / 1000.0)
+    };
+
+    // Strong: Scryfall answers these over the one card containing every word.
+    assert_eq!(strength("primeval titanoth", WEAK_BELOW), ("primeval titan", "hit", 0.799), "over Titanoth Rex");
+    assert_eq!(
+        strength("inquisitor serr", WEAK_BELOW),
+        ("inquisitor's ox", "hit", 0.714),
+        "the lowest typo answer, over Serra Inquisitors"
+    );
+    // Weak: the one containing card answers on Scryfall instead.
+    assert_eq!(
+        strength("hyd disintegrat", WEAK_BELOW),
+        ("disintegrate", "weak", 0.703),
+        "the highest containment answer: HYDRA Disintegrator"
+    );
+    assert_eq!(strength("tuk returned", WEAK_BELOW), ("returned", "weak", 0.697), "Tuktuk the Returned");
+    assert_eq!(strength("prophesi", WEAK_BELOW), ("prophecy", "weak", 0.625), "at the floor: Prophesied End");
+    // No line reads every hit as a hit, which is what the pyo3 mirror reports.
+    assert_eq!(strength("hyd disintegrat", 0.0).1, "hit");
+
+    let other = |needle: &str| fuzzy_name_match(a, needle, crate::FUZZY_SCORE_FLOOR, crate::FUZZY_SCORE_LEAD).status(WEAK_BELOW);
+    assert_eq!(other("zzzzzzzz"), "miss");
+    let tied = named_cards_store(&["fire dragon", "fire dragan"]);
+    let tied_bytes = rkyv::to_bytes::<Error>(&tied).expect("serialize");
+    let t = rkyv::access::<Archived<CardData>, Error>(&tied_bytes).expect("access");
+    assert_eq!(fuzzy_name_match(t, "fire dragen", crate::FUZZY_SCORE_FLOOR, crate::FUZZY_SCORE_LEAD).status(WEAK_BELOW), "ambiguous");
 }
 
 #[test]
