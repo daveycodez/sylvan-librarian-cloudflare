@@ -1182,10 +1182,15 @@ export async function cardsCollectionHandler(
 		// ONE LINE PER BATCH, the only per-request record of this route now that invocation logs
 		// are off: how big mtg-seeker's batches are, which identifier kinds they carry, and how many
 		// partition RPCs each one cost. `calls` is PartitionedEngine's count before RemoteEngine's
-		// transient retry. Grep "collection batch:".
-		const calls = (engine as { partitionCalls?: number }).partitionCalls ?? -1;
+		// transient retry and its hedge (together 12 sends per 8,374 batches on DeckGen, 09-25), and
+		// `rounds` how many sequential waits they took: 1 is the design, 2 a repair round (a routed
+		// name its partition did not settle, a routed key that missed). Grep "collection batch:".
+		const { partitionCalls: calls = -1, collectionRounds: rounds = -1 } = engine as {
+			partitionCalls?: number;
+			collectionRounds?: number;
+		};
 		console.log(
-			`collection batch: n=${identifiers.length} id=${kinds.id} key=${kinds.key} pair=${kinds.pair} name=${kinds.name} name+set=${kinds.nameSet} q=${scope ? 1 : 0} calls=${calls} found=${found.length}`,
+			`collection batch: n=${identifiers.length} id=${kinds.id} key=${kinds.key} pair=${kinds.pair} name=${kinds.name} name+set=${kinds.nameSet} q=${scope ? 1 : 0} calls=${calls} rounds=${rounds} found=${found.length}`,
 		);
 		return scryfallCollectionJson(found, notFound, warnings, pretty, COLLECTION_CACHE);
 	} catch (err) {

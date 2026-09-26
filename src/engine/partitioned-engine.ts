@@ -35,7 +35,12 @@
 //                                      back together, so there is no
 //                                      materialize round; a routed name its
 //                                      partition does not settle costs a
-//                                      second round to the rest. An oracle id
+//                                      second round to the rest — except a
+//                                      name routed to its SERVED partition
+//                                      under a scope filter or a set, which
+//                                      rides every round-1 call instead (its
+//                                      route can miss), so a scoped batch of
+//                                      misses is one round. An oracle id
 //                                      goes by partitionOfOracleId; its miss
 //                                      re-reads the manifest (cacheTtl 60) and
 //                                      asks again ONCE iff the modulus moved
@@ -1262,6 +1267,9 @@ export class PartitionedEngine implements Engine {
 		return best;
 	}
 
+	/** Rounds of partition calls this request's collection batch took — the route's log line. */
+	collectionRounds = 0;
+
 	/**
 	 * A whole collection batch in ONE round of at most N calls — see Engine.scryfallCollectionBatch.
 	 * The per-kind methods it replaced (b9bc501) spent up to 2N on the names (rank, then materialize
@@ -1285,7 +1293,10 @@ export class PartitionedEngine implements Engine {
 	 * its names live in. A routed name's reply must SETTLE it (`nameReplySettles`); one that does
 	 * not — a hint from a key the filter never held, a served partition answering only an extra —
 	 * is asked of every other partition in the repair round, and then ALL its replies are merged
-	 * in partition order, exactly as if it had been asked everywhere at once.
+	 * in partition order, exactly as if it had been asked everywhere at once. The one exception is
+	 * a SERVED-routed name under a scope filter or a set, whose route can miss for want of a
+	 * passing printing: it rides every round-1 call instead, so a scoped deck list that misses most
+	 * of its names is still one round (see `riding` below).
 	 *
 	 * The merge keeps the rules the per-kind methods had:
 	 *   - keys and trees: the first card in PARTITION ORDER — a hint names the lowest owning
@@ -1326,9 +1337,27 @@ export class PartitionedEngine implements Engine {
 		const nameHints = batch.names.map(({ folded }) => this.nameHintOf(folded));
 		const nameReplies: { p: number; rank: number[] | null; card: Uint8Array | null; present: boolean }[][] =
 			batch.names.map(() => []);
+		// Which partitions each name has been asked of, whichever round — a name is never asked of
+		// one twice, and one asked of all N is settled by construction.
+		const nameAsked = batch.names.map(() => new Set<number>());
+		// A SERVED-routed name rides every round-1 call when its route can MISS: under a scope FILTER
+		// or a set, the served partition may hold no printing that passes, and its miss proves nothing
+		// about the extras-only cards of the name the other partitions hold (`nameReplySettles`) — so
+		// the repair round would ask them anyway. Measured on DeckGen 09-26: `?q=(is:commander)` and
+		// `?q=t:"creature" ...` batches of 60–75 names missed 46–70 of them, one served name among the
+		// misses sent the whole batch to a second round, and 515 of 841 such batches cost 19–20
+		// calls on ten partitions where the same batches unscoped cost 10. Riding round 1 costs a name
+		// lookup per partition already being called and no call; a served name WITHOUT a filter or
+		// set always settles on its route (the served card is there to answer), so it stays routed.
+		const nameCanMiss = (i: number) => (scope?.filterTreeJson ?? null) !== null || batch.names[i]?.setCode !== "";
+		const riding = batch.names.map((_, i) => {
+			const hint = nameHints[i] ?? null;
+			return hint !== null && !("sole" in hint) && nameCanMiss(i);
+		});
 		type Ask = { p: number; keyAt: number[]; treeAt: number[]; nameAt: number[] };
-		const ask = (asks: Ask[]) =>
-			Promise.all(
+		const ask = (asks: Ask[]) => {
+			if (asks.length > 0) this.collectionRounds++;
+			return Promise.all(
 				asks.map(async ({ p, keyAt, treeAt, nameAt }) => {
 					const sub: CollectionBatch = {
 						keys: keyAt.map((i) => batch.keys[i] as CollectionBatchKey),
@@ -1337,9 +1366,11 @@ export class PartitionedEngine implements Engine {
 					};
 					// Presence settles a routed name's MISS (`nameReplySettles`); only a sole route reads it.
 					if (nameAt.some((i) => soleHint(nameHints[i] ?? null) === p)) sub.presence = true;
+					for (const i of nameAt) nameAsked[i]?.add(p);
 					return { p, keyAt, treeAt, nameAt, answer: await this.at(p).scryfallCollectionBatch(sub, baseUrl, scope) };
 				}),
 			);
+		};
 		const fill = (replies: Awaited<ReturnType<typeof ask>>) => {
 			for (const { p, keyAt, treeAt, nameAt, answer } of replies) {
 				for (const [j, i] of keyAt.entries()) if (out.keys[i] === null) out.keys[i] = answer.keys[j] ?? null;
@@ -1374,10 +1405,11 @@ export class PartitionedEngine implements Engine {
 			}
 		}
 		const askedIn1 = (p: number) => everywhere || called.has(p);
+		// Every partition round 1 calls: an unrouted name's, a routed name's own, and a riding name's.
 		const namesFor = (p: number) =>
 			batch.names.flatMap((_, i) => {
 				const hint = nameHints[i] ?? null;
-				return hint === null || hintPartition(hint) === p ? [i] : [];
+				return hint === null || hintPartition(hint) === p || riding[i] ? [i] : [];
 			});
 		fill(
 			await ask(
@@ -1409,8 +1441,9 @@ export class PartitionedEngine implements Engine {
 		// collision, or a lookup of something that does not exist): it can only be in a partition
 		// round 1 did not ask. A tree misses only as an ADDRESS — the English tree of an address
 		// with no English printing misses while its lang-less twin hits, and that is an answer. A
-		// routed name is unsettled when its one reply does not prove the filter's word
-		// (`nameReplySettles`), and is then asked of every partition but its route's.
+		// routed name is unsettled when its route's reply does not prove the filter's word
+		// (`nameReplySettles`), and is then asked of every partition that has not answered it yet —
+		// none, for a name round 1 already asked of all N.
 		const keyAt = everywhere
 			? []
 			: batch.keys.flatMap((key, i) => (key.kind !== "oracle_id" && out.keys[i] === null ? [i] : []));
@@ -1420,8 +1453,9 @@ export class PartitionedEngine implements Engine {
 		const treeAt = everywhere ? [] : allTrees.filter((i) => !answered.has(batch.treeAddresses?.[i] ?? null));
 		const unsettled = batch.names.flatMap((_, i) => {
 			const hint = nameHints[i] ?? null;
-			if (hint === null) return [];
-			const reply = nameReplies[i]?.[0];
+			if (hint === null || (nameAsked[i]?.size ?? 0) >= this.n) return [];
+			const route = hintPartition(hint);
+			const reply = nameReplies[i]?.find((r) => r.p === route);
 			return reply !== undefined && nameReplySettles(hint, reply.rank, reply.present) ? [] : [i];
 		});
 		if (keyAt.length > 0 || treeAt.length > 0 || unsettled.length > 0) {
@@ -1430,7 +1464,7 @@ export class PartitionedEngine implements Engine {
 					p,
 					keyAt: askedIn1(p) ? [] : keyAt,
 					treeAt: askedIn1(p) ? [] : treeAt,
-					nameAt: unsettled.filter((i) => hintPartition(nameHints[i] as NameHint) !== p),
+					nameAt: unsettled.filter((i) => !nameAsked[i]?.has(p)),
 				}))
 				.filter((a) => a.keyAt.length > 0 || a.treeAt.length > 0 || a.nameAt.length > 0);
 			fill(await ask(asks));

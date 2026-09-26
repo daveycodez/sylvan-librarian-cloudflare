@@ -1079,6 +1079,33 @@ describe("cache headers", () => {
 });
 
 describe("POST /cards/collection", () => {
+	test("logs one line per batch: its kinds, its scope, and the partition calls and rounds it took", async () => {
+		const engine = Object.assign(new FakeEngine(), { partitionCalls: 10, collectionRounds: 1 });
+		const lines = await loggedLines("collection batch: ", () =>
+			testDispatch(
+				makeCtx({
+					engine,
+					request: new Request("https://sylvan-librarian.com/cards/collection?q=is%3Acommander", {
+						method: "POST",
+						headers: { "content-type": "application/json" },
+						body: JSON.stringify({ identifiers: [{ name: "Llanowar Elves" }, { name: "Nope" }] }),
+					}),
+				}),
+				"/cards/collection?q=is%3Acommander",
+				"POST",
+			),
+		);
+		expect(lines.length).toBe(1);
+		expect(lines[0]).toMatch(
+			/^collection batch: n=2 id=0 key=0 pair=0 name=2 name\+set=0 q=1 calls=10 rounds=1 found=\d+$/,
+		);
+		// An engine that counts nothing says so rather than claiming zero.
+		const unmetered = await loggedLines("collection batch: ", () =>
+			testDispatch(postCtx({ identifiers: [{ name: "Llanowar Elves" }] }), "/cards/collection", "POST"),
+		);
+		expect(unmetered[0]).toMatch(/ q=0 calls=-1 rounds=-1 found=\d+$/);
+	});
+
 	test("resolves identifiers and reports the ones that matched nothing", async () => {
 		const known = "aaaaaaaa-0000-4000-8000-000000000001";
 		const body = await json(
