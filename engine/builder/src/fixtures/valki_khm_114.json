@@ -1,0 +1,201 @@
+{
+ "all_parts": [
+  {
+   "component": "combo_piece",
+   "id": "c62490ac-4838-4b68-baff-18d9823a2a7f",
+   "name": "Tibalt, Cosmic Impostor Emblem",
+   "object": "related_card",
+   "type_line": "Emblem",
+   "uri": "https://api.scryfall.com/cards/c62490ac-4838-4b68-baff-18d9823a2a7f"
+  },
+  {
+   "component": "combo_piece",
+   "id": "e3e5c965-a689-4726-b8c2-63b836895939",
+   "name": "Valki, God of Lies // Tibalt, Cosmic Impostor",
+   "object": "related_card",
+   "type_line": "Legendary Creature — God // Legendary Planeswalker — Tibalt",
+   "uri": "https://api.scryfall.com/cards/e3e5c965-a689-4726-b8c2-63b836895939"
+  }
+ ],
+ "arena_id": 75155,
+ "artist": "Yongjae Choi",
+ "artist_ids": [
+  "5ab91c3b-a6da-4751-a56e-81d0f61a67ab"
+ ],
+ "booster": true,
+ "border_color": "black",
+ "card_faces": [
+  {
+   "artist": "Yongjae Choi",
+   "artist_id": "5ab91c3b-a6da-4751-a56e-81d0f61a67ab",
+   "colors": [
+    "B"
+   ],
+   "illustration_id": "25af817b-39a3-4b56-af19-fc1688cb4bc1",
+   "image_uris": {
+    "art": "https://cards.scryfall.io/art/front/e/a/ea7e4c65-b4c4-4795-9475-3cba71c50ea5.webp?1783928244",
+    "art_crop": "https://cards.scryfall.io/art_crop/front/e/a/ea7e4c65-b4c4-4795-9475-3cba71c50ea5.jpg?1783928244",
+    "border_crop": "https://cards.scryfall.io/border_crop/front/e/a/ea7e4c65-b4c4-4795-9475-3cba71c50ea5.jpg?1783928244",
+    "crop": "https://cards.scryfall.io/crop/front/e/a/ea7e4c65-b4c4-4795-9475-3cba71c50ea5.webp?1783928244",
+    "display": "https://cards.scryfall.io/display/front/e/a/ea7e4c65-b4c4-4795-9475-3cba71c50ea5.webp?1783928244",
+    "grid": "https://cards.scryfall.io/grid/front/e/a/ea7e4c65-b4c4-4795-9475-3cba71c50ea5.webp?1783928244",
+    "large": "https://cards.scryfall.io/large/front/e/a/ea7e4c65-b4c4-4795-9475-3cba71c50ea5.jpg?1783928244",
+    "normal": "https://cards.scryfall.io/normal/front/e/a/ea7e4c65-b4c4-4795-9475-3cba71c50ea5.jpg?1783928244",
+    "png": "https://cards.scryfall.io/png/front/e/a/ea7e4c65-b4c4-4795-9475-3cba71c50ea5.png?1783928244",
+    "small": "https://cards.scryfall.io/small/front/e/a/ea7e4c65-b4c4-4795-9475-3cba71c50ea5.jpg?1783928244",
+    "thumb": "https://cards.scryfall.io/thumb/front/e/a/ea7e4c65-b4c4-4795-9475-3cba71c50ea5.webp?1783928244"
+   },
+   "mana_cost": "{1}{B}",
+   "name": "Valki, God of Lies",
+   "object": "card_face",
+   "oracle_text": "When Valki enters, each opponent reveals their hand. For each opponent, exile a creature card they revealed this way until Valki leaves the battlefield.\n{X}: Choose a creature card exiled with Valki with mana value X. Valki becomes a copy of that card.",
+   "power": "2",
+   "toughness": "1",
+   "type_line": "Legendary Creature — God"
+  },
+  {
+   "artist": "Yongjae Choi",
+   "artist_id": "5ab91c3b-a6da-4751-a56e-81d0f61a67ab",
+   "colors": [
+    "B",
+    "R"
+   ],
+   "illustration_id": "1c9bcbf6-513d-4a50-aa91-3ab0b74ad7b2",
+   "image_uris": {
+    "art": "https://cards.scryfall.io/art/back/e/a/ea7e4c65-b4c4-4795-9475-3cba71c50ea5.webp?1783928244",
+    "art_crop": "https://cards.scryfall.io/art_crop/back/e/a/ea7e4c65-b4c4-4795-9475-3cba71c50ea5.jpg?1783928244",
+    "border_crop": "https://cards.scryfall.io/border_crop/back/e/a/ea7e4c65-b4c4-4795-9475-3cba71c50ea5.jpg?1783928244",
+    "crop": "https://cards.scryfall.io/crop/back/e/a/ea7e4c65-b4c4-4795-9475-3cba71c50ea5.webp?1783928244",
+    "display": "https://cards.scryfall.io/display/back/e/a/ea7e4c65-b4c4-4795-9475-3cba71c50ea5.webp?1783928244",
+    "grid": "https://cards.scryfall.io/grid/back/e/a/ea7e4c65-b4c4-4795-9475-3cba71c50ea5.webp?1783928244",
+    "large": "https://cards.scryfall.io/large/back/e/a/ea7e4c65-b4c4-4795-9475-3cba71c50ea5.jpg?1783928244",
+    "normal": "https://cards.scryfall.io/normal/back/e/a/ea7e4c65-b4c4-4795-9475-3cba71c50ea5.jpg?1783928244",
+    "png": "https://cards.scryfall.io/png/back/e/a/ea7e4c65-b4c4-4795-9475-3cba71c50ea5.png?1783928244",
+    "small": "https://cards.scryfall.io/small/back/e/a/ea7e4c65-b4c4-4795-9475-3cba71c50ea5.jpg?1783928244",
+    "thumb": "https://cards.scryfall.io/thumb/back/e/a/ea7e4c65-b4c4-4795-9475-3cba71c50ea5.webp?1783928244"
+   },
+   "loyalty": "5",
+   "mana_cost": "{5}{B}{R}",
+   "name": "Tibalt, Cosmic Impostor",
+   "object": "card_face",
+   "oracle_text": "As Tibalt enters, you get an emblem with \"You may play cards exiled with Tibalt, Cosmic Impostor, and you may spend mana as though it were mana of any color to cast those spells.\"\n+2: Exile the top card of each player's library.\n−3: Exile target artifact or creature.\n−8: Exile all graveyards. Add {R}{R}{R}.",
+   "type_line": "Legendary Planeswalker — Tibalt"
+  }
+ ],
+ "cardmarket_id": 529302,
+ "cmc": 2.0,
+ "collector_number": "114",
+ "color_identity": [
+  "B",
+  "R"
+ ],
+ "digital": false,
+ "edhrec_rank": 6038,
+ "finishes": [
+  "nonfoil",
+  "foil"
+ ],
+ "foil": true,
+ "frame": "2015",
+ "frame_effects": [
+  "legendary"
+ ],
+ "full_art": false,
+ "game_changer": false,
+ "games": [
+  "arena",
+  "paper",
+  "mtgo"
+ ],
+ "highres_image": true,
+ "id": "ea7e4c65-b4c4-4795-9475-3cba71c50ea5",
+ "image_status": "highres_scan",
+ "image_updated_at": "2026-07-13T07:37:24Z",
+ "keywords": [],
+ "lang": "en",
+ "layout": "modal_dfc",
+ "legalities": {
+  "alchemy": "not_legal",
+  "brawl": "legal",
+  "commander": "legal",
+  "competitivebrawl": "legal",
+  "duel": "legal",
+  "future": "not_legal",
+  "gladiator": "legal",
+  "historic": "legal",
+  "legacy": "legal",
+  "modern": "legal",
+  "oathbreaker": "legal",
+  "oldschool": "not_legal",
+  "pauper": "not_legal",
+  "paupercommander": "not_legal",
+  "penny": "not_legal",
+  "pioneer": "legal",
+  "predh": "not_legal",
+  "premodern": "not_legal",
+  "standard": "not_legal",
+  "standardbrawl": "not_legal",
+  "timeless": "legal",
+  "tlr": "not_legal",
+  "vintage": "legal"
+ },
+ "mtgo_id": 87559,
+ "multiverse_ids": [
+  503724,
+  503725
+ ],
+ "name": "Valki, God of Lies // Tibalt, Cosmic Impostor",
+ "nonfoil": true,
+ "object": "card",
+ "oracle_id": "907ae517-22d5-4ac7-bc3a-3f4d5eaeeb57",
+ "oversized": false,
+ "preview": {
+  "previewed_at": "2021-01-07",
+  "source": "Wizards of the Coast",
+  "source_uri": ""
+ },
+ "prices": {
+  "eur": "3.54",
+  "eur_foil": "4.90",
+  "tix": "0.17",
+  "usd": "3.84",
+  "usd_etched": null,
+  "usd_foil": "4.21"
+ },
+ "prints_search_uri": "https://api.scryfall.com/cards/search?order=released&q=oracleid%3A907ae517-22d5-4ac7-bc3a-3f4d5eaeeb57&unique=prints",
+ "produced_mana": [
+  "R"
+ ],
+ "promo": false,
+ "purchase_uris": {
+  "cardhoarder": "https://www.cardhoarder.com/cards/87559?affiliate_id=scryfall&ref=card-profile&utm_campaign=affiliate&utm_medium=card&utm_source=scryfall",
+  "cardmarket": "https://www.cardmarket.com/en/Magic/Products?idProduct=529302&referrer=scryfall&utm_campaign=card_prices&utm_medium=text&utm_source=scryfall",
+  "tcgplayer": "https://partner.tcgplayer.com/c/4931599/1830156/21018?subId1=api&u=https%3A%2F%2Fwww.tcgplayer.com%2Fproduct%2F230113%3Fpage%3D1"
+ },
+ "rarity": "mythic",
+ "related_uris": {
+  "edhrec": "https://edhrec.com/route/?cc=Valki%2C+God+of+Lies",
+  "gatherer": "https://gatherer.wizards.com/Pages/Card/Details.aspx?multiverseid=503724&printed=false",
+  "tcgplayer_infinite_articles": "https://partner.tcgplayer.com/c/4931599/1830156/21018?subId1=api&trafcat=tcgplayer.com%2Fsearch%2Farticles&u=https%3A%2F%2Fwww.tcgplayer.com%2Fsearch%2Farticles%3FproductLineName%3Dmagic%26q%3DValki%252C%2BGod%2Bof%2BLies%2B%252F%252F%2BTibalt%252C%2BCosmic%2BImpostor",
+  "tcgplayer_infinite_decks": "https://partner.tcgplayer.com/c/4931599/1830156/21018?subId1=api&trafcat=tcgplayer.com%2Fsearch%2Fdecks&u=https%3A%2F%2Fwww.tcgplayer.com%2Fsearch%2Fdecks%3FproductLineName%3Dmagic%26q%3DValki%252C%2BGod%2Bof%2BLies%2B%252F%252F%2BTibalt%252C%2BCosmic%2BImpostor"
+ },
+ "released_at": "2021-02-05",
+ "reprint": false,
+ "reserved": false,
+ "rulings_uri": "https://api.scryfall.com/cards/ea7e4c65-b4c4-4795-9475-3cba71c50ea5/rulings",
+ "scryfall_set_uri": "https://scryfall.com/sets/khm?utm_source=api",
+ "scryfall_uri": "https://scryfall.com/card/khm/114/valki-god-of-lies-tibalt-cosmic-impostor?utm_source=api",
+ "security_stamp": "oval",
+ "set": "khm",
+ "set_id": "43057fad-b1c1-437f-bc48-0045bce6d8c9",
+ "set_name": "Kaldheim",
+ "set_search_uri": "https://api.scryfall.com/cards/search?order=set&q=e%3Akhm&unique=prints",
+ "set_type": "expansion",
+ "set_uri": "https://api.scryfall.com/sets/43057fad-b1c1-437f-bc48-0045bce6d8c9",
+ "story_spotlight": false,
+ "tcgplayer_id": 230113,
+ "textless": false,
+ "type_line": "Legendary Creature — God // Legendary Planeswalker — Tibalt",
+ "uri": "https://api.scryfall.com/cards/ea7e4c65-b4c4-4795-9475-3cba71c50ea5",
+ "variation": false
+}

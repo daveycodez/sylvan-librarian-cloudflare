@@ -1,0 +1,170 @@
+{
+ "all_parts": [
+  {
+   "component": "meld_part",
+   "id": "a8bfc03f-227c-4a5d-b172-067ea5860bf9",
+   "name": "Fang, Fearless l'Cie",
+   "object": "related_card",
+   "type_line": "Legendary Creature — Human Warrior",
+   "uri": "https://api.scryfall.com/cards/a8bfc03f-227c-4a5d-b172-067ea5860bf9"
+  },
+  {
+   "component": "meld_result",
+   "id": "a951cc35-bd29-467f-b28c-5d57340e7450",
+   "name": "Ragnarok, Divine Deliverance",
+   "object": "related_card",
+   "type_line": "Legendary Creature — Beast Avatar",
+   "uri": "https://api.scryfall.com/cards/a951cc35-bd29-467f-b28c-5d57340e7450"
+  },
+  {
+   "component": "meld_part",
+   "id": "f1083637-7c43-44e0-8029-ad56cca8cc19",
+   "name": "Vanille, Cheerful l'Cie",
+   "object": "related_card",
+   "type_line": "Legendary Creature — Human Cleric",
+   "uri": "https://api.scryfall.com/cards/f1083637-7c43-44e0-8029-ad56cca8cc19"
+  }
+ ],
+ "arena_id": 96079,
+ "artist": "Simon Dominic",
+ "artist_ids": [
+  "b0e80135-db5a-4b88-a0bc-815a0e94faa1"
+ ],
+ "booster": true,
+ "border_color": "black",
+ "card_back_id": "6b87afcb-8a6c-426d-b991-605d3d9486ac",
+ "cardmarket_id": 824155,
+ "cmc": 4.0,
+ "collector_number": "211",
+ "color_identity": [
+  "B",
+  "G"
+ ],
+ "colors": [
+  "G"
+ ],
+ "digital": false,
+ "edhrec_rank": 9296,
+ "finishes": [
+  "nonfoil",
+  "foil"
+ ],
+ "foil": true,
+ "frame": "2015",
+ "frame_effects": [
+  "legendary"
+ ],
+ "full_art": false,
+ "game_changer": false,
+ "games": [
+  "paper",
+  "arena",
+  "mtgo"
+ ],
+ "highres_image": true,
+ "id": "91226c1a-63a0-494e-bcf0-77c2d6f49213",
+ "illustration_id": "5723c516-d63b-4dbc-8fe7-8ea72c437162",
+ "image_status": "highres_scan",
+ "image_updated_at": "2026-07-13T01:36:17Z",
+ "image_uris": {
+  "art": "https://cards.scryfall.io/art/front/9/1/91226c1a-63a0-494e-bcf0-77c2d6f49213.webp?1783906577",
+  "art_crop": "https://cards.scryfall.io/art_crop/front/9/1/91226c1a-63a0-494e-bcf0-77c2d6f49213.jpg?1783906577",
+  "border_crop": "https://cards.scryfall.io/border_crop/front/9/1/91226c1a-63a0-494e-bcf0-77c2d6f49213.jpg?1783906577",
+  "crop": "https://cards.scryfall.io/crop/front/9/1/91226c1a-63a0-494e-bcf0-77c2d6f49213.webp?1783906577",
+  "display": "https://cards.scryfall.io/display/front/9/1/91226c1a-63a0-494e-bcf0-77c2d6f49213.webp?1783906577",
+  "grid": "https://cards.scryfall.io/grid/front/9/1/91226c1a-63a0-494e-bcf0-77c2d6f49213.webp?1783906577",
+  "large": "https://cards.scryfall.io/large/front/9/1/91226c1a-63a0-494e-bcf0-77c2d6f49213.jpg?1783906577",
+  "normal": "https://cards.scryfall.io/normal/front/9/1/91226c1a-63a0-494e-bcf0-77c2d6f49213.jpg?1783906577",
+  "png": "https://cards.scryfall.io/png/front/9/1/91226c1a-63a0-494e-bcf0-77c2d6f49213.png?1783906577",
+  "small": "https://cards.scryfall.io/small/front/9/1/91226c1a-63a0-494e-bcf0-77c2d6f49213.jpg?1783906577",
+  "thumb": "https://cards.scryfall.io/thumb/front/9/1/91226c1a-63a0-494e-bcf0-77c2d6f49213.webp?1783906577"
+ },
+ "keywords": [
+  "Meld",
+  "Mill"
+ ],
+ "lang": "en",
+ "layout": "meld",
+ "legalities": {
+  "alchemy": "legal",
+  "brawl": "legal",
+  "commander": "legal",
+  "competitivebrawl": "legal",
+  "duel": "legal",
+  "future": "legal",
+  "gladiator": "legal",
+  "historic": "legal",
+  "legacy": "legal",
+  "modern": "legal",
+  "oathbreaker": "legal",
+  "oldschool": "not_legal",
+  "pauper": "not_legal",
+  "paupercommander": "not_legal",
+  "penny": "not_legal",
+  "pioneer": "legal",
+  "predh": "not_legal",
+  "premodern": "not_legal",
+  "standard": "legal",
+  "standardbrawl": "legal",
+  "timeless": "legal",
+  "tlr": "not_legal",
+  "vintage": "legal"
+ },
+ "mana_cost": "{3}{G}",
+ "mtgo_id": 141365,
+ "multiverse_ids": [],
+ "name": "Vanille, Cheerful l'Cie",
+ "nonfoil": true,
+ "object": "card",
+ "oracle_id": "577725ae-290f-4081-8352-3317521a096f",
+ "oracle_text": "When Vanille enters, mill two cards, then return a permanent card from your graveyard to your hand.\nAt the beginning of your first main phase, if you both own and control Vanille and a creature named Fang, Fearless l'Cie, you may pay {3}{B}{G}. If you do, exile them, then meld them into Ragnarok, Divine Deliverance.",
+ "oversized": false,
+ "penny_rank": 4061,
+ "power": "3",
+ "prices": {
+  "eur": "0.14",
+  "eur_foil": "0.18",
+  "tix": "0.03",
+  "usd": "0.19",
+  "usd_etched": null,
+  "usd_foil": "0.30"
+ },
+ "prints_search_uri": "https://api.scryfall.com/cards/search?order=released&q=oracleid%3A577725ae-290f-4081-8352-3317521a096f&unique=prints",
+ "promo": false,
+ "promo_types": [
+  "ffxiii",
+  "universesbeyond"
+ ],
+ "purchase_uris": {
+  "cardhoarder": "https://www.cardhoarder.com/cards/141365?affiliate_id=scryfall&ref=card-profile&utm_campaign=affiliate&utm_medium=card&utm_source=scryfall",
+  "cardmarket": "https://www.cardmarket.com/en/Magic/Products?idProduct=824155&referrer=scryfall&utm_campaign=card_prices&utm_medium=text&utm_source=scryfall",
+  "tcgplayer": "https://partner.tcgplayer.com/c/4931599/1830156/21018?subId1=api&u=https%3A%2F%2Fwww.tcgplayer.com%2Fproduct%2F630940%3Fpage%3D1"
+ },
+ "rarity": "uncommon",
+ "related_uris": {
+  "edhrec": "https://edhrec.com/route/?cc=Vanille%2C+Cheerful+l%27Cie",
+  "tcgplayer_infinite_articles": "https://partner.tcgplayer.com/c/4931599/1830156/21018?subId1=api&trafcat=tcgplayer.com%2Fsearch%2Farticles&u=https%3A%2F%2Fwww.tcgplayer.com%2Fsearch%2Farticles%3FproductLineName%3Dmagic%26q%3DVanille%252C%2BCheerful%2Bl%2527Cie",
+  "tcgplayer_infinite_decks": "https://partner.tcgplayer.com/c/4931599/1830156/21018?subId1=api&trafcat=tcgplayer.com%2Fsearch%2Fdecks&u=https%3A%2F%2Fwww.tcgplayer.com%2Fsearch%2Fdecks%3FproductLineName%3Dmagic%26q%3DVanille%252C%2BCheerful%2Bl%2527Cie"
+ },
+ "released_at": "2025-06-13",
+ "reprint": false,
+ "reserved": false,
+ "resource_id": "920B23AF614E3B2DD4BEF64A70EB57677EBE548C4137237511DB1C875AF03247",
+ "rulings_uri": "https://api.scryfall.com/cards/91226c1a-63a0-494e-bcf0-77c2d6f49213/rulings",
+ "scryfall_set_uri": "https://scryfall.com/sets/fin?utm_source=api",
+ "scryfall_uri": "https://scryfall.com/card/fin/211/vanille-cheerful-lcie?utm_source=api",
+ "security_stamp": "triangle",
+ "set": "fin",
+ "set_id": "d7beb4b7-e1ff-4d35-ab07-5700f17ea1ea",
+ "set_name": "Final Fantasy",
+ "set_search_uri": "https://api.scryfall.com/cards/search?order=set&q=e%3Afin&unique=prints",
+ "set_type": "expansion",
+ "set_uri": "https://api.scryfall.com/sets/d7beb4b7-e1ff-4d35-ab07-5700f17ea1ea",
+ "story_spotlight": false,
+ "tcgplayer_id": 630940,
+ "textless": false,
+ "toughness": "2",
+ "type_line": "Legendary Creature — Human Cleric",
+ "uri": "https://api.scryfall.com/cards/91226c1a-63a0-494e-bcf0-77c2d6f49213",
+ "variation": false
+}

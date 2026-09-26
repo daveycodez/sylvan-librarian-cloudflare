@@ -399,8 +399,8 @@ function walkExtrasTriggers(
 		// and of the 21 format values probed one at a time `premodern` is the ONLY one that fires
 		// (`legal:premodern` and `-f:premodern t:land` fire too, so it is the value and not the
 		// alias, and negation does not cancel it). Measured 2026-08-16.
-		// `-banned:commander` is the tail of `is:commander`'s expansion, so this is one of the four
-		// triggers a derived term can leak: `is:commander` echoes false there and would fire here.
+		// `-banned:commander` was the tail of `is:commander`'s expansion until generation 55 made it a
+		// stored tag; the `fromExpansion` guard stays for any expansion that ends in a `banned:` leaf.
 		if (attr === "card_legalities" && !fromExpansion) {
 			const original = lhs?.kwargs?.original_attribute;
 			if (original === "banned") out.forced = true;

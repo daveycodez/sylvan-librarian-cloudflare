@@ -1,0 +1,123 @@
+{
+ "arena_id": 81641,
+ "artist": "Simon Dominic",
+ "artist_ids": [
+  "b0e80135-db5a-4b88-a0bc-815a0e94faa1"
+ ],
+ "booster": false,
+ "border_color": "black",
+ "card_back_id": "0aeebaf5-8c7d-4636-9e82-8c27447861f7",
+ "cmc": 1.0,
+ "collector_number": "911",
+ "color_identity": [
+  "U"
+ ],
+ "colors": [
+  "U"
+ ],
+ "digital": true,
+ "edhrec_rank": 1292,
+ "finishes": [
+  "nonfoil"
+ ],
+ "foil": false,
+ "frame": "2015",
+ "full_art": false,
+ "game_changer": false,
+ "games": [
+  "arena"
+ ],
+ "highres_image": false,
+ "id": "cd2e8fab-3633-4eea-9f09-a6160692da05",
+ "illustration_id": "3b280b87-442e-41b7-b4d6-462d4334a330",
+ "image_status": "lowres",
+ "image_updated_at": "2026-07-13T05:52:45Z",
+ "image_uris": {
+  "art": "https://cards.scryfall.io/art/front/c/d/cd2e8fab-3633-4eea-9f09-a6160692da05.webp?1783921965",
+  "art_crop": "https://cards.scryfall.io/art_crop/front/c/d/cd2e8fab-3633-4eea-9f09-a6160692da05.jpg?1783921965",
+  "border_crop": "https://cards.scryfall.io/border_crop/front/c/d/cd2e8fab-3633-4eea-9f09-a6160692da05.jpg?1783921965",
+  "crop": "https://cards.scryfall.io/crop/front/c/d/cd2e8fab-3633-4eea-9f09-a6160692da05.webp?1783921965",
+  "display": "https://cards.scryfall.io/display/front/c/d/cd2e8fab-3633-4eea-9f09-a6160692da05.webp?1783921965",
+  "grid": "https://cards.scryfall.io/grid/front/c/d/cd2e8fab-3633-4eea-9f09-a6160692da05.webp?1783921965",
+  "large": "https://cards.scryfall.io/large/front/c/d/cd2e8fab-3633-4eea-9f09-a6160692da05.jpg?1783921965",
+  "normal": "https://cards.scryfall.io/normal/front/c/d/cd2e8fab-3633-4eea-9f09-a6160692da05.jpg?1783921965",
+  "png": "https://cards.scryfall.io/png/front/c/d/cd2e8fab-3633-4eea-9f09-a6160692da05.png?1783921965",
+  "small": "https://cards.scryfall.io/small/front/c/d/cd2e8fab-3633-4eea-9f09-a6160692da05.jpg?1783921965",
+  "thumb": "https://cards.scryfall.io/thumb/front/c/d/cd2e8fab-3633-4eea-9f09-a6160692da05.webp?1783921965"
+ },
+ "keywords": [
+  "Mill",
+  "Landfall"
+ ],
+ "lang": "en",
+ "layout": "normal",
+ "legalities": {
+  "alchemy": "not_legal",
+  "brawl": "legal",
+  "commander": "legal",
+  "competitivebrawl": "legal",
+  "duel": "legal",
+  "future": "not_legal",
+  "gladiator": "legal",
+  "historic": "legal",
+  "legacy": "legal",
+  "modern": "legal",
+  "oathbreaker": "legal",
+  "oldschool": "not_legal",
+  "pauper": "not_legal",
+  "paupercommander": "not_legal",
+  "penny": "not_legal",
+  "pioneer": "legal",
+  "predh": "not_legal",
+  "premodern": "not_legal",
+  "standard": "not_legal",
+  "standardbrawl": "not_legal",
+  "timeless": "legal",
+  "tlr": "legal",
+  "vintage": "legal"
+ },
+ "mana_cost": "{U}",
+ "multiverse_ids": [],
+ "name": "Ruin Crab",
+ "nonfoil": true,
+ "object": "card",
+ "oracle_id": "8afc00d4-a1c6-4329-af2c-a7f58a0c33e7",
+ "oracle_text": "Landfall — Whenever a land you control enters, each opponent mills three cards. (To mill a card, a player puts the top card of their library into their graveyard.)",
+ "oversized": false,
+ "penny_rank": 2207,
+ "power": "0",
+ "prices": {
+  "eur": null,
+  "eur_foil": null,
+  "tix": null,
+  "usd": null,
+  "usd_etched": null,
+  "usd_foil": null
+ },
+ "prints_search_uri": "https://api.scryfall.com/cards/search?order=released&q=oracleid%3A8afc00d4-a1c6-4329-af2c-a7f58a0c33e7&unique=prints",
+ "promo": false,
+ "rarity": "uncommon",
+ "related_uris": {
+  "edhrec": "https://edhrec.com/route/?cc=Ruin+Crab",
+  "tcgplayer_infinite_articles": "https://partner.tcgplayer.com/c/4931599/1830156/21018?subId1=api&trafcat=tcgplayer.com%2Fsearch%2Farticles&u=https%3A%2F%2Fwww.tcgplayer.com%2Fsearch%2Farticles%3FproductLineName%3Dmagic%26q%3DRuin%2BCrab",
+  "tcgplayer_infinite_decks": "https://partner.tcgplayer.com/c/4931599/1830156/21018?subId1=api&trafcat=tcgplayer.com%2Fsearch%2Fdecks&u=https%3A%2F%2Fwww.tcgplayer.com%2Fsearch%2Fdecks%3FproductLineName%3Dmagic%26q%3DRuin%2BCrab"
+ },
+ "released_at": "2022-07-07",
+ "reprint": true,
+ "reserved": false,
+ "rulings_uri": "https://api.scryfall.com/cards/cd2e8fab-3633-4eea-9f09-a6160692da05/rulings",
+ "scryfall_set_uri": "https://scryfall.com/sets/hbg?utm_source=api",
+ "scryfall_uri": "https://scryfall.com/card/hbg/911/ruin-crab?utm_source=api",
+ "set": "hbg",
+ "set_id": "35528ede-7870-4598-a2ee-7f3d6464a74b",
+ "set_name": "Alchemy Horizons: Baldur's Gate",
+ "set_search_uri": "https://api.scryfall.com/cards/search?order=set&q=e%3Ahbg&unique=prints",
+ "set_type": "alchemy",
+ "set_uri": "https://api.scryfall.com/sets/35528ede-7870-4598-a2ee-7f3d6464a74b",
+ "story_spotlight": false,
+ "textless": false,
+ "toughness": "3",
+ "type_line": "Creature — Crab",
+ "uri": "https://api.scryfall.com/cards/cd2e8fab-3633-4eea-9f09-a6160692da05",
+ "variation": false
+}

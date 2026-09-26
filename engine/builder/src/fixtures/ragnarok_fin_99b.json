@@ -1,0 +1,172 @@
+{
+ "all_parts": [
+  {
+   "component": "meld_part",
+   "id": "a8bfc03f-227c-4a5d-b172-067ea5860bf9",
+   "name": "Fang, Fearless l'Cie",
+   "object": "related_card",
+   "type_line": "Legendary Creature — Human Warrior",
+   "uri": "https://api.scryfall.com/cards/a8bfc03f-227c-4a5d-b172-067ea5860bf9"
+  },
+  {
+   "component": "meld_result",
+   "id": "a951cc35-bd29-467f-b28c-5d57340e7450",
+   "name": "Ragnarok, Divine Deliverance",
+   "object": "related_card",
+   "type_line": "Legendary Creature — Beast Avatar",
+   "uri": "https://api.scryfall.com/cards/a951cc35-bd29-467f-b28c-5d57340e7450"
+  },
+  {
+   "component": "meld_part",
+   "id": "f1083637-7c43-44e0-8029-ad56cca8cc19",
+   "name": "Vanille, Cheerful l'Cie",
+   "object": "related_card",
+   "type_line": "Legendary Creature — Human Cleric",
+   "uri": "https://api.scryfall.com/cards/f1083637-7c43-44e0-8029-ad56cca8cc19"
+  }
+ ],
+ "artist": "Simon Dominic",
+ "artist_ids": [
+  "b0e80135-db5a-4b88-a0bc-815a0e94faa1"
+ ],
+ "booster": true,
+ "border_color": "black",
+ "card_back_id": "0aeebaf5-8c7d-4636-9e82-8c27447861f7",
+ "cmc": 7.0,
+ "collector_number": "99b",
+ "color_identity": [
+  "B",
+  "G"
+ ],
+ "color_indicator": [
+  "B",
+  "G"
+ ],
+ "colors": [
+  "B",
+  "G"
+ ],
+ "digital": false,
+ "finishes": [
+  "nonfoil",
+  "foil"
+ ],
+ "flavor_text": "When prayers turn to promises, not even fate can stand in their way.",
+ "foil": true,
+ "frame": "2015",
+ "frame_effects": [
+  "legendary"
+ ],
+ "full_art": false,
+ "game_changer": false,
+ "games": [
+  "paper",
+  "arena",
+  "mtgo"
+ ],
+ "highres_image": true,
+ "id": "01c5bafe-c995-4cef-90fb-7ccb95858511",
+ "illustration_id": "045a6ef0-2292-4bbd-b505-e95c517a1503",
+ "image_status": "highres_scan",
+ "image_updated_at": "2026-07-13T01:37:02Z",
+ "image_uris": {
+  "art": "https://cards.scryfall.io/art/front/0/1/01c5bafe-c995-4cef-90fb-7ccb95858511.webp?1783906622",
+  "art_crop": "https://cards.scryfall.io/art_crop/front/0/1/01c5bafe-c995-4cef-90fb-7ccb95858511.jpg?1783906622",
+  "border_crop": "https://cards.scryfall.io/border_crop/front/0/1/01c5bafe-c995-4cef-90fb-7ccb95858511.jpg?1783906622",
+  "crop": "https://cards.scryfall.io/crop/front/0/1/01c5bafe-c995-4cef-90fb-7ccb95858511.webp?1783906622",
+  "display": "https://cards.scryfall.io/display/front/0/1/01c5bafe-c995-4cef-90fb-7ccb95858511.webp?1783906622",
+  "grid": "https://cards.scryfall.io/grid/front/0/1/01c5bafe-c995-4cef-90fb-7ccb95858511.webp?1783906622",
+  "large": "https://cards.scryfall.io/large/front/0/1/01c5bafe-c995-4cef-90fb-7ccb95858511.jpg?1783906622",
+  "normal": "https://cards.scryfall.io/normal/front/0/1/01c5bafe-c995-4cef-90fb-7ccb95858511.jpg?1783906622",
+  "png": "https://cards.scryfall.io/png/front/0/1/01c5bafe-c995-4cef-90fb-7ccb95858511.png?1783906622",
+  "small": "https://cards.scryfall.io/small/front/0/1/01c5bafe-c995-4cef-90fb-7ccb95858511.jpg?1783906622",
+  "thumb": "https://cards.scryfall.io/thumb/front/0/1/01c5bafe-c995-4cef-90fb-7ccb95858511.webp?1783906622"
+ },
+ "keywords": [
+  "Reach",
+  "Vigilance",
+  "Haste",
+  "Trample",
+  "Menace"
+ ],
+ "lang": "en",
+ "layout": "meld",
+ "legalities": {
+  "alchemy": "legal",
+  "brawl": "legal",
+  "commander": "legal",
+  "competitivebrawl": "legal",
+  "duel": "legal",
+  "future": "legal",
+  "gladiator": "legal",
+  "historic": "legal",
+  "legacy": "legal",
+  "modern": "legal",
+  "oathbreaker": "legal",
+  "oldschool": "not_legal",
+  "pauper": "not_legal",
+  "paupercommander": "not_legal",
+  "penny": "not_legal",
+  "pioneer": "legal",
+  "predh": "not_legal",
+  "premodern": "not_legal",
+  "standard": "legal",
+  "standardbrawl": "legal",
+  "timeless": "legal",
+  "tlr": "not_legal",
+  "vintage": "legal"
+ },
+ "mana_cost": "",
+ "multiverse_ids": [],
+ "name": "Ragnarok, Divine Deliverance",
+ "nonfoil": true,
+ "object": "card",
+ "oracle_id": "14b839ef-80b1-4e7d-b2fd-38e973899cde",
+ "oracle_text": "Reach, vigilance, menace, trample, haste\nWhen Ragnarok dies, destroy target permanent and return target nonlegendary permanent card from your graveyard to the battlefield.",
+ "oversized": false,
+ "power": "7",
+ "prices": {
+  "eur": null,
+  "eur_foil": null,
+  "tix": null,
+  "usd": null,
+  "usd_etched": null,
+  "usd_foil": null
+ },
+ "prints_search_uri": "https://api.scryfall.com/cards/search?order=released&q=oracleid%3A14b839ef-80b1-4e7d-b2fd-38e973899cde&unique=prints",
+ "promo": false,
+ "promo_types": [
+  "ffxiii",
+  "universesbeyond"
+ ],
+ "purchase_uris": {
+  "cardhoarder": "https://www.cardhoarder.com/cards?affiliate_id=scryfall&data%5Bsearch%5D=Ragnarok%2C+Divine+Deliverance&ref=card-profile&utm_campaign=affiliate&utm_medium=card&utm_source=scryfall",
+  "cardmarket": "https://www.cardmarket.com/en/Magic/Products/Search?referrer=scryfall&searchString=Ragnarok%2C+Divine+Deliverance&utm_campaign=card_prices&utm_medium=text&utm_source=scryfall",
+  "tcgplayer": "https://partner.tcgplayer.com/c/4931599/1830156/21018?subId1=api&u=https%3A%2F%2Fwww.tcgplayer.com%2Fsearch%2Fmagic%2Fproduct%3FproductLineName%3Dmagic%26q%3DRagnarok%252C%2BDivine%2BDeliverance%26view%3Dgrid"
+ },
+ "rarity": "uncommon",
+ "related_uris": {
+  "edhrec": "https://edhrec.com/route/?cc=Ragnarok%2C+Divine+Deliverance",
+  "tcgplayer_infinite_articles": "https://partner.tcgplayer.com/c/4931599/1830156/21018?subId1=api&trafcat=tcgplayer.com%2Fsearch%2Farticles&u=https%3A%2F%2Fwww.tcgplayer.com%2Fsearch%2Farticles%3FproductLineName%3Dmagic%26q%3DRagnarok%252C%2BDivine%2BDeliverance",
+  "tcgplayer_infinite_decks": "https://partner.tcgplayer.com/c/4931599/1830156/21018?subId1=api&trafcat=tcgplayer.com%2Fsearch%2Fdecks&u=https%3A%2F%2Fwww.tcgplayer.com%2Fsearch%2Fdecks%3FproductLineName%3Dmagic%26q%3DRagnarok%252C%2BDivine%2BDeliverance"
+ },
+ "released_at": "2025-06-13",
+ "reprint": false,
+ "reserved": false,
+ "resource_id": "4E38EA2CEA37FF189A5882E515B67E4BE7E978F46DFD48026EA7A5E7CEFD2852",
+ "rulings_uri": "https://api.scryfall.com/cards/01c5bafe-c995-4cef-90fb-7ccb95858511/rulings",
+ "scryfall_set_uri": "https://scryfall.com/sets/fin?utm_source=api",
+ "scryfall_uri": "https://scryfall.com/card/fin/99b/ragnarok-divine-deliverance?utm_source=api",
+ "set": "fin",
+ "set_id": "d7beb4b7-e1ff-4d35-ab07-5700f17ea1ea",
+ "set_name": "Final Fantasy",
+ "set_search_uri": "https://api.scryfall.com/cards/search?order=set&q=e%3Afin&unique=prints",
+ "set_type": "expansion",
+ "set_uri": "https://api.scryfall.com/sets/d7beb4b7-e1ff-4d35-ab07-5700f17ea1ea",
+ "story_spotlight": false,
+ "textless": false,
+ "toughness": "6",
+ "type_line": "Legendary Creature — Beast Avatar",
+ "uri": "https://api.scryfall.com/cards/01c5bafe-c995-4cef-90fb-7ccb95858511",
+ "variation": false
+}

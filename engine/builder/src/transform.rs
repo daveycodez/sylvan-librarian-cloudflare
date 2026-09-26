@@ -968,19 +968,238 @@ pub const MELD_RESULT_IS_TAG: &str = "meldresult";
 ///
 /// Matched on the card's OWN id rather than on layout: every meld card carries all three entries,
 /// so `layout == "meld"` says only that the card is part of a meld and not which side of it.
+///
+/// FALLING BACK TO THE CARD'S OWN NAME when no entry carries its id. A reprint's `all_parts` can
+/// list a SIBLING printing's ids instead of its own: in the 2026-08-16 bulk, Ragnarok's fin/99b,
+/// fin/381b and fin/446b, Brisela's sld/1336b and the eight fin/sld part printings beside them name
+/// no entry by their own id, so they carried no role and `is:meldresult&unique=prints` answered 20
+/// here against api.scryfall.com's 24 (`is:meldpart` 40 against 48) — and a result with no role is
+/// exactly the card [`commander_role_tags`] has to keep out. The entry whose NAME is the printing's
+/// own name is its role all the same; only the meld components count, so a combo piece or token
+/// sharing the name decides nothing.
 fn meld_is_tag(card: &Map<String, Value>) -> Option<&'static str> {
-    let id = card.get("id").and_then(Value::as_str)?;
-    for part in card.get("all_parts").and_then(Value::as_array)? {
-        if part.get("id").and_then(Value::as_str) != Some(id) {
+    let parts = card.get("all_parts").and_then(Value::as_array)?;
+    let role = |part: &Value| match part.get("component").and_then(Value::as_str) {
+        Some("meld_part") => Some(MELD_PART_IS_TAG),
+        Some("meld_result") => Some(MELD_RESULT_IS_TAG),
+        _ => None,
+    };
+    if let Some(id) = card.get("id").and_then(Value::as_str)
+        && let Some(own) = parts.iter().find(|p| p.get("id").and_then(Value::as_str) == Some(id))
+    {
+        return role(own);
+    }
+    let name = card.get("name").and_then(Value::as_str)?;
+    parts.iter().filter(|p| p.get("name").and_then(Value::as_str) == Some(name)).find_map(role)
+}
+
+/// `is:commander`, `is:brawler`, `is:duelcommander`, `is:oathbreaker` — the four "can this card
+/// lead a deck" classes. Spelled once here and once in db-info.ts; tests/parser/is-tag-tables.test.ts
+/// pins the pairs.
+///
+/// THEY WERE PARSER REWRITES, and every rewrite read the MERGED row, whose types, toughness and
+/// text are the union of every face. A commander is chosen from the face you CAST, so the union
+/// answered for cards that can never lead a deck, and the four gaps were measured on
+/// api.scryfall.com (2026-09-26, default search):
+///
+///   `is:commander is:flip`       4 there, 19 here — Budoka Pupil // Ichiga: the legend is the flip
+///   `is:commander is:transform` 86 there, 102 here — Westvale Abbey // Ormendahl, the MOM Invasions
+///   `is:commander is:meld`       7 there, 12 here — the five meld RESULTS (Brisela, Hanweir, …)
+///   `is:oathbreaker`           288 there, 310 here — 15 of them a planeswalker BACK (Kytheon,
+///                                Valki // Tibalt) and Urza, Planeswalker, a meld result
+///
+/// and MTGSeeker's reverse-EDHREC commander lists put the uncastable ones first, because a meld
+/// result has no EDHREC rank. The rules below reproduce Scryfall's four answers card for card over
+/// the 2026-08-16 bulk with `include_extras=true` and `date<=2026-08-14` on both sides (the rebalanced
+/// `A-` cards, since withdrawn from Scryfall, left out): commander 3,906 against 3,906 but for
+/// three `unk` playtest cards named in the residual, brawler 2,318 = 2,318 once the 38 cards whose
+/// brawl legality Scryfall has since changed are accounted for, duelcommander 3,323 = 3,323,
+/// oathbreaker 287 = 287 — set differences, not just counts.
+///
+/// THE SHAPE, read from the FRONT face (see [`front_faces`]):
+///   - a legendary Creature, or a legendary card that is a creature OUTSIDE the battlefield
+///     (Grist, the Hunger Tide: "As long as Grist isn't on the battlefield, it's a 1/1 Insect
+///     creature" — the one card whose type line is not a creature in the command zone), or any
+///     card whose text says it "can be your commander" (case-insensitive: unk/RL01b says
+///     "Commander");
+///   - for `commander` and `brawler` only, a legendary card with a printed toughness (Vehicles,
+///     Spacecraft) or a Background — `is:duelcommander` counts neither (Heart of Kiran and every
+///     Background are `f:duel` and not duel commanders there);
+///   - for `brawler` only, a legendary Planeswalker too (Davriel, Soul Broker; Teyo);
+///   - `oathbreaker` is its own shape: the front face is a Planeswalker.
+///
+/// Never a token (a `Token` type or a token layout: Xenagos Ascended is a legendary creature token
+/// and no commander), never a meld RESULT ([`meld_is_tag`]).
+///
+/// THE LEGALITY, from the printing's own `legalities`:
+///   - commander: not `banned` in commander (legal or not: Arena's y-set legends count);
+///   - brawler: `legal` in brawl and not `banned` in `competitivebrawl` — Tajic, Legion's Valor
+///     (ymkm/28) and Ragavan are brawl-legal and banned there, and not brawlers. The engine has no
+///     `competitivebrawl` format, which is why the whole class is decided here and not rewritten;
+///   - duelcommander: `legal` in duel, NOT `restricted` — Scryfall writes Duel Commander's
+///     "banned as commander" list (Derevi, Edgar Markov, Krark, Oloro, Raffine…) as `restricted`,
+///     and the rewrite's `f:duel` let them through;
+///   - oathbreaker: `legal` in oathbreaker.
+///
+/// THE RESIDUAL: `is:commander` +2/−1 inside `unk` (Unknown Event playtest cards, all extras): Scryfall
+/// leaves out Awoken Nephilim (RZ11a) and The Belligerent and Useless Island (RL01a) and keeps
+/// The Magical City, New (RL01b) — the last now matched by the case-insensitive text test, the
+/// first two with nothing on them that separates them from Ano'thr (RZ10), which Scryfall keeps.
+/// And api.scryfall.com had not yet given `is:oathbreaker` to eight new `fra`/`frc` planeswalkers
+/// on 2026-09-26 (Ajani Resolute, Garruk, Curse Breaker, …), all of them `f:oathbreaker` there;
+/// this answers them, as Scryfall will once its own aggregate catches up with the set.
+pub const COMMANDER_IS_TAG: &str = "commander";
+pub const BRAWLER_IS_TAG: &str = "brawler";
+pub const DUEL_COMMANDER_IS_TAG: &str = "duelcommander";
+pub const OATHBREAKER_IS_TAG: &str = "oathbreaker";
+
+/// `is:spell` — a card with a CASTABLE face that is a spell. Spelled once here and once in
+/// db-info.ts.
+///
+/// It was a type union over the merged row (`t:artifact or t:battle or … t:sorcery`), which reads
+/// every face and knows nothing a card cannot be cast as: Unfinity's Attractions and Unstable's
+/// Contraptions are Artifacts that are never cast, an artifact land is an Artifact that is a land,
+/// and a transform card's back is never cast either. 32,446 here against 32,327 on
+/// api.scryfall.com (2026-09-26).
+///
+/// THE RULE, per castable face ([`cast_faces`]): a face is a spell unless it is a Land or a Token,
+/// or its only types are ones no card is cast as (Plane, Phenomenon, Scheme, Vanguard,
+/// Conspiracy, Emblem, Dungeon, Hero, Event, Boss, Stickers, the checklist `Card`), or it is an
+/// Attraction or a Contraption. A word the rule has never heard of counts as castable, and that
+/// is Scryfall's reading too: the pre-Sixth-Edition `Summon Dragon` printings, Unhinged's
+/// `Eaturecray` and Byode's `Universewalker` are spells there, and a lower-cased `instant` (Unstable's
+/// "capital offense") is title-cased like every type. Meld RESULTS are spells there as well, which
+/// is why this, unlike the commander classes, does not ask.
+///
+/// Measured over the 2026-08-16 bulk against api.scryfall.com (`include_extras=true`,
+/// `date<=2026-08-14`, rebalanced `A-` cards left out): 32,809 against 32,810, `is:spell t:land`
+/// 88 = 88 by name (the modal and transform lands whose FRONT is a spell), and the one residual
+/// is mb2/513 Essence of Ajani, an `emblem`-layout playtest card Scryfall calls a spell.
+pub const SPELL_IS_TAG: &str = "spell";
+
+/// The layouts that are not a card anyone casts or chooses to lead a deck: tokens, emblems, the
+/// Planechase/Archenemy/Vanguard oversized cards and art cards.
+const NOT_A_CARD_LAYOUTS: &[&str] =
+    &["token", "double_faced_token", "emblem", "planar", "scheme", "vanguard", "art_series"];
+
+/// The card types that are never cast, for [`SPELL_IS_TAG`]. Compared title-cased, as
+/// `parse_type_line` spells them.
+const NEVER_CAST_TYPES: &[&str] = &[
+    "Card", "Plane", "Phenomenon", "Scheme", "Vanguard", "Conspiracy", "Emblem", "Dungeon", "Hero", "Event", "Boss",
+    "Stickers",
+];
+
+/// The card types a spell can have. A face carrying one of these is a spell even beside a
+/// never-cast word: Theros's `Hero Artifact — Equipment` (thp3) is an Artifact spell there.
+const SPELL_TYPES: &[&str] =
+    &["Artifact", "Battle", "Creature", "Enchantment", "Instant", "Kindred", "Tribal", "Planeswalker", "Sorcery"];
+
+/// Artifact subtypes that are never cast: Attractions are visited, Contraptions assembled.
+const NEVER_CAST_SUBTYPES: &[&str] = &["Attraction", "Contraption"];
+
+/// The FACES that decide who can lead a deck: the one you cast, which is face 0 on every faced
+/// layout (a flip card's unflipped half, a transform or modal card's front, an adventure's
+/// creature) — except a SPLIT card, whose halves are one card and all of it.
+///
+/// Face 0 and not the card's own keys, because the card's own `type_line` on a faced layout is the
+/// joined one ("Creature — Human Monk // Legendary Creature — Human Monk"), and a reversible card
+/// carries no top-level type line at all.
+fn front_faces(card: &Map<String, Value>) -> Vec<&Map<String, Value>> {
+    let faces: Vec<&Map<String, Value>> = card
+        .get("card_faces")
+        .and_then(Value::as_array)
+        .map(|f| f.iter().filter_map(Value::as_object).collect())
+        .unwrap_or_default();
+    match faces.first() {
+        None => vec![card],
+        Some(_) if s(card, "layout").as_deref() == Some("split") => faces,
+        Some(front) => vec![front],
+    }
+}
+
+/// The faces that can be CAST, for [`SPELL_IS_TAG`]: every half of a split, adventure or
+/// `prepare` card and both faces of a modal DFC; the front alone of a transform, flip or
+/// reversible card, whose other face is only ever turned to.
+fn cast_faces(card: &Map<String, Value>) -> Vec<&Map<String, Value>> {
+    let every_face = matches!(s(card, "layout").as_deref(), Some("split" | "adventure" | "prepare" | "modal_dfc"));
+    if every_face && let Some(faces) = card.get("card_faces").and_then(Value::as_array) {
+        return faces.iter().filter_map(Value::as_object).collect();
+    }
+    front_faces(card)
+}
+
+/// "…isn't on the battlefield, it's a 1/1 Insect creature…" — a card that is a CREATURE in the
+/// command zone whatever its type line says. Lower-cased, straight or curly apostrophes.
+fn creature_outside_the_battlefield(text: &str) -> bool {
+    let text = text.to_lowercase().replace('\u{2019}', "'");
+    text.split(['.', '\n']).any(|sentence| sentence.contains("isn't on the battlefield, it's a") && sentence.contains("creature"))
+}
+
+/// The role tags (commander, brawler, duelcommander, oathbreaker, spell) this printing carries.
+/// See [`COMMANDER_IS_TAG`] and [`SPELL_IS_TAG`] for the rules and their measurements.
+fn commander_role_tags(card: &Map<String, Value>) -> Vec<&'static str> {
+    let mut tags = Vec::new();
+    let layout = s(card, "layout");
+    let not_a_card = layout.as_deref().is_some_and(|l| NOT_A_CARD_LAYOUTS.contains(&l));
+    let legality = |format: &str| {
+        card.get("legalities").and_then(|l| l.get(format)).and_then(Value::as_str).unwrap_or("not_legal").to_owned()
+    };
+
+    if !not_a_card {
+        let spell = cast_faces(card).into_iter().any(|face| {
+            let (types, subtypes) = parse_type_line(&s(face, "type_line").unwrap_or_default());
+            let has = |t: &str| types.iter().any(|x| x == t);
+            if types.is_empty() || has("Land") || has("Token") {
+                return false;
+            }
+            if !types.iter().any(|t| SPELL_TYPES.contains(&t.as_str()))
+                && types.iter().any(|t| NEVER_CAST_TYPES.contains(&t.as_str()))
+            {
+                return false;
+            }
+            !subtypes.iter().any(|t| NEVER_CAST_SUBTYPES.contains(&t.as_str()))
+        });
+        if spell {
+            tags.push(SPELL_IS_TAG);
+        }
+    }
+
+    if not_a_card || meld_is_tag(card) == Some(MELD_RESULT_IS_TAG) {
+        return tags;
+    }
+    // (creature-shaped, toughness-or-Background, legendary planeswalker, any planeswalker), unioned
+    // over the front faces — more than one only for a split card.
+    let (mut creature, mut other_permanent, mut legendary_walker, mut walker) = (false, false, false, false);
+    for face in front_faces(card) {
+        let (types, subtypes) = parse_type_line(&s(face, "type_line").unwrap_or_default());
+        let has = |t: &str| types.iter().any(|x| x == t);
+        if has("Token") {
             continue;
         }
-        return match part.get("component").and_then(Value::as_str) {
-            Some("meld_part") => Some(MELD_PART_IS_TAG),
-            Some("meld_result") => Some(MELD_RESULT_IS_TAG),
-            _ => None,
-        };
+        let text = s(face, "oracle_text").unwrap_or_default();
+        let legendary = has("Legendary");
+        walker |= has("Planeswalker");
+        creature |= text.to_lowercase().contains("can be your commander")
+            || (legendary && (has("Creature") || creature_outside_the_battlefield(&text)));
+        other_permanent |= legendary && (face.get("toughness").is_some() || subtypes.iter().any(|t| t == "Background"));
+        legendary_walker |= legendary && has("Planeswalker");
     }
-    None
+    if (creature || other_permanent) && legality("commander") != "banned" {
+        tags.push(COMMANDER_IS_TAG);
+    }
+    if (creature || other_permanent || legendary_walker)
+        && legality("brawl") == "legal"
+        && legality("competitivebrawl") != "banned"
+    {
+        tags.push(BRAWLER_IS_TAG);
+    }
+    if creature && legality("duel") == "legal" {
+        tags.push(DUEL_COMMANDER_IS_TAG);
+    }
+    if walker && legality("oathbreaker") == "legal" {
+        tags.push(OATHBREAKER_IS_TAG);
+    }
+    tags
 }
 
 /// The layouts that are two pieces of cardboard, for [`hybrid_cost_of`]. A split, adventure or
@@ -1598,6 +1817,17 @@ impl RowDraft {
             self.card_is_tags.retain(|t| t != HYBRID_IS_TAG);
         }
     }
+
+    /// Record the role tags [`commander_role_tags`] decided for the whole PRINTING — once, from
+    /// `transform_row`, for the same reason as `set_hybrid`: the answer depends on the layout and
+    /// on which face is the front, and a per-face draft knows neither.
+    fn set_roles(&mut self, roles: &[&str]) {
+        for role in roles {
+            if !self.card_is_tags.iter().any(|t| t == role) {
+                self.card_is_tags.push((*role).to_owned());
+            }
+        }
+    }
 }
 
 /// The printed full name for the engine's printed-name index, folded exactly like
@@ -1924,6 +2154,9 @@ pub fn transform_row(bulk_card: &Value, is_canonical: bool) -> Result<Option<Row
         // From `card` and its FACES, not from the merged row: the merge keeps the front's
         // `mana_cost_jsonb`, but a split card's right half is a face and still counts.
         row.set_hybrid(has_hybrid_cost(card, Some(faces)));
+        // Likewise the commander classes and `is:spell`: the merged row is every face's union,
+        // and who can lead a deck or be cast is a question about ONE face.
+        row.set_roles(&commander_role_tags(card));
         return Ok(Some(row));
     }
 
@@ -1939,6 +2172,7 @@ pub fn transform_row(bulk_card: &Value, is_canonical: bool) -> Result<Option<Row
     row.flavor_name_folded = row.flavor_name.as_deref().map(|v| fold_accents(&v.to_lowercase()));
     row.is_canonical = is_canonical;
     row.set_hybrid(has_hybrid_cost(card, None));
+    row.set_roles(&commander_role_tags(card));
     Ok(Some(row))
 }
 
@@ -4502,7 +4736,9 @@ mod tests {
             json!({
                 "booster": true, "foil": true, "hires": true, "nonfoil": true, "reprint": true,
                 "game_paper": true, "game_arena": true, "game_mtgo": true,
-                "startercollection": true, "beginnerbox": true
+                "startercollection": true, "beginnerbox": true,
+                // A creature, and so a spell: `commander_role_tags`, not a bulk key.
+                "spell": true
             })
         );
         assert_eq!(row["card_subtypes"], json!(["Elf", "Druid"]));
@@ -4617,10 +4853,14 @@ mod tests {
         // _sync_boolean_is_tags parity: only the managed keys, only when the
         // blob boolean is exactly true. A missing key and a false key are the
         // same absence, and a non-boolean never counts.
+        // Less `spell`: every `minimal_card` is an Instant and so carries it, and the role tags
+        // are pinned in tests/role_classes.rs rather than restated on each of these.
         let tags_of = |card: &Value| {
             let draft = transform(card).unwrap().unwrap();
             let rows: Vec<Value> = finalize(vec![draft], &TagData::default()).collect();
-            rows[0]["card_is_tags"].clone()
+            let mut tags = rows[0]["card_is_tags"].clone();
+            tags.as_object_mut().unwrap().remove(SPELL_IS_TAG);
+            tags
         };
 
         // `game_paper` rides along on every row here because `minimal_card` carries

@@ -1727,8 +1727,24 @@ export async function gzipBytes(bytes: Uint8Array): Promise<Uint8Array> {
  *      pairing is 45/48/53's; and since x19 keys the manifest by format (MANIFEST_KEY), the new
  *      store publishes beside the running build's rather than over it, so the deploy is not dark
  *      between its two steps.
+ *
+ *   55 (2026-09-26): WHO CAN LEAD A DECK, AND WHAT IS CAST, ARE ASKED OF ONE FACE (backlog x29).
+ *      `commander`, `brawler`, `duelcommander`, `oathbreaker` and `spell` join COMPUTED_IS_TAGS,
+ *      decided by the builder's `commander_role_tags` from the FRONT face and the printing's own
+ *      legalities; the five parser rewrites they replace read the merged row, every face at once,
+ *      and answered for meld results, flip and transform backs, planeswalker back faces,
+ *      Attractions and artifact lands (`is:commander` 3,766 here against api.scryfall.com's 3,731,
+ *      `is:spell` 32,446 against 32,327). The same pass: the meld role falls back to the card's own
+ *      NAME when `all_parts` lists a sibling printing's ids (`is:meldresult&unique=prints` 20
+ *      against 24).
+ *
+ *      GENERATION-ONLY. Every change is a value in a column the archive already has — tag words in
+ *      `card_is_tags` — so a generation-54 store still LOADS, and would answer `is:commander` from
+ *      no row at all once the parser stops rewriting it. This constant is what makes store-age.ts
+ *      rebuild; the format, and so the per-format manifest key, stays 2026092601 and the rebuild
+ *      replaces the store in place.
  */
-export const STORE_CONTENT_GENERATION = 54;
+export const STORE_CONTENT_GENERATION = 55;
 
 /**
  * Chunk key for a store. Keyed by store_key, so publishes never collide.

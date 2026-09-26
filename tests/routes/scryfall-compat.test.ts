@@ -481,8 +481,9 @@ describe("GET /cards/search", () => {
 		const treeOf = () => JSON.stringify(JSON.parse(engine.lastSearch?.filterTreeJson ?? "null"));
 
 		// Derived, expands to a trigger, and does NOT fire there — the defect this closes. Every one
-		// of these lowers to `layout:`; `has:artist` lowers to `artist:/./` and `is:commander` to a
-		// subtree ending in `-banned:commander`, the other two attributes an expansion can leak.
+		// of these lowers to `layout:`, and `has:artist` lowers to `artist:/./`. `is:commander` used
+		// to lower to a subtree ending in `-banned:commander`; it is a stored tag since generation 55
+		// and stays here as the non-trigger it still is.
 		for (const q of [
 			"is:split",
 			"is:flip",

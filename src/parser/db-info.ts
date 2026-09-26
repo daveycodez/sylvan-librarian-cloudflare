@@ -367,12 +367,49 @@ export const HYBRID_IS_TAG = "hybrid";
 export const MELD_PART_IS_TAG = "meldpart";
 export const MELD_RESULT_IS_TAG = "meldresult";
 
+/**
+ * `is:commander`, `is:brawler`, `is:duelcommander`, `is:oathbreaker` — who can lead a deck.
+ * Computed by the importer from the FRONT face (the one you cast: a flip card's unflipped half, a
+ * transform or modal card's front, both halves of a split), never a token or a meld result, and
+ * from the printing's own legalities — including `competitivebrawl`, a format the engine has no
+ * column for, and duel's `restricted`, which is how Scryfall writes Duel Commander's "banned as
+ * commander" list.
+ *
+ * They were rewrites here until generation 55, and every rewrite read the MERGED row — every
+ * face's types, toughness and text at once — so it answered for cards no one can cast as a
+ * commander: `is:commander is:flip` 19 against api.scryfall.com's 4 (Budoka Pupil // Ichiga),
+ * `is:commander is:transform` 102 against 86 (Westvale Abbey // Ormendahl), `is:commander is:meld`
+ * 12 against 7 (the five meld RESULTS), `is:oathbreaker` 310 against 288 (Kytheon, Valki // Tibalt,
+ * Urza, Planeswalker). The rules and their measurements are written at the builder's
+ * `COMMANDER_IS_TAG`.
+ *
+ * Spelled once here and once as the builder's constants of the same names.
+ */
+export const COMMANDER_IS_TAG = "commander";
+export const BRAWLER_IS_TAG = "brawler";
+export const DUEL_COMMANDER_IS_TAG = "duelcommander";
+export const OATHBREAKER_IS_TAG = "oathbreaker";
+
+/**
+ * `is:spell` — a card with a CASTABLE face that is a spell: not a land, not a token, not a card
+ * type nothing is cast as (plane, scheme, conspiracy, dungeon, …), and not an Attraction or
+ * Contraption. It was a type union over the merged row, which let Unfinity's Attractions and the
+ * artifact lands in (32,446 against api.scryfall.com's 32,327). The rule and its measurement are
+ * written at the builder's `SPELL_IS_TAG`. Spelled once here and once there.
+ */
+export const SPELL_IS_TAG = "spell";
+
 export const COMPUTED_IS_TAGS: ReadonlySet<string> = new Set([
 	EXTRA_IS_TAG,
 	FUNNY_IS_TAG,
 	HYBRID_IS_TAG,
 	MELD_PART_IS_TAG,
 	MELD_RESULT_IS_TAG,
+	COMMANDER_IS_TAG,
+	BRAWLER_IS_TAG,
+	DUEL_COMMANDER_IS_TAG,
+	OATHBREAKER_IS_TAG,
+	SPELL_IS_TAG,
 ]);
 
 export const BOOLEAN_IS_TAGS: ReadonlyMap<string, string> = new Map([

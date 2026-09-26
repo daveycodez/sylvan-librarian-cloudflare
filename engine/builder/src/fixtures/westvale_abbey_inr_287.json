@@ -1,0 +1,207 @@
+{
+ "all_parts": [
+  {
+   "component": "combo_piece",
+   "id": "677b1405-a667-4a29-94ba-a821b10223b1",
+   "name": "Westvale Abbey // Ormendahl, Profane Prince",
+   "object": "related_card",
+   "type_line": "Land // Legendary Creature — Demon",
+   "uri": "https://api.scryfall.com/cards/677b1405-a667-4a29-94ba-a821b10223b1"
+  },
+  {
+   "component": "combo_piece",
+   "id": "4825c59d-9e27-4a12-ba84-642b8540e573",
+   "name": "Shadows Over Innistrad Checklist 2",
+   "object": "related_card",
+   "type_line": "Card",
+   "uri": "https://api.scryfall.com/cards/4825c59d-9e27-4a12-ba84-642b8540e573"
+  },
+  {
+   "component": "token",
+   "id": "7081602e-84a3-45b0-87f6-f0f236a5264e",
+   "name": "Human Cleric",
+   "object": "related_card",
+   "type_line": "Token Creature — Human Cleric",
+   "uri": "https://api.scryfall.com/cards/7081602e-84a3-45b0-87f6-f0f236a5264e"
+  }
+ ],
+ "artist": "Min Yum",
+ "artist_ids": [
+  "9cb65d6f-8851-4d56-9add-9eefa274bd1b"
+ ],
+ "booster": true,
+ "border_color": "black",
+ "card_faces": [
+  {
+   "artist": "Min Yum",
+   "artist_id": "9cb65d6f-8851-4d56-9add-9eefa274bd1b",
+   "colors": [],
+   "illustration_id": "6a0d5174-5a4d-406e-acd2-6c191f2a5cae",
+   "image_uris": {
+    "art": "https://cards.scryfall.io/art/front/5/f/5fbc6091-a161-45b0-9932-543b569caaee.webp?1783908059",
+    "art_crop": "https://cards.scryfall.io/art_crop/front/5/f/5fbc6091-a161-45b0-9932-543b569caaee.jpg?1783908059",
+    "border_crop": "https://cards.scryfall.io/border_crop/front/5/f/5fbc6091-a161-45b0-9932-543b569caaee.jpg?1783908059",
+    "crop": "https://cards.scryfall.io/crop/front/5/f/5fbc6091-a161-45b0-9932-543b569caaee.webp?1783908059",
+    "display": "https://cards.scryfall.io/display/front/5/f/5fbc6091-a161-45b0-9932-543b569caaee.webp?1783908059",
+    "grid": "https://cards.scryfall.io/grid/front/5/f/5fbc6091-a161-45b0-9932-543b569caaee.webp?1783908059",
+    "large": "https://cards.scryfall.io/large/front/5/f/5fbc6091-a161-45b0-9932-543b569caaee.jpg?1783908059",
+    "normal": "https://cards.scryfall.io/normal/front/5/f/5fbc6091-a161-45b0-9932-543b569caaee.jpg?1783908059",
+    "png": "https://cards.scryfall.io/png/front/5/f/5fbc6091-a161-45b0-9932-543b569caaee.png?1783908059",
+    "small": "https://cards.scryfall.io/small/front/5/f/5fbc6091-a161-45b0-9932-543b569caaee.jpg?1783908059",
+    "thumb": "https://cards.scryfall.io/thumb/front/5/f/5fbc6091-a161-45b0-9932-543b569caaee.webp?1783908059"
+   },
+   "mana_cost": "",
+   "name": "Westvale Abbey",
+   "object": "card_face",
+   "oracle_text": "{T}: Add {C}.\n{5}, {T}, Pay 1 life: Create a 1/1 white and black Human Cleric creature token.\n{5}, {T}, Sacrifice five creatures: Transform this land, then untap it.",
+   "type_line": "Land"
+  },
+  {
+   "artist": "Min Yum",
+   "artist_id": "9cb65d6f-8851-4d56-9add-9eefa274bd1b",
+   "color_indicator": [
+    "B"
+   ],
+   "colors": [
+    "B"
+   ],
+   "flavor_text": "With Griselbrand gone, the Skirsdag eagerly awaited another demon to claim their devotion. Ormendahl did not make them wait long.",
+   "illustration_id": "e576c60b-6928-4684-994f-ad80e127234b",
+   "image_uris": {
+    "art": "https://cards.scryfall.io/art/back/5/f/5fbc6091-a161-45b0-9932-543b569caaee.webp?1783908059",
+    "art_crop": "https://cards.scryfall.io/art_crop/back/5/f/5fbc6091-a161-45b0-9932-543b569caaee.jpg?1783908059",
+    "border_crop": "https://cards.scryfall.io/border_crop/back/5/f/5fbc6091-a161-45b0-9932-543b569caaee.jpg?1783908059",
+    "crop": "https://cards.scryfall.io/crop/back/5/f/5fbc6091-a161-45b0-9932-543b569caaee.webp?1783908059",
+    "display": "https://cards.scryfall.io/display/back/5/f/5fbc6091-a161-45b0-9932-543b569caaee.webp?1783908059",
+    "grid": "https://cards.scryfall.io/grid/back/5/f/5fbc6091-a161-45b0-9932-543b569caaee.webp?1783908059",
+    "large": "https://cards.scryfall.io/large/back/5/f/5fbc6091-a161-45b0-9932-543b569caaee.jpg?1783908059",
+    "normal": "https://cards.scryfall.io/normal/back/5/f/5fbc6091-a161-45b0-9932-543b569caaee.jpg?1783908059",
+    "png": "https://cards.scryfall.io/png/back/5/f/5fbc6091-a161-45b0-9932-543b569caaee.png?1783908059",
+    "small": "https://cards.scryfall.io/small/back/5/f/5fbc6091-a161-45b0-9932-543b569caaee.jpg?1783908059",
+    "thumb": "https://cards.scryfall.io/thumb/back/5/f/5fbc6091-a161-45b0-9932-543b569caaee.webp?1783908059"
+   },
+   "mana_cost": "",
+   "name": "Ormendahl, Profane Prince",
+   "object": "card_face",
+   "oracle_text": "Flying, lifelink, indestructible, haste",
+   "power": "9",
+   "toughness": "7",
+   "type_line": "Legendary Creature — Demon"
+  }
+ ],
+ "cardmarket_id": 805889,
+ "cmc": 0.0,
+ "collector_number": "287",
+ "color_identity": [
+  "B"
+ ],
+ "digital": false,
+ "edhrec_rank": 1474,
+ "finishes": [
+  "nonfoil",
+  "foil"
+ ],
+ "foil": true,
+ "frame": "2015",
+ "frame_effects": [
+  "legendary"
+ ],
+ "full_art": false,
+ "game_changer": false,
+ "games": [
+  "paper",
+  "mtgo"
+ ],
+ "highres_image": true,
+ "id": "5fbc6091-a161-45b0-9932-543b569caaee",
+ "image_status": "highres_scan",
+ "image_updated_at": "2026-07-13T02:00:59Z",
+ "keywords": [
+  "Flying",
+  "Lifelink",
+  "Indestructible",
+  "Transform",
+  "Haste"
+ ],
+ "lang": "en",
+ "layout": "transform",
+ "legalities": {
+  "alchemy": "not_legal",
+  "brawl": "legal",
+  "commander": "legal",
+  "competitivebrawl": "legal",
+  "duel": "legal",
+  "future": "not_legal",
+  "gladiator": "legal",
+  "historic": "legal",
+  "legacy": "legal",
+  "modern": "legal",
+  "oathbreaker": "legal",
+  "oldschool": "not_legal",
+  "pauper": "not_legal",
+  "paupercommander": "not_legal",
+  "penny": "legal",
+  "pioneer": "legal",
+  "predh": "not_legal",
+  "premodern": "not_legal",
+  "standard": "not_legal",
+  "standardbrawl": "not_legal",
+  "timeless": "legal",
+  "tlr": "legal",
+  "vintage": "legal"
+ },
+ "mtgo_id": 136014,
+ "multiverse_ids": [
+  686141
+ ],
+ "name": "Westvale Abbey // Ormendahl, Profane Prince",
+ "nonfoil": true,
+ "object": "card",
+ "oracle_id": "04eeb9ad-5c59-411b-8809-db8349838588",
+ "oversized": false,
+ "penny_rank": 1151,
+ "prices": {
+  "eur": "1.78",
+  "eur_foil": "1.62",
+  "tix": "0.03",
+  "usd": "3.53",
+  "usd_etched": null,
+  "usd_foil": "3.42"
+ },
+ "prints_search_uri": "https://api.scryfall.com/cards/search?order=released&q=oracleid%3A04eeb9ad-5c59-411b-8809-db8349838588&unique=prints",
+ "produced_mana": [
+  "C"
+ ],
+ "promo": false,
+ "purchase_uris": {
+  "cardhoarder": "https://www.cardhoarder.com/cards/136014?affiliate_id=scryfall&ref=card-profile&utm_campaign=affiliate&utm_medium=card&utm_source=scryfall",
+  "cardmarket": "https://www.cardmarket.com/en/Magic/Products?idProduct=805889&referrer=scryfall&utm_campaign=card_prices&utm_medium=text&utm_source=scryfall",
+  "tcgplayer": "https://partner.tcgplayer.com/c/4931599/1830156/21018?subId1=api&u=https%3A%2F%2Fwww.tcgplayer.com%2Fproduct%2F609924%3Fpage%3D1"
+ },
+ "rarity": "rare",
+ "related_uris": {
+  "edhrec": "https://edhrec.com/route/?cc=Westvale+Abbey",
+  "gatherer": "https://gatherer.wizards.com/Pages/Card/Details.aspx?multiverseid=686141&printed=false",
+  "tcgplayer_infinite_articles": "https://partner.tcgplayer.com/c/4931599/1830156/21018?subId1=api&trafcat=tcgplayer.com%2Fsearch%2Farticles&u=https%3A%2F%2Fwww.tcgplayer.com%2Fsearch%2Farticles%3FproductLineName%3Dmagic%26q%3DWestvale%2BAbbey%2B%252F%252F%2BOrmendahl%252C%2BProfane%2BPrince",
+  "tcgplayer_infinite_decks": "https://partner.tcgplayer.com/c/4931599/1830156/21018?subId1=api&trafcat=tcgplayer.com%2Fsearch%2Fdecks&u=https%3A%2F%2Fwww.tcgplayer.com%2Fsearch%2Fdecks%3FproductLineName%3Dmagic%26q%3DWestvale%2BAbbey%2B%252F%252F%2BOrmendahl%252C%2BProfane%2BPrince"
+ },
+ "released_at": "2025-01-24",
+ "reprint": true,
+ "reserved": false,
+ "rulings_uri": "https://api.scryfall.com/cards/5fbc6091-a161-45b0-9932-543b569caaee/rulings",
+ "scryfall_set_uri": "https://scryfall.com/sets/inr?utm_source=api",
+ "scryfall_uri": "https://scryfall.com/card/inr/287/westvale-abbey-ormendahl-profane-prince?utm_source=api",
+ "security_stamp": "oval",
+ "set": "inr",
+ "set_id": "b9618c8c-9f31-4b42-9798-2991893c27bf",
+ "set_name": "Innistrad Remastered",
+ "set_search_uri": "https://api.scryfall.com/cards/search?order=set&q=e%3Ainr&unique=prints",
+ "set_type": "masters",
+ "set_uri": "https://api.scryfall.com/sets/b9618c8c-9f31-4b42-9798-2991893c27bf",
+ "story_spotlight": false,
+ "tcgplayer_id": 609924,
+ "textless": false,
+ "type_line": "Land // Legendary Creature — Demon",
+ "uri": "https://api.scryfall.com/cards/5fbc6091-a161-45b0-9932-543b569caaee",
+ "variation": false
+}

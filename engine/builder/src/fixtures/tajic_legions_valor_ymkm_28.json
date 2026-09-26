@@ -1,0 +1,131 @@
+{
+ "arena_id": 91389,
+ "artist": "Julia Metzger",
+ "artist_ids": [
+  "6e76edce-99a8-4f87-95d0-e316c378fa8b"
+ ],
+ "booster": false,
+ "border_color": "black",
+ "card_back_id": "0aeebaf5-8c7d-4636-9e82-8c27447861f7",
+ "cmc": 4.0,
+ "collector_number": "28",
+ "color_identity": [
+  "R",
+  "W"
+ ],
+ "colors": [
+  "R",
+  "W"
+ ],
+ "digital": true,
+ "finishes": [
+  "nonfoil"
+ ],
+ "foil": false,
+ "frame": "2015",
+ "frame_effects": [
+  "legendary"
+ ],
+ "full_art": false,
+ "game_changer": false,
+ "games": [
+  "arena"
+ ],
+ "highres_image": true,
+ "id": "7b838cfc-e8fd-4258-aa5f-afbde461c37c",
+ "illustration_id": "1e0e9150-9157-4343-ba97-3468bb5396d1",
+ "image_status": "highres_scan",
+ "image_updated_at": "2026-07-13T03:13:47Z",
+ "image_uris": {
+  "art": "https://cards.scryfall.io/art/front/7/b/7b838cfc-e8fd-4258-aa5f-afbde461c37c.webp?1783912427",
+  "art_crop": "https://cards.scryfall.io/art_crop/front/7/b/7b838cfc-e8fd-4258-aa5f-afbde461c37c.jpg?1783912427",
+  "border_crop": "https://cards.scryfall.io/border_crop/front/7/b/7b838cfc-e8fd-4258-aa5f-afbde461c37c.jpg?1783912427",
+  "crop": "https://cards.scryfall.io/crop/front/7/b/7b838cfc-e8fd-4258-aa5f-afbde461c37c.webp?1783912427",
+  "display": "https://cards.scryfall.io/display/front/7/b/7b838cfc-e8fd-4258-aa5f-afbde461c37c.webp?1783912427",
+  "grid": "https://cards.scryfall.io/grid/front/7/b/7b838cfc-e8fd-4258-aa5f-afbde461c37c.webp?1783912427",
+  "large": "https://cards.scryfall.io/large/front/7/b/7b838cfc-e8fd-4258-aa5f-afbde461c37c.jpg?1783912427",
+  "normal": "https://cards.scryfall.io/normal/front/7/b/7b838cfc-e8fd-4258-aa5f-afbde461c37c.jpg?1783912427",
+  "png": "https://cards.scryfall.io/png/front/7/b/7b838cfc-e8fd-4258-aa5f-afbde461c37c.png?1783912427",
+  "small": "https://cards.scryfall.io/small/front/7/b/7b838cfc-e8fd-4258-aa5f-afbde461c37c.jpg?1783912427",
+  "thumb": "https://cards.scryfall.io/thumb/front/7/b/7b838cfc-e8fd-4258-aa5f-afbde461c37c.webp?1783912427"
+ },
+ "keywords": [
+  "Indestructible",
+  "Haste",
+  "Conjure"
+ ],
+ "lang": "en",
+ "layout": "normal",
+ "legalities": {
+  "alchemy": "not_legal",
+  "brawl": "legal",
+  "commander": "not_legal",
+  "competitivebrawl": "banned",
+  "duel": "not_legal",
+  "future": "not_legal",
+  "gladiator": "legal",
+  "historic": "legal",
+  "legacy": "not_legal",
+  "modern": "not_legal",
+  "oathbreaker": "not_legal",
+  "oldschool": "not_legal",
+  "pauper": "not_legal",
+  "paupercommander": "not_legal",
+  "penny": "not_legal",
+  "pioneer": "not_legal",
+  "predh": "not_legal",
+  "premodern": "not_legal",
+  "standard": "not_legal",
+  "standardbrawl": "not_legal",
+  "timeless": "legal",
+  "tlr": "not_legal",
+  "vintage": "not_legal"
+ },
+ "mana_cost": "{2}{R}{W}",
+ "multiverse_ids": [],
+ "name": "Tajic, Legion's Valor",
+ "nonfoil": true,
+ "object": "card",
+ "oracle_id": "da9c8b15-cfa1-443f-857e-06ce50c7b3b1",
+ "oracle_text": "Indestructible, haste\nAt the beginning of combat on your turn, put a +1/+1 counter on Tajic, Legion's Valor. Then conjure a card with mana value equal to the number of +1/+1 counters on it from Tajic, Legion's Valor's spellbook onto the battlefield. It gains haste until end of turn and attacks this combat if able.",
+ "oversized": false,
+ "power": "1",
+ "prices": {
+  "eur": null,
+  "eur_foil": null,
+  "tix": null,
+  "usd": null,
+  "usd_etched": null,
+  "usd_foil": null
+ },
+ "prints_search_uri": "https://api.scryfall.com/cards/search?order=released&q=oracleid%3Ada9c8b15-cfa1-443f-857e-06ce50c7b3b1&unique=prints",
+ "promo": false,
+ "promo_types": [
+  "alchemy"
+ ],
+ "rarity": "mythic",
+ "related_uris": {
+  "edhrec": "https://edhrec.com/route/?cc=Tajic%2C+Legion%27s+Valor",
+  "tcgplayer_infinite_articles": "https://partner.tcgplayer.com/c/4931599/1830156/21018?subId1=api&trafcat=tcgplayer.com%2Fsearch%2Farticles&u=https%3A%2F%2Fwww.tcgplayer.com%2Fsearch%2Farticles%3FproductLineName%3Dmagic%26q%3DTajic%252C%2BLegion%2527s%2BValor",
+  "tcgplayer_infinite_decks": "https://partner.tcgplayer.com/c/4931599/1830156/21018?subId1=api&trafcat=tcgplayer.com%2Fsearch%2Fdecks&u=https%3A%2F%2Fwww.tcgplayer.com%2Fsearch%2Fdecks%3FproductLineName%3Dmagic%26q%3DTajic%252C%2BLegion%2527s%2BValor"
+ },
+ "released_at": "2024-03-05",
+ "reprint": false,
+ "reserved": false,
+ "rulings_uri": "https://api.scryfall.com/cards/7b838cfc-e8fd-4258-aa5f-afbde461c37c/rulings",
+ "scryfall_set_uri": "https://scryfall.com/sets/ymkm?utm_source=api",
+ "scryfall_uri": "https://scryfall.com/card/ymkm/28/tajic-legions-valor?utm_source=api",
+ "security_stamp": "arena",
+ "set": "ymkm",
+ "set_id": "3879667a-f0b8-4bc2-8662-7c861e22b4e9",
+ "set_name": "Alchemy: Murders at Karlov Manor ",
+ "set_search_uri": "https://api.scryfall.com/cards/search?order=set&q=e%3Aymkm&unique=prints",
+ "set_type": "alchemy",
+ "set_uri": "https://api.scryfall.com/sets/3879667a-f0b8-4bc2-8662-7c861e22b4e9",
+ "story_spotlight": false,
+ "textless": false,
+ "toughness": "1",
+ "type_line": "Legendary Creature — Human Soldier",
+ "uri": "https://api.scryfall.com/cards/7b838cfc-e8fd-4258-aa5f-afbde461c37c",
+ "variation": false
+}

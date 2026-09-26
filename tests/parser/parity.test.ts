@@ -118,13 +118,24 @@ function applyTagAliases(tree: string): string {
  * honest: the query must still be in the corpus (else the entry is stale), and the exporter's tree
  * must still DIFFER from it (the day the vendored Python stores the tag too, this entry is dead
  * and must go — the fixture takes over).
+ *
+ * FIVE MORE SINCE GENERATION 55 (2026-09-26), the same shape of divergence. `is:commander`,
+ * `is:brawler`, `is:duelcommander`, `is:oathbreaker` and `is:spell` are stored tags here, decided
+ * by the builder from the FRONT face and the printing's own legalities, where the vendored Python
+ * still rewrites each to a type/toughness/text union over the merged row — which answered for
+ * meld results, flip and transform backs, planeswalker back faces, Attractions and artifact lands
+ * (the measurements are at the builder's `COMMANDER_IS_TAG` and `SPELL_IS_TAG`).
  */
+const isTagTree = (tag: string) =>
+	'{"kwargs":{"lhs":{"kwargs":{"attribute_name":"card_is_tags","original_attribute":"is"},' +
+	`"node_type":"CardAttributeNode"},"op":":","rhs":["${tag}"]},"node_type":"CardBinaryOperatorNode"}`;
 const PORT_ONLY_TREES: ReadonlyMap<string, string> = new Map([
-	[
-		"is:funny",
-		'{"kwargs":{"lhs":{"kwargs":{"attribute_name":"card_is_tags","original_attribute":"is"},' +
-			'"node_type":"CardAttributeNode"},"op":":","rhs":["funny"]},"node_type":"CardBinaryOperatorNode"}',
-	],
+	["is:funny", isTagTree("funny")],
+	["is:commander", isTagTree("commander")],
+	["is:brawler", isTagTree("brawler")],
+	["is:duelcommander", isTagTree("duelcommander")],
+	["is:oathbreaker", isTagTree("oathbreaker")],
+	["is:spell", isTagTree("spell")],
 ]);
 
 interface FixtureCase {

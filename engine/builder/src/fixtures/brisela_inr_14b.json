@@ -1,0 +1,164 @@
+{
+ "all_parts": [
+  {
+   "component": "meld_result",
+   "id": "7e926e19-553c-470a-afde-358541af5caa",
+   "name": "Brisela, Voice of Nightmares",
+   "object": "related_card",
+   "type_line": "Legendary Creature — Eldrazi Angel",
+   "uri": "https://api.scryfall.com/cards/7e926e19-553c-470a-afde-358541af5caa"
+  },
+  {
+   "component": "meld_part",
+   "id": "6fccdb60-5fce-4a6e-a709-b986f9a4b653",
+   "name": "Bruna, the Fading Light",
+   "object": "related_card",
+   "type_line": "Legendary Creature — Angel Horror",
+   "uri": "https://api.scryfall.com/cards/6fccdb60-5fce-4a6e-a709-b986f9a4b653"
+  },
+  {
+   "component": "meld_part",
+   "id": "04506bad-3856-4184-8dda-941ded60f41a",
+   "name": "Gisela, the Broken Blade",
+   "object": "related_card",
+   "type_line": "Legendary Creature — Angel Horror",
+   "uri": "https://api.scryfall.com/cards/04506bad-3856-4184-8dda-941ded60f41a"
+  }
+ ],
+ "artist": "Clint Cearley",
+ "artist_ids": [
+  "03b75350-d5a0-4e3a-b3b4-8d4a5554385b"
+ ],
+ "booster": true,
+ "border_color": "black",
+ "card_back_id": "0aeebaf5-8c7d-4636-9e82-8c27447861f7",
+ "cmc": 11.0,
+ "collector_number": "14b",
+ "color_identity": [
+  "W"
+ ],
+ "colors": [],
+ "digital": false,
+ "finishes": [
+  "nonfoil",
+  "foil"
+ ],
+ "flavor_text": "Upon discovering what had become of her sisters, Sigarda could only weep.",
+ "foil": true,
+ "frame": "2015",
+ "frame_effects": [
+  "legendary"
+ ],
+ "full_art": false,
+ "game_changer": false,
+ "games": [
+  "paper"
+ ],
+ "highres_image": true,
+ "id": "7e926e19-553c-470a-afde-358541af5caa",
+ "illustration_id": "9528e065-5297-4d91-bf75-3c175b54f0d4",
+ "image_status": "highres_scan",
+ "image_updated_at": "2026-07-13T02:03:09Z",
+ "image_uris": {
+  "art": "https://cards.scryfall.io/art/front/7/e/7e926e19-553c-470a-afde-358541af5caa.webp?1783908189",
+  "art_crop": "https://cards.scryfall.io/art_crop/front/7/e/7e926e19-553c-470a-afde-358541af5caa.jpg?1783908189",
+  "border_crop": "https://cards.scryfall.io/border_crop/front/7/e/7e926e19-553c-470a-afde-358541af5caa.jpg?1783908189",
+  "crop": "https://cards.scryfall.io/crop/front/7/e/7e926e19-553c-470a-afde-358541af5caa.webp?1783908189",
+  "display": "https://cards.scryfall.io/display/front/7/e/7e926e19-553c-470a-afde-358541af5caa.webp?1783908189",
+  "grid": "https://cards.scryfall.io/grid/front/7/e/7e926e19-553c-470a-afde-358541af5caa.webp?1783908189",
+  "large": "https://cards.scryfall.io/large/front/7/e/7e926e19-553c-470a-afde-358541af5caa.jpg?1783908189",
+  "normal": "https://cards.scryfall.io/normal/front/7/e/7e926e19-553c-470a-afde-358541af5caa.jpg?1783908189",
+  "png": "https://cards.scryfall.io/png/front/7/e/7e926e19-553c-470a-afde-358541af5caa.png?1783908189",
+  "small": "https://cards.scryfall.io/small/front/7/e/7e926e19-553c-470a-afde-358541af5caa.jpg?1783908189",
+  "thumb": "https://cards.scryfall.io/thumb/front/7/e/7e926e19-553c-470a-afde-358541af5caa.webp?1783908189"
+ },
+ "keywords": [
+  "Flying",
+  "Lifelink",
+  "Vigilance",
+  "First strike"
+ ],
+ "lang": "en",
+ "layout": "meld",
+ "legalities": {
+  "alchemy": "not_legal",
+  "brawl": "legal",
+  "commander": "legal",
+  "competitivebrawl": "legal",
+  "duel": "legal",
+  "future": "not_legal",
+  "gladiator": "legal",
+  "historic": "legal",
+  "legacy": "legal",
+  "modern": "legal",
+  "oathbreaker": "legal",
+  "oldschool": "not_legal",
+  "pauper": "not_legal",
+  "paupercommander": "not_legal",
+  "penny": "not_legal",
+  "pioneer": "legal",
+  "predh": "not_legal",
+  "premodern": "not_legal",
+  "standard": "not_legal",
+  "standardbrawl": "not_legal",
+  "timeless": "legal",
+  "tlr": "not_legal",
+  "vintage": "legal"
+ },
+ "mana_cost": "",
+ "multiverse_ids": [
+  686144
+ ],
+ "name": "Brisela, Voice of Nightmares",
+ "nonfoil": true,
+ "object": "card",
+ "oracle_id": "b23587e0-9fb7-492e-8bb4-f218e8e4ce6c",
+ "oracle_text": "Flying, first strike, vigilance, lifelink\nYour opponents can't cast spells with mana value 3 or less.",
+ "oversized": false,
+ "power": "9",
+ "preview": {
+  "previewed_at": "2025-01-06",
+  "source": "Wizards of the Coast",
+  "source_uri": "https://magic.wizards.com/en/news/making-magic/the-ins-and-outs-of-innistrad-remastered"
+ },
+ "prices": {
+  "eur": null,
+  "eur_foil": null,
+  "tix": null,
+  "usd": null,
+  "usd_etched": null,
+  "usd_foil": null
+ },
+ "prints_search_uri": "https://api.scryfall.com/cards/search?order=released&q=oracleid%3Ab23587e0-9fb7-492e-8bb4-f218e8e4ce6c&unique=prints",
+ "promo": false,
+ "purchase_uris": {
+  "cardhoarder": "https://www.cardhoarder.com/cards?affiliate_id=scryfall&data%5Bsearch%5D=Brisela%2C+Voice+of+Nightmares&ref=card-profile&utm_campaign=affiliate&utm_medium=card&utm_source=scryfall",
+  "cardmarket": "https://www.cardmarket.com/en/Magic/Products/Search?referrer=scryfall&searchString=Brisela%2C+Voice+of+Nightmares&utm_campaign=card_prices&utm_medium=text&utm_source=scryfall",
+  "tcgplayer": "https://partner.tcgplayer.com/c/4931599/1830156/21018?subId1=api&u=https%3A%2F%2Fwww.tcgplayer.com%2Fsearch%2Fmagic%2Fproduct%3FproductLineName%3Dmagic%26q%3DBrisela%252C%2BVoice%2Bof%2BNightmares%26view%3Dgrid"
+ },
+ "rarity": "mythic",
+ "related_uris": {
+  "edhrec": "https://edhrec.com/route/?cc=Brisela%2C+Voice+of+Nightmares",
+  "gatherer": "https://gatherer.wizards.com/Pages/Card/Details.aspx?multiverseid=686144&printed=false",
+  "tcgplayer_infinite_articles": "https://partner.tcgplayer.com/c/4931599/1830156/21018?subId1=api&trafcat=tcgplayer.com%2Fsearch%2Farticles&u=https%3A%2F%2Fwww.tcgplayer.com%2Fsearch%2Farticles%3FproductLineName%3Dmagic%26q%3DBrisela%252C%2BVoice%2Bof%2BNightmares",
+  "tcgplayer_infinite_decks": "https://partner.tcgplayer.com/c/4931599/1830156/21018?subId1=api&trafcat=tcgplayer.com%2Fsearch%2Fdecks&u=https%3A%2F%2Fwww.tcgplayer.com%2Fsearch%2Fdecks%3FproductLineName%3Dmagic%26q%3DBrisela%252C%2BVoice%2Bof%2BNightmares"
+ },
+ "released_at": "2025-01-24",
+ "reprint": true,
+ "reserved": false,
+ "rulings_uri": "https://api.scryfall.com/cards/7e926e19-553c-470a-afde-358541af5caa/rulings",
+ "scryfall_set_uri": "https://scryfall.com/sets/inr?utm_source=api",
+ "scryfall_uri": "https://scryfall.com/card/inr/14b/brisela-voice-of-nightmares?utm_source=api",
+ "set": "inr",
+ "set_id": "b9618c8c-9f31-4b42-9798-2991893c27bf",
+ "set_name": "Innistrad Remastered",
+ "set_search_uri": "https://api.scryfall.com/cards/search?order=set&q=e%3Ainr&unique=prints",
+ "set_type": "masters",
+ "set_uri": "https://api.scryfall.com/sets/b9618c8c-9f31-4b42-9798-2991893c27bf",
+ "story_spotlight": false,
+ "textless": false,
+ "toughness": "10",
+ "type_line": "Legendary Creature — Eldrazi Angel",
+ "uri": "https://api.scryfall.com/cards/7e926e19-553c-470a-afde-358541af5caa",
+ "variation": false
+}

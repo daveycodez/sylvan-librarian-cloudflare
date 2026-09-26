@@ -1,0 +1,181 @@
+{
+ "all_parts": [
+  {
+   "component": "combo_piece",
+   "id": "cd8586f9-97e2-438d-b74f-1e53c811f314",
+   "name": "Eldritch Moon Checklist",
+   "object": "related_card",
+   "type_line": "Card",
+   "uri": "https://api.scryfall.com/cards/cd8586f9-97e2-438d-b74f-1e53c811f314"
+  },
+  {
+   "component": "meld_result",
+   "id": "7e926e19-553c-470a-afde-358541af5caa",
+   "name": "Brisela, Voice of Nightmares",
+   "object": "related_card",
+   "type_line": "Legendary Creature — Eldrazi Angel",
+   "uri": "https://api.scryfall.com/cards/7e926e19-553c-470a-afde-358541af5caa"
+  },
+  {
+   "component": "meld_part",
+   "id": "6fccdb60-5fce-4a6e-a709-b986f9a4b653",
+   "name": "Bruna, the Fading Light",
+   "object": "related_card",
+   "type_line": "Legendary Creature — Angel Horror",
+   "uri": "https://api.scryfall.com/cards/6fccdb60-5fce-4a6e-a709-b986f9a4b653"
+  },
+  {
+   "component": "meld_part",
+   "id": "04506bad-3856-4184-8dda-941ded60f41a",
+   "name": "Gisela, the Broken Blade",
+   "object": "related_card",
+   "type_line": "Legendary Creature — Angel Horror",
+   "uri": "https://api.scryfall.com/cards/04506bad-3856-4184-8dda-941ded60f41a"
+  }
+ ],
+ "artist": "Clint Cearley",
+ "artist_ids": [
+  "03b75350-d5a0-4e3a-b3b4-8d4a5554385b"
+ ],
+ "booster": true,
+ "border_color": "black",
+ "card_back_id": "130c9fd0-22e2-434a-afc9-0890ce7b368c",
+ "cardmarket_id": 805028,
+ "cmc": 4.0,
+ "collector_number": "24",
+ "color_identity": [
+  "W"
+ ],
+ "colors": [
+  "W"
+ ],
+ "digital": false,
+ "edhrec_rank": 2574,
+ "finishes": [
+  "nonfoil",
+  "foil"
+ ],
+ "flavor_text": "She now hears only Emrakul's murmurs.",
+ "foil": true,
+ "frame": "2015",
+ "frame_effects": [
+  "legendary"
+ ],
+ "full_art": false,
+ "game_changer": false,
+ "games": [
+  "paper",
+  "mtgo"
+ ],
+ "highres_image": true,
+ "id": "04506bad-3856-4184-8dda-941ded60f41a",
+ "illustration_id": "db5289ab-8aa4-412d-afd4-f7b7fef475fb",
+ "image_status": "highres_scan",
+ "image_updated_at": "2026-07-13T02:03:01Z",
+ "image_uris": {
+  "art": "https://cards.scryfall.io/art/front/0/4/04506bad-3856-4184-8dda-941ded60f41a.webp?1783908181",
+  "art_crop": "https://cards.scryfall.io/art_crop/front/0/4/04506bad-3856-4184-8dda-941ded60f41a.jpg?1783908181",
+  "border_crop": "https://cards.scryfall.io/border_crop/front/0/4/04506bad-3856-4184-8dda-941ded60f41a.jpg?1783908181",
+  "crop": "https://cards.scryfall.io/crop/front/0/4/04506bad-3856-4184-8dda-941ded60f41a.webp?1783908181",
+  "display": "https://cards.scryfall.io/display/front/0/4/04506bad-3856-4184-8dda-941ded60f41a.webp?1783908181",
+  "grid": "https://cards.scryfall.io/grid/front/0/4/04506bad-3856-4184-8dda-941ded60f41a.webp?1783908181",
+  "large": "https://cards.scryfall.io/large/front/0/4/04506bad-3856-4184-8dda-941ded60f41a.jpg?1783908181",
+  "normal": "https://cards.scryfall.io/normal/front/0/4/04506bad-3856-4184-8dda-941ded60f41a.jpg?1783908181",
+  "png": "https://cards.scryfall.io/png/front/0/4/04506bad-3856-4184-8dda-941ded60f41a.png?1783908181",
+  "small": "https://cards.scryfall.io/small/front/0/4/04506bad-3856-4184-8dda-941ded60f41a.jpg?1783908181",
+  "thumb": "https://cards.scryfall.io/thumb/front/0/4/04506bad-3856-4184-8dda-941ded60f41a.webp?1783908181"
+ },
+ "keywords": [
+  "Flying",
+  "Lifelink",
+  "First strike",
+  "Meld"
+ ],
+ "lang": "en",
+ "layout": "meld",
+ "legalities": {
+  "alchemy": "not_legal",
+  "brawl": "legal",
+  "commander": "legal",
+  "competitivebrawl": "legal",
+  "duel": "legal",
+  "future": "not_legal",
+  "gladiator": "legal",
+  "historic": "legal",
+  "legacy": "legal",
+  "modern": "legal",
+  "oathbreaker": "legal",
+  "oldschool": "not_legal",
+  "pauper": "not_legal",
+  "paupercommander": "not_legal",
+  "penny": "legal",
+  "pioneer": "legal",
+  "predh": "not_legal",
+  "premodern": "not_legal",
+  "standard": "not_legal",
+  "standardbrawl": "not_legal",
+  "timeless": "legal",
+  "tlr": "not_legal",
+  "vintage": "legal"
+ },
+ "mana_cost": "{2}{W}{W}",
+ "mtgo_id": 135406,
+ "multiverse_ids": [
+  685840
+ ],
+ "name": "Gisela, the Broken Blade",
+ "nonfoil": true,
+ "object": "card",
+ "oracle_id": "f3e23d5e-bd88-4e7c-a3fb-db2a8cb05b22",
+ "oracle_text": "Flying, first strike, lifelink\nAt the beginning of your end step, if you both own and control Gisela and a creature named Bruna, the Fading Light, exile them, then meld them into Brisela, Voice of Nightmares.",
+ "oversized": false,
+ "penny_rank": 1791,
+ "power": "4",
+ "preview": {
+  "previewed_at": "2025-01-06",
+  "source": "Wizards of the Coast",
+  "source_uri": "https://magic.wizards.com/en/news/making-magic/the-ins-and-outs-of-innistrad-remastered"
+ },
+ "prices": {
+  "eur": "15.28",
+  "eur_foil": "19.15",
+  "tix": "0.15",
+  "usd": "22.51",
+  "usd_etched": null,
+  "usd_foil": "27.78"
+ },
+ "prints_search_uri": "https://api.scryfall.com/cards/search?order=released&q=oracleid%3Af3e23d5e-bd88-4e7c-a3fb-db2a8cb05b22&unique=prints",
+ "promo": false,
+ "purchase_uris": {
+  "cardhoarder": "https://www.cardhoarder.com/cards/135406?affiliate_id=scryfall&ref=card-profile&utm_campaign=affiliate&utm_medium=card&utm_source=scryfall",
+  "cardmarket": "https://www.cardmarket.com/en/Magic/Products?idProduct=805028&referrer=scryfall&utm_campaign=card_prices&utm_medium=text&utm_source=scryfall",
+  "tcgplayer": "https://partner.tcgplayer.com/c/4931599/1830156/21018?subId1=api&u=https%3A%2F%2Fwww.tcgplayer.com%2Fproduct%2F609601%3Fpage%3D1"
+ },
+ "rarity": "mythic",
+ "related_uris": {
+  "edhrec": "https://edhrec.com/route/?cc=Gisela%2C+the+Broken+Blade",
+  "gatherer": "https://gatherer.wizards.com/Pages/Card/Details.aspx?multiverseid=685840&printed=false",
+  "tcgplayer_infinite_articles": "https://partner.tcgplayer.com/c/4931599/1830156/21018?subId1=api&trafcat=tcgplayer.com%2Fsearch%2Farticles&u=https%3A%2F%2Fwww.tcgplayer.com%2Fsearch%2Farticles%3FproductLineName%3Dmagic%26q%3DGisela%252C%2Bthe%2BBroken%2BBlade",
+  "tcgplayer_infinite_decks": "https://partner.tcgplayer.com/c/4931599/1830156/21018?subId1=api&trafcat=tcgplayer.com%2Fsearch%2Fdecks&u=https%3A%2F%2Fwww.tcgplayer.com%2Fsearch%2Fdecks%3FproductLineName%3Dmagic%26q%3DGisela%252C%2Bthe%2BBroken%2BBlade"
+ },
+ "released_at": "2025-01-24",
+ "reprint": true,
+ "reserved": false,
+ "rulings_uri": "https://api.scryfall.com/cards/04506bad-3856-4184-8dda-941ded60f41a/rulings",
+ "scryfall_set_uri": "https://scryfall.com/sets/inr?utm_source=api",
+ "scryfall_uri": "https://scryfall.com/card/inr/24/gisela-the-broken-blade?utm_source=api",
+ "security_stamp": "oval",
+ "set": "inr",
+ "set_id": "b9618c8c-9f31-4b42-9798-2991893c27bf",
+ "set_name": "Innistrad Remastered",
+ "set_search_uri": "https://api.scryfall.com/cards/search?order=set&q=e%3Ainr&unique=prints",
+ "set_type": "masters",
+ "set_uri": "https://api.scryfall.com/sets/b9618c8c-9f31-4b42-9798-2991893c27bf",
+ "story_spotlight": false,
+ "tcgplayer_id": 609601,
+ "textless": false,
+ "toughness": "3",
+ "type_line": "Legendary Creature — Angel Horror",
+ "uri": "https://api.scryfall.com/cards/04506bad-3856-4184-8dda-941ded60f41a",
+ "variation": false
+}

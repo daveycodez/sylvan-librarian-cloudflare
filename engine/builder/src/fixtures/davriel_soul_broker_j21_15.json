@@ -1,0 +1,143 @@
+{
+ "all_parts": [
+  {
+   "component": "combo_piece",
+   "id": "2940839a-9aa3-4e0e-801e-ef927d40dd77",
+   "name": "Manor Guardian",
+   "object": "related_card",
+   "type_line": "Creature — Demon",
+   "uri": "https://api.scryfall.com/cards/2940839a-9aa3-4e0e-801e-ef927d40dd77"
+  },
+  {
+   "component": "combo_piece",
+   "id": "a6830e11-2f85-45b0-bd1f-cc66e5aa92c5",
+   "name": "Davriel, Soul Broker",
+   "object": "related_card",
+   "type_line": "Legendary Planeswalker — Davriel",
+   "uri": "https://api.scryfall.com/cards/a6830e11-2f85-45b0-bd1f-cc66e5aa92c5"
+  }
+ ],
+ "arena_id": 79373,
+ "artist": "Justine Cruz",
+ "artist_ids": [
+  "4d6acc42-7bac-42cb-ac57-a56355292e89"
+ ],
+ "booster": true,
+ "border_color": "black",
+ "card_back_id": "0aeebaf5-8c7d-4636-9e82-8c27447861f7",
+ "cmc": 4.0,
+ "collector_number": "15",
+ "color_identity": [
+  "B"
+ ],
+ "colors": [
+  "B"
+ ],
+ "digital": true,
+ "finishes": [
+  "nonfoil"
+ ],
+ "foil": false,
+ "frame": "2015",
+ "full_art": false,
+ "game_changer": false,
+ "games": [
+  "arena"
+ ],
+ "highres_image": true,
+ "id": "a6830e11-2f85-45b0-bd1f-cc66e5aa92c5",
+ "illustration_id": "941062ae-35d4-481b-8a83-d2f6337c5c93",
+ "image_status": "highres_scan",
+ "image_updated_at": "2026-07-13T06:58:12Z",
+ "image_uris": {
+  "art": "https://cards.scryfall.io/art/front/a/6/a6830e11-2f85-45b0-bd1f-cc66e5aa92c5.webp?1783925892",
+  "art_crop": "https://cards.scryfall.io/art_crop/front/a/6/a6830e11-2f85-45b0-bd1f-cc66e5aa92c5.jpg?1783925892",
+  "border_crop": "https://cards.scryfall.io/border_crop/front/a/6/a6830e11-2f85-45b0-bd1f-cc66e5aa92c5.jpg?1783925892",
+  "crop": "https://cards.scryfall.io/crop/front/a/6/a6830e11-2f85-45b0-bd1f-cc66e5aa92c5.webp?1783925892",
+  "display": "https://cards.scryfall.io/display/front/a/6/a6830e11-2f85-45b0-bd1f-cc66e5aa92c5.webp?1783925892",
+  "grid": "https://cards.scryfall.io/grid/front/a/6/a6830e11-2f85-45b0-bd1f-cc66e5aa92c5.webp?1783925892",
+  "large": "https://cards.scryfall.io/large/front/a/6/a6830e11-2f85-45b0-bd1f-cc66e5aa92c5.jpg?1783925892",
+  "normal": "https://cards.scryfall.io/normal/front/a/6/a6830e11-2f85-45b0-bd1f-cc66e5aa92c5.jpg?1783925892",
+  "png": "https://cards.scryfall.io/png/front/a/6/a6830e11-2f85-45b0-bd1f-cc66e5aa92c5.png?1783925892",
+  "small": "https://cards.scryfall.io/small/front/a/6/a6830e11-2f85-45b0-bd1f-cc66e5aa92c5.jpg?1783925892",
+  "thumb": "https://cards.scryfall.io/thumb/front/a/6/a6830e11-2f85-45b0-bd1f-cc66e5aa92c5.webp?1783925892"
+ },
+ "keywords": [],
+ "lang": "en",
+ "layout": "normal",
+ "legalities": {
+  "alchemy": "not_legal",
+  "brawl": "legal",
+  "commander": "not_legal",
+  "competitivebrawl": "legal",
+  "duel": "not_legal",
+  "future": "not_legal",
+  "gladiator": "legal",
+  "historic": "legal",
+  "legacy": "not_legal",
+  "modern": "not_legal",
+  "oathbreaker": "not_legal",
+  "oldschool": "not_legal",
+  "pauper": "not_legal",
+  "paupercommander": "not_legal",
+  "penny": "not_legal",
+  "pioneer": "not_legal",
+  "predh": "not_legal",
+  "premodern": "not_legal",
+  "standard": "not_legal",
+  "standardbrawl": "not_legal",
+  "timeless": "legal",
+  "tlr": "not_legal",
+  "vintage": "not_legal"
+ },
+ "loyalty": "4",
+ "mana_cost": "{2}{B}{B}",
+ "multiverse_ids": [
+  534594
+ ],
+ "name": "Davriel, Soul Broker",
+ "nonfoil": true,
+ "object": "card",
+ "oracle_id": "22b5721d-c187-4e0f-b752-52c2a26f3505",
+ "oracle_text": "+1: Until your next turn, whenever an opponent attacks you and/or planeswalkers you control, they discard a card. If they can't, they sacrifice an attacking creature.\n−2: Accept one of Davriel's offers, then accept one of Davriel's conditions.\n−3: Target creature an opponent controls perpetually gets -3/-3.",
+ "oversized": false,
+ "preview": {
+  "previewed_at": "2021-07-26",
+  "source": "IGN",
+  "source_uri": "https://www.ign.com/articles/jumpstart-historic-horizons-spoilers-mtg-arena-digital-only-card-reveal-details"
+ },
+ "prices": {
+  "eur": null,
+  "eur_foil": null,
+  "tix": null,
+  "usd": null,
+  "usd_etched": null,
+  "usd_foil": null
+ },
+ "prints_search_uri": "https://api.scryfall.com/cards/search?order=released&q=oracleid%3A22b5721d-c187-4e0f-b752-52c2a26f3505&unique=prints",
+ "promo": false,
+ "rarity": "mythic",
+ "related_uris": {
+  "edhrec": "https://edhrec.com/route/?cc=Davriel%2C+Soul+Broker",
+  "gatherer": "https://gatherer.wizards.com/Pages/Card/Details.aspx?multiverseid=534594&printed=false",
+  "tcgplayer_infinite_articles": "https://partner.tcgplayer.com/c/4931599/1830156/21018?subId1=api&trafcat=tcgplayer.com%2Fsearch%2Farticles&u=https%3A%2F%2Fwww.tcgplayer.com%2Fsearch%2Farticles%3FproductLineName%3Dmagic%26q%3DDavriel%252C%2BSoul%2BBroker",
+  "tcgplayer_infinite_decks": "https://partner.tcgplayer.com/c/4931599/1830156/21018?subId1=api&trafcat=tcgplayer.com%2Fsearch%2Fdecks&u=https%3A%2F%2Fwww.tcgplayer.com%2Fsearch%2Fdecks%3FproductLineName%3Dmagic%26q%3DDavriel%252C%2BSoul%2BBroker"
+ },
+ "released_at": "2021-08-26",
+ "reprint": false,
+ "reserved": false,
+ "rulings_uri": "https://api.scryfall.com/cards/a6830e11-2f85-45b0-bd1f-cc66e5aa92c5/rulings",
+ "scryfall_set_uri": "https://scryfall.com/sets/j21?utm_source=api",
+ "scryfall_uri": "https://scryfall.com/card/j21/15/davriel-soul-broker?utm_source=api",
+ "set": "j21",
+ "set_id": "e1cc23bd-379b-4f2c-a4e0-83fc1e7be023",
+ "set_name": "Jumpstart: Historic Horizons",
+ "set_search_uri": "https://api.scryfall.com/cards/search?order=set&q=e%3Aj21&unique=prints",
+ "set_type": "draft_innovation",
+ "set_uri": "https://api.scryfall.com/sets/e1cc23bd-379b-4f2c-a4e0-83fc1e7be023",
+ "story_spotlight": false,
+ "textless": false,
+ "type_line": "Legendary Planeswalker — Davriel",
+ "uri": "https://api.scryfall.com/cards/a6830e11-2f85-45b0-bd1f-cc66e5aa92c5",
+ "variation": false
+}

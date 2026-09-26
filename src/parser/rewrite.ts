@@ -183,15 +183,15 @@ const DERIVED_EXPANSIONS: ReadonlyMap<string, string> = new Map([
 	// two names for one cycle, like tangoland/battleland.
 	["is\u0000tricycleland", "otag:tricycle-land"], // 10, exact
 	// ── Non-land derivables ──────────────────────────────────────────────────
-	// Commander eligibility: legendary permanents with a printed toughness
-	// (creatures, Vehicles, Spacecraft -- toughness>=0, the parser-friendly
-	// spelling of toughness>-1; no legendary prints negative toughness and *
-	// compares as 0 on both engines) plus Backgrounds, plus rules text granting
-	// eligibility outright, MINUS the commander banlist.
-	[
-		"is\u0000commander",
-		'((t:legendary (toughness>=0 or t:background)) or o:"can be your commander") -banned:commander',
-	],
+	// NO `is:commander`, `is:brawler`, `is:duelcommander`, `is:oathbreaker` or `is:spell` HERE any
+	// more: all five are STORED tags since generation 55 (COMMANDER_IS_TAG and its neighbours in
+	// db-info.ts, decided by the builder's `commander_role_tags`). Their rewrites composed `t:`,
+	// `toughness>=0` and `o:` over the MERGED row, which is every face at once, so they answered
+	// for faces nobody casts — a flip card's legendary flipped half, a transform card's legendary
+	// back, a meld RESULT, a planeswalker back face — and `is:spell` let in Attractions and
+	// artifact lands. Who can lead a deck or be cast is a question about ONE face, and only the
+	// importer holds the faces. The vendored Python keeps upstream's rewrites; parity.test.ts
+	// names the five trees in PORT_ONLY_TREES.
 	// `is:partner` is "pairs as a commander", not "has the Partner keyword". Scryfall counts every
 	// pairing mechanic on a LEGENDARY card: Partner and its `Partner with` / `Partner—<group>` /
 	// Friends forever variants (all of which carry the plain `Partner` keyword), `Choose a
@@ -237,26 +237,10 @@ const DERIVED_EXPANSIONS: ReadonlyMap<string, string> = new Map([
 	// db-info.ts — with the rule and its 11-card residual written at the builder.
 	["is\u0000alchemy", "st:alchemy"],
 	["is\u0000masterpiece", "st:masterpiece"], // exact
-	// ── Eligibility, in the shape is:commander already uses ──────────────────
-	// Each validated separately against its own live list rather than rewritten to the format
-	// filter — they are strict SUBSETS of `f:oathbreaker` / `f:brawl` / `f:duel`, not equal to them.
-	// Measured 2026-08-16: every card Scryfall names is matched (the "is: minus shape" difference is
-	// ZERO in all three), and the shapes over-catch by 15 / 27 / 121 on 287 / 2,318 / 3,323. Adding
-	// the format banlist does not close the gap, so it is recorded rather than papered over — the
-	// same standing the filterland (20 vs 22) and gainland (43 vs 15) entries already have.
-	["is\u0000oathbreaker", "t:planeswalker f:oathbreaker"], // +15 / 287
-	["is\u0000brawler", '((t:legendary (toughness>=0 or t:background)) or o:"can be your commander") f:brawl'], // +27 / 2,318
-	["is\u0000duelcommander", '((t:legendary (toughness>=0 or t:background)) or o:"can be your commander") f:duel'], // +121 / 3,323
-	// Everything with a castable primary type on some face. Scryfall's own is:spell is FACE-level
-	// and this type union is not, so the two differ on the merged type lines: +48 / 31,760 measured
-	// against api.scryfall.com on 2026-08-16 (excluding funny sets, which are not imported), with
-	// ZERO misses — a strict superset, and the over-catch is the single-faced Artifact Lands plus
-	// Unfinity's Attractions. `-t:land` was the other candidate and is worse in both directions:
-	// 173 over, 87 under, because it drops the modal DFCs whose front face is a spell.
-	[
-		"is\u0000spell",
-		"t:artifact or t:battle or t:creature or t:enchantment or t:instant or t:kindred or t:planeswalker or t:sorcery",
-	],
+	// (`is:oathbreaker`, `is:brawler`, `is:duelcommander` and `is:spell` lived here; the
+	// over-catch their notes recorded — +15 / +27 / +121 and +48 — was the merged-row face bug plus
+	// what no rewrite could read: duel's `restricted` ("banned as commander"), `competitivebrawl`,
+	// and which faces are cast. All four are stored tags now; see the note above `is:partner`.)
 	// A printing that is not a reprint IS the first printing, exactly — not approximately. Measured
 	// on api.scryfall.com 2026-08-16: `is:firstprinting is:reprint` and `-is:firstprinting
 	// -is:reprint` are both empty, so the two partition the printing space; `e:khm` is 425 prints,

@@ -1,0 +1,196 @@
+{
+ "all_parts": [
+  {
+   "component": "combo_piece",
+   "id": "f3dcc7b5-c911-44c9-be5a-087298ddb492",
+   "name": "Magic Origins Checklist",
+   "object": "related_card",
+   "type_line": "Card",
+   "uri": "https://api.scryfall.com/cards/f3dcc7b5-c911-44c9-be5a-087298ddb492"
+  },
+  {
+   "component": "combo_piece",
+   "id": "58c39df6-b237-40d1-bdcb-2fe5d05392a9",
+   "name": "Kytheon, Hero of Akros // Gideon, Battle-Forged",
+   "object": "related_card",
+   "type_line": "Legendary Creature — Human Soldier // Legendary Planeswalker — Gideon",
+   "uri": "https://api.scryfall.com/cards/58c39df6-b237-40d1-bdcb-2fe5d05392a9"
+  }
+ ],
+ "artist": "Willian Murai",
+ "artist_ids": [
+  "5a553c8e-e3b9-40e0-bde5-1db621c53939"
+ ],
+ "booster": true,
+ "border_color": "black",
+ "card_faces": [
+  {
+   "artist": "Willian Murai",
+   "artist_id": "5a553c8e-e3b9-40e0-bde5-1db621c53939",
+   "colors": [
+    "W"
+   ],
+   "illustration_id": "abc512f2-9ddf-46cd-975b-69b0ff395851",
+   "image_uris": {
+    "art": "https://cards.scryfall.io/art/front/5/8/58c39df6-b237-40d1-bdcb-2fe5d05392a9.webp?1783938364",
+    "art_crop": "https://cards.scryfall.io/art_crop/front/5/8/58c39df6-b237-40d1-bdcb-2fe5d05392a9.jpg?1783938364",
+    "border_crop": "https://cards.scryfall.io/border_crop/front/5/8/58c39df6-b237-40d1-bdcb-2fe5d05392a9.jpg?1783938364",
+    "crop": "https://cards.scryfall.io/crop/front/5/8/58c39df6-b237-40d1-bdcb-2fe5d05392a9.webp?1783938364",
+    "display": "https://cards.scryfall.io/display/front/5/8/58c39df6-b237-40d1-bdcb-2fe5d05392a9.webp?1783938364",
+    "grid": "https://cards.scryfall.io/grid/front/5/8/58c39df6-b237-40d1-bdcb-2fe5d05392a9.webp?1783938364",
+    "large": "https://cards.scryfall.io/large/front/5/8/58c39df6-b237-40d1-bdcb-2fe5d05392a9.jpg?1783938364",
+    "normal": "https://cards.scryfall.io/normal/front/5/8/58c39df6-b237-40d1-bdcb-2fe5d05392a9.jpg?1783938364",
+    "png": "https://cards.scryfall.io/png/front/5/8/58c39df6-b237-40d1-bdcb-2fe5d05392a9.png?1783938364",
+    "small": "https://cards.scryfall.io/small/front/5/8/58c39df6-b237-40d1-bdcb-2fe5d05392a9.jpg?1783938364",
+    "thumb": "https://cards.scryfall.io/thumb/front/5/8/58c39df6-b237-40d1-bdcb-2fe5d05392a9.webp?1783938364"
+   },
+   "mana_cost": "{W}",
+   "name": "Kytheon, Hero of Akros",
+   "object": "card_face",
+   "oracle_text": "At end of combat, if Kytheon and at least two other creatures attacked this combat, exile Kytheon, then return him to the battlefield transformed under his owner's control.\n{2}{W}: Kytheon gains indestructible until end of turn.",
+   "power": "2",
+   "toughness": "1",
+   "type_line": "Legendary Creature — Human Soldier"
+  },
+  {
+   "artist": "Willian Murai",
+   "artist_id": "5a553c8e-e3b9-40e0-bde5-1db621c53939",
+   "color_indicator": [
+    "W"
+   ],
+   "colors": [
+    "W"
+   ],
+   "illustration_id": "e57a3c5b-2b82-475e-a8b8-92d05d60962b",
+   "image_uris": {
+    "art": "https://cards.scryfall.io/art/back/5/8/58c39df6-b237-40d1-bdcb-2fe5d05392a9.webp?1783938364",
+    "art_crop": "https://cards.scryfall.io/art_crop/back/5/8/58c39df6-b237-40d1-bdcb-2fe5d05392a9.jpg?1783938364",
+    "border_crop": "https://cards.scryfall.io/border_crop/back/5/8/58c39df6-b237-40d1-bdcb-2fe5d05392a9.jpg?1783938364",
+    "crop": "https://cards.scryfall.io/crop/back/5/8/58c39df6-b237-40d1-bdcb-2fe5d05392a9.webp?1783938364",
+    "display": "https://cards.scryfall.io/display/back/5/8/58c39df6-b237-40d1-bdcb-2fe5d05392a9.webp?1783938364",
+    "grid": "https://cards.scryfall.io/grid/back/5/8/58c39df6-b237-40d1-bdcb-2fe5d05392a9.webp?1783938364",
+    "large": "https://cards.scryfall.io/large/back/5/8/58c39df6-b237-40d1-bdcb-2fe5d05392a9.jpg?1783938364",
+    "normal": "https://cards.scryfall.io/normal/back/5/8/58c39df6-b237-40d1-bdcb-2fe5d05392a9.jpg?1783938364",
+    "png": "https://cards.scryfall.io/png/back/5/8/58c39df6-b237-40d1-bdcb-2fe5d05392a9.png?1783938364",
+    "small": "https://cards.scryfall.io/small/back/5/8/58c39df6-b237-40d1-bdcb-2fe5d05392a9.jpg?1783938364",
+    "thumb": "https://cards.scryfall.io/thumb/back/5/8/58c39df6-b237-40d1-bdcb-2fe5d05392a9.webp?1783938364"
+   },
+   "loyalty": "3",
+   "mana_cost": "",
+   "name": "Gideon, Battle-Forged",
+   "object": "card_face",
+   "oracle_text": "+2: Up to one target creature an opponent controls attacks Gideon during its controller's next turn if able.\n+1: Until your next turn, target creature gains indestructible. Untap that creature.\n0: Until end of turn, Gideon becomes a 4/4 Human Soldier creature with indestructible that's still a planeswalker. Prevent all damage that would be dealt to him this turn.",
+   "type_line": "Legendary Planeswalker — Gideon"
+  }
+ ],
+ "cardmarket_id": 283342,
+ "cmc": 1.0,
+ "collector_number": "23",
+ "color_identity": [
+  "W"
+ ],
+ "digital": false,
+ "edhrec_rank": 11325,
+ "finishes": [
+  "nonfoil",
+  "foil"
+ ],
+ "foil": true,
+ "frame": "2015",
+ "frame_effects": [
+  "originpwdfc"
+ ],
+ "full_art": false,
+ "game_changer": false,
+ "games": [
+  "paper",
+  "mtgo"
+ ],
+ "highres_image": true,
+ "id": "58c39df6-b237-40d1-bdcb-2fe5d05392a9",
+ "image_status": "highres_scan",
+ "image_updated_at": "2026-07-13T10:26:04Z",
+ "keywords": [
+  "Transform"
+ ],
+ "lang": "en",
+ "layout": "transform",
+ "legalities": {
+  "alchemy": "not_legal",
+  "brawl": "legal",
+  "commander": "legal",
+  "competitivebrawl": "legal",
+  "duel": "legal",
+  "future": "not_legal",
+  "gladiator": "legal",
+  "historic": "legal",
+  "legacy": "legal",
+  "modern": "legal",
+  "oathbreaker": "legal",
+  "oldschool": "not_legal",
+  "pauper": "not_legal",
+  "paupercommander": "not_legal",
+  "penny": "legal",
+  "pioneer": "legal",
+  "predh": "not_legal",
+  "premodern": "not_legal",
+  "standard": "not_legal",
+  "standardbrawl": "not_legal",
+  "timeless": "legal",
+  "tlr": "legal",
+  "vintage": "legal"
+ },
+ "mtgo_foil_id": 57877,
+ "mtgo_id": 57876,
+ "multiverse_ids": [
+  398428,
+  398429
+ ],
+ "name": "Kytheon, Hero of Akros // Gideon, Battle-Forged",
+ "nonfoil": true,
+ "object": "card",
+ "oracle_id": "e49d745c-5130-4b54-bcbb-643b08528456",
+ "oversized": false,
+ "penny_rank": 131,
+ "prices": {
+  "eur": "1.88",
+  "eur_foil": "4.88",
+  "tix": "0.02",
+  "usd": "1.71",
+  "usd_etched": null,
+  "usd_foil": "6.40"
+ },
+ "prints_search_uri": "https://api.scryfall.com/cards/search?order=released&q=oracleid%3Ae49d745c-5130-4b54-bcbb-643b08528456&unique=prints",
+ "promo": false,
+ "purchase_uris": {
+  "cardhoarder": "https://www.cardhoarder.com/cards/57876?affiliate_id=scryfall&ref=card-profile&utm_campaign=affiliate&utm_medium=card&utm_source=scryfall",
+  "cardmarket": "https://www.cardmarket.com/en/Magic/Products?idProduct=283342&referrer=scryfall&utm_campaign=card_prices&utm_medium=text&utm_source=scryfall",
+  "tcgplayer": "https://partner.tcgplayer.com/c/4931599/1830156/21018?subId1=api&u=https%3A%2F%2Fwww.tcgplayer.com%2Fproduct%2F99958%3Fpage%3D1"
+ },
+ "rarity": "mythic",
+ "related_uris": {
+  "edhrec": "https://edhrec.com/route/?cc=Kytheon%2C+Hero+of+Akros",
+  "gatherer": "https://gatherer.wizards.com/Pages/Card/Details.aspx?multiverseid=398428&printed=false",
+  "tcgplayer_infinite_articles": "https://partner.tcgplayer.com/c/4931599/1830156/21018?subId1=api&trafcat=tcgplayer.com%2Fsearch%2Farticles&u=https%3A%2F%2Fwww.tcgplayer.com%2Fsearch%2Farticles%3FproductLineName%3Dmagic%26q%3DKytheon%252C%2BHero%2Bof%2BAkros%2B%252F%252F%2BGideon%252C%2BBattle-Forged",
+  "tcgplayer_infinite_decks": "https://partner.tcgplayer.com/c/4931599/1830156/21018?subId1=api&trafcat=tcgplayer.com%2Fsearch%2Fdecks&u=https%3A%2F%2Fwww.tcgplayer.com%2Fsearch%2Fdecks%3FproductLineName%3Dmagic%26q%3DKytheon%252C%2BHero%2Bof%2BAkros%2B%252F%252F%2BGideon%252C%2BBattle-Forged"
+ },
+ "released_at": "2015-07-17",
+ "reprint": false,
+ "reserved": false,
+ "rulings_uri": "https://api.scryfall.com/cards/58c39df6-b237-40d1-bdcb-2fe5d05392a9/rulings",
+ "scryfall_set_uri": "https://scryfall.com/sets/ori?utm_source=api",
+ "scryfall_uri": "https://scryfall.com/card/ori/23/kytheon-hero-of-akros-gideon-battle-forged?utm_source=api",
+ "security_stamp": "oval",
+ "set": "ori",
+ "set_id": "0eeb9a9a-20ac-404d-b55f-aeb7a43a7f62",
+ "set_name": "Magic Origins",
+ "set_search_uri": "https://api.scryfall.com/cards/search?order=set&q=e%3Aori&unique=prints",
+ "set_type": "core",
+ "set_uri": "https://api.scryfall.com/sets/0eeb9a9a-20ac-404d-b55f-aeb7a43a7f62",
+ "story_spotlight": false,
+ "tcgplayer_id": 99958,
+ "textless": false,
+ "type_line": "Legendary Creature — Human Soldier // Legendary Planeswalker — Gideon",
+ "uri": "https://api.scryfall.com/cards/58c39df6-b237-40d1-bdcb-2fe5d05392a9",
+ "variation": false
+}

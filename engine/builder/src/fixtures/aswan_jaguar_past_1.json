@@ -1,0 +1,122 @@
+{
+ "artist": "Pat Lewis",
+ "artist_ids": [
+  "3130411f-ddd5-4cab-a2f4-0a9c3b95a26e"
+ ],
+ "booster": false,
+ "border_color": "black",
+ "card_back_id": "0aeebaf5-8c7d-4636-9e82-8c27447861f7",
+ "cmc": 3.0,
+ "collector_number": "1",
+ "color_identity": [
+  "G"
+ ],
+ "colors": [
+  "G"
+ ],
+ "digital": true,
+ "finishes": [
+  "nonfoil"
+ ],
+ "foil": false,
+ "frame": "1997",
+ "full_art": false,
+ "game_changer": false,
+ "games": [
+  "astral"
+ ],
+ "highres_image": false,
+ "id": "76fab0bc-abc0-4e9f-ae06-b7d748cb073d",
+ "illustration_id": "5fd55524-5cdc-4a17-b907-e8e594567a1c",
+ "image_status": "lowres",
+ "image_updated_at": "2026-07-13T12:47:44Z",
+ "image_uris": {
+  "art": "https://cards.scryfall.io/art/front/7/6/76fab0bc-abc0-4e9f-ae06-b7d748cb073d.webp?1783946864",
+  "art_crop": "https://cards.scryfall.io/art_crop/front/7/6/76fab0bc-abc0-4e9f-ae06-b7d748cb073d.jpg?1783946864",
+  "border_crop": "https://cards.scryfall.io/border_crop/front/7/6/76fab0bc-abc0-4e9f-ae06-b7d748cb073d.jpg?1783946864",
+  "crop": "https://cards.scryfall.io/crop/front/7/6/76fab0bc-abc0-4e9f-ae06-b7d748cb073d.webp?1783946864",
+  "display": "https://cards.scryfall.io/display/front/7/6/76fab0bc-abc0-4e9f-ae06-b7d748cb073d.webp?1783946864",
+  "grid": "https://cards.scryfall.io/grid/front/7/6/76fab0bc-abc0-4e9f-ae06-b7d748cb073d.webp?1783946864",
+  "large": "https://cards.scryfall.io/large/front/7/6/76fab0bc-abc0-4e9f-ae06-b7d748cb073d.jpg?1783946864",
+  "normal": "https://cards.scryfall.io/normal/front/7/6/76fab0bc-abc0-4e9f-ae06-b7d748cb073d.jpg?1783946864",
+  "png": "https://cards.scryfall.io/png/front/7/6/76fab0bc-abc0-4e9f-ae06-b7d748cb073d.png?1783946864",
+  "small": "https://cards.scryfall.io/small/front/7/6/76fab0bc-abc0-4e9f-ae06-b7d748cb073d.jpg?1783946864",
+  "thumb": "https://cards.scryfall.io/thumb/front/7/6/76fab0bc-abc0-4e9f-ae06-b7d748cb073d.webp?1783946864"
+ },
+ "keywords": [],
+ "lang": "en",
+ "layout": "normal",
+ "legalities": {
+  "alchemy": "not_legal",
+  "brawl": "not_legal",
+  "commander": "not_legal",
+  "competitivebrawl": "not_legal",
+  "duel": "not_legal",
+  "future": "not_legal",
+  "gladiator": "not_legal",
+  "historic": "not_legal",
+  "legacy": "not_legal",
+  "modern": "not_legal",
+  "oathbreaker": "not_legal",
+  "oldschool": "not_legal",
+  "pauper": "not_legal",
+  "paupercommander": "not_legal",
+  "penny": "not_legal",
+  "pioneer": "not_legal",
+  "predh": "not_legal",
+  "premodern": "not_legal",
+  "standard": "not_legal",
+  "standardbrawl": "not_legal",
+  "timeless": "not_legal",
+  "tlr": "not_legal",
+  "vintage": "not_legal"
+ },
+ "mana_cost": "{1}{G}{G}",
+ "multiverse_ids": [],
+ "name": "Aswan Jaguar",
+ "nonfoil": true,
+ "object": "card",
+ "oracle_id": "9ab97610-76ad-4631-825e-8596dc9cfd4c",
+ "oracle_text": "When Aswan Jaguar comes into play, choose a random creature type from those in target opponent's deck.\n{G}{G}, {T}: Bury target creature of the chosen type.",
+ "oversized": false,
+ "power": "2",
+ "prices": {
+  "eur": null,
+  "eur_foil": null,
+  "tix": null,
+  "usd": null,
+  "usd_etched": null,
+  "usd_foil": null
+ },
+ "prints_search_uri": "https://api.scryfall.com/cards/search?order=released&q=oracleid%3A9ab97610-76ad-4631-825e-8596dc9cfd4c&unique=prints",
+ "promo": false,
+ "purchase_uris": {
+  "cardhoarder": "https://www.cardhoarder.com/cards?affiliate_id=scryfall&data%5Bsearch%5D=Aswan+Jaguar&ref=card-profile&utm_campaign=affiliate&utm_medium=card&utm_source=scryfall",
+  "cardmarket": "https://www.cardmarket.com/en/Magic/Products/Search?referrer=scryfall&searchString=Aswan+Jaguar&utm_campaign=card_prices&utm_medium=text&utm_source=scryfall",
+  "tcgplayer": "https://partner.tcgplayer.com/c/4931599/1830156/21018?subId1=api&u=https%3A%2F%2Fwww.tcgplayer.com%2Fsearch%2Fmagic%2Fproduct%3FproductLineName%3Dmagic%26q%3DAswan%2BJaguar%26view%3Dgrid"
+ },
+ "rarity": "common",
+ "related_uris": {
+  "edhrec": "https://edhrec.com/route/?cc=Aswan+Jaguar",
+  "tcgplayer_infinite_articles": "https://partner.tcgplayer.com/c/4931599/1830156/21018?subId1=api&trafcat=tcgplayer.com%2Fsearch%2Farticles&u=https%3A%2F%2Fwww.tcgplayer.com%2Fsearch%2Farticles%3FproductLineName%3Dmagic%26q%3DAswan%2BJaguar",
+  "tcgplayer_infinite_decks": "https://partner.tcgplayer.com/c/4931599/1830156/21018?subId1=api&trafcat=tcgplayer.com%2Fsearch%2Fdecks&u=https%3A%2F%2Fwww.tcgplayer.com%2Fsearch%2Fdecks%3FproductLineName%3Dmagic%26q%3DAswan%2BJaguar"
+ },
+ "released_at": "1997-04-01",
+ "reprint": false,
+ "reserved": false,
+ "rulings_uri": "https://api.scryfall.com/cards/76fab0bc-abc0-4e9f-ae06-b7d748cb073d/rulings",
+ "scryfall_set_uri": "https://scryfall.com/sets/past?utm_source=api",
+ "scryfall_uri": "https://scryfall.com/card/past/1/aswan-jaguar?utm_source=api",
+ "set": "past",
+ "set_id": "9ca75b06-d9c5-4245-9bba-f2751f8d50a5",
+ "set_name": "Astral Cards",
+ "set_search_uri": "https://api.scryfall.com/cards/search?order=set&q=e%3Apast&unique=prints",
+ "set_type": "box",
+ "set_uri": "https://api.scryfall.com/sets/9ca75b06-d9c5-4245-9bba-f2751f8d50a5",
+ "story_spotlight": false,
+ "textless": false,
+ "toughness": "2",
+ "type_line": "Summon Jaguar",
+ "uri": "https://api.scryfall.com/cards/76fab0bc-abc0-4e9f-ae06-b7d748cb073d",
+ "variation": false
+}
