@@ -30,9 +30,16 @@ mock.module("cloudflare:workers", () => ({
 	},
 }));
 
+/** x22: every bundle the fake engine was asked for, as its arguments. */
+const bundlesAsked: unknown[][] = [];
+
 const fakeEngine = {
 	searchCardsAsObjects: async () => ({ totalCards: 1, cards: [] }),
 	searchCardsAsJson: async () => ({ totalCards: 1, cards: "[]" }),
+	scryfallNamedFuzzyBundle: async (...args: unknown[]) => {
+		bundlesAsked.push(args);
+		return { exact: { rank: null, present: false, card: null }, fuzzy: null, candidates: [], contained: [] };
+	},
 };
 
 /** The two-step publish's call log, asserted by the prepare/commit suite below. */
@@ -57,6 +64,9 @@ let gatherStore: {
 	ops: unknown;
 } | null = null;
 
+/** x22: what this object's names index plans for a fuzzy needle (null: it cannot plan). */
+let fuzzyPlanAnswer: { partitions: number[]; everywhere: boolean; stage: string; builtAt: string } | null = null;
+
 /** n15: what this object's names index answers a gathered search (null: it cannot say). */
 let namesIndexAnswer: number[] | null = null;
 /** n15: the builds namesSearchPartitions was asked for. */
@@ -70,9 +80,10 @@ mock.module("../../src/engine/store", () => ({
 	},
 	// n8: imported by search-engine-do for scryfallAutocompleteNames; nothing here routes to it.
 	autocompleteFromNames: async () => [],
-	// n15: the fuzzy plan's; nothing here routes to it.
+	// n15: the fuzzy plan's; x22's suite sets what it answers.
 	namesFuzzyPlan: async () => {
-		throw new Error("no names index");
+		if (fuzzyPlanAnswer === null) throw new Error("no names index");
+		return fuzzyPlanAnswer;
 	},
 	collectionPacketOf: () => new Uint8Array(),
 	getEngine: async () => {
@@ -741,5 +752,46 @@ describe("a name-only gather asks only the partitions its names index names (n15
 		// The pruned run asked partition 1 (and re-asked it as a straggler); the fallback asks all.
 		expect(asked.includes(0)).toBe(true);
 		expect(asked.includes(2)).toBe(true);
+	});
+});
+
+describe("the fuzzy plan's object answers its own bundle in the same call (x22)", () => {
+	type PlanDo = {
+		scryfallNamedFuzzyPlan(
+			folded: string,
+			words: string[],
+			reportedShards?: number,
+			own?: { partition: number; limit: number; baseUrl: string },
+		): Promise<{ partitions: number[]; everywhere: boolean; bundle?: unknown }>;
+	};
+	const planDo = () => makeDo() as unknown as PlanDo;
+	const own = { partition: 4, limit: 2, baseUrl: "https://x" };
+
+	afterEach(() => {
+		fuzzyPlanAnswer = null;
+		bundlesAsked.length = 0;
+	});
+
+	test("a plan naming this object's partition, or every partition, carries its bundle", async () => {
+		for (const plan of [
+			{ partitions: [1, 4], everywhere: false, stage: "typo", builtAt: "1" },
+			{ partitions: [], everywhere: true, stage: "contained", builtAt: "1" },
+		]) {
+			fuzzyPlanAnswer = plan;
+			bundlesAsked.length = 0;
+			const reply = await planDo().scryfallNamedFuzzyPlan("shok", ["shok"], 1, own);
+			expect(reply.partitions).toEqual(plan.partitions);
+			expect(reply.bundle).toBeDefined();
+			// The bundle's own arguments; never a set (a set= needle is never planned).
+			expect(bundlesAsked).toEqual([["shok", "", ["shok"], 2, "https://x"]]);
+		}
+	});
+
+	test("a plan leaving this object out, or a router that did not ask, computes no bundle", async () => {
+		fuzzyPlanAnswer = { partitions: [1], everywhere: false, stage: "typo", builtAt: "1" };
+		expect((await planDo().scryfallNamedFuzzyPlan("shok", ["shok"], 1, own)).bundle).toBeUndefined();
+		fuzzyPlanAnswer = { partitions: [], everywhere: true, stage: "contained", builtAt: "1" };
+		expect((await planDo().scryfallNamedFuzzyPlan("shok", ["shok"], 1)).bundle).toBeUndefined();
+		expect(bundlesAsked).toEqual([]);
 	});
 });

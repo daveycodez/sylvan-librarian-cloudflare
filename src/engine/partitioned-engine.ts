@@ -62,8 +62,14 @@
 //   named fuzzy (scryfallNamedFuzzy)   1 plan from ONE object's names index (n15),
 //                                      then one round of bundles from only the
 //                                      partitions the plan names (the winner's,
-//                                      usually; none for a miss) — 2 calls where
-//                                      it was N. Without an index, or with set=:
+//                                      usually) — 2 calls where it was N, 1 when
+//                                      the plan object is the winner's (x22: its
+//                                      own bundle rides the plan's call). A
+//                                      needle the index cannot settle because
+//                                      the answer may be a FOREIGN printed name
+//                                      (the index holds none) asks all N — every
+//                                      miss does — N calls with the plan's, where
+//                                      it was N + 1. Without an index, or set=:
 //                                      ONE round of N bundles — exact probe,
 //                                      typo candidates and local race, and
 //                                      containment from each partition at once,
@@ -787,6 +793,15 @@ export class PartitionedEngine implements Engine {
 
 	/** n15: the stage the names index's fuzzy plan settled on, or null when no plan was used. */
 	namedFuzzyPlanStage: string | null = null;
+
+	/**
+	 * x22: whether the fuzzy plan asked EVERY partition (the containment stage may need the foreign
+	 * printed names the index does not carry), or null when no plan was used. Logged as `wide=`.
+	 */
+	namedFuzzyWide: boolean | null = null;
+
+	/** x22: how many partitions' bundles the fuzzy merge read — the plan object's included. Logged as `bundles=`. */
+	namedFuzzyBundles: number | null = null;
 
 	/**
 	 * Whether this request's search was ANSWERED by one pinned partition — an oracle id's owner or a
@@ -1553,11 +1568,16 @@ export class PartitionedEngine implements Engine {
 		// A routed MISS the hint settles is the exact stage's answer too (`scryfallExactName` returns
 		// it without asking further), so the other partitions' ranks are not consulted.
 		let exactSettledMiss = false;
+		this.namedFuzzyWide = null;
+		this.namedFuzzyBundles = null;
 		if (hint !== null) {
 			const first = hintPartition(hint);
 			const reply = await bundle(first);
 			if (nameReplySettles(hint, reply.exact.rank, reply.exact.present)) {
-				if (reply.exact.rank !== null && reply.exact.card !== null) return { status: "card", card: reply.exact.card };
+				if (reply.exact.rank !== null && reply.exact.card !== null) {
+					this.namedFuzzyBundles = 1;
+					return { status: "card", card: reply.exact.card };
+				}
 				exactSettledMiss = reply.exact.rank === null;
 			}
 			replies[first] = reply;
@@ -1565,8 +1585,10 @@ export class PartitionedEngine implements Engine {
 		// n15: ONE object's names index names the partitions whose bundles can change the answer; every
 		// other partition's bundle is read as answering nothing (EMPTY_NAMED_FUZZY_BUNDLE), which the
 		// plan proves it would. No plan (no index, a set scope, an object that cannot say): all of them.
-		const plan = setCode === "" ? await this.namedFuzzyPlan(folded, words) : null;
+		// x22: the plan object answers its own bundle in the plan's call when the plan names it.
+		const plan = setCode === "" ? await this.namedFuzzyPlan(folded, words, replies, baseUrl) : null;
 		const wanted = plan === null || plan.everywhere ? Array.from({ length: this.n }, (_, p) => p) : plan.partitions;
+		this.namedFuzzyWide = plan === null ? null : plan.everywhere;
 		await Promise.all(
 			wanted
 				.filter((p) => replies[p] === undefined)
@@ -1574,6 +1596,7 @@ export class PartitionedEngine implements Engine {
 					replies[p] = await bundle(p);
 				}),
 		);
+		this.namedFuzzyBundles = replies.filter((r) => r !== undefined).length;
 		// Array.from, not map: `replies` is sparse, and map skips its holes.
 		const filled = Array.from({ length: this.n }, (_, p) => replies[p] ?? EMPTY_NAMED_FUZZY_BUNDLE);
 		const merged = mergeNamedFuzzyBundles(filled, words, NAMED_CONTAINMENT_LIMIT, exactSettledMiss);
@@ -1587,15 +1610,29 @@ export class PartitionedEngine implements Engine {
 	 * needle, like the gather coordinator — or null to ask every partition: the manifest names no
 	 * names blob, the object cannot plan (a format-1 blob, the build before n15, a stuck object), or
 	 * it planned from another build than this request's (partition numbers mean nothing across builds).
+	 *
+	 * x22: the plan object is a partition object, so it is asked for its OWN bundle in the same call
+	 * (unless `replies` already holds it, from the routed probe), and answers it when its plan names
+	 * it: the bundle is filled into `replies` here, and the fan-out skips it. An `everywhere` plan —
+	 * a needle only the foreign printed names could answer, which the index does not carry, and so
+	 * every miss — is N calls in all where it was N + 1. A bundle rides only an ACCEPTED plan: one
+	 * from another build numbers its partitions differently.
 	 */
-	private async namedFuzzyPlan(folded: string, words: string[]): Promise<NamedFuzzyPlan | null> {
+	private async namedFuzzyPlan(
+		folded: string,
+		words: string[],
+		replies: (NamedFuzzyBundle | undefined)[],
+		baseUrl: string,
+	): Promise<NamedFuzzyPlan | null> {
 		if (!cardNamesOf(this.manifest)) return null;
 		const p = gatherPartitionOf(`named:${folded}`, this.n);
+		const own = replies[p] === undefined ? { partition: p, limit: NAMED_CONTAINMENT_LIMIT, baseUrl } : undefined;
 		try {
-			const plan = await this.at(p).scryfallNamedFuzzyPlan(folded, words);
+			const plan = await this.at(p).scryfallNamedFuzzyPlan(folded, words, own);
 			if (plan.builtAt !== String(this.manifest.built_at ?? "")) return null;
 			if (plan.partitions.some((q) => !Number.isInteger(q) || q < 0 || q >= this.n)) return null;
 			this.namedFuzzyPlanStage = plan.stage;
+			if (own !== undefined && plan.bundle !== undefined) replies[p] = plan.bundle;
 			return plan;
 		} catch (err) {
 			console.warn(`named fuzzy: no plan from partition ${p}'s names index (${err}); asking every partition`);

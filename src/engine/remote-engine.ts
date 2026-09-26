@@ -20,7 +20,8 @@ import type {
 	ExactNameProbe,
 	FuzzyCandidateWire,
 	NamedFuzzyBundle,
-	NamedFuzzyPlan,
+	NamedFuzzyOwnBundle,
+	NamedFuzzyPlanReply,
 	ResultShape,
 	ScryfallFuzzyResult,
 	SearchPageEnvelope,
@@ -120,7 +121,12 @@ interface SearchEngineStub {
 		limit: number,
 		reportedShards?: number,
 	): Promise<{ names: string[] } & Telemetry>;
-	scryfallNamedFuzzyPlan(folded: string, words: string[], reportedShards?: number): Promise<NamedFuzzyPlan & Telemetry>;
+	scryfallNamedFuzzyPlan(
+		folded: string,
+		words: string[],
+		reportedShards?: number,
+		own?: NamedFuzzyOwnBundle,
+	): Promise<NamedFuzzyPlanReply & Telemetry>;
 	scryfallExactName(
 		folded: string,
 		setCode: string,
@@ -1020,12 +1026,23 @@ export class RemoteEngine implements Engine {
 
 	/** n15: which partitions `/cards/named?fuzzy=` must ask, planned by this one object from its names
 	 * index (see the DO's scryfallNamedFuzzyPlan). Throws where the object cannot — the router then
-	 * asks every partition. */
-	async scryfallNamedFuzzyPlan(folded: string, words: string[]): Promise<NamedFuzzyPlan> {
-		const { partitions, everywhere, stage, builtAt } = await this.searchRpc("scryfallNamedFuzzyPlan", (stub, shards) =>
-			stub.scryfallNamedFuzzyPlan(folded, words, shards),
+	 * asks every partition. With `own` (x22) the reply also carries this object's own bundle when the
+	 * plan names its partition; an object on the build before x22 never carries one. */
+	async scryfallNamedFuzzyPlan(
+		folded: string,
+		words: string[],
+		own?: NamedFuzzyOwnBundle,
+	): Promise<NamedFuzzyPlanReply> {
+		const { partitions, everywhere, stage, builtAt, bundle } = await this.searchRpc(
+			"scryfallNamedFuzzyPlan",
+			(stub, shards) =>
+				own === undefined
+					? stub.scryfallNamedFuzzyPlan(folded, words, shards)
+					: stub.scryfallNamedFuzzyPlan(folded, words, shards, own),
 		);
-		return { partitions, everywhere, stage, builtAt };
+		return bundle === undefined
+			? { partitions, everywhere, stage, builtAt }
+			: { partitions, everywhere, stage, builtAt, bundle };
 	}
 
 	/** n8: the whole corpus's autocomplete from this one object's card-names blob (see the DO's

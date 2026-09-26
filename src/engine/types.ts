@@ -474,6 +474,23 @@ export interface NamedFuzzyPlan {
 	builtAt: string;
 }
 
+/**
+ * x22: the plan object's OWN bundle, asked in the plan's call. The plan object is a partition object
+ * too, and a plan that names its partition — every `everywhere` plan, which is every miss the index
+ * cannot settle — used to cost it a second call for its bundle. `partition` is its number as the
+ * router counts them; the rest are the bundle's own arguments (no set: a set= needle is never planned).
+ */
+export interface NamedFuzzyOwnBundle {
+	partition: number;
+	limit: number;
+	baseUrl: string;
+}
+
+/** A plan, and — when the router asked for it and the plan names the object's partition — its bundle. */
+export interface NamedFuzzyPlanReply extends NamedFuzzyPlan {
+	bundle?: NamedFuzzyBundle;
+}
+
 /** One cross-partition fuzzy candidate, decoded off the wasm `fuzzy_candidates` packet.
  * `oracleId` is the global card identity the race's "a card never competes with itself" rule
  * keys on; `vpid` is partition-local and unused by the race. */

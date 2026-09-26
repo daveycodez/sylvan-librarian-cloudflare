@@ -881,10 +881,20 @@ async function namedFuzzy(
 	} finally {
 		// One line per miss of the Workers Cache, values-free like `cards/search:`'s: which stage the
 		// names index planned (`-` when no plan was used — a set scope, no index) and what it cost.
+		// `calls` is every partition RPC (the plan's, which carries the plan object's own bundle when
+		// its plan names it, included); after the status, x22's two: `wide=1` when the plan asked
+		// every partition because the answer may lie in a foreign printed name the index does not
+		// carry (`-` with no plan), and `bundles=` how many partitions' bundles were merged.
 		// Grep "cards/named fuzzy:".
-		const partitioned = engine as { partitionCalls?: number; namedFuzzyPlanStage?: string | null };
+		const partitioned = engine as {
+			partitionCalls?: number;
+			namedFuzzyPlanStage?: string | null;
+			namedFuzzyWide?: boolean | null;
+			namedFuzzyBundles?: number | null;
+		};
+		const wide = partitioned.namedFuzzyWide == null ? "-" : partitioned.namedFuzzyWide ? 1 : 0;
 		console.log(
-			`cards/named fuzzy: plan=${partitioned.namedFuzzyPlanStage ?? "-"} set=${setCode ? 1 : 0} calls=${partitioned.partitionCalls ?? -1} status=${status}`,
+			`cards/named fuzzy: plan=${partitioned.namedFuzzyPlanStage ?? "-"} set=${setCode ? 1 : 0} calls=${partitioned.partitionCalls ?? -1} status=${status} wide=${wide} bundles=${partitioned.namedFuzzyBundles ?? "-"}`,
 		);
 	}
 	return scryfallJson(notFoundError(`No cards found matching “${fuzzy}”`), pretty, CARDS_CACHE);

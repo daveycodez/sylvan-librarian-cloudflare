@@ -3009,6 +3009,1084 @@
 					"contained": []
 				}
 			]
+		},
+		{
+			"label": "not found: a sentence (production's 2026-09-26 misses are sentences)",
+			"fuzzy": "blue creatures that combo infinitely",
+			"set": "",
+			"hint": null,
+			"expect": "miss",
+			"partitions": [
+				{
+					"rank": null,
+					"present": false,
+					"exact": null,
+					"candidates": [],
+					"fuzzy": {
+						"status": "miss",
+						"card": null
+					},
+					"contained": []
+				},
+				{
+					"rank": null,
+					"present": false,
+					"exact": null,
+					"candidates": [],
+					"fuzzy": {
+						"status": "miss",
+						"card": null
+					},
+					"contained": []
+				},
+				{
+					"rank": null,
+					"present": false,
+					"exact": null,
+					"candidates": [],
+					"fuzzy": {
+						"status": "miss",
+						"card": null
+					},
+					"contained": []
+				},
+				{
+					"rank": null,
+					"present": false,
+					"exact": null,
+					"candidates": [],
+					"fuzzy": {
+						"status": "miss",
+						"card": null
+					},
+					"contained": []
+				},
+				{
+					"rank": null,
+					"present": false,
+					"exact": null,
+					"candidates": [],
+					"fuzzy": {
+						"status": "miss",
+						"card": null
+					},
+					"contained": []
+				},
+				{
+					"rank": null,
+					"present": false,
+					"exact": null,
+					"candidates": [],
+					"fuzzy": {
+						"status": "miss",
+						"card": null
+					},
+					"contained": []
+				},
+				{
+					"rank": null,
+					"present": false,
+					"exact": null,
+					"candidates": [],
+					"fuzzy": {
+						"status": "miss",
+						"card": null
+					},
+					"contained": []
+				},
+				{
+					"rank": null,
+					"present": false,
+					"exact": null,
+					"candidates": [],
+					"fuzzy": {
+						"status": "miss",
+						"card": null
+					},
+					"contained": []
+				},
+				{
+					"rank": null,
+					"present": false,
+					"exact": null,
+					"candidates": [],
+					"fuzzy": {
+						"status": "miss",
+						"card": null
+					},
+					"contained": []
+				},
+				{
+					"rank": null,
+					"present": false,
+					"exact": null,
+					"candidates": [],
+					"fuzzy": {
+						"status": "miss",
+						"card": null
+					},
+					"contained": []
+				}
+			]
+		},
+		{
+			"label": "not found: a sentence",
+			"fuzzy": "cards that lower equip cost",
+			"set": "",
+			"hint": null,
+			"expect": "miss",
+			"partitions": [
+				{
+					"rank": null,
+					"present": false,
+					"exact": null,
+					"candidates": [],
+					"fuzzy": {
+						"status": "miss",
+						"card": null
+					},
+					"contained": []
+				},
+				{
+					"rank": null,
+					"present": false,
+					"exact": null,
+					"candidates": [],
+					"fuzzy": {
+						"status": "miss",
+						"card": null
+					},
+					"contained": []
+				},
+				{
+					"rank": null,
+					"present": false,
+					"exact": null,
+					"candidates": [],
+					"fuzzy": {
+						"status": "miss",
+						"card": null
+					},
+					"contained": []
+				},
+				{
+					"rank": null,
+					"present": false,
+					"exact": null,
+					"candidates": [],
+					"fuzzy": {
+						"status": "miss",
+						"card": null
+					},
+					"contained": []
+				},
+				{
+					"rank": null,
+					"present": false,
+					"exact": null,
+					"candidates": [],
+					"fuzzy": {
+						"status": "miss",
+						"card": null
+					},
+					"contained": []
+				},
+				{
+					"rank": null,
+					"present": false,
+					"exact": null,
+					"candidates": [],
+					"fuzzy": {
+						"status": "miss",
+						"card": null
+					},
+					"contained": []
+				},
+				{
+					"rank": null,
+					"present": false,
+					"exact": null,
+					"candidates": [],
+					"fuzzy": {
+						"status": "miss",
+						"card": null
+					},
+					"contained": []
+				},
+				{
+					"rank": null,
+					"present": false,
+					"exact": null,
+					"candidates": [],
+					"fuzzy": {
+						"status": "miss",
+						"card": null
+					},
+					"contained": []
+				},
+				{
+					"rank": null,
+					"present": false,
+					"exact": null,
+					"candidates": [],
+					"fuzzy": {
+						"status": "miss",
+						"card": null
+					},
+					"contained": []
+				},
+				{
+					"rank": null,
+					"present": false,
+					"exact": null,
+					"candidates": [],
+					"fuzzy": {
+						"status": "miss",
+						"card": null
+					},
+					"contained": []
+				}
+			]
+		},
+		{
+			"label": "not found: one word no name comes near",
+			"fuzzy": "littlebones",
+			"set": "",
+			"hint": null,
+			"expect": "miss",
+			"partitions": [
+				{
+					"rank": null,
+					"present": false,
+					"exact": null,
+					"candidates": [],
+					"fuzzy": {
+						"status": "miss",
+						"card": null
+					},
+					"contained": []
+				},
+				{
+					"rank": null,
+					"present": false,
+					"exact": null,
+					"candidates": [],
+					"fuzzy": {
+						"status": "miss",
+						"card": null
+					},
+					"contained": []
+				},
+				{
+					"rank": null,
+					"present": false,
+					"exact": null,
+					"candidates": [],
+					"fuzzy": {
+						"status": "miss",
+						"card": null
+					},
+					"contained": []
+				},
+				{
+					"rank": null,
+					"present": false,
+					"exact": null,
+					"candidates": [],
+					"fuzzy": {
+						"status": "miss",
+						"card": null
+					},
+					"contained": []
+				},
+				{
+					"rank": null,
+					"present": false,
+					"exact": null,
+					"candidates": [],
+					"fuzzy": {
+						"status": "miss",
+						"card": null
+					},
+					"contained": []
+				},
+				{
+					"rank": null,
+					"present": false,
+					"exact": null,
+					"candidates": [],
+					"fuzzy": {
+						"status": "miss",
+						"card": null
+					},
+					"contained": []
+				},
+				{
+					"rank": null,
+					"present": false,
+					"exact": null,
+					"candidates": [],
+					"fuzzy": {
+						"status": "miss",
+						"card": null
+					},
+					"contained": []
+				},
+				{
+					"rank": null,
+					"present": false,
+					"exact": null,
+					"candidates": [],
+					"fuzzy": {
+						"status": "miss",
+						"card": null
+					},
+					"contained": []
+				},
+				{
+					"rank": null,
+					"present": false,
+					"exact": null,
+					"candidates": [],
+					"fuzzy": {
+						"status": "miss",
+						"card": null
+					},
+					"contained": []
+				},
+				{
+					"rank": null,
+					"present": false,
+					"exact": null,
+					"candidates": [],
+					"fuzzy": {
+						"status": "miss",
+						"card": null
+					},
+					"contained": []
+				}
+			]
+		},
+		{
+			"label": "not found: a typo of a printed name (printed names get no typo tolerance)",
+			"fuzzy": "blitzschlagg",
+			"set": "",
+			"hint": null,
+			"expect": "miss",
+			"partitions": [
+				{
+					"rank": null,
+					"present": false,
+					"exact": null,
+					"candidates": [],
+					"fuzzy": {
+						"status": "miss",
+						"card": null
+					},
+					"contained": []
+				},
+				{
+					"rank": null,
+					"present": false,
+					"exact": null,
+					"candidates": [],
+					"fuzzy": {
+						"status": "miss",
+						"card": null
+					},
+					"contained": []
+				},
+				{
+					"rank": null,
+					"present": false,
+					"exact": null,
+					"candidates": [],
+					"fuzzy": {
+						"status": "miss",
+						"card": null
+					},
+					"contained": []
+				},
+				{
+					"rank": null,
+					"present": false,
+					"exact": null,
+					"candidates": [],
+					"fuzzy": {
+						"status": "miss",
+						"card": null
+					},
+					"contained": []
+				},
+				{
+					"rank": null,
+					"present": false,
+					"exact": null,
+					"candidates": [],
+					"fuzzy": {
+						"status": "miss",
+						"card": null
+					},
+					"contained": []
+				},
+				{
+					"rank": null,
+					"present": false,
+					"exact": null,
+					"candidates": [],
+					"fuzzy": {
+						"status": "miss",
+						"card": null
+					},
+					"contained": []
+				},
+				{
+					"rank": null,
+					"present": false,
+					"exact": null,
+					"candidates": [],
+					"fuzzy": {
+						"status": "miss",
+						"card": null
+					},
+					"contained": []
+				},
+				{
+					"rank": null,
+					"present": false,
+					"exact": null,
+					"candidates": [],
+					"fuzzy": {
+						"status": "miss",
+						"card": null
+					},
+					"contained": []
+				},
+				{
+					"rank": null,
+					"present": false,
+					"exact": null,
+					"candidates": [],
+					"fuzzy": {
+						"status": "miss",
+						"card": null
+					},
+					"contained": []
+				},
+				{
+					"rank": null,
+					"present": false,
+					"exact": null,
+					"candidates": [],
+					"fuzzy": {
+						"status": "miss",
+						"card": null
+					},
+					"contained": []
+				}
+			]
+		},
+		{
+			"label": "not found: a typo of a printed name, several words",
+			"fuzzy": "ego a derva",
+			"set": "",
+			"hint": null,
+			"expect": "miss",
+			"partitions": [
+				{
+					"rank": null,
+					"present": false,
+					"exact": null,
+					"candidates": [],
+					"fuzzy": {
+						"status": "miss",
+						"card": null
+					},
+					"contained": []
+				},
+				{
+					"rank": null,
+					"present": false,
+					"exact": null,
+					"candidates": [],
+					"fuzzy": {
+						"status": "miss",
+						"card": null
+					},
+					"contained": []
+				},
+				{
+					"rank": null,
+					"present": false,
+					"exact": null,
+					"candidates": [],
+					"fuzzy": {
+						"status": "miss",
+						"card": null
+					},
+					"contained": []
+				},
+				{
+					"rank": null,
+					"present": false,
+					"exact": null,
+					"candidates": [],
+					"fuzzy": {
+						"status": "miss",
+						"card": null
+					},
+					"contained": []
+				},
+				{
+					"rank": null,
+					"present": false,
+					"exact": null,
+					"candidates": [],
+					"fuzzy": {
+						"status": "miss",
+						"card": null
+					},
+					"contained": []
+				},
+				{
+					"rank": null,
+					"present": false,
+					"exact": null,
+					"candidates": [],
+					"fuzzy": {
+						"status": "miss",
+						"card": null
+					},
+					"contained": []
+				},
+				{
+					"rank": null,
+					"present": false,
+					"exact": null,
+					"candidates": [],
+					"fuzzy": {
+						"status": "miss",
+						"card": null
+					},
+					"contained": []
+				},
+				{
+					"rank": null,
+					"present": false,
+					"exact": null,
+					"candidates": [],
+					"fuzzy": {
+						"status": "miss",
+						"card": null
+					},
+					"contained": []
+				},
+				{
+					"rank": null,
+					"present": false,
+					"exact": null,
+					"candidates": [],
+					"fuzzy": {
+						"status": "miss",
+						"card": null
+					},
+					"contained": []
+				},
+				{
+					"rank": null,
+					"present": false,
+					"exact": null,
+					"candidates": [],
+					"fuzzy": {
+						"status": "miss",
+						"card": null
+					},
+					"contained": []
+				}
+			]
+		},
+		{
+			"label": "not found: only an art series contains it",
+			"fuzzy": "mighty kobold",
+			"set": "",
+			"hint": null,
+			"expect": "miss",
+			"partitions": [
+				{
+					"rank": null,
+					"present": false,
+					"exact": null,
+					"candidates": [],
+					"fuzzy": {
+						"status": "miss",
+						"card": null
+					},
+					"contained": []
+				},
+				{
+					"rank": null,
+					"present": false,
+					"exact": null,
+					"candidates": [],
+					"fuzzy": {
+						"status": "miss",
+						"card": null
+					},
+					"contained": []
+				},
+				{
+					"rank": null,
+					"present": false,
+					"exact": null,
+					"candidates": [],
+					"fuzzy": {
+						"status": "miss",
+						"card": null
+					},
+					"contained": []
+				},
+				{
+					"rank": null,
+					"present": false,
+					"exact": null,
+					"candidates": [],
+					"fuzzy": {
+						"status": "miss",
+						"card": null
+					},
+					"contained": []
+				},
+				{
+					"rank": null,
+					"present": false,
+					"exact": null,
+					"candidates": [],
+					"fuzzy": {
+						"status": "miss",
+						"card": null
+					},
+					"contained": []
+				},
+				{
+					"rank": null,
+					"present": false,
+					"exact": null,
+					"candidates": [],
+					"fuzzy": {
+						"status": "miss",
+						"card": null
+					},
+					"contained": []
+				},
+				{
+					"rank": null,
+					"present": false,
+					"exact": null,
+					"candidates": [],
+					"fuzzy": {
+						"status": "miss",
+						"card": null
+					},
+					"contained": []
+				},
+				{
+					"rank": null,
+					"present": false,
+					"exact": null,
+					"candidates": [],
+					"fuzzy": {
+						"status": "miss",
+						"card": null
+					},
+					"contained": []
+				},
+				{
+					"rank": null,
+					"present": false,
+					"exact": null,
+					"candidates": [],
+					"fuzzy": {
+						"status": "miss",
+						"card": null
+					},
+					"contained": []
+				},
+				{
+					"rank": null,
+					"present": false,
+					"exact": null,
+					"candidates": [],
+					"fuzzy": {
+						"status": "miss",
+						"card": null
+					},
+					"contained": []
+				}
+			]
+		},
+		{
+			"label": "containment: a word only a printed name carries (why the plan cannot settle a miss)",
+			"fuzzy": "red goad",
+			"set": "",
+			"hint": null,
+			"expect": "card:Unmoored Ego",
+			"partitions": [
+				{
+					"rank": null,
+					"present": false,
+					"exact": null,
+					"candidates": [],
+					"fuzzy": {
+						"status": "miss",
+						"card": null
+					},
+					"contained": []
+				},
+				{
+					"rank": null,
+					"present": false,
+					"exact": null,
+					"candidates": [],
+					"fuzzy": {
+						"status": "miss",
+						"card": null
+					},
+					"contained": []
+				},
+				{
+					"rank": null,
+					"present": false,
+					"exact": null,
+					"candidates": [],
+					"fuzzy": {
+						"status": "miss",
+						"card": null
+					},
+					"contained": []
+				},
+				{
+					"rank": null,
+					"present": false,
+					"exact": null,
+					"candidates": [],
+					"fuzzy": {
+						"status": "miss",
+						"card": null
+					},
+					"contained": []
+				},
+				{
+					"rank": null,
+					"present": false,
+					"exact": null,
+					"candidates": [],
+					"fuzzy": {
+						"status": "miss",
+						"card": null
+					},
+					"contained": []
+				},
+				{
+					"rank": null,
+					"present": false,
+					"exact": null,
+					"candidates": [],
+					"fuzzy": {
+						"status": "miss",
+						"card": null
+					},
+					"contained": []
+				},
+				{
+					"rank": null,
+					"present": false,
+					"exact": null,
+					"candidates": [],
+					"fuzzy": {
+						"status": "miss",
+						"card": null
+					},
+					"contained": []
+				},
+				{
+					"rank": null,
+					"present": false,
+					"exact": null,
+					"candidates": [],
+					"fuzzy": {
+						"status": "miss",
+						"card": null
+					},
+					"contained": []
+				},
+				{
+					"rank": null,
+					"present": false,
+					"exact": null,
+					"candidates": [],
+					"fuzzy": {
+						"status": "miss",
+						"card": null
+					},
+					"contained": []
+				},
+				{
+					"rank": null,
+					"present": false,
+					"exact": null,
+					"candidates": [],
+					"fuzzy": {
+						"status": "miss",
+						"card": null
+					},
+					"contained": [
+						{
+							"name": "Unmoored Ego",
+							"printed_name": "Ego à Deriva",
+							"set": "grn",
+							"collector_number": "212"
+						}
+					]
+				}
+			]
+		},
+		{
+			"label": "not found within a set",
+			"fuzzy": "zzzz qqqq",
+			"set": "m11",
+			"hint": null,
+			"expect": "miss",
+			"partitions": [
+				{
+					"rank": null,
+					"present": false,
+					"exact": null,
+					"candidates": [],
+					"fuzzy": {
+						"status": "miss",
+						"card": null
+					},
+					"contained": []
+				},
+				{
+					"rank": null,
+					"present": false,
+					"exact": null,
+					"candidates": [],
+					"fuzzy": {
+						"status": "miss",
+						"card": null
+					},
+					"contained": []
+				},
+				{
+					"rank": null,
+					"present": false,
+					"exact": null,
+					"candidates": [],
+					"fuzzy": {
+						"status": "miss",
+						"card": null
+					},
+					"contained": []
+				},
+				{
+					"rank": null,
+					"present": false,
+					"exact": null,
+					"candidates": [],
+					"fuzzy": {
+						"status": "miss",
+						"card": null
+					},
+					"contained": []
+				},
+				{
+					"rank": null,
+					"present": false,
+					"exact": null,
+					"candidates": [],
+					"fuzzy": {
+						"status": "miss",
+						"card": null
+					},
+					"contained": []
+				},
+				{
+					"rank": null,
+					"present": false,
+					"exact": null,
+					"candidates": [],
+					"fuzzy": {
+						"status": "miss",
+						"card": null
+					},
+					"contained": []
+				},
+				{
+					"rank": null,
+					"present": false,
+					"exact": null,
+					"candidates": [],
+					"fuzzy": {
+						"status": "miss",
+						"card": null
+					},
+					"contained": []
+				},
+				{
+					"rank": null,
+					"present": false,
+					"exact": null,
+					"candidates": [],
+					"fuzzy": {
+						"status": "miss",
+						"card": null
+					},
+					"contained": []
+				},
+				{
+					"rank": null,
+					"present": false,
+					"exact": null,
+					"candidates": [],
+					"fuzzy": {
+						"status": "miss",
+						"card": null
+					},
+					"contained": []
+				},
+				{
+					"rank": null,
+					"present": false,
+					"exact": null,
+					"candidates": [],
+					"fuzzy": {
+						"status": "miss",
+						"card": null
+					},
+					"contained": []
+				}
+			]
+		},
+		{
+			"label": "not found: a typo within a set the card is not in",
+			"fuzzy": "lihgtning bolt",
+			"set": "war",
+			"hint": null,
+			"expect": "miss",
+			"partitions": [
+				{
+					"rank": null,
+					"present": false,
+					"exact": null,
+					"candidates": [],
+					"fuzzy": {
+						"status": "miss",
+						"card": null
+					},
+					"contained": []
+				},
+				{
+					"rank": null,
+					"present": false,
+					"exact": null,
+					"candidates": [],
+					"fuzzy": {
+						"status": "miss",
+						"card": null
+					},
+					"contained": []
+				},
+				{
+					"rank": null,
+					"present": false,
+					"exact": null,
+					"candidates": [],
+					"fuzzy": {
+						"status": "miss",
+						"card": null
+					},
+					"contained": []
+				},
+				{
+					"rank": null,
+					"present": false,
+					"exact": null,
+					"candidates": [],
+					"fuzzy": {
+						"status": "miss",
+						"card": null
+					},
+					"contained": []
+				},
+				{
+					"rank": null,
+					"present": false,
+					"exact": null,
+					"candidates": [],
+					"fuzzy": {
+						"status": "miss",
+						"card": null
+					},
+					"contained": []
+				},
+				{
+					"rank": null,
+					"present": false,
+					"exact": null,
+					"candidates": [],
+					"fuzzy": {
+						"status": "miss",
+						"card": null
+					},
+					"contained": []
+				},
+				{
+					"rank": null,
+					"present": false,
+					"exact": null,
+					"candidates": [],
+					"fuzzy": {
+						"status": "miss",
+						"card": null
+					},
+					"contained": []
+				},
+				{
+					"rank": null,
+					"present": false,
+					"exact": null,
+					"candidates": [],
+					"fuzzy": {
+						"status": "miss",
+						"card": null
+					},
+					"contained": []
+				},
+				{
+					"rank": null,
+					"present": false,
+					"exact": null,
+					"candidates": [],
+					"fuzzy": {
+						"status": "miss",
+						"card": null
+					},
+					"contained": []
+				},
+				{
+					"rank": null,
+					"present": false,
+					"exact": null,
+					"candidates": [],
+					"fuzzy": {
+						"status": "miss",
+						"card": null
+					},
+					"contained": []
+				}
+			]
 		}
 	]
 }

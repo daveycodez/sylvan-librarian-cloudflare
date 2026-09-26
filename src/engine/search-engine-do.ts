@@ -105,7 +105,8 @@ import type {
 	ExactNameProbe,
 	FuzzyCandidateWire,
 	NamedFuzzyBundle,
-	NamedFuzzyPlan,
+	NamedFuzzyOwnBundle,
+	NamedFuzzyPlanReply,
 	ResultShape,
 	ScryfallFuzzyResult,
 	SearchPageEnvelope,
@@ -661,13 +662,26 @@ export class SearchEngine extends DurableObject<Env> {
 	 * WHOLE corpus from the names index beside this object's store (store.ts `namesFuzzyPlan`). A new
 	 * method, so an object on the build before it fails the call and the router asks every partition.
 	 * Throws where there is no index to plan from, likewise.
+	 *
+	 * x22: `own`, when the router sends it, asks for this object's OWN bundle in the same call, which
+	 * it answers only when the plan names this object's partition (`own.partition`, as the router
+	 * numbers them) or every partition — so the plan object is never asked twice, and a plan that
+	 * leaves it out costs nothing more. LAST and optional, so either build pairs with the other during
+	 * a rolling deploy: an object on the build before it ignores the argument and answers no bundle,
+	 * and the router then asks for it as it always did.
 	 */
 	async scryfallNamedFuzzyPlan(
 		folded: string,
 		words: string[],
 		reportedShards?: number,
-	): Promise<NamedFuzzyPlan & SearchTelemetry> {
-		return this.instrumented(reportedShards, async () => namesFuzzyPlan(this.env, this.loadContext(), folded, words));
+		own?: NamedFuzzyOwnBundle,
+	): Promise<NamedFuzzyPlanReply & SearchTelemetry> {
+		return this.instrumented(reportedShards, async (engine) => {
+			const plan = await namesFuzzyPlan(this.env, this.loadContext(), folded, words);
+			const wanted = own !== undefined && (plan.everywhere || plan.partitions.includes(own.partition));
+			if (!wanted || !engine.scryfallNamedFuzzyBundle) return plan;
+			return { ...plan, bundle: await engine.scryfallNamedFuzzyBundle(folded, "", words, own.limit, own.baseUrl) };
+		});
 	}
 
 	/**

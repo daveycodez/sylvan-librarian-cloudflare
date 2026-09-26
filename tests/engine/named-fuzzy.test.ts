@@ -9,7 +9,7 @@
 // exports by its own Rust test (`the_bundle_is_the_separate_exports_byte_for_byte`), so the two
 // tests together cover the path from the engine to the response.
 
-import { describe, expect, test } from "bun:test";
+import { describe, expect, spyOn, test } from "bun:test";
 import { bundleFromStages, type NamedFuzzyStages, resolveNamedFuzzyStaged } from "../../src/engine/named-fuzzy";
 import { gatherPartitionOf } from "../../src/engine/partition";
 import { mergeNamedFuzzyBundles, nameReplySettles, PartitionedEngine } from "../../src/engine/partitioned-engine";
@@ -25,6 +25,7 @@ import {
 	type Engine,
 	FUZZY_WEAK_BELOW,
 	type FuzzyCandidateWire,
+	type NamedFuzzyOwnBundle,
 	type ScryfallFuzzyResult,
 	type StoreManifest,
 } from "../../src/engine/types";
@@ -506,18 +507,30 @@ describe("a names-index plan asks only the partitions it names (n15)", () => {
 	type Plan = { partitions: number[]; everywhere: boolean; stage: string; builtAt: string };
 
 	/** The engines of `engines()`, over a manifest naming a names blob, whose plan object answers
-	 * `plan` (or throws it, when it is an Error). */
-	function planned(partitions: Stages[], plan: Plan | Error, routing: RoutingFilter | null = null) {
+	 * `plan` (or throws it, when it is an Error) — and, as the DO does since x22, its OWN bundle in
+	 * the same reply when the router asks for it and the plan names its partition (logged
+	 * `plan+bundle:<p>`). `legacy` is an object on the build before x22: it never carries one. */
+	function planned(partitions: Stages[], plan: Plan | Error, routing: RoutingFilter | null = null, legacy = false) {
 		const n = partitions.length;
 		const manifest = { ...manifestOf(n), names_key: "store:card-names-v1-100.store:0", names_bytes: 10 };
 		const calls: string[] = [];
 		const engine = new PartitionedEngine(
 			(p) =>
 				Object.assign(fakePartition(p, partitions[p] ?? MISS, calls), {
-					scryfallNamedFuzzyPlan: async () => {
-						calls.push(`plan:${p}`);
-						if (plan instanceof Error) throw plan;
-						return plan;
+					scryfallNamedFuzzyPlan: async (folded: string, words: string[], own?: NamedFuzzyOwnBundle) => {
+						if (plan instanceof Error) {
+							calls.push(`plan:${p}`);
+							throw plan;
+						}
+						if (own !== undefined) expect(own.partition).toBe(p);
+						const wanted = own !== undefined && (plan.everywhere || plan.partitions.includes(p));
+						if (legacy || !wanted) {
+							calls.push(`plan:${p}`);
+							return plan;
+						}
+						calls.push(`plan+bundle:${p}`);
+						const stages = stagesOf(partitions[p] ?? MISS);
+						return { ...plan, bundle: await bundleFromStages(stages, folded, "", words, own.limit, own.baseUrl) };
 					},
 				}) as unknown as RemoteEngine,
 			manifest,
@@ -528,13 +541,20 @@ describe("a names-index plan asks only the partitions it names (n15)", () => {
 		return { engine, staged, calls };
 	}
 
+	/** The partitions whose bundles reached the merge — asked alone, or riding the plan (x22) — ascending. */
+	const delivered = (calls: string[]) =>
+		calls
+			.filter((c) => c.startsWith("bundle:") || c.startsWith("plan+bundle:"))
+			.map((c) => Number(c.slice(c.indexOf(":") + 1)))
+			.sort((a, b) => a - b);
+
 	/** The partitions whose stages answer anything — what a sound plan must name. */
 	const answering = (partitions: Stages[]) =>
 		partitions.flatMap((s, p) =>
 			s.rank !== null || s.present || s.candidates.length > 0 || s.contained.length > 0 ? [p] : [],
 		);
 
-	test("every recorded needle: the plan's partitions alone give the staged answer, in 1 + |plan| calls", async () => {
+	test("every recorded needle: the plan's partitions alone give the staged answer, the plan object's own in the plan's call", async () => {
 		const cases = recorded.cases as unknown as { fuzzy: string; set: string; partitions: Stages[] }[];
 		let calls = 0;
 		for (const c of cases.filter((c) => c.set === "")) {
@@ -542,7 +562,9 @@ describe("a names-index plan asks only the partitions it names (n15)", () => {
 			const e = planned(c.partitions, plan);
 			const got = await respond(e.engine, c.fuzzy, "");
 			expect(got).toEqual(await respond(e.staged, c.fuzzy, ""));
-			expect(e.calls.length).toBe(1 + plan.partitions.length);
+			const planner = gatherPartitionOf(`named:${foldAccents(c.fuzzy.trim().toLowerCase())}`, 10);
+			expect(e.calls.length).toBe(1 + plan.partitions.filter((p) => p !== planner).length);
+			expect(delivered(e.calls)).toEqual(plan.partitions);
 			calls += e.calls.length;
 		}
 		// The point: far fewer than N per needle.
@@ -579,7 +601,7 @@ describe("a names-index plan asks only the partitions it names (n15)", () => {
 		]) {
 			const e = planned(partitions, plan);
 			expect(JSON.parse((await respond(e.engine, "shok", "")).body).name).toBe("Shock");
-			expect(e.calls.filter((c) => c.startsWith("bundle:")).length).toBe(10);
+			expect(delivered(e.calls)).toEqual(Array.from({ length: 10 }, (_, p) => p));
 		}
 		const scoped = planned(partitions, { partitions: [3], everywhere: false, stage: "typo", builtAt: "100" });
 		await respond(scoped.engine, "shok", "lea");
@@ -600,5 +622,131 @@ describe("a names-index plan asks only the partitions it names (n15)", () => {
 		const got = await respond(e.engine, folded, "");
 		expect(JSON.parse(got.body).name).toBe("Shock");
 		expect(e.calls.filter((c) => c.startsWith("bundle:"))).toEqual(["bundle:2", "bundle:5"]);
+	});
+
+	// ── x22: the plan object's own bundle rides the plan's call ─────────────────────────────────
+
+	/** A recorded case's per-partition answers, by needle (and set). */
+	const recordedCase = (fuzzy: string, set = "") => {
+		const c = (recorded.cases as unknown as { fuzzy: string; set: string; partitions: Stages[] }[]).find(
+			(c) => c.fuzzy === fuzzy && c.set === set,
+		);
+		if (!c) throw new Error(`no recorded case ${fuzzy} set=${set}`);
+		return c.partitions;
+	};
+	const plannerOf = (fuzzy: string) => gatherPartitionOf(`named:${foldAccents(fuzzy.trim().toLowerCase())}`, 10);
+	const everywhere = { partitions: [], everywhere: true, stage: "contained", builtAt: "100" };
+
+	/** api.scryfall.com's body for each, probed 2026-09-26 (x22) — these bytes: the not_found error,
+	 * two-space indented, the name in curly quotes. */
+	const scryfall404 = (fuzzy: string) =>
+		JSON.stringify(
+			{ object: "error", code: "not_found", status: 404, details: `No cards found matching “${fuzzy}”` },
+			null,
+			2,
+		);
+
+	test("x22: a miss the plan cannot settle is N calls where it was N + 1, and Scryfall's 404 byte for byte", async () => {
+		// Production's misses are sentences typed into the name box (2026-09-26). No name carries
+		// their words, but the index cannot say no FOREIGN printed name does, so the plan is
+		// `everywhere` — and the plan object's own bundle now rides the plan's call.
+		for (const fuzzy of [
+			"blue creatures that combo infinitely",
+			"cards that lower equip cost",
+			"littlebones",
+			"blitzschlagg",
+			"ego a derva",
+			"mighty kobold",
+		]) {
+			const e = planned(recordedCase(fuzzy), everywhere);
+			const got = await respond(e.engine, fuzzy, "");
+			expect(got).toEqual(await respond(e.staged, fuzzy, ""));
+			expect(got.status).toBe(404);
+			expect(got.body).toBe(scryfall404(fuzzy));
+			expect(e.calls).toContain(`plan+bundle:${plannerOf(fuzzy)}`);
+			expect(e.calls.length).toBe(10);
+			expect(delivered(e.calls)).toEqual(Array.from({ length: 10 }, (_, p) => p));
+		}
+	});
+
+	test("x22: why a miss-shaped plan asks everywhere — `red goad` is answered by a printed name alone", async () => {
+		// Unmoored Ego's Portuguese name, "Ego à Deriva", carries `goad` ("eg|o a d|eriva") and its
+		// oracle name `red`: api.scryfall.com answers that printing. The names index holds no
+		// printed names, so a plan that read this needle as a miss would answer 404.
+		const partitions = recordedCase("red goad");
+		const e = planned(partitions, everywhere);
+		const got = JSON.parse((await respond(e.engine, "red goad", "")).body);
+		expect(got.name).toBe("Unmoored Ego");
+		expect(got.printed_name).toBe("Ego à Deriva");
+		const blind = planned(partitions, { partitions: [], everywhere: false, stage: "miss", builtAt: "100" });
+		expect((await respond(blind.engine, "red goad", "")).status).toBe(404);
+	});
+
+	test("x22: a plan naming its own object's partition is ONE call", async () => {
+		const planner = plannerOf("shok");
+		const partitions = at(10, {
+			[planner]: { candidates: [cand(0.9, "o", "shock")], fuzzy: { status: "hit", card: named("Shock") } },
+		});
+		const e = planned(partitions, { partitions: [planner], everywhere: false, stage: "typo", builtAt: "100" });
+		expect(JSON.parse((await respond(e.engine, "shok", "")).body).name).toBe("Shock");
+		expect(e.calls).toEqual([`plan+bundle:${planner}`]);
+	});
+
+	test("x22: an object on the build before it carries no bundle, and is asked for one as before", async () => {
+		const fuzzy = "blue creatures that combo infinitely";
+		const e = planned(recordedCase(fuzzy), everywhere, null, true);
+		expect((await respond(e.engine, fuzzy, "")).body).toBe(scryfall404(fuzzy));
+		expect(e.calls.length).toBe(11);
+		expect(e.calls).toContain(`plan:${plannerOf(fuzzy)}`);
+		expect(delivered(e.calls)).toEqual(Array.from({ length: 10 }, (_, p) => p));
+	});
+
+	test("x22: a plan from another build is not used, and neither is its bundle", async () => {
+		const fuzzy = "littlebones";
+		const e = planned(recordedCase(fuzzy), { ...everywhere, builtAt: "99" });
+		expect((await respond(e.engine, fuzzy, "")).status).toBe(404);
+		// Its bundle came back, but the partition it numbers may not be this build's: all ten asked.
+		expect(e.calls.filter((c) => c.startsWith("bundle:")).length).toBe(10);
+	});
+
+	test("x22: a routed reply already holding the plan object's bundle is not asked for again", async () => {
+		const folded = "shok";
+		const planner = plannerOf(folded);
+		const partitions = at(10, {
+			[planner]: { candidates: [cand(0.9, "o", "shock")], fuzzy: { status: "hit", card: named("Shock") } },
+		});
+		const e = planned(
+			partitions,
+			{ partitions: [planner], everywhere: false, stage: "typo", builtAt: "100" },
+			filterFor(folded, { sole: planner }, 10),
+		);
+		expect(JSON.parse((await respond(e.engine, folded, "")).body).name).toBe("Shock");
+		expect(e.calls).toEqual([`bundle:${planner}`, `plan:${planner}`]);
+	});
+
+	test("x22: the log line says how wide the plan went and how many bundles were read", async () => {
+		const lines: string[] = [];
+		const log = spyOn(console, "log").mockImplementation((line: unknown) => {
+			lines.push(String(line));
+		});
+		try {
+			const fuzzy = "littlebones";
+			await respond(planned(recordedCase(fuzzy), everywhere).engine, fuzzy, "");
+			const planner = plannerOf("shok");
+			const partitions = at(10, {
+				[planner]: { candidates: [cand(0.9, "o", "shock")], fuzzy: { status: "hit", card: named("Shock") } },
+			});
+			const typo = { partitions: [planner], everywhere: false, stage: "typo", builtAt: "100" };
+			await respond(planned(partitions, typo).engine, "shok", "");
+			await respond(planned(recordedCase("zzzz qqqq", "m11"), everywhere).engine, "zzzz qqqq", "m11");
+		} finally {
+			log.mockRestore();
+		}
+		expect(lines.filter((l) => l.startsWith("cards/named fuzzy:"))).toEqual([
+			"cards/named fuzzy: plan=contained set=0 calls=10 status=miss wide=1 bundles=10",
+			"cards/named fuzzy: plan=typo set=0 calls=1 status=card wide=0 bundles=1",
+			// A set scope is never planned: every partition, as before.
+			"cards/named fuzzy: plan=- set=1 calls=10 status=miss wide=- bundles=10",
+		]);
 	});
 });
