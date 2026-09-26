@@ -38,7 +38,23 @@ const mem = (): WebAssembly.Memory => {
 };
 const view = (ptr: number, len: number) => new Uint8Array(mem().buffer, ptr, len);
 
-const EMIT = { LOG: 1, DRAFT: 2, STATS: 3, SPILL: 4, CHUNK: 5, ROW: 6, TAGDATA: 7 } as const;
+// Every kind src/lib.rs can emit (its `const EMIT_*: u32`), so a new one cannot reach the default
+// arm and fail the gate unseen: tests/import/wasm-import-driver-emits.test.ts reads both lists.
+const EMIT = {
+	LOG: 1,
+	DRAFT: 2,
+	STATS: 3,
+	SPILL: 4,
+	CHUNK: 5,
+	ROW: 6,
+	TAGDATA: 7,
+	ROUTING: 8,
+	INFLATE: 9,
+	TAG_ALIASES: 10,
+	ORACLE_PAIRS: 11,
+	CORPUS: 12,
+	NAMES: 13,
+} as const;
 
 const env = {
 	emit(kind: number, ptr: number, len: number) {
@@ -68,7 +84,17 @@ const env = {
 				rowLines.push(decoder.decode(bytes));
 				break;
 			case EMIT.TAGDATA:
-				break; // persistence path; not needed in-process
+			case EMIT.ROUTING:
+			case EMIT.INFLATE:
+			case EMIT.TAG_ALIASES:
+			case EMIT.ORACLE_PAIRS:
+			case EMIT.CORPUS:
+			case EMIT.NAMES:
+				// The coordinator's persistence and publish inputs (tag data, routing keys, the inflate
+				// checkpoint, alias maps, oracle pairs, the corpus snapshot, card names): this driver
+				// compares store rows only, so it has no consumer for them. n8's NAMES (13) reaching the
+				// default arm is what broke `bun run gate` from 66b63506 on.
+				break;
 			default:
 				throw new Error(`unknown emit kind ${kind}`);
 		}
