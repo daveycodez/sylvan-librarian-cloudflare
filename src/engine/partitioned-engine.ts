@@ -59,6 +59,11 @@
 //   search pinned to !"Name"           1, when the filter names ONE partition
 //                                      holding the name and it finds rows;
 //                                      else the gather
+//   search restricted to a card LIST   1 isolate RPC, to a coordinator INSIDE
+//   (`!"a" or !"b" …`, oracleid: lists, the k partitions the list's cards live
+//   ANDed with anything; y1)           in, which asks only those k (a gather of
+//                                      one when k = 1); oracle ids alone in one
+//                                      partition are a pin. See card-restriction.ts
 //   named fuzzy (scryfallNamedFuzzy)   1 plan from ONE object's names index (n15),
 //                                      then one round of bundles from only the
 //                                      partitions the plan names (the winner's,
@@ -101,6 +106,7 @@
 
 import { collateName, foldAccents } from "../parser/pystr";
 import { cardNamesOf } from "./card-names";
+import { type CardRestriction, cardRestrictionOf } from "./card-restriction";
 import { emptyCollectionAnswer } from "./collection-batch";
 import { edgeCacheUrl, readThroughEdgeCache } from "./edge-cache";
 import { NAMED_CONTAINMENT_LIMIT, resolveNamedFuzzyStaged, weakWinnerOrContained } from "./named-fuzzy";
@@ -847,6 +853,12 @@ export class PartitionedEngine implements Engine {
 	 */
 	pinnedAnswer = false;
 
+	/**
+	 * y1: `k/N` when this request's search was restricted to a list of cards living in k of the N
+	 * partitions (card-restriction.ts) and asked only those, else null. Logged as `list=`.
+	 */
+	listPartitions: string | null = null;
+
 	private at(partition: number): RemoteEngine {
 		this.partitionCalls++;
 		let e = this.engines.get(partition);
@@ -933,6 +945,26 @@ export class PartitionedEngine implements Engine {
 		return hint !== null && "sole" in hint ? hint.sole : null;
 	}
 
+	/**
+	 * Backlog y1: the partitions a query restricted to a LIST of cards can match in
+	 * (card-restriction.ts), or null — ask them all. Names are placed by this request's build's
+	 * routing filter (none yet: every name is unplaced), oracle ids by its modulus.
+	 */
+	private async restriction(opts: EngineSearchOptions): Promise<CardRestriction | null> {
+		// Cheap before any wait: a tree without a `!"name"` or an oracle id cannot be restricted.
+		const names = opts.filterTreeJson.includes('"ExactNameNode"');
+		if (!names && !opts.filterTreeJson.includes('"oracle_id"')) return null;
+		if (names) await this.routed();
+		// Without a filter every name reads null (ALL); a list of oracle ids needs none.
+		const restriction = cardRestrictionOf(
+			opts.filterTreeJson,
+			this.n,
+			(collated) => this.nameHintOf(collated),
+			opts.includeMultilingual === true,
+		);
+		return restriction !== null && restriction.partitions.length < this.n ? restriction : null;
+	}
+
 	private async pinnedOrGathered<T>(
 		opts: EngineSearchOptions,
 		pinned: (owner: RemoteEngine, partitionCount: number) => Promise<T>,
@@ -940,6 +972,8 @@ export class PartitionedEngine implements Engine {
 		/** Whether a pinned answer found nothing — a NAME pin then gathers (see pinnedNamePartition). */
 		empty: (answer: T) => boolean,
 	): Promise<T> {
+		// y1: the partitions a card-list query is restricted to, when that is fewer than all of them.
+		let restricted: CardRestriction | null = null;
 		const p = this.pinnedPartition(opts);
 		if (p !== null) {
 			try {
@@ -964,14 +998,48 @@ export class PartitionedEngine implements Engine {
 					if (!(err instanceof StaleModulusError) && !isStuckEngine(err)) throw err;
 					console.warn(`name-pinned search not answered by partition ${named} (${err}); gathering instead`);
 				}
+			} else {
+				restricted = await this.restriction(opts);
 			}
 		}
-		const coordinator = gatherPartitionOf(opts.filterTreeJson, this.n);
+		if (restricted !== null && restricted.names === 0 && restricted.partitions.length <= 1) {
+			// Oracle ids alone, all in one partition — or in none (two different ids ANDed), and then
+			// any one partition answers the empty page the gather would. Pinned like one id: an id's
+			// partition is the modulus's, whatever build the owner has loaded.
+			const owner = restricted.partitions[0] ?? gatherPartitionOf(opts.filterTreeJson, this.n);
+			this.listPartitions = `${restricted.partitions.length}/${this.n}`;
+			try {
+				const answer = await pinned(this.at(owner), this.n);
+				this.pinnedAnswer = true;
+				return answer;
+			} catch (err) {
+				if (!(err instanceof StaleModulusError) && !isStuckEngine(err)) throw err;
+				console.warn(`list-pinned search not answered by partition ${owner} (${err}); gathering instead`);
+				restricted = null;
+				this.listPartitions = null;
+			}
+		}
+		// A NAMED restriction is its build's filter's word, so even one partition is asked as a gather
+		// of one, which keeps the page only if it answered from that build — never as a pin, which
+		// checks the modulus alone. None at all (names ANDed apart) cannot be checked: ask everyone.
+		const only = restricted !== null && restricted.partitions.length > 0 ? restricted.partitions : null;
+		// The coordinator comes from the query text, among the partitions that will be asked.
+		const candidates = only ?? Array.from({ length: this.n }, (_, i) => i);
+		const at = gatherPartitionOf(opts.filterTreeJson, candidates.length);
+		const coordinator = candidates[at] as number;
+		let gatherOpts: EngineSearchOptions = opts;
 		// n15: the build this request is pinned to rides along, so the coordinator may answer a
 		// name-only filter from its names index — only when it has loaded this very build.
-		const gatherOpts: EngineSearchOptions = cardNamesOf(this.manifest)
-			? { ...opts, namesBuild: String(this.manifest.built_at ?? "") }
-			: opts;
+		if (cardNamesOf(this.manifest)) gatherOpts = { ...gatherOpts, namesBuild: String(this.manifest.built_at ?? "") };
+		if (only !== null) {
+			// y1: only these partitions are asked — kept by the coordinator only if they answer from
+			// this request's build, whose filter and modulus chose them.
+			gatherOpts = {
+				...gatherOpts,
+				gatherPartitions: { build: String(this.manifest.built_at ?? ""), partitions: only },
+			};
+			this.listPartitions = `${only.length}/${this.n}`;
+		}
 		try {
 			return await gathered(this.at(coordinator), gatherOpts);
 		} catch (err) {
@@ -979,7 +1047,16 @@ export class PartitionedEngine implements Engine {
 			// object: one object that has stopped answering would take that query down until the next
 			// deploy. Any partition can coordinate a gather, so the next one takes over — once.
 			if (this.n < 2 || !isStuckEngine(err)) throw err;
-			const next = (coordinator + 1) % this.n;
+			if (candidates.length < 2) {
+				// A list gather of one whose one partition is not answering: every partition can, as
+				// the full gather, coordinated by the next one.
+				const next = (coordinator + 1) % this.n;
+				console.warn(`list gather partition ${coordinator} not answering (${err}); gathering everywhere from ${next}`);
+				const { gatherPartitions: _, ...everywhere } = gatherOpts;
+				this.listPartitions = null;
+				return gathered(this.at(next), everywhere);
+			}
+			const next = candidates[(at + 1) % candidates.length] as number;
 			console.warn(`gather coordinator partition ${coordinator} not answering (${err}); failing over to ${next}`);
 			return gathered(this.at(next), gatherOpts);
 		}

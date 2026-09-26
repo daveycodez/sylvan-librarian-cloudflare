@@ -753,6 +753,66 @@ describe("a name-only gather asks only the partitions its names index names (n15
 		expect(asked.includes(0)).toBe(true);
 		expect(asked.includes(2)).toBe(true);
 	});
+
+	// y1: a search restricted to a list of cards names its partitions itself (card-restriction.ts).
+	describe("a card-list gather asks only the partitions the router listed (y1)", () => {
+		const LIST_TREE = JSON.stringify({
+			node_type: "OrNode",
+			kwargs: {
+				operands: [
+					{ node_type: "ExactNameNode", kwargs: { value: "a" } },
+					{ node_type: "ExactNameNode", kwargs: { value: "b" } },
+				],
+			},
+		});
+		const LIST = { ...OPTS, filterTreeJson: LIST_TREE };
+
+		test("the listed partitions alone, merged in order, and never the names index", async () => {
+			namesIndexAnswer = [1];
+			const { engine, asked } = gather();
+			const page = await engine.gatherSearchAsJson(
+				{ ...LIST, namesBuild: "7", gatherPartitions: { build: "7", partitions: [0, 2] } },
+				"rows",
+			);
+			expect(asked.sort()).toEqual([0, 2]);
+			expect(namesIndexAsked).toEqual([]);
+			expect(page.totalCards).toBe(2);
+			expect(text(page.cardsBytes)).toBe('[{"name":"p0"},{"name":"p2"}]');
+		});
+
+		test("a list of ONE partition — another object's — is a gather of one", async () => {
+			const { engine, asked } = gather();
+			const page = await engine.gatherSearchAsJson(
+				{ ...LIST, gatherPartitions: { build: "7", partitions: [1] } },
+				"rows",
+			);
+			expect(asked).toEqual([1]);
+			expect(text(page.cardsBytes)).toBe('[{"name":"p1"}]');
+		});
+
+		test("a list for another build than this object loaded, out of range, unordered or empty: every partition", async () => {
+			for (const list of [
+				{ build: "6", partitions: [1] },
+				{ build: "7", partitions: [1, 3] },
+				{ build: "7", partitions: [2, 1] },
+				{ build: "7", partitions: [] },
+				{ build: "", partitions: [1] },
+			]) {
+				const { engine, asked } = gather();
+				const page = await engine.gatherSearchAsJson({ ...LIST, gatherPartitions: list }, "rows");
+				expect(asked.sort()).toEqual([0, 1, 2]);
+				expect(page.totalCards).toBe(3);
+			}
+		});
+
+		test("listed partitions that answer from another build: thrown away, every partition asked", async () => {
+			const { engine, asked } = gather("8");
+			await engine
+				.gatherSearchAsJson({ ...LIST, gatherPartitions: { build: "7", partitions: [1, 2] } }, "rows")
+				.catch(() => {});
+			expect(asked.includes(0)).toBe(true);
+		});
+	});
 });
 
 describe("the fuzzy plan's object answers its own bundle in the same call (x22)", () => {

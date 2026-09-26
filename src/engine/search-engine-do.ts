@@ -937,9 +937,12 @@ export class SearchEngine extends DurableObject<Env> {
 	 * and reporting it as the whole corpus is the failure mode with no symptom.
 	 */
 	private async gatherRun(
-		opts: EngineSearchOptions,
+		listedOpts: EngineSearchOptions,
 		shaping: GatherShaping,
 	): Promise<GatheredPage & { gathered: number }> {
+		const listed = await this.gatherListed(listedOpts, shaping);
+		if (listed !== null) return listed;
+		const { gatherPartitions: _, ...opts } = listedOpts;
 		const named = await this.gatherNamed(opts, shaping);
 		if (named !== null) return named;
 		const width = await this.gatherWidth();
@@ -966,6 +969,49 @@ export class SearchEngine extends DurableObject<Env> {
 			return { ...page, gathered: loadedWidth };
 		}
 		return { ...page, gathered: width };
+	}
+
+	/**
+	 * Backlog y1: a search restricted to a list of cards, gathered from only the partitions the router
+	 * found them in (`opts.gatherPartitions`, card-restriction.ts) — or null, and every partition is
+	 * asked: no list, a malformed one, or partitions that answered from another build than the one
+	 * whose routing filter and modulus chose them (a publish in between).
+	 *
+	 * THE PAGE IS THE FULL GATHER'S, byte for byte, by gatherNamed's argument: every partition left
+	 * out holds no row of the query, so it would have contributed an empty key stream, and
+	 * `runTwoPhase` sees the rest in the same relative (ascending) order.
+	 */
+	private async gatherListed(
+		opts: EngineSearchOptions,
+		shaping: GatherShaping,
+	): Promise<(GatheredPage & { gathered: number }) | null> {
+		const list = opts.gatherPartitions;
+		if (list === undefined) return null;
+		const { gatherPartitions: _, ...rest } = opts;
+		const partitions = list.partitions;
+		const ascending = partitions.every(
+			(p, i) => Number.isInteger(p) && p >= 0 && (i === 0 || p > (partitions[i - 1] as number)),
+		);
+		if (!list.build || partitions.length === 0 || !ascending) return null;
+		// Already on another build, or cut narrower than the list assumes (an object past the width
+		// would refuse to load): the list means nothing here, so do not spend a round on it.
+		const loaded = currentManifest(this.label);
+		if (loaded && String(loaded.built_at ?? "") !== list.build) return null;
+		const width = await this.gatherWidth();
+		if ((partitions[partitions.length - 1] as number) >= width) return null;
+		const clients = this.partitionClients(width);
+		const page = await runTwoPhase(
+			partitions.map((p) => clients[p] as PartitionClient),
+			rest,
+			shaping,
+		);
+		if (page.builtAt !== list.build) {
+			console.warn(
+				`[${this.label}] list gather answered from build ${page.builtAt}, not ${list.build}; asking every partition`,
+			);
+			return null;
+		}
+		return { ...page, gathered: partitions.length };
 	}
 
 	/**

@@ -2070,3 +2070,231 @@ describe("a gathered search carries its build to the coordinator's names index (
 		expect(seen[0]?.opts).toEqual(OPTS);
 	});
 });
+
+// y1: a search restricted to a LIST of cards (`!"a" or !"b" …`, `oracleid:` lists, alone or ANDed
+// with other filters) asks only the partitions those cards live in (card-restriction.ts).
+describe("a card-list search asks only the partitions its cards live in (y1)", () => {
+	const named = (entries: { key: string; partition: number }[]) =>
+		filterOf(entries, ROUTING_FEATURE_NAME_KEYS | ROUTING_FEATURE_NAME_TIERS);
+	// bolt in 1, counterspell in 3, island in 1; brainstorm served in 2 with an art series in 0.
+	const FILTER = named([
+		{ key: "ns:bolt", partition: 1 },
+		{ key: "ns:counterspell", partition: 3 },
+		{ key: "ns:island", partition: 1 },
+		{ key: "ns:brainstorm", partition: 2 },
+		{ key: "na:brainstorm", partition: 0 },
+	]);
+	const bang = (value: string) => ({ node_type: "ExactNameNode", kwargs: { value } });
+	const oracle = (value: string) => ({
+		node_type: "CardBinaryOperatorNode",
+		kwargs: {
+			lhs: { node_type: "CardAttributeNode", kwargs: { attribute_name: "oracle_id" } },
+			op: ":",
+			rhs: { node_type: "StringValueNode", kwargs: { value } },
+		},
+	});
+	const typed = {
+		node_type: "CardBinaryOperatorNode",
+		kwargs: { lhs: { node_type: "CardAttributeNode", kwargs: { attribute_name: "card_types" } }, op: ":", rhs: ["x"] },
+	};
+	const notTag = (tag: string) => ({
+		node_type: "NotNode",
+		kwargs: {
+			operand: {
+				node_type: "CardBinaryOperatorNode",
+				kwargs: {
+					lhs: {
+						node_type: "CardAttributeNode",
+						kwargs: { attribute_name: "card_is_tags", original_attribute: "is" },
+					},
+					op: ":",
+					rhs: [tag],
+				},
+			},
+		},
+	});
+	const and = (...operands: unknown[]) => ({ node_type: "AndNode", kwargs: { operands } });
+	const or = (...operands: unknown[]) => ({ node_type: "OrNode", kwargs: { operands } });
+	const optsOf = (tree: unknown) => ({ ...OPTS, filterTreeJson: JSON.stringify(tree) });
+	/** Deterministic oracle ids in partition p. */
+	const idsIn = (p: number, count: number) => {
+		const out: string[] = [];
+		for (let i = 0; out.length < count; i++) {
+			const id = `00000000-0000-4000-8000-${i.toString(16).padStart(12, "0")}`;
+			if (partitionOfOracleId(id, N) === p) out.push(id);
+		}
+		return out;
+	};
+	const idIn = (p: number) => idsIn(p, 1)[0] as string;
+	const ENVELOPE = { pretty: false, pageOffset: 0, noMatchDetails: "" };
+
+	function recording(routing: RoutingFilter | null, stuck: number[] = []) {
+		const seen: { call: string; opts: Record<string, unknown> }[] = [];
+		const answer = { totalCards: 0, cardsBytes: new Uint8Array(), rowCount: 0 };
+		const engine = new PartitionedEngine(
+			(p) => {
+				const record =
+					(method: string, value: unknown) =>
+					async (opts: Record<string, unknown>, ...rest: unknown[]) => {
+						const pinned = rest.find((r) => typeof r === "number");
+						seen.push({ call: `${method}${pinned === undefined ? "" : `[${pinned}]`}:${p}`, opts });
+						if (stuck.includes(p)) throw new EngineCallTimeoutError("stuck");
+						return value;
+					};
+				return {
+					gatherSearchAsObjects: record("gatherSearchAsObjects", { totalCards: 0, cards: [] }),
+					gatherSearchAsJson: record("gatherSearchAsJson", answer),
+					gatherScryfallSearch: record("gatherScryfallSearch", answer),
+					searchCardsAsObjects: record("searchCardsAsObjects", { totalCards: 0, cards: [] }),
+					searchCardsAsJson: record("searchCardsAsJson", answer),
+					scryfallSearch: record("scryfallSearch", answer),
+					scryfallSearchPage: async (
+						opts: Record<string, unknown>,
+						_b: unknown,
+						_e: unknown,
+						_c: unknown,
+						call: string,
+						n?: number,
+					) => {
+						seen.push({ call: `scryfallSearchPage[${call}${n === undefined ? "" : `,${n}`}]:${p}`, opts });
+						if (stuck.includes(p)) throw new EngineCallTimeoutError("stuck");
+						return new Response("{}", { status: 404 });
+					},
+					gatheredPartitions: 2,
+				} as unknown as RemoteEngine;
+			},
+			manifestOf(N),
+			async () => manifestOf(N),
+			routing,
+		);
+		return { engine, seen };
+	}
+
+	test("an OR of names ANDed with a filter: ONE gather call, inside the list, carrying the list and its build", async () => {
+		const { engine, seen } = recording(FILTER);
+		const opts = optsOf(and(typed, or(bang("bolt"), bang("counterspell"), bang("island"))));
+		await engine.searchCardsAsJson(opts, "rows");
+		expect(seen.length).toBe(1);
+		expect(seen[0]?.call).toBe(`gatherSearchAsJson:${[1, 3][gatherPartitionOf(opts.filterTreeJson, 2)]}`);
+		expect(seen[0]?.opts).toEqual({ ...opts, gatherPartitions: { build: "100", partitions: [1, 3] } });
+		expect(engine.listPartitions).toBe(`2/${N}`);
+		expect(engine.pinnedAnswer).toBe(false);
+	});
+
+	test("every search transport routes the list the same way", async () => {
+		const { engine, seen } = recording(FILTER);
+		const opts = optsOf(or(bang("bolt"), bang("counterspell")));
+		await engine.searchCardsAsObjects(opts);
+		await engine.scryfallSearch(opts, "https://x");
+		await engine.scryfallSearchPage(opts, "https://x", ENVELOPE, {});
+		for (const { opts: sent } of seen) expect(sent.gatherPartitions).toEqual({ build: "100", partitions: [1, 3] });
+		expect(seen.map((s) => s.call.split(":")[0])).toEqual([
+			"gatherSearchAsObjects",
+			"gatherScryfallSearch",
+			"scryfallSearchPage[cards2]",
+		]);
+		// The coordinator's count of partitions asked reaches the log line.
+		expect(engine.gatheredPartitions).toBe(2);
+	});
+
+	test("a list whose names all live in ONE partition is a gather of one there — never a pin", async () => {
+		const { engine, seen } = recording(FILTER);
+		await engine.searchCardsAsJson(optsOf(or(bang("bolt"), bang("island"))), "rows");
+		expect(seen.map((s) => s.call)).toEqual(["gatherSearchAsJson:1"]);
+		expect(seen[0]?.opts.gatherPartitions).toEqual({ build: "100", partitions: [1] });
+		expect(engine.listPartitions).toBe(`1/${N}`);
+	});
+
+	test("oracle ids alone in ONE partition are a pin carrying N; in none, a pin anywhere", async () => {
+		const [a, b] = idsIn(2, 2) as [string, string];
+		const { engine, seen } = recording(null);
+		await engine.searchCardsAsJson(optsOf(or(oracle(a), oracle(b))), "rows");
+		expect(seen.map((s) => s.call)).toEqual([`searchCardsAsJson[${N}]:2`]);
+		expect(engine.pinnedAnswer).toBe(true);
+		expect(engine.listPartitions).toBe(`1/${N}`);
+		// Two different ids ANDed inside an OR's operand: nothing can match; any one partition says so.
+		const disjoint = recording(null);
+		const tree = and(typed, or(and(oracle(idIn(0)), oracle(idIn(1)))));
+		await disjoint.engine.searchCardsAsJson(optsOf(tree), "rows");
+		expect(disjoint.seen.map((s) => s.call)).toEqual([
+			`searchCardsAsJson[${N}]:${gatherPartitionOf(JSON.stringify(tree), N)}`,
+		]);
+		expect(disjoint.engine.listPartitions).toBe(`0/${N}`);
+	});
+
+	test("oracle ids across partitions need no routing filter", async () => {
+		const { engine, seen } = recording(null);
+		await engine.searchCardsAsJson(optsOf(or(oracle(idIn(0)), oracle(idIn(3)))), "rows");
+		expect(seen.length).toBe(1);
+		expect(seen[0]?.opts.gatherPartitions).toEqual({ build: "100", partitions: [0, 3] });
+	});
+
+	test("names ANDed apart (no partition) gather everywhere: an empty set cannot be checked against a build", async () => {
+		const { engine, seen } = recording(FILTER);
+		await engine.searchCardsAsJson(optsOf(and(typed, or(and(bang("bolt"), bang("counterspell"))))), "rows");
+		expect(seen.length).toBe(1);
+		expect(seen[0]?.opts.gatherPartitions).toBeUndefined();
+		expect(engine.listPartitions).toBeNull();
+	});
+
+	test("a served name places only under the extras gate", async () => {
+		const bare = recording(FILTER);
+		await bare.engine.searchCardsAsJson(optsOf(or(bang("bolt"), bang("brainstorm"))), "rows");
+		expect(bare.seen[0]?.opts.gatherPartitions).toBeUndefined();
+		const gated = recording(FILTER);
+		await gated.engine.searchCardsAsJson(optsOf(and(or(bang("bolt"), bang("brainstorm")), notTag("extra"))), "rows");
+		expect(gated.seen[0]?.opts.gatherPartitions).toEqual({ build: "100", partitions: [1, 2] });
+	});
+
+	test("an OR mixing in an unrestricted term, or no filter for its names: the full gather", async () => {
+		for (const [tree, routing] of [
+			[or(bang("bolt"), typed), FILTER],
+			[or(bang("bolt"), bang("counterspell")), null],
+		] as const) {
+			const { engine, seen } = recording(routing);
+			await engine.searchCardsAsJson(optsOf(tree), "rows");
+			expect(seen.map((s) => s.call)).toEqual([`gatherSearchAsJson:${gatherPartitionOf(JSON.stringify(tree), N)}`]);
+			expect(seen[0]?.opts.gatherPartitions).toBeUndefined();
+		}
+	});
+
+	test("a lone `!name` keeps the n6 pin, and its empty answer still gathers EVERYWHERE", async () => {
+		const { engine, seen } = recording(FILTER);
+		await engine.searchCardsAsObjects(optsOf(and(bang("bolt"), typed)));
+		// totalCards 0 from the pin: not trusted, and the full gather answers — not a list gather.
+		expect(seen[0]?.call).toBe(`searchCardsAsObjects[${N}]:1`);
+		expect(seen[1]?.call).toMatch(/^gatherSearchAsObjects:/);
+		expect(seen[1]?.opts.gatherPartitions).toBeUndefined();
+	});
+
+	test("a stuck coordinator fails over to the next partition OF THE LIST", async () => {
+		const opts = optsOf(or(bang("bolt"), bang("counterspell")));
+		const first = [1, 3][gatherPartitionOf(opts.filterTreeJson, 2)] as number;
+		const { engine, seen } = recording(FILTER, [first]);
+		await engine.searchCardsAsJson(opts, "rows");
+		expect(seen.map((s) => s.call)).toEqual([
+			`gatherSearchAsJson:${first}`,
+			`gatherSearchAsJson:${first === 1 ? 3 : 1}`,
+		]);
+		expect(seen[1]?.opts.gatherPartitions).toEqual({ build: "100", partitions: [1, 3] });
+	});
+
+	test("a stuck gather-of-one fails over to the FULL gather, coordinated by the next partition", async () => {
+		const { engine, seen } = recording(FILTER, [1]);
+		await engine.searchCardsAsJson(optsOf(or(bang("bolt"), bang("island"))), "rows");
+		expect(seen.map((s) => s.call)).toEqual(["gatherSearchAsJson:1", "gatherSearchAsJson:2"]);
+		expect(seen[1]?.opts.gatherPartitions).toBeUndefined();
+		expect(engine.listPartitions).toBeNull();
+	});
+
+	test("an oracle-list pin that is stuck falls back to the full gather", async () => {
+		const [a, b] = idsIn(2, 2) as [string, string];
+		const { engine, seen } = recording(null, [2]);
+		// The full gather's coordinator may itself be the stuck 2; it then fails over once more.
+		await engine.searchCardsAsJson(optsOf(or(oracle(a), oracle(b))), "rows").catch(() => {});
+		expect(seen[0]?.call).toBe(`searchCardsAsJson[${N}]:2`);
+		expect(seen[1]?.call).toMatch(/^gatherSearchAsJson:/);
+		expect(seen[1]?.opts.gatherPartitions).toBeUndefined();
+		expect(engine.listPartitions).toBeNull();
+	});
+});

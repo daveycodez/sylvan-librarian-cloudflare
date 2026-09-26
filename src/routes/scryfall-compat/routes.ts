@@ -776,13 +776,16 @@ export async function cardsSearchHandler(
 		// name pin that fell back to it 2. `gathered` is how many partitions the gather's coordinator
 		// asked — fewer than N for a name-only filter its names index answered (n15), 0 for that
 		// filter's 404, `-` when there was no gather or the coordinator did not say. Grep "cards/search:".
+		// `list` (y1) is `k/N` when the query was restricted to a list of cards (`!"a" or !"b" …`,
+		// `oracleid:` lists) living in k of the N partitions and only those were asked, else `-`.
 		const partitioned = engine as {
 			partitionCalls?: number;
 			pinnedAnswer?: boolean;
 			gatheredPartitions?: number | null;
+			listPartitions?: string | null;
 		};
 		console.log(
-			`cards/search: shape=${userShape} unique=${unique} order=${orderby} dir=${direction} page=${page} extras=${includeExtras ? 1 : 0} variations=${includeVariations ? 1 : 0} multilingual=${asBool(params.include_multilingual) ? 1 : 0} pin=${partitioned.pinnedAnswer ? 1 : 0} calls=${partitioned.partitionCalls ?? -1} gathered=${partitioned.gatheredPartitions ?? "-"} status=${status}`,
+			`cards/search: shape=${userShape} unique=${unique} order=${orderby} dir=${direction} page=${page} extras=${includeExtras ? 1 : 0} variations=${includeVariations ? 1 : 0} multilingual=${asBool(params.include_multilingual) ? 1 : 0} pin=${partitioned.pinnedAnswer ? 1 : 0} list=${partitioned.listPartitions ?? "-"} calls=${partitioned.partitionCalls ?? -1} gathered=${partitioned.gatheredPartitions ?? "-"} status=${status}`,
 		);
 	}
 }

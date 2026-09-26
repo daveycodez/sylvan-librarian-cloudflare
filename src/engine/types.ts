@@ -44,6 +44,15 @@ export interface EngineSearchOptions {
 	 * own options object never reads it (Store.optsJson picks its keys).
 	 */
 	namesBuild?: string;
+	/**
+	 * Backlog y1: the ONLY partitions that can hold a row of this search — a query restricted to a
+	 * list of cards (card-restriction.ts) — computed by the router against `build`'s routing filter
+	 * and modulus. The gather's coordinator asks just these, ascending, and keeps the page only when
+	 * they answered from `build`; otherwise (a publish in between) it asks every partition. Set on a
+	 * gathered search only; absent, or on a coordinator that predates it, every partition is asked.
+	 * Carried opaquely like `namesBuild`.
+	 */
+	gatherPartitions?: { build: string; partitions: number[] };
 }
 
 export interface EngineSearchResult {

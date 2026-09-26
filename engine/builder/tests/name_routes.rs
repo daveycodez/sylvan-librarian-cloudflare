@@ -530,3 +530,168 @@ fn name_routes_match_the_all_partition_merge() {
     }
     assert!(mismatches.is_empty(), "{} mismatches", mismatches.len());
 }
+
+/// Backlog y1: the invariants a `/cards/search` restricted to a LIST of `!"name"`s rests on, when the
+/// router sends it to only the partitions the routing filter names for its names
+/// (src/engine/card-restriction.ts). Unlike a lone `!"name"` pin (n6), a list's answer cannot prove
+/// each member's key was real — its page is one merge — so the keys themselves must cover `!`:
+///
+///   (a) EVERY partition where `!"x"` matches a row — any printing class, extras, variations and the
+///       foreign annex included — emitted a name key for `x`. Then a SOLE hint p is exact (no other
+///       partition matches), and a key the filter never held names no card anywhere, so whatever
+///       its garbage byte reads only adds a partition that answers nothing.
+///   (b) EVERY partition where `!"x" -is:extra` matches a row — the router's default gate, the
+///       canonical printings only — emitted `x` SERVED (`ns:`). Then, under that gate and without
+///       the foreign annex, a SERVED hint s is exact too: s is the one partition that emitted it
+///       served. NOT with the annex: a foreign printing of an old card can print a name its card
+///       no longer has (`!"Pradesh Gypsies" -is:extra` matches Pradesh Wanderers' foreign rows,
+///       whose names no builder keys, and its one keyed row is an extra), so a WIDENED query
+///       trusts only sole hints. The widened exceptions are counted and printed, not failed.
+///
+/// Every needle the engine's `!` can compare equal is here: `exact_name_matches` holds a stored
+/// string whose collation (or a two-part half's) IS the needle, and every stored string — a card's
+/// name, a divergent printing's joined name, a card-level flavor name, a face-level flavor join —
+/// is some row's field, so its collation is among the collated needles below. Non-ASCII needles
+/// are not routed (`nameKey`), and are skipped.
+///
+///   SYLVAN_STORE_BUILD=/path/to/store-build scripts/with-rust.sh cargo test --release \
+///     -p sylvan-store-builder --test name_routes -- --ignored --nocapture list_restriction
+#[test]
+#[ignore = "needs a built corpus: SYLVAN_STORE_BUILD=<store-build dir>"]
+fn list_restriction_keys_cover_every_bang_match() {
+    let Ok(dir) = std::env::var("SYLVAN_STORE_BUILD") else {
+        eprintln!("SYLVAN_STORE_BUILD is not set; nothing to check");
+        return;
+    };
+    let manifest: Value = serde_json::from_str(&std::fs::read_to_string(format!("{dir}/manifest.json")).unwrap()).unwrap();
+    let n = manifest["partition_count"].as_u64().unwrap() as usize;
+    assert!(n <= 64);
+
+    let started = std::time::Instant::now();
+    let mut owners: HashMap<String, Owners> = HashMap::new();
+    let mut needles: HashSet<String> = HashSet::new();
+    let rows = std::io::BufReader::new(std::fs::File::open(format!("{dir}/rows.jsonl")).unwrap());
+    let mut keys = Vec::new();
+    for line in rows.lines() {
+        let row: RowNames = serde_json::from_str(&line.unwrap()).unwrap();
+        let p = (fnv1a64_oracle_id(&row.oracle_id) % n as u64) as usize;
+        keys.clear();
+        let face_flavor = face_flavor_name_folded(row.card_faces.iter().map(|f| f.flavor_name.as_deref()));
+        name_routing_keys_of(
+            &row.card_name_folded,
+            row.flavor_name_folded.as_deref(),
+            face_flavor.as_deref(),
+            row.is_canonical,
+            row.card_is_tags.contains_key("extra"),
+            row.card_layout.as_deref() == Some("art_series"),
+            &mut keys,
+        );
+        for key in &keys {
+            let o = owners.entry(format!("nm:{}", &key[3..])).or_default();
+            o.all |= 1 << p;
+            if key.starts_with("ns:") {
+                o.served |= 1 << p;
+            }
+        }
+        let mut names = vec![row.card_name_folded.as_str()];
+        names.extend(halves(&row.card_name_folded));
+        if let Some(f) = row.flavor_name_folded.as_deref() {
+            names.push(f);
+            names.extend(halves(f));
+        }
+        if let Some(f) = face_flavor.as_deref() {
+            names.push(f);
+            names.extend(halves(f));
+        }
+        for name in names {
+            if let Some(key) = router_key(name) {
+                needles.insert(key[3..].to_owned());
+            }
+        }
+    }
+    let mut needles: Vec<String> = needles.into_iter().collect();
+    needles.sort();
+    let (mut sole, mut served, mut none) = (0usize, 0usize, 0usize);
+    for needle in &needles {
+        match owners.get(&format!("nm:{needle}")).map_or(Hint::None, |o| o.hint()) {
+            Hint::Sole(_) => sole += 1,
+            Hint::Served(..) => served += 1,
+            Hint::None => none += 1,
+        }
+    }
+    eprintln!(
+        "{} collated needles ({sole} sole, {served} served, {none} undecidable or unkeyed) in {:.1?}",
+        needles.len(),
+        started.elapsed()
+    );
+
+    let stores: Vec<BufferStore> = manifest["partitions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|part| {
+            let key = part["store_key"].as_str().unwrap();
+            BufferStore::from_bytes(&std::fs::read(format!("{dir}/{key}")).unwrap()).unwrap()
+        })
+        .collect();
+    let started = std::time::Instant::now();
+    let opts = QueryOptions { unique: "printing".to_owned(), limit: 1, include_multilingual: true, ..QueryOptions::default() };
+    let canonical = QueryOptions { include_multilingual: false, ..opts.clone() };
+    let gate = serde_json::json!({"node_type": "NotNode", "kwargs": {"operand": {"node_type": "CardBinaryOperatorNode", "kwargs": {
+        "lhs": {"node_type": "CardAttributeNode", "kwargs": {"attribute_name": "card_is_tags", "original_attribute": "is"}},
+        "op": ":", "rhs": ["extra"]}}}});
+    let results: Vec<(Vec<String>, usize, usize, Vec<String>)> = std::thread::scope(|s| {
+        let handles: Vec<_> = stores
+            .iter()
+            .enumerate()
+            .map(|(q, store)| {
+                let (needles, owners, opts, canonical, gate) = (&needles, &owners, &opts, &canonical, &gate);
+                s.spawn(move || {
+                    let (mut bad, mut matched, mut gated, mut widened) = (Vec::new(), 0usize, 0usize, Vec::new());
+                    for needle in needles {
+                        let bang = serde_json::json!({"node_type": "ExactNameNode", "kwargs": {"value": needle}});
+                        if store.query(&bang.to_string(), opts).unwrap().total == 0 {
+                            continue;
+                        }
+                        matched += 1;
+                        let o = owners.get(&format!("nm:{needle}")).copied().unwrap_or_default();
+                        if o.all & (1 << q) == 0 {
+                            bad.push(format!("(a) !{needle:?} matches in partition {q}, which emitted no key for it"));
+                        }
+                        let tree = serde_json::json!({"node_type": "AndNode", "kwargs": {"operands": [bang, gate]}}).to_string();
+                        if o.served & (1 << q) != 0 || store.query(&tree, opts).unwrap().total == 0 {
+                            continue;
+                        }
+                        // Matches under the gate somewhere in the annex, in a partition that emitted it unserved.
+                        if store.query(&tree, canonical).unwrap().total > 0 {
+                            gated += 1;
+                            bad.push(format!("(b) !{needle:?} -is:extra matches in partition {q}, which emitted it unserved"));
+                        } else {
+                            widened.push(format!("!{needle:?} -is:extra in partition {q}, foreign printings only"));
+                        }
+                    }
+                    (bad, matched, gated, widened)
+                })
+            })
+            .collect();
+        handles.into_iter().map(|h| h.join().unwrap()).collect()
+    });
+    let matched: usize = results.iter().map(|r| r.1).sum();
+    let bad: Vec<&String> = results.iter().flat_map(|r| r.0.iter()).collect();
+    let widened: Vec<&String> = results.iter().flat_map(|r| r.3.iter()).collect();
+    eprintln!(
+        "{} needles × {n} partitions in {:.1?}: {matched} (needle, partition) matches; {} violations; \
+         {} unserved partitions matching under the gate only through the foreign annex (why a widened query trusts sole hints alone)",
+        needles.len(),
+        started.elapsed(),
+        bad.len(),
+        widened.len()
+    );
+    for w in widened.iter().take(20) {
+        eprintln!("  widened: {w}");
+    }
+    for b in bad.iter().take(40) {
+        eprintln!("VIOLATION {b}");
+    }
+    assert!(bad.is_empty(), "{} violations", bad.len());
+}
