@@ -88,6 +88,7 @@ import {
 	prefetchStore,
 	pruneToManifest,
 	refreshNow,
+	reserveStoreBuffer,
 	settleInFlightLoad,
 	swapToStore,
 	tryGetLoadedEngine,
@@ -945,7 +946,10 @@ export class SearchEngine extends DurableObject<Env> {
 		const { gatherPartitions: _, ...opts } = listedOpts;
 		const named = await this.gatherNamed(opts, shaping);
 		if (named !== null) return named;
-		const width = await this.gatherWidth();
+		const { width, manifest } = await this.gatherWidth();
+		// Nothing awaits between this and the fan-out below: the growth must land before any
+		// sibling call is issued, not merely before the load (see reserveOwnStore).
+		if (manifest) this.reserveOwnStore(manifest, width);
 		let page = await runTwoPhase(this.partitionClients(width), opts, shaping);
 		// Free when the fan-out included this partition, which it always does at a correct width.
 		await this.engine();
@@ -1080,24 +1084,58 @@ export class SearchEngine extends DurableObject<Env> {
 	/**
 	 * The partition count to fan out across, without loading this object's store. See gatherRun
 	 * for the order and for why a wrong answer here is caught rather than trusted.
+	 *
+	 * With it, the manifest that named it when this object's own store is NOT loaded — the record
+	 * its load will start from, and what reserveOwnStore sizes the reservation by. Null when warm.
 	 */
-	private async gatherWidth(): Promise<number> {
+	private async gatherWidth(): Promise<{ width: number; manifest: StoreManifest | null }> {
 		const loaded = currentManifest(this.label);
-		if (loaded && isPartitionedManifest(loaded)) return loaded.partition_count as number;
+		if (loaded && isPartitionedManifest(loaded)) return { width: loaded.partition_count as number, manifest: null };
 		const own = parseEngineName(this.label)?.partition;
 		try {
 			const pushed = readLiveManifest(this.ctx.storage) as StoreManifest | null;
-			if (pushed && manifestServableBy(own, pushed)) return pushed.partition_count as number;
+			if (pushed && manifestServableBy(own, pushed))
+				return { width: pushed.partition_count as number, manifest: pushed };
 		} catch {
 			// No record, no schema, or no storage: KV answers instead.
 		}
 		const truth = await readManifest(this.env).catch(() => null);
-		if (truth && manifestServableBy(own, truth)) return truth.partition_count as number;
+		if (truth && manifestServableBy(own, truth)) return { width: truth.partition_count as number, manifest: truth };
 		// Nothing names a width. Load, and let gatherRun's check refuse with the precise reason.
 		await this.engine();
 		const after = currentManifest(this.label);
-		if (after && isPartitionedManifest(after)) return after.partition_count as number;
+		if (after && isPartitionedManifest(after)) return { width: after.partition_count as number, manifest: null };
 		rethrowForRpc(new EngineUnavailableError(`${this.label} cannot gather: no manifest names a partition count`));
+	}
+
+	/**
+	 * x23: a cold coordinator grows its linear memory by its own store BEFORE asking its siblings.
+	 *
+	 * Workers cancels an invocation's outgoing Durable Object calls that are still connecting when
+	 * the isolate's memory jumps — each rejects "Network connection lost." — and only six of an
+	 * invocation's calls connect at a time. The coordinator's own load (a2432b3: it runs alongside
+	 * the siblings' on purpose) grows linear memory by a partition, ~45MB, in one step, so on every
+	 * cold gather the 7th, 8th and 9th sibling calls were still queued to connect and died, to be
+	 * asked again only once the load was done — in 14 sampled free-account traces those three
+	 * partitions finished waking a median ~290ms after the other six.
+	 *
+	 * Reproduced with a throwaway Worker on 2026-09-26 (nine sibling DOs, fresh each trial), running
+	 * this engine's own blob: begin_store_load_gzip(45MB) 50ms after the calls went out killed the
+	 * 7th–9th in 23 of 24 chances over 8 trials, and all nine when nothing had connected yet; with
+	 * reserve_store_buffer first, 0 of 216 died, with or without 200ms of CPU after it. CPU alone
+	 * kills nothing; a growth under ~32MB total, or of a few MB above it, kills nothing either.
+	 * So the growth moves here, ahead of the fan-out (~0.02ms, untouched pages), and the load fills
+	 * the reserved buffer while its CPU still runs alongside the siblings'. Warm objects never get
+	 * here: gatherWidth hands over no manifest once the store is loaded.
+	 */
+	private reserveOwnStore(manifest: StoreManifest, width: number): void {
+		const reserved = reserveStoreBuffer(this.label, manifest, parseEngineName(this.label)?.partition);
+		if (!reserved) return;
+		const mb = (bytes: number) => (bytes / 1_048_576).toFixed(1);
+		console.log(
+			`[${this.label}] reserved ${mb(reserved.bytes)}MB for its own store before asking its ${width - 1} ` +
+				`siblings (linear memory ${mb(reserved.linearBefore)}MB -> ${mb(reserved.linearAfter)}MB)`,
+		);
 	}
 
 	/**

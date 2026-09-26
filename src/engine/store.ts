@@ -1686,6 +1686,46 @@ export async function getEngine(env: Env, ctx: LoadContext): Promise<Engine> {
 	return state.loading as Promise<Engine>;
 }
 
+/**
+ * x23: grow the label's linear memory NOW by the store `manifest` names for `partition`, held as
+ * the spare buffer its load refills, so that load grows nothing. For a gather coordinator that has
+ * not loaded its own store, called before it asks its siblings.
+ *
+ * WHY: Workers cancels an invocation's outgoing Durable Object calls that are still connecting
+ * when its isolate's memory jumps ("Network connection lost."), and at most six connect at once.
+ * A coordinator's own load grows linear memory by a whole partition (~45MB) while its nine sibling
+ * calls are out, so the 7th, 8th and 9th died on every cold gather (163 on the free account and
+ * ~5,500 on DeckGen in the 3 days to 2026-09-26) and were asked again only after the load, ~290ms
+ * late. Growing first and loading into the grown memory keeps every call.
+ *
+ * Returns what was reserved, for the log, or null when nothing needed to be: the store is loaded,
+ * a load already holds its buffer, the spare already fits, or the manifest has no record for this
+ * partition (the load then refuses it with the precise reason). A blob that predates the export
+ * reserves nothing and loads exactly as before.
+ */
+export function reserveStoreBuffer(
+	label: string,
+	manifest: StoreManifest,
+	partition: number | undefined,
+): { bytes: number; linearBefore: number; linearAfter: number } | null {
+	if (liveCurrent(stateFor(label), label)) return null;
+	let bytes: number;
+	try {
+		bytes = archiveOfManifest(manifest, partition).storeBytes;
+	} catch {
+		return null;
+	}
+	const w = wasm.engineFor(label);
+	const linearBefore = w.linearMemoryBytes();
+	try {
+		if (w.reserve_store_buffer(bytes) !== true) return null;
+	} catch (err) {
+		console.warn(`[${label}] could not reserve ${bytes} bytes ahead of its store load (${err}); loading without`);
+		return null;
+	}
+	return { bytes, linearBefore, linearAfter: w.linearMemoryBytes() };
+}
+
 /** Non-blocking: the label's engine if this isolate is already warm, else null. */
 export function tryGetLoadedEngine(label?: string): Engine | null {
 	return liveCurrent(stateFor(label), label)?.engine ?? null;

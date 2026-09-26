@@ -515,6 +515,24 @@ export function random_search(n: number, seed: bigint, filter_tree_json: string,
 export function random_search_shaped(n: number, seed: bigint, filter_tree_json: string, fields_json: string, shape: string): Uint8Array;
 
 /**
+ * Grow linear memory NOW by what a load of `total_len` bytes will need, holding the buffer as the
+ * spare that load refills — so the load itself grows nothing. Returns whether it allocated.
+ *
+ * WHY (x23, measured 2026-09-26): Workers cancels an invocation's outgoing Durable Object calls
+ * that are still connecting when its isolate's memory jumps — every such call rejects with
+ * "Network connection lost." — and at most six of an invocation's calls connect at once, so a
+ * gather coordinator whose own store load grew linear memory by a partition (~45MB) while its
+ * nine sibling calls were in flight lost the 7th, 8th and 9th every time. A throwaway Worker
+ * reproduced it with nothing but `WebAssembly.Memory.grow`: 0 to 45MB with nine calls out killed
+ * calls 7–9 in 9 of 9 trials; the same growth made BEFORE the calls were issued, 0 of 144 calls.
+ *
+ * A no-op when there is nothing to prevent: a store is loaded (the next swap refills ITS buffer,
+ * and a second one beside it would be dead weight for the object's life), a load already holds its
+ * buffer, or the spare is already big enough.
+ */
+export function reserve_store_buffer(total_len: number): boolean;
+
+/**
  * One engine row as a Scryfall card object, for the differential test that guards the port.
  *
  * Needs NO store: the builder is a pure function of the row and the base URL, which is what lets

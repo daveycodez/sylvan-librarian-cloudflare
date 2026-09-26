@@ -35,6 +35,7 @@ declare module "sylvan-engine-wasm" {
 		/** Frame `index` of the ACTIVE store's LZ4 encoding; empty past the last one. */
 		store_lz4_frame(index: number): Uint8Array;
 		unload_store(): void;
+		reserve_store_buffer(totalLen: number): boolean;
 		store_loaded(): boolean;
 		query(filterTreeJson: string, optsJson: string): string;
 		query_rows(filterTreeJson: string, optsJson: string): Uint8Array;
@@ -122,6 +123,8 @@ declare module "sylvan-engine-wasm" {
 	export function init_store(bytes: Uint8Array): void;
 	/** Drop the active store ahead of a tight-memory hot swap. */
 	export function unload_store(): void;
+	/** x23: grow linear memory now for a load of `totalLen` bytes, held as the spare that load refills. */
+	export function reserve_store_buffer(totalLen: number): boolean;
 	export function store_loaded(): boolean;
 	// ── Single-card addressing (the /cards/* surface) ────────────────────────
 	// `fieldsJson` is a JSON list of field names, or "null" for the default set. A miss is JSON

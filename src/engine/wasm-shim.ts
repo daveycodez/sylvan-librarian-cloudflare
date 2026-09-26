@@ -206,6 +206,12 @@ export interface EngineHandle {
 	finish_store_load_lz4(): void;
 	store_lz4_frame(index: number): Uint8Array;
 	unload_store(): void;
+	/**
+	 * x23: grow linear memory now by what a load of `totalLen` bytes needs, as the spare that load
+	 * refills. True when it allocated; false when a store, a load or a big-enough spare already
+	 * holds that memory. A blob that predates the export answers undefined (see engineFor's wrap).
+	 */
+	reserve_store_buffer(totalLen: number): boolean;
 	store_loaded(): boolean;
 	query(filterTreeJson: string, optsJson: string): string;
 	query_rows(filterTreeJson: string, optsJson: string): Uint8Array;
@@ -311,6 +317,7 @@ export function engineFor(label: string): EngineHandle {
 		finish_store_load_lz4: wrap("finish_store_load_lz4"),
 		store_lz4_frame: wrap("store_lz4_frame"),
 		unload_store: wrap("unload_store"),
+		reserve_store_buffer: wrap("reserve_store_buffer"),
 		store_loaded: wrap("store_loaded"),
 		query: wrap("query"),
 		query_rows: wrap("query_rows"),

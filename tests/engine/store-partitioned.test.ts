@@ -63,6 +63,8 @@ const FAKE_LZ4_BLOCK = 24;
 const sum8 = (bytes: Uint8Array) => bytes.reduce((s, b) => (s + b) & 0xff, 0);
 /** Every label that began an LZ4 load, in order — "did this load read the LZ4 family?" */
 const lz4Loads: string[] = [];
+/** x23: every reserve_store_buffer call that reached the fake engine, as [label, bytes]. */
+const reservations: [string, number][] = [];
 
 function handleFor(label: string) {
 	const inst = instanceFor(label);
@@ -134,6 +136,11 @@ function handleFor(label: string) {
 		},
 		unload_store() {
 			inst.loaded = null;
+		},
+		// x23: the reservation, as the real crate decides it — nothing beside a loaded store.
+		reserve_store_buffer(total: number) {
+			reservations.push([label, total]);
+			return inst.loaded === null && total > 0;
 		},
 		store_loaded: () => inst.loaded !== null,
 		// The identity probe: the loaded archive's first byte, so a test can tell
@@ -498,6 +505,34 @@ describe("the partitioned loader", () => {
 		expect(store.getEngine(env, ctxFor("engine-old-p0", 0))).rejects.toThrow(/predates the partitioned store/);
 		// And the repair is named: the next import replaces it.
 		expect(store.getEngine(env, ctxFor("engine-old-p0", 0))).rejects.toThrow(/next import/);
+	});
+});
+
+describe("reserving a cold coordinator's store memory (x23)", () => {
+	test("sizes the reservation by this partition's store, and a warm label reserves nothing", async () => {
+		const { entries, manifest } = await publishV2("300");
+		const { env } = fakeEnv(entries);
+		reservations.length = 0;
+
+		expect(store.reserveStoreBuffer("engine-reserve-p1", manifest, 1)).toEqual({
+			bytes: 64,
+			linearBefore: 0,
+			linearAfter: 0,
+		});
+		expect(reservations).toEqual([["engine-reserve-p1", 64]]);
+
+		// Once loaded, the label's own buffer is what the next swap refills: no call reaches wasm.
+		await store.getEngine(env, ctxFor("engine-reserve-p1", 1));
+		expect(store.reserveStoreBuffer("engine-reserve-p1", manifest, 1)).toBeNull();
+		expect(reservations).toHaveLength(1);
+	});
+
+	test("a manifest with no record for the partition reserves nothing and throws nothing", async () => {
+		const { manifest } = await publishV2("301");
+		reservations.length = 0;
+		expect(store.reserveStoreBuffer("engine-reserve-p5", manifest, 5)).toBeNull();
+		expect(store.reserveStoreBuffer("engine-reserve-none", manifest, undefined)).toBeNull();
+		expect(reservations).toEqual([]);
 	});
 });
 

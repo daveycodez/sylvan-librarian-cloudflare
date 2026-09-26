@@ -123,6 +123,14 @@ mock.module("../../src/engine/store", () => ({
 		publishCalls.push("swapToStore");
 		return true;
 	},
+	// x23: the cold coordinator's reservation, recorded in the gather suite's event order.
+	reserveStoreBuffer: (label: string, manifest: { partitions?: { store_bytes: number }[] }, partition?: number) => {
+		const g = gatherStore;
+		if (!g || g.loaded) return null;
+		const bytes = manifest.partitions?.[partition ?? -1]?.store_bytes;
+		g.events.push(`own:reserve ${label} ${bytes}`);
+		return bytes === undefined ? null : { bytes, linearBefore: 1_048_576, linearAfter: 1_048_576 + bytes };
+	},
 	// Imported for the two-phase gather; a null manifest keeps every gather
 	// entry point on the local single-store path, which these tests exercise.
 	currentManifest: () => (gatherStore?.loaded ? gatherStore.manifest : null),
@@ -519,6 +527,26 @@ describe("a cold gather wakes every partition at once", () => {
 		expect(events.indexOf("p1:searchKeys")).toBeLessThan(events.indexOf("own:loaded"));
 		expect(page.totalCards).toBe(2);
 		expect(new TextDecoder().decode(page.cardsBytes)).toBe('[{"name":"p0"},{"name":"p1"}]');
+	});
+
+	test("a cold coordinator reserves its own store's memory before asking any sibling (x23)", async () => {
+		// Workers cancels an invocation's still-connecting DO calls when its memory jumps, and the
+		// coordinator's own load is a ~45MB jump: the reservation must land before the fan-out.
+		const { engine, events } = coldGather(0);
+		await engine.gatherSearchAsJson(OPTS, "rows");
+		expect(events[0]).toBe("own:reserve engine-wnam-p0 10");
+		expect(events.filter((e) => e.startsWith("own:reserve"))).toHaveLength(1);
+		// ...and the load itself still runs alongside the siblings' (a2432b3).
+		expect(events.indexOf("p1:searchKeys")).toBeLessThan(events.indexOf("own:loaded"));
+	});
+
+	test("a warm coordinator reserves nothing", async () => {
+		const { engine, events } = coldGather(0);
+		await engine.gatherSearchAsJson(OPTS, "rows");
+		events.length = 0;
+		await engine.gatherSearchAsJson(OPTS, "rows");
+		expect(events.filter((e) => e.startsWith("own:"))).toEqual([]);
+		expect(events).toContain("p1:searchKeys");
 	});
 
 	test("the page reports the longest wake anywhere in the fan-out, not only its own", async () => {

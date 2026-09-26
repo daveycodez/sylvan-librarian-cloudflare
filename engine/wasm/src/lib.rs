@@ -603,6 +603,41 @@ fn unload_store_inner() -> Result<(), String> {
     Ok(())
 }
 
+/// Grow linear memory NOW by what a load of `total_len` bytes will need, holding the buffer as the
+/// spare that load refills — so the load itself grows nothing. Returns whether it allocated.
+///
+/// WHY (x23, measured 2026-09-26): Workers cancels an invocation's outgoing Durable Object calls
+/// that are still connecting when its isolate's memory jumps — every such call rejects with
+/// "Network connection lost." — and at most six of an invocation's calls connect at once, so a
+/// gather coordinator whose own store load grew linear memory by a partition (~45MB) while its
+/// nine sibling calls were in flight lost the 7th, 8th and 9th every time. A throwaway Worker
+/// reproduced it with nothing but `WebAssembly.Memory.grow`: 0 to 45MB with nine calls out killed
+/// calls 7–9 in 9 of 9 trials; the same growth made BEFORE the calls were issued, 0 of 144 calls.
+///
+/// A no-op when there is nothing to prevent: a store is loaded (the next swap refills ITS buffer,
+/// and a second one beside it would be dead weight for the object's life), a load already holds its
+/// buffer, or the spare is already big enough.
+#[wasm_bindgen]
+pub fn reserve_store_buffer(total_len: u32) -> Result<bool, JsError> {
+    reserve_store_buffer_inner(total_len as usize).map_err(|e| JsError::new(&e))
+}
+
+fn reserve_store_buffer_inner(total: usize) -> Result<bool, String> {
+    if total == 0 {
+        return Ok(false);
+    }
+    if with_mut(&STORE, "store", |s| s.is_some())?
+        || with_mut(&LOADING, "load", |l| l.is_some())?
+        || with_mut(&GZ_BUF, "gzip buffer", |b| b.is_some())?
+        || with_mut(&LZ4_LOADING, "lz4 load", |l| l.is_some())?
+        || with_mut(&SPARE, "spare", |s| s.as_ref().is_some_and(|b| b.capacity() >= total))?
+    {
+        return Ok(false);
+    }
+    recycle(store_buffer(total)?)?;
+    Ok(true)
+}
+
 /// Whether a store is loaded. A poisoned slot reports false: the instance holds nothing usable,
 /// and the next load or query surfaces the poisoned error for the shim to act on.
 #[wasm_bindgen]
@@ -2445,6 +2480,64 @@ mod tests {
         assert_eq!(held, Some(ptr), "an abandoned load's buffer is what the next load refills");
         abandon_loads().expect("abandon");
         assert!(!store_loaded(), "no failed load ever became the active store");
+    }
+
+    /// x23: a reservation is the allocation the next load would have made, made early — so the
+    /// load refills it instead of growing linear memory while the gather's sibling calls connect.
+    /// It never adds a second store-sized buffer beside one that already exists.
+    #[test]
+    fn a_reserved_buffer_is_what_the_next_load_fills() {
+        let row = serde_json::json!({
+            "card_name": "Reserve Test",
+            "card_name_folded": "reserve test",
+            "oracle_id": "55555555-5555-5555-5555-555555555555",
+            "scryfall_id": "eeeeeeee-0000-0000-0000-000000000001",
+            "card_set_code": "tst",
+            "set_name": "Test Set",
+            "collector_number": "1",
+            "oracle_text": "Reserve the thing.",
+            "type_line": "Instant",
+            "card_types": ["Instant"],
+            "card_subtypes": [],
+            "card_keywords": {},
+            "card_colors": {"U": true},
+            "card_color_identity": {"U": true},
+            "cmc": 1,
+            "card_legalities": {"commander": "legal"},
+        });
+        let mut builder = card_engine::StoreBuilder::new();
+        builder.add_card(&row).expect("add_card");
+        let mut raw = Vec::new();
+        builder.finish_to_writer(&mut raw).expect("finish");
+        let total = raw.len();
+
+        SPARE.with(|s| *s.borrow_mut() = None);
+        assert_eq!(reserve_store_buffer_inner(0), Ok(false), "nothing to reserve for an empty store");
+        assert_eq!(reserve_store_buffer_inner(total), Ok(true), "a cold instance reserves");
+        let spare = SPARE.with(|s| s.borrow().as_ref().map(|b| (b.as_ptr(), b.capacity())));
+        let (ptr, cap) = spare.expect("held as the spare");
+        assert!(cap >= total);
+        assert_eq!(reserve_store_buffer_inner(total), Ok(false), "a spare that fits is not replaced");
+        assert_eq!(SPARE.with(|s| s.borrow().as_ref().map(|b| b.as_ptr())), Some(ptr));
+
+        // The load takes the reservation; while it holds it, another reservation allocates nothing.
+        begin_store_load(total as u32).expect("begin");
+        let loading = LOADING.with(|l| l.borrow().as_ref().map(|(b, _)| b.as_ptr()));
+        assert_eq!(loading, Some(ptr), "the load refilled the reservation");
+        assert_eq!(reserve_store_buffer_inner(total), Ok(false), "a load in progress already holds its buffer");
+        assert!(SPARE.with(|s| s.borrow().is_none()), "and nothing was allocated beside it");
+        store_load_chunk_inner(&raw).expect("chunk");
+        finish_store_load_inner().expect("finish");
+        assert!(store_loaded());
+
+        // A loaded store's buffer is what the next swap refills: reserving now would be a second one.
+        assert_eq!(reserve_store_buffer_inner(total), Ok(false), "a loaded store is never reserved beside");
+        assert!(SPARE.with(|s| s.borrow().is_none()));
+        unload_store().expect("unload");
+        let spare = SPARE.with(|s| s.borrow().as_ref().map(|b| b.as_ptr()));
+        assert_eq!(spare, Some(ptr), "unload keeps the same buffer");
+        assert_eq!(reserve_store_buffer_inner(total), Ok(false), "and that spare already fits");
+        SPARE.with(|s| *s.borrow_mut() = None);
     }
 
     /// The gzipped load path the Durable Object runs on every wake: a store published as

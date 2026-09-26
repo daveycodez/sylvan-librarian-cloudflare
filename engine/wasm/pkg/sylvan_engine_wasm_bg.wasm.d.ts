@@ -13,6 +13,7 @@ export const store_load_lz4_chunk: (a: number, b: number) => [number, number];
 export const finish_store_load_lz4: () => [number, number];
 export const store_lz4_frame: (a: number) => [number, number, number, number];
 export const unload_store: () => [number, number];
+export const reserve_store_buffer: (a: number) => [number, number, number];
 export const store_loaded: () => number;
 export const query: (a: number, b: number, c: number, d: number) => [number, number, number, number];
 export const query_rows: (a: number, b: number, c: number, d: number) => [number, number, number, number];
