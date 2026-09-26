@@ -1001,9 +1001,14 @@ export class SearchEngine extends DurableObject<Env> {
 		// would refuse to load): the list means nothing here, so do not spend a round on it.
 		const loaded = currentManifest(this.label);
 		if (loaded && String(loaded.built_at ?? "") !== list.build) return null;
-		const width = await this.gatherWidth();
+		const { width, manifest } = await this.gatherWidth();
 		if ((partitions[partitions.length - 1] as number) >= width) return null;
 		const clients = this.partitionClients(width);
+		// x23, as in gatherRun: a cold coordinator that is one of the listed partitions grows its
+		// memory for its own store BEFORE the fan-out, so no sibling call is still connecting when
+		// the load allocates. Nothing awaits between this and runTwoPhase.
+		const own = parseEngineName(this.label)?.partition;
+		if (manifest && own !== undefined && partitions.includes(own)) this.reserveOwnStore(manifest, width);
 		const page = await runTwoPhase(
 			partitions.map((p) => clients[p] as PartitionClient),
 			rest,
