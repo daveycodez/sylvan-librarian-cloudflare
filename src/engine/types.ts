@@ -271,7 +271,7 @@ export interface Engine {
 	 */
 	scryfallExactName(folded: string, setCode: string, baseUrl: string): Promise<Record<string, unknown> | null>;
 	/**
-	 * `[tier, name, served, score]` for this engine's best `exact=` candidate, or null (core_api's
+	 * `[tier, name, served, tie, score]` for this engine's best `exact=` candidate, or null (core_api's
 	 * `exact_name_rank`; see NameRank for how two compare).
 	 *
 	 * Only the partitioned router calls this, to rank partitions before materializing one — a
@@ -378,7 +378,7 @@ export interface CollectionBatchAnswer {
 	keys: (Uint8Array | null)[];
 	trees: (Uint8Array | null)[];
 	names: (Uint8Array | null)[];
-	/** `[tier, name, served, score]` per name, or null — what the partitioned router merges names by. */
+	/** `[tier, name, served, tie, score]` per name, or null — what the partitioned router merges names by. */
 	nameRanks: (NameRank | null)[];
 	/**
 	 * Per name, whether this store holds it at all — no set, no scope, and `exact=`'s wider name
@@ -388,9 +388,9 @@ export interface CollectionBatchAnswer {
 }
 
 /**
- * A name lookup's rank on the wire, `[tier, name, served, score]` — card_engine's `exact_name_rank`.
- * The router compares two with `beatsExactRank`: a NUMBER element higher-wins, a STRING element (the
- * collated card name) lower-wins, in order.
+ * A name lookup's rank on the wire, `[tier, name, served, tie, score]` — card_engine's
+ * `exact_name_rank`. The router compares two with `beatsExactRank`: a NUMBER element higher-wins, a
+ * STRING element (the collated card name; the card's tie key, `name_tie_key`) lower-wins, in order.
  */
 export type NameRank = (number | string)[];
 

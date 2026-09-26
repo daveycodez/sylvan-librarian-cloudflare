@@ -299,15 +299,17 @@ export function flavorKeyOf(card: Record<string, unknown>): string | undefined {
 
 /**
  * Whether exact-name rank `a` beats `b`, with null losing to anything — card_engine's
- * `NameHit::outranks` over the wire form `[tier, name, served, score]` (core_api's
+ * `NameHit::outranks` over the wire form `[tier, name, served, tie, score]` (core_api's
  * `exact_name_rank`): element by element in the order the engine emits them, a NUMBER higher-wins
- * and a STRING — the collated card name — lower-wins.
+ * and a STRING — the collated card name, and the card's tie key — lower-wins.
  *
  * The tier leads: a partition holding an extras-only card the needle names WHOLE beats one holding
  * a served card it names by a face (`exact=chaos`: the fj25 front card Chaos over Order // Chaos,
- * api.scryfall.com 2026-09-26). On one tier the first name wins (`exact=day`: the Day // Night token
- * over Night // Day), and of one name the served card (`exact=Earth Rumble`: the tla sorcery over
- * the jtla front card).
+ * api.scryfall.com 2026-09-26) — and a double-faced token's face is a whole name. On one tier the
+ * first name wins (`exact=elemental`: the City's Blessing // Elemental token over the Elemental
+ * tokens), of one name the served card (`exact=Earth Rumble`: the tla sorcery over the jtla front
+ * card), and of one name and served class the lower tie key (`exact=armed`: the fmsc front card
+ * over fj25's, whose text sorts after it).
  */
 export function beatsExactRank(a: NameRank, b: NameRank | null): boolean {
 	if (b === null) return true;
@@ -344,11 +346,17 @@ function soleHint(hint: NameHint | null): number | null {
  *   rival t    and every other partition holds it only as an extra — on tier t at most, 0 when
  *              only as an art series, which ranks below everything), and s's `[tier, name, served,
  *              …]` beats every one of theirs whatever their names and scores: a HIGHER tier than
- *              t, or the whole-name tier served (every whole-name candidate has the needle for its
- *              name, so the served flag decides). `delver of secrets` (a face of the served card,
- *              its art-series faces elsewhere, t = 0) settles; `chaos` (Order // Chaos's face, t = 3
- *              from the fj25 front card Chaos) and `night` (Night // Day's face, t = 2 from the Day
- *              // Night token, whose name comes first) do not, and the merge answers the extra.
+ *              t, or the whole-name tier served under the NEEDLE'S OWN NAME (no whole-name rival
+ *              sorts before it: a double-faced token's face that would is spelled served by the
+ *              builders, so the filter holds no single served partition for it; see
+ *              `name_routing_keys_of` in engine/builder/src/transform.rs). `delver of secrets` (a
+ *              face of the served card, its art-series faces elsewhere, t = 0) settles; `chaos`
+ *              (Order // Chaos's face, t = 3 from the fj25 front card Chaos) and `day` (Night //
+ *              Day's face, t = 3 from the Day // Night token) do not, and the merge answers the
+ *              extra — `night`, whose token name comes first, has no served route at all. A served
+ *              double-faced token answering under its own joined name (Undercity // The Initiative
+ *              for `undercity`) does not settle either: an extra named the needle would sort
+ *              before it.
  *   served s   a filter built before the builders spelled tiers (no `rival`): s answered SERVED —
  *              the rule before x26, when served led the rank. Until the next build publishes a
  *              tiered filter it answers exactly as it did, a whole-name extra in another
@@ -364,11 +372,21 @@ export function nameReplySettles(hint: NameHint, rank: NameRank | null, present:
 	const tier = Number(rank[0] ?? 0);
 	const served = Number(rank[2] ?? 0);
 	if (hint.rival === undefined) return served === 1;
-	return tier > hint.rival || (tier === hint.rival && tier === NAME_TIER_WHOLE && served === 1);
+	if (tier > hint.rival) return true;
+	// On the whole-name tier every rival is named the needle or sorts after it, so the served card
+	// named the needle beats them all — and only that card: `needle` is absent only from a caller
+	// that routes no key, which settles nothing here.
+	return (
+		tier === hint.rival &&
+		tier === NAME_TIER_WHOLE &&
+		served === 1 &&
+		hint.needle !== undefined &&
+		rank[1] === hint.needle
+	);
 }
 
-/** The engine's whole-name tier (core_api's `TIER_WHOLE_NAME`): on it every candidate's name IS the
- * needle, so of two replies the served one wins. */
+/** The engine's whole-name tier (core_api's `TIER_WHOLE_NAME`): on it a candidate's name is the
+ * needle, or a double-faced token's own name, so of two replies named the needle the served one wins. */
 const NAME_TIER_WHOLE = 3;
 
 // ── The routing filter (src/engine/routing-filter.ts) ─────────────────────────
@@ -1381,7 +1399,10 @@ export class PartitionedEngine implements Engine {
 	private nameHintOf(folded: string): NameHint | null {
 		if (this.routing === null || !this.routing.hasNameKeys) return null;
 		const key = nameKey(folded);
-		return key === null ? null : this.routing.lookupName(key);
+		if (key === null) return null;
+		const hint = this.routing.lookupName(key);
+		// A served route carries the collated needle, which its whole-name reply must BE to settle.
+		return hint !== null && "served" in hint ? { ...hint, needle: key.slice(key.indexOf(":") + 1) } : hint;
 	}
 
 	/** The best rank any partition holds — the whole store's answer, for an Engine asked directly. */

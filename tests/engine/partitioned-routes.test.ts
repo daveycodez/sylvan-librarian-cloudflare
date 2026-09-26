@@ -1524,9 +1524,10 @@ describe("exact names route through the filter (backlog n6)", () => {
 	]);
 
 	// x26: Order // Chaos served in 3 and the fj25 front card Chaos (a whole-name extra) in 1; Night
-	// // Day served in 3 and the Day // Night token (an extra, a face) in 0; Delver of Secrets //
-	// Insectile Aberration served in 2 and its art-series faces in 0 — the keys the builders write for
-	// them (`name_routing_keys_are_spelled_like_the_router_spells_them`).
+	// // Day served in 3 and an extra naming `night` by a face in 0; Delver of Secrets // Insectile
+	// Aberration served in 2 and its art-series faces in 0 — the keys the builders write for them
+	// (`name_routing_keys_are_spelled_like_the_router_spells_them`). x27: the real `night` extra, the
+	// Day // Night double-faced TOKEN, writes `ns:night` — see DFC_KEYS.
 	const CHAOS_KEYS = [
 		{ key: "ns:chaos", partition: 3 },
 		{ key: "nw:chaos", partition: 1 },
@@ -1608,6 +1609,71 @@ describe("exact names route through the filter (backlog n6)", () => {
 		expect(calls).toEqual(["scryfallExactNameProbe:2"]);
 	});
 
+	// x27: a double-faced token's faces are WHOLE names, and the builders spell a face its own name
+	// sorts before as SERVED. The Day // Night token in 0 (`nw:day`, `ns:night`) beside the served
+	// Night // Day in 3; City's Blessing // Elemental in 1 (`ns:elemental`) beside a served card named
+	// Elemental in 2; the served token Undercity // The Initiative in 2 beside an extra named Undercity
+	// in 1 (a card the corpus does not hold: a served token's own joined name must not settle).
+	const DFC = tiered([
+		{ key: "nw:daynight", partition: 0 },
+		{ key: "nw:day", partition: 0 },
+		{ key: "ns:night", partition: 0 },
+		{ key: "ns:nightday", partition: 3 },
+		{ key: "ns:night", partition: 3 },
+		{ key: "ns:day", partition: 3 },
+		{ key: "nw:citysblessingelemental", partition: 1 },
+		{ key: "nw:citysblessing", partition: 1 },
+		{ key: "ns:elemental", partition: 1 },
+		{ key: "ns:elemental", partition: 2 },
+		{ key: "ns:undercitytheinitiative", partition: 2 },
+		{ key: "ns:undercity", partition: 2 },
+		{ key: "nw:undercity", partition: 1 },
+	]);
+	const elementalStores = {
+		1: { exact: { name: "City's Blessing // Elemental" }, exactRank: [3, "citysblessingelemental", 0, "R 0 0 ", 0.1] },
+		2: { exact: { name: "Elemental" }, exactRank: [3, "elemental", 1, "R 0 0 ", 9.9] },
+	};
+	const dayNightStores = {
+		0: { exact: { name: "Day // Night" }, exactRank: [3, "daynight", 0, "", 0.1] },
+		3: { exact: { name: "Night // Day" }, exactRank: [2, "nightday", 1, "", 9.9] },
+	};
+
+	test("exact: a double-faced token's face that comes first by name is spelled served — the name asks everyone", async () => {
+		expect(DFC.lookupName("nm:night")).toBeNull();
+		expect(DFC.lookupName("nm:elemental")).toBeNull();
+		expect(DFC.lookupName("nm:day")).toEqual({ served: 3, rival: 3 });
+		// `exact=elemental` is City's Blessing // Elemental on api.scryfall.com (2026-09-26), over
+		// every card named Elemental; a served one would be no different.
+		const elemental = build(elementalStores, undefined, DFC);
+		expect(await elemental.engine.scryfallExactName("elemental", "", "https://x")).toEqual({
+			name: "City's Blessing // Elemental",
+		});
+		expect(elemental.calls.length).toBe(N);
+		const night = build(dayNightStores, undefined, DFC);
+		expect(await night.engine.scryfallExactName("night", "", "https://x")).toEqual({ name: "Day // Night" });
+		expect(night.calls.length).toBe(N);
+		// `day`: the token is a whole-name rival (rival 3) of the served FACE answer, which asks the rest.
+		const day = build(dayNightStores, undefined, DFC);
+		expect(await day.engine.scryfallExactName("day", "", "https://x")).toEqual({ name: "Day // Night" });
+		expect(day.calls[0]).toBe("scryfallExactNameProbe:3");
+		expect(day.calls.length).toBe(N);
+	});
+
+	test("exact: a served whole-name answer settles only under the needle's own name", async () => {
+		const { engine, calls } = build(
+			{
+				1: { exact: { name: "Undercity" }, exactRank: [3, "undercity", 0, "", 0.1] },
+				2: { exact: { name: "Undercity // The Initiative" }, exactRank: [3, "undercitytheinitiative", 1, "", 9.9] },
+			},
+			undefined,
+			DFC,
+		);
+		expect(DFC.lookupName("nm:undercity")).toEqual({ served: 2, rival: 3 });
+		expect(await engine.scryfallExactName("undercity", "", "https://x")).toEqual({ name: "Undercity" });
+		expect(calls[0]).toBe("scryfallExactNameProbe:2");
+		expect(calls.length).toBe(N);
+	});
+
 	test("exact: a filter built before the tiers keeps the served route's old rule until a build republishes it", async () => {
 		// The same keys, sealed without tiers (`#nm1` batches): the served holder's served reply
 		// settles as it always did — the face answer, one probe — and nothing else changes.
@@ -1621,35 +1687,53 @@ describe("exact names route through the filter (backlog n6)", () => {
 	});
 
 	test("nameReplySettles: a served route with tiers settles on a HIGHER tier than the rival's — or on the whole-name tier served", () => {
-		const whole = { served: 3, rival: 3 };
-		const face = { served: 3, rival: 2 };
-		const flavor = { served: 3, rival: 1 };
-		const art = { served: 3, rival: 0 };
-		// On the whole-name tier every candidate's name is the needle, so served decides.
-		expect(nameReplySettles(whole, [3, "x", 1, 0], false)).toBe(true);
-		expect(nameReplySettles(whole, [3, "x", 0, 9], false)).toBe(false);
-		expect(nameReplySettles(whole, [2, "x", 1, 9], false)).toBe(false);
-		expect(nameReplySettles(face, [3, "x", 0, 0], true)).toBe(true);
+		const whole = { served: 3, rival: 3, needle: "x" };
+		const face = { served: 3, rival: 2, needle: "x" };
+		const flavor = { served: 3, rival: 1, needle: "x" };
+		const art = { served: 3, rival: 0, needle: "x" };
+		// On the whole-name tier every rival is named the needle or sorts after it (a double-faced
+		// token whose name sorts first is spelled served), so the served card NAMED THE NEEDLE decides.
+		expect(nameReplySettles(whole, [3, "x", 1, "", 0], false)).toBe(true);
+		expect(nameReplySettles(whole, [3, "x", 0, "", 9], false)).toBe(false);
+		expect(nameReplySettles(whole, [2, "x", 1, "", 9], false)).toBe(false);
+		// ...and no other: a served double-faced token answering under its own joined name, or a
+		// route that carries no needle, asks the rest.
+		expect(nameReplySettles(whole, [3, "xy", 1, "", 0], false)).toBe(false);
+		expect(nameReplySettles({ served: 3, rival: 3 }, [3, "x", 1, "", 0], false)).toBe(false);
+		expect(nameReplySettles(face, [3, "x", 0, "", 0], true)).toBe(true);
+		expect(nameReplySettles(face, [3, "ax", 0, "", 0], true)).toBe(true);
 		// On a face tie a rival's name may come first, served or not.
-		expect(nameReplySettles(face, [2, "a", 1, 0], true)).toBe(false);
-		expect(nameReplySettles(flavor, [2, "x", 0, 9], true)).toBe(true);
-		expect(nameReplySettles(flavor, [1, "", 1, 0], true)).toBe(false);
-		expect(nameReplySettles(art, [1, "", 0, 0], true)).toBe(true);
-		expect(nameReplySettles(art, [0, "", 1, 0], true)).toBe(false);
+		expect(nameReplySettles(face, [2, "a", 1, "", 0], true)).toBe(false);
+		expect(nameReplySettles(flavor, [2, "x", 0, "", 9], true)).toBe(true);
+		expect(nameReplySettles(flavor, [1, "", 1, "", 0], true)).toBe(false);
+		expect(nameReplySettles(art, [1, "", 0, "", 0], true)).toBe(true);
+		expect(nameReplySettles(art, [0, "", 1, "", 0], true)).toBe(false);
 		// A miss never settles a served route; a filter without tiers keeps the served-only rule.
 		expect(nameReplySettles(whole, null, true)).toBe(false);
-		expect(nameReplySettles({ served: 3 }, [2, "x", 1, 0], false)).toBe(true);
-		expect(nameReplySettles({ served: 3 }, [3, "x", 0, 0], false)).toBe(false);
+		expect(nameReplySettles({ served: 3 }, [2, "x", 1, "", 0], false)).toBe(true);
+		expect(nameReplySettles({ served: 3 }, [3, "x", 0, "", 0], false)).toBe(false);
 	});
 
-	test("beatsExactRank: the higher tier, then the LOWER name, then served, then the higher score", () => {
-		expect(beatsExactRank([3, "chaos", 0, 0.1], [2, "orderchaos", 1, 9.9])).toBe(true);
-		expect(beatsExactRank([2, "daynight", 0, 0.1], [2, "nightday", 1, 9.9])).toBe(true);
-		expect(beatsExactRank([2, "nightday", 1, 9.9], [2, "daynight", 0, 0.1])).toBe(false);
-		expect(beatsExactRank([3, "earthrumble", 1, 0.1], [3, "earthrumble", 0, 9.9])).toBe(true);
-		expect(beatsExactRank([3, "x", 1, 0.2], [3, "x", 1, 0.1])).toBe(true);
-		expect(beatsExactRank([3, "x", 1, 0.1], [3, "x", 1, 0.1])).toBe(false);
-		expect(beatsExactRank([0, "", 0, 0], null)).toBe(true);
+	test("beatsExactRank: the higher tier, then the LOWER name, then served, then the LOWER tie key, then the higher score", () => {
+		expect(beatsExactRank([3, "chaos", 0, "", 0.1], [2, "orderchaos", 1, "", 9.9])).toBe(true);
+		expect(beatsExactRank([2, "daynight", 0, "", 0.1], [2, "nightday", 1, "", 9.9])).toBe(true);
+		expect(beatsExactRank([2, "nightday", 1, "", 9.9], [2, "daynight", 0, "", 0.1])).toBe(false);
+		expect(beatsExactRank([3, "citysblessingelemental", 0, "", 0.1], [3, "elemental", 0, "", 9.9])).toBe(true);
+		expect(beatsExactRank([3, "earthrumble", 1, "Z", 0.1], [3, "earthrumble", 0, "", 9.9])).toBe(true);
+		// x27: of one name and served class the lower tie key — `exact=armed` is the fmsc front card,
+		// "(Theme color: {B})", over fj25's "(Theme color: {W})" that outscores it.
+		expect(beatsExactRank([3, "armed", 0, " 0 0 themecolorb", 0.1], [3, "armed", 0, " 0 0 themecolorw", 9.9])).toBe(
+			true,
+		);
+		expect(beatsExactRank([3, "armed", 0, " 0 0 themecolorw", 9.9], [3, "armed", 0, " 0 0 themecolorb", 0.1])).toBe(
+			false,
+		);
+		// Colors first: "" (colorless) < "B" < "G" < "R" < "RG".
+		expect(beatsExactRank([3, "ox", 0, "G 2c01 2c01 ", 0.1], [3, "ox", 0, "W 2c00 2c01 ", 9.9])).toBe(true);
+		expect(beatsExactRank([3, "x", 0, "R 0 0 ", 0.1], [3, "x", 0, "RG 0 0 ", 9.9])).toBe(true);
+		expect(beatsExactRank([3, "x", 1, "", 0.2], [3, "x", 1, "", 0.1])).toBe(true);
+		expect(beatsExactRank([3, "x", 1, "", 0.1], [3, "x", 1, "", 0.1])).toBe(false);
+		expect(beatsExactRank([0, "", 0, "", 0], null)).toBe(true);
 	});
 
 	test("exact: a name ONE partition holds is ONE probe", async () => {

@@ -916,18 +916,22 @@ pub fn exact_card_by_name(folded: &str, set_code: &str, fields_json: &str) -> Re
     })
 }
 
-/// How well this partition's best `exact=` candidate matches, as `[tier, name, served, score]`, or
+/// How well this partition's best `exact=` candidate matches, as `[tier, name, served, tie, score]`, or
 /// `null` — card_engine's `exact_name_rank`, whose order the router's `beatsExactRank` applies.
 ///
-/// The HIGHER tier wins: 3 (the needle IS a card's whole name) > 2 (it matches a FACE) > 1 (a
-/// FLAVOR name) > 0 (an art-series card, a collection identifier only). Then the LOWER name — the
-/// card's collated name, a string, empty on the two lower tiers. Then served, 1 when the printing
-/// answered is one a default search shows and 0 when the name exists only in the extras class;
+/// The HIGHER tier wins: 3 (the needle IS a card's whole name, or a double-faced token's face) > 2
+/// (it matches a FACE of any other card) > 1 (a FLAVOR name) > 0 (an art-series card, a collection
+/// identifier only). Then the LOWER name — the card's collated name, a string, empty on the two
+/// lower tiers. Then served, 1 when the printing answered is one a default search shows and 0 when
+/// the name exists only in the extras class; then the LOWER tie key (card_engine's
+/// `name_tie_key`: colors, power, toughness, rules text — a string, empty on the two lower tiers);
 /// then the higher prefer_score. So `exact=chaos` answers the fj25 front card Chaos (whole) over
-/// Order // Chaos (a face), `exact=day` the Day // Night token over Night // Day (both faces, and
-/// "daynight" comes first), and `exact=Earth Rumble` the tla sorcery over the jtla front card of
-/// the same name — whatever partition each hashed to. The router reads one reply's tier and served
-/// flag to decide whether a served name route's single reply is final (`nameReplySettles`).
+/// Order // Chaos (a face), `exact=elemental` the double-faced token City's Blessing // Elemental
+/// over the Elemental tokens ("citysblessingelemental" comes first), `exact=Earth Rumble` the tla
+/// sorcery over the jtla front card of the same name, and `exact=armed` the fmsc front card over
+/// the fj25 one it is tied with on everything but its card — whatever partition each hashed to. The
+/// router reads one reply's tier, name and served flag to decide whether a served name route's
+/// single reply is final (`nameReplySettles`).
 ///
 /// EXISTS FOR THE PARTITIONED ROUTER. `exact_card_by_name` ranks its candidates, but with the
 /// corpus cut into partitions that ranking is LOCAL — and more than one partition can answer,
@@ -943,9 +947,11 @@ pub fn exact_name_rank(folded: &str, set_code: &str) -> Result<String, JsError> 
 
 /// An `exact_name_rank` as the wire's JSON — `exact_name_rank` and `exact_name_probe` both write it
 /// here, so the router compares the two exports' ranks as the same values.
-fn rank_text(rank: Option<(u8, String, u8, f32)>) -> String {
+fn rank_text(rank: Option<(u8, String, u8, String, f32)>) -> String {
     match rank {
-        Some((tier, name, served, score)) => format!("[{tier},{},{served},{score}]", serde_json::Value::String(name)),
+        Some((tier, name, served, tie, score)) => {
+            format!("[{tier},{},{served},{},{score}]", serde_json::Value::String(name), serde_json::Value::String(tie))
+        }
         None => "null".to_string(),
     }
 }
@@ -1043,7 +1049,7 @@ fn parse_scope(prefer: &str, scope_json: &str) -> Result<Option<card_engine::Col
 }
 
 /// How well this partition's best collection-identifier candidate matches, as
-/// `[tier, name, served, score]` or `null` per identifier — the batched twin of `exact_name_rank`, and
+/// `[tier, name, served, tie, score]` or `null` per identifier — the batched twin of `exact_name_rank`, and
 /// there for the same partitioned router. Under a scope the score is the scope's prefer score
 /// and served is always 1 (the scope's pool holds no extras).
 #[wasm_bindgen]
@@ -1057,7 +1063,7 @@ pub fn collection_name_ranks(identifiers_json: &str, prefer: &str, scope_json: &
         let out: Vec<serde_json::Value> = ranks
             .into_iter()
             .map(|r| match r {
-                Some((tier, name, served, score)) => serde_json::json!([tier, name, served, score]),
+                Some((tier, name, served, tie, score)) => serde_json::json!([tier, name, served, tie, score]),
                 None => serde_json::Value::Null,
             })
             .collect();
@@ -1098,7 +1104,7 @@ pub fn card_by_illustration_id(illustration_id: &str, fields_json: &str) -> Resu
 /// The answer is little-endian bytes:
 ///
 /// ```text
-/// header_len: u32, header: header_len bytes of JSON — one rank per name, [tier, name, served, score] or null
+/// header_len: u32, header: header_len bytes of JSON — one rank per name, [tier, name, served, tie, score] or null
 /// then for each key, each tree, each name, in that order: len: u32, card: len bytes (0 = none)
 /// ```
 ///
@@ -1138,7 +1144,7 @@ pub fn collection_batch(request_json: &str, fields_json: &str, base_url: &str) -
         let rank_list: Vec<serde_json::Value> = ranks
             .iter()
             .map(|r| match r {
-                Some((tier, name, served, score)) => serde_json::json!([tier, name, served, score]),
+                Some((tier, name, served, tie, score)) => serde_json::json!([tier, name, served, tie, score]),
                 None => serde_json::Value::Null,
             })
             .collect();

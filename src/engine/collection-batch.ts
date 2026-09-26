@@ -3,7 +3,7 @@
 //
 // The packet is what engine/wasm's `collection_batch` writes, little-endian:
 //
-//   header_len: u32, header: header_len bytes of JSON — one rank per name, [tier, name, served, score] or null
+//   header_len: u32, header: header_len bytes of JSON — one rank per name, [tier, name, served, tie, score] or null
 //     (or, when the batch asked for `presence`, {"ranks": [...], "present": [bool per name]})
 //   then for each key, each tree, each name, in that order: len: u32, card: len bytes (0 = none)
 //

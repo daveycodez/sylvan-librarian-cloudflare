@@ -36,8 +36,8 @@ use card_engine::{fnv1a64_oracle_id, BufferStore, CollectionScope, QueryOptions}
 use serde_json::{Map, Value};
 use sylvan_store_builder::transform::{face_flavor_name_folded, name_routing_keys_of};
 
-/// A reply's rank, as the router compares it: `(tier, name, served, score)`.
-type Rank = (u8, String, u8, f64);
+/// A reply's rank, as the router compares it: `(tier, name, served, tie, score)`.
+type Rank = (u8, String, u8, String, f64);
 
 #[derive(Clone, Debug)]
 struct Reply {
@@ -54,12 +54,19 @@ enum Hint {
     Served(usize, u8),
 }
 
-/// `beatsExactRank`: the higher tier, then the LOWER name, then served, then the higher score —
-/// strictly.
+/// `beatsExactRank`: the higher tier, then the LOWER name, then served, then the LOWER tie key, then
+/// the higher score — strictly.
 fn beats(a: &Rank, b: Option<&Rank>) -> bool {
     match b {
         None => true,
-        Some(b) => a.0.cmp(&b.0).then_with(|| b.1.cmp(&a.1)).then(a.2.cmp(&b.2)).then(a.3.partial_cmp(&b.3).unwrap()).is_gt(),
+        Some(b) => a
+            .0
+            .cmp(&b.0)
+            .then_with(|| b.1.cmp(&a.1))
+            .then(a.2.cmp(&b.2))
+            .then_with(|| b.3.cmp(&a.3))
+            .then(a.4.partial_cmp(&b.4).unwrap())
+            .is_gt(),
     }
 }
 
@@ -76,24 +83,30 @@ fn merge(replies: &[Reply]) -> Option<(usize, Rank)> {
     best
 }
 
-/// `nameReplySettles`: whether the hinted partition's reply alone is the answer.
-fn settles(hint: Hint, replies: &[Reply]) -> bool {
+/// `nameReplySettles`: whether the hinted partition's reply alone is the answer. `needle` is the
+/// collated name the router looked up (its key without the namespace), which a whole-name served
+/// reply must carry.
+fn settles(hint: Hint, needle: Option<&str>, replies: &[Reply]) -> bool {
     match hint {
         Hint::Sole(p) => replies[p].rank.is_some() || replies[p].present,
-        Hint::Served(s, rival) => replies[s]
-            .rank
-            .as_ref()
-            .is_some_and(|&(tier, _, served, _)| tier > rival || (tier == rival && tier == TIER_WHOLE && served == 1)),
+        Hint::Served(s, rival) => replies[s].rank.as_ref().is_some_and(|(tier, name, served, _, _)| {
+            *tier > rival || (*tier == rival && *tier == TIER_WHOLE && *served == 1 && needle == Some(name.as_str()))
+        }),
         Hint::None => false,
     }
 }
 
 /// The router: the hinted partition's reply when it settles the name, else the merge.
-fn route(hint: Hint, replies: &[Reply]) -> Option<(usize, Rank)> {
+fn route(hint: Hint, needle: Option<&str>, replies: &[Reply]) -> Option<(usize, Rank)> {
     match hint {
-        Hint::Sole(p) | Hint::Served(p, _) if settles(hint, replies) => replies[p].rank.clone().map(|r| (p, r)),
+        Hint::Sole(p) | Hint::Served(p, _) if settles(hint, needle, replies) => replies[p].rank.clone().map(|r| (p, r)),
         _ => merge(replies),
     }
+}
+
+/// The collated needle `nameHintOf` hands a served hint: `router_key` without its namespace.
+fn router_needle(folded: &str) -> Option<String> {
+    router_key(folded).map(|k| k["nm:".len()..].to_owned())
 }
 
 /// `nameKey` in src/engine/routing-filter.ts: the key the router hashes, or None (not routed).
@@ -236,7 +249,7 @@ fn name_routes_match_the_all_partition_merge() {
             face_flavor.as_deref(),
             row.is_canonical,
             extra,
-            row.card_layout.as_deref() == Some("art_series"),
+            row.card_layout.as_deref(),
             &mut keys,
         );
         raw_lines += keys.len();
@@ -352,7 +365,7 @@ fn name_routes_match_the_all_partition_merge() {
                     let exact = |(needle, set): &(String, Option<String>)| {
                         let rank = store
                             .exact_name_rank(needle, set.as_deref())
-                            .map(|(tier, name, served, score)| (tier, name, served, f64::from(score)));
+                            .map(|(tier, name, served, tie, score)| (tier, name, served, tie, f64::from(score)));
                         let present = rank.is_some() || (set.is_some() && present(needle));
                         Reply { rank, present }
                     };
@@ -398,13 +411,14 @@ fn name_routes_match_the_all_partition_merge() {
         [("exact", |r| &r.0), ("collection", |r| &r.1), ("collection+scope", |r| &r.2)];
     for (i, (needle, set)) in cases.iter().enumerate() {
         let hint = hint_of(needle);
+        let key_needle = router_needle(needle);
         for (s, (surface, pick)) in surfaces.iter().enumerate() {
             let col = column(*pick, i);
-            let (routed, merged) = (route(hint, &col), merge(&col));
+            let (routed, merged) = (route(hint, key_needle.as_deref(), &col), merge(&col));
             if routed.as_ref().map(|r| r.0) != merged.as_ref().map(|m| m.0) || routed.as_ref().map(|r| &r.1) != merged.as_ref().map(|m| &m.1) {
                 mismatches.push(format!("{surface} {needle:?} set={set:?} hint={hint:?}: routed {routed:?} merged {merged:?}"));
             }
-            let settled = settles(hint, &col);
+            let settled = settles(hint, key_needle.as_deref(), &col);
             single[s] += usize::from(settled);
             if let Hint::Served(p, _) = hint
                 && col[p].rank.as_ref().is_some_and(|r| r.2 == 1)
@@ -464,9 +478,10 @@ fn name_routes_match_the_all_partition_merge() {
                 .chain((0..n).flat_map(|s| (0..4).map(move |t| Hint::Served(s, t))))
                 .collect()
         };
+        let key_needle = router_needle(needle);
         for hint in hints {
             misspelled_checks += 1;
-            let routed = route(hint, &col);
+            let routed = route(hint, key_needle.as_deref(), &col);
             if routed.as_ref().map(|r| r.0) != merged.as_ref().map(|m| m.0) {
                 mismatches.push(format!("misspelling {needle:?} set={set:?} hint={hint:?}: routed {routed:?} merged {merged:?}"));
             }

@@ -2885,7 +2885,7 @@ pub fn routing_keys_of_row(row: &Value, out: &mut Vec<String>) {
         face_flavor.as_deref(),
         canonical,
         extra,
-        text("card_layout") == Some(ART_SERIES_LAYOUT),
+        text("card_layout"),
         out,
     );
 }
@@ -2927,12 +2927,22 @@ pub fn routing_keys_of_row(row: &Value, out: &mut Vec<String>) {
 // (card-level or a face-level join) — the engine's `TIER_WHOLE_NAME` / `TIER_FACE_NAME` /
 // `TIER_FLAVOR_NAME` — and an ART-SERIES row `na:` for its whole and face names, which the engine
 // ranks below every other card (`TIER_ART_SERIES`; `exact=` never answers one). The engine ranks
-// `(tier, name, served, score)`, so the served partition's answer is final only when it is on a
+// `(tier, name, served, tie, score)`, so the served partition's answer is final only when it is on a
 // higher tier than any other partition's extras hold the name on: `exact=chaos` is the fj25 front
-// card Chaos (`nw:chaos`) over Order // Chaos (`ns:chaos`, a face), and `exact=night` the Day //
-// Night token (`nm:night`) over Night // Day (`ns:night`), on api.scryfall.com 2026-09-26. The
-// filter stores that highest rival tier beside the served partition, and the router settles on one
-// reply only when that reply beats it (`nameReplySettles` in partitioned-engine.ts).
+// card Chaos (`nw:chaos`) over Order // Chaos (`ns:chaos`, a face), on api.scryfall.com 2026-09-26.
+// The filter stores that highest rival tier beside the served partition, and the router settles on
+// one reply only when that reply beats it (`nameReplySettles` in partitioned-engine.ts).
+//
+// A DOUBLE-FACED TOKEN'S FACES ARE WHOLE NAMES (x27): the engine ranks an extras token's face match
+// on the whole-name tier, where its OWN name, in order, decides — `exact=elemental` is City's
+// Blessing // Elemental, `exact=night` the Day // Night token — so its face keys are `nw:`. Except
+// where that name sorts BEFORE the face (`citysblessingelemental` < `elemental`): that token beats
+// every card named the face, a served one too, and no rival tier says so — the router settles a
+// served whole-name reply against a whole-tier rival, which every other one of them deserves. Such a
+// face is spelled `ns:`, as if served: a name whose one real served holder is elsewhere then has TWO
+// served partitions and no hint (every partition is asked and merged), and one whose served holder
+// shares the token's partition gets that partition's own ranked reply, which settles only on a tier
+// above every other partition's.
 //
 // WIRE FORMAT, like the id namespaces above: `nameKey` in routing-filter.ts spells the other side.
 
@@ -2956,6 +2966,11 @@ fn collate_name(folded: &str) -> String {
 /// `name_key_tier`). Halves are collated after the split, as the engine does, so a needle cannot
 /// straddle the join.
 fn push_name_keys(name: &str, whole_prefix: &str, face_prefix: &str, out: &mut Vec<String>) {
+    push_name_keys_with(name, whole_prefix, |_| face_prefix, out);
+}
+
+/// [`push_name_keys`] with each face's prefix chosen from its collated key.
+fn push_name_keys_with<'p>(name: &str, whole_prefix: &str, face_prefix: impl Fn(&str) -> &'p str, out: &mut Vec<String>) {
     let whole = collate_name(name);
     if !whole.is_empty() {
         out.push(format!("{whole_prefix}{whole}"));
@@ -2964,11 +2979,11 @@ fn push_name_keys(name: &str, whole_prefix: &str, face_prefix: &str, out: &mut V
     if let (Some(front), Some(back), None) = (halves.next(), halves.next(), halves.next()) {
         let (front, back) = (collate_name(front), collate_name(back));
         if !front.is_empty() && front != whole {
-            out.push(format!("{face_prefix}{front}"));
+            out.push(format!("{}{front}", face_prefix(&front)));
         }
         // An art-series card doubles its name ("Delver of Secrets // Delver of Secrets"): one key.
         if !back.is_empty() && back != whole && back != front {
-            out.push(format!("{face_prefix}{back}"));
+            out.push(format!("{}{back}", face_prefix(&back)));
         }
     }
 }
@@ -2989,17 +3004,19 @@ pub fn face_flavor_name_folded<'a>(faces: impl IntoIterator<Item = Option<&'a st
 
 /// Append one row's NAME routing keys — see the section comment. `face_flavor_folded` is
 /// [`face_flavor_name_folded`] over the row's faces. `extra` is whether the row carries the `extra`
-/// `is:` tag; everything else is served, and writes `ns:` on every tier. `art_series` is whether the
-/// row's layout is `art_series` (every art-series row is an extra too).
+/// `is:` tag; everything else is served, and writes `ns:` on every tier. `layout` is the row's
+/// `card_layout`: an `art_series` row (every one an extra too) writes `na:`, and an extras
+/// `double_faced_token` row its face names on the whole-name tier.
 pub fn name_routing_keys_of(
     card_name_folded: &str,
     flavor_name_folded: Option<&str>,
     face_flavor_folded: Option<&str>,
     canonical: bool,
     extra: bool,
-    art_series: bool,
+    layout: Option<&str>,
     out: &mut Vec<String>,
 ) {
+    let art_series = layout == Some(ART_SERIES_LAYOUT);
     // (whole, face, flavor): the tiers the engine ranks an extras-only card on. An art series'
     // flavor name stays a flavor-tier key: the flavor pass does not skip one.
     let (whole, face, flavor) = match (extra, art_series) {
@@ -3008,7 +3025,13 @@ pub fn name_routing_keys_of(
         (false, false) => ("ns:", "ns:", "ns:"),
     };
     if canonical {
-        push_name_keys(card_name_folded, whole, face, out);
+        if extra && layout == Some(FACES_ARE_NAMES_LAYOUT) {
+            // Whole names, and one that sorts before the needle outranks a served card of it.
+            let whole_collated = collate_name(card_name_folded);
+            push_name_keys_with(card_name_folded, whole, |face| if whole_collated.as_str() < face { "ns:" } else { "nw:" }, out);
+        } else {
+            push_name_keys(card_name_folded, whole, face, out);
+        }
     }
     // A flavor name, halves included, is only ever a flavor-tier match.
     if let Some(name) = flavor_name_folded.filter(|f| !f.is_empty()) {
@@ -3032,6 +3055,10 @@ pub fn is_name_routing_key(key: &str) -> bool {
 /// The layout the engine skips on `exact=` and ranks last on a collection identifier — see
 /// `TIER_ART_SERIES` in card_engine's core_api.rs.
 const ART_SERIES_LAYOUT: &str = "art_series";
+
+/// The layout whose face names the engine ranks as whole names — `FACES_ARE_NAMES_LAYOUT` in
+/// card_engine's core_api.rs.
+const FACES_ARE_NAMES_LAYOUT: &str = "double_faced_token";
 
 /// Bytes per entry of the scryfall id → oracle id index's input: the scryfall id's 16 raw bytes,
 /// then the oracle id's 16. The nightly's `EMIT_ORACLE_PAIRS` and the native builder's
@@ -3151,7 +3178,7 @@ impl CorpusPassDraft {
             face_flavor.as_deref(),
             self.is_canonical,
             extra,
-            self.card_layout.as_deref() == Some(ART_SERIES_LAYOUT),
+            self.card_layout.as_deref(),
             out,
         );
     }
@@ -3236,7 +3263,7 @@ mod tests {
     fn name_routing_keys_are_spelled_like_the_router_spells_them() {
         let keys = |name: &str, flavor: Option<&str>, canonical: bool, extra: bool| {
             let mut out = Vec::new();
-            name_routing_keys_of(name, flavor, None, canonical, extra, false, &mut out);
+            name_routing_keys_of(name, flavor, None, canonical, extra, None, &mut out);
             out
         };
         // Collated: every non-alphanumeric gone, the fold already done by the caller.
@@ -3253,7 +3280,7 @@ mod tests {
         // A doubled art-series name gives its face key once, and every card-name key of an art
         // series is `na:` — the engine ranks it below every other card, so it is no one's rival.
         let mut art = Vec::new();
-        name_routing_keys_of("delver of secrets // delver of secrets", Some("x"), None, true, true, true, &mut art);
+        name_routing_keys_of("delver of secrets // delver of secrets", Some("x"), None, true, true, Some("art_series"), &mut art);
         assert_eq!(art, ["na:delverofsecretsdelverofsecrets", "na:delverofsecrets", "nf:x"]);
         // Served rows write `ns:` on every tier; an extra's whole name is `nw:`.
         assert_eq!(keys("cabbages", None, true, true), ["nw:cabbages"]);
@@ -3268,6 +3295,27 @@ mod tests {
         assert!(is_name_routing_key("na:delverofsecrets"));
         assert!(keys("titanoth rex", None, false, false).is_empty());
         assert_eq!(keys("", None, true, false), Vec::<String>::new());
+
+        // An extras DOUBLE-FACED TOKEN's faces are whole names (x27): `nw:`, and `ns:` for a face
+        // its own name sorts before — `exact=elemental` is City's Blessing // Elemental over every
+        // card named Elemental, served or not; `exact=day` is Day // Night on the whole tier, where
+        // a served card named Day would still come first.
+        let token = |name: &str, extra: bool| {
+            let mut out = Vec::new();
+            name_routing_keys_of(name, None, None, true, extra, Some("double_faced_token"), &mut out);
+            out
+        };
+        assert_eq!(
+            token("city's blessing // elemental", true),
+            ["nw:citysblessingelemental", "nw:citysblessing", "ns:elemental"]
+        );
+        assert_eq!(token("day // night", true), ["nw:daynight", "nw:day", "ns:night"]);
+        // A SERVED one (Undercity // The Initiative) is served on every key, as any served row.
+        assert_eq!(token("undercity // the initiative", false), ["ns:undercitytheinitiative", "ns:undercity", "ns:theinitiative"]);
+        // Every other two-faced extra keeps its faces on the face tier.
+        let mut split = Vec::new();
+        name_routing_keys_of("start // fire", None, None, true, true, Some("split"), &mut split);
+        assert_eq!(split, ["nw:startfire", "nm:start", "nm:fire"]);
     }
 
     /// FACE-LEVEL flavor names (backlog n13) are ONE key, the join in face order over the faces that
@@ -3291,7 +3339,7 @@ mod tests {
 
         let keys = |name: &str, face: Option<&str>, canonical: bool, extra: bool| {
             let mut out = Vec::new();
-            name_routing_keys_of(name, None, face, canonical, extra, false, &mut out);
+            name_routing_keys_of(name, None, face, canonical, extra, None, &mut out);
             out
         };
         assert_eq!(

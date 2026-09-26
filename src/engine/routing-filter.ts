@@ -154,15 +154,20 @@ export function externalIdKey(namespace: string, id: number): string {
 // value is: a key never built in reads garbage, so the router trusts a reply only when the reply
 // itself proves the key was real (partitioned-engine.ts, `nameReplySettles`).
 //
-// WHY THE TIER (x26). The engine ranks a name `(tier, name, served, score)`: a WHOLE-name extra
+// WHY THE TIER (x26). The engine ranks a name `(tier, name, served, tie, score)`: a WHOLE-name extra
 // outranks a served FACE match, and on one tier the first name in order wins, served or not —
 // `exact=chaos` is the fj25 front card Chaos, not Order // Chaos, and `exact=night` the Day // Night
 // token, not Night // Day, measured on api.scryfall.com 2026-09-26 — so "s is the one served holder"
 // no longer means s's answer is final. It is final when s answers on a tier above every other
-// partition's extras (or, on the whole-name tier, where every name is the needle, served). `t` is
+// partition's extras (or, on the whole-name tier, served under the needle's own name). `t` is
 // what lets the one reply decide that: `delverofsecrets` (the transform card served in one
 // partition, its art-series faces in another, t = 0) still settles on one call, and `chaos` (t = 3,
 // s answering a face) asks the rest.
+//
+// x27: a double-faced token's faces are whole names to the engine (`exact=elemental` is City's
+// Blessing // Elemental), so its face keys are `nw:` — and `ns:` where its own name sorts before the
+// face, since that token beats even a served card named the face and no tier says so. Such a name
+// has two served holders when a real one exists elsewhere, and asks everyone.
 
 /** Namespace of a name key. The build input spells the row's class and tier in the prefix — `ns:` a
  * SERVED row's name, and an extras row's `nw:` whole name, `nm:` face name, `nf:` flavor name, `na:`
@@ -225,8 +230,10 @@ export function nameKey(folded: string): string | null {
  * What `lookupName` knows about a name: the one partition holding it, or the one holding it SERVED
  * — with, from a filter that carries tiers, `rival`: the highest tier (3 whole, 2 face, 1 flavor, 0
  * only an art series) on which any OTHER partition holds it, every one of them only as an extra.
+ * `needle` is not the filter's: the router adds the collated name it looked up (the key without its
+ * namespace), which a whole-name served reply must carry to settle (`nameReplySettles`).
  */
-export type NameHint = { sole: number } | { served: number; rival?: number };
+export type NameHint = { sole: number } | { served: number; rival?: number; needle?: string };
 
 /** How many rival values a served name key's value spells (0-3): `N + 4s + t`. */
 const NAME_RIVALS = 4;

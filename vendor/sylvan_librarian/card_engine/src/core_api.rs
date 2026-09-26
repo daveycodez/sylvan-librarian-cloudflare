@@ -2297,13 +2297,24 @@ impl BufferStore {
 
     /// The RANK `exact_card_by_name` answers with, without materializing the card.
     ///
-    /// `(tier, name, served, prefer_score)`, compared in that order — see `outranks`: the higher
-    /// tier wins — 3 = the needle IS this card's whole name, 2 = it matches a FACE of this card, 1 =
-    /// it matches a FLAVOR name (`exact=` only), 0 = an ART-SERIES card's name (a collection
-    /// identifier only; `exact=` never answers one); then the LOWER collated card name, on the
-    /// whole-name and face tiers (empty on the other two); then served, 1 = the printing answered
-    /// is one a default search shows, 0 = the name exists only in the extras class (see
-    /// `preferred_served_vpid`); then the higher prefer_score.
+    /// `(tier, name, served, tie, prefer_score)`, compared in that order — see `outranks`: the
+    /// higher tier wins — 3 = the needle IS this card's whole name, or one face of a DOUBLE-FACED
+    /// TOKEN (see below), 2 = it matches a FACE of any other card, 1 = it matches a FLAVOR name
+    /// (`exact=` only), 0 = an ART-SERIES card's name (a collection identifier only; `exact=` never
+    /// answers one); then the LOWER collated card name, on the whole-name and face tiers (empty on
+    /// the other two); then served, 1 = the printing answered is one a default search shows, 0 = the
+    /// name exists only in the extras class (see `preferred_served_vpid`); then the LOWER `tie`
+    /// (`name_tie_key`, empty on the flavor and art-series tiers); then the higher prefer_score.
+    ///
+    /// A DOUBLE-FACED TOKEN'S FACES ARE WHOLE NAMES (x27). Measured on api.scryfall.com
+    /// 2026-09-26: `exact=elemental` (and `fuzzy=`, and `{"name":"Elemental"}`) is City's Blessing
+    /// // Elemental f18/2, over 31 Elemental tokens the needle names whole; `treasure` Dinosaur //
+    /// Treasure f17/11, `horror` Copy // Horror tgk1/1, `thopter` Servo // Thopter l16/5, `soldier`
+    /// and `goblin soldier` Goblin // Soldier tgk1/4, `demon` Angel // Demon phel/1★, `wolf` Human
+    /// // Wolf f12/1a — each a `double_faced_token` whose name comes first, answered on the
+    /// whole-name tier. Every other two-faced layout stays a face match below it: `jump` is Jump
+    /// m10/59, not Encouraging Aviator // Jump (a `prepare` card whose name comes first), and
+    /// `liberate` Liberate inv/21, not the cmb2 split Bind // Liberate.
     ///
     /// THE TIER LEADS. Measured on api.scryfall.com 2026-09-26, `exact=`, `fuzzy=` and a collection
     /// `{"name"}` alike: `chaos` is the fj25 memorabilia front card Chaos (fj25/46), not the served
@@ -2324,11 +2335,15 @@ impl BufferStore {
     /// Fire, which the served flag also explained. The first name in order wins each one; the lowest
     /// collector number does not (Monster // Virtuous is twoc/1, Start // Fire cmb2/101).
     ///
-    /// SERVED, THEN SCORE, BREAK A TIE OF NAMES — the whole-name tier's every tie, since there every
-    /// candidate's collated name IS the needle: `exact=Earth Rumble` is the tla sorcery, never the
-    /// jtla front card of the same name (2026-09-15), and `illusion` the best-scored of six Illusion
-    /// tokens. The rank was `(served, tier, score)` from the Earth Rumble fix until 2026-09-26, which
-    /// answered Order // Chaos for `chaos` and Night // Day for `day`.
+    /// SERVED BREAKS A TIE OF NAMES FIRST: `exact=Earth Rumble` is the tla sorcery, never the jtla
+    /// front card of the same name (2026-09-15). The rank was `(served, tier, score)` from the Earth
+    /// Rumble fix until 2026-09-26, which answered Order // Chaos for `chaos` and Night // Day for
+    /// `day`.
+    ///
+    /// THEN THE CARD, NOT THE SCORE (x27): of two cards of one name and one served class, the one
+    /// whose `name_tie_key` — colors, power, toughness, rules text — comes first. `exact=armed` is
+    /// the fmsc front card "(Theme color: {B})", not the fj25 one "(Theme color: {W})" that
+    /// outscores it; see `name_tie_key` for the 24 needles that pin it.
     ///
     /// WHY THIS IS PUBLIC. With a partitioned store the scan runs once per partition, and MORE
     /// THAN ONE PARTITION CAN ANSWER: a needle is often one card's whole name and another card's
@@ -2352,9 +2367,9 @@ impl BufferStore {
     /// The last two are the reason a bare "is it the whole name?" flag is not enough to merge on:
     /// neither candidate is a whole-name match, so the answer turns on prefer_score, which only
     /// the owning partition can compute.
-    pub fn exact_name_rank(&self, folded: &str, set_code: Option<&str>) -> Option<(u8, String, u8, f32)> {
+    pub fn exact_name_rank(&self, folded: &str, set_code: Option<&str>) -> Option<(u8, String, u8, String, f32)> {
         self.name_best(folded, set_code, NameScope::Exact, None)
-            .map(|hit| (hit.tier, hit.name.to_owned(), hit.served, hit.score as f32))
+            .map(|hit| (hit.tier, hit.name.to_owned(), hit.served, hit.tie, hit.score as f32))
     }
 
     /// The best printing a COLLECTION IDENTIFIER's `name` resolves to -- `POST /cards/collection`'s
@@ -2443,7 +2458,7 @@ impl BufferStore {
             .iter()
             .map(|&(folded, set_code)| {
                 self.name_best(folded, set_code, NameScope::Collection, bound.as_ref())
-                    .map(|hit| (hit.tier, hit.name.to_owned(), hit.served, hit.score))
+                    .map(|hit| (hit.tier, hit.name.to_owned(), hit.served, hit.tie, hit.score))
             })
             .collect())
     }
@@ -2468,7 +2483,7 @@ impl BufferStore {
     ) -> Option<NameHit<'_>> {
         let needle = crate::collate_name(folded);
         let data = self.data();
-        // Ranked on (tier, name, served, prefer_score), in that order — `outranks`.
+        // Ranked on (tier, name, served, tie, prefer_score), in that order — `outranks`.
         //
         // DELIBERATE DIVERGENCE from upstream, which orders on prefer_score alone. On this corpus
         // that returns `Emeritus of Conflict // Lightning Bolt` for `exact=Lightning Bolt`,
@@ -2491,6 +2506,9 @@ impl BufferStore {
         // surface, and the front card only for a name nothing else carries (`exact=Cabbages`).
         // ACROSS tiers the tier decides, extra or not: `exact=chaos` is the fj25 front card Chaos,
         // whole, over Order // Chaos, a face.
+        //
+        // THE CARD FOURTH (x27): of two cards of one name and one served class, `name_tie_key` —
+        // not the score, which answered the fj25 `Armed` front card where Scryfall answers fmsc's.
         let mut best: Option<NameHit<'_>> = None;
         for cid in name_scan_candidates(data, &needle) {
             let cid = cid as usize;
@@ -2515,15 +2533,19 @@ impl BufferStore {
             // of Secrets"}` is Delver of Secrets // Insectile Aberration on api.scryfall.com
             // (2026-08-31), where the name order would otherwise answer the art series ("Delver of
             // Secrets // Delver of Secrets" comes first). The served flag used to keep it there.
-            let (tier, name) = if layout_of(data, pid as u32) == Some("art_series") {
+            let layout = layout_of(data, pid as u32);
+            let (tier, name, tie) = if layout == Some("art_series") {
                 if scope == NameScope::Exact {
                     continue;
                 }
-                (TIER_ART_SERIES, "")
+                (TIER_ART_SERIES, "", String::new())
             } else {
-                (tier, crate::collated_name(card, &data.strings))
+                // A DOUBLE-FACED TOKEN's faces are whole names (x27; see `exact_name_rank`): its
+                // FACE match ranks on the whole-name tier, where its own name, in order, decides.
+                let tier = if tier == TIER_FACE_NAME && layout == Some(FACES_ARE_NAMES_LAYOUT) { TIER_WHOLE_NAME } else { tier };
+                (tier, crate::collated_name(card, &data.strings), name_tie_key(card, &data.strings))
             };
-            let hit = NameHit { tier, name, served: u8::from(served), score, cid, vpid: pid as u32 };
+            let hit = NameHit { tier, name, served: u8::from(served), tie, score, cid, vpid: pid as u32 };
             if best.as_ref().is_none_or(|b| hit.outranks(b)) {
                 best = Some(hit);
             }
@@ -2591,6 +2613,7 @@ impl BufferStore {
             tier: TIER_FLAVOR_NAME,
             name: "",
             served: u8::from(served),
+            tie: String::new(),
             score: f64::from(score),
             cid: card_of_vpid(data, vpid) as usize,
             vpid,
@@ -3936,31 +3959,124 @@ const TIER_FLAVOR_NAME: u8 = 1;
 /// A collection identifier naming an art-series card: kept, below every other card it names.
 const TIER_ART_SERIES: u8 = 0;
 
-/// A name lookup's rank, `(tier, name, served, score)` — see `exact_name_rank` for each element
-/// and `NameHit::outranks` for the order. The wire form the partitioned router merges on.
-pub type NameRank = (u8, String, u8, f64);
+/// The layout whose FACE names are whole names to the name scan (x27; see `exact_name_rank`).
+const FACES_ARE_NAMES_LAYOUT: &str = "double_faced_token";
 
-/// One candidate of the name scan: its rank's four elements, and the card and printing it answers.
-#[derive(Debug, Clone, Copy)]
+/// A name lookup's rank, `(tier, name, served, tie, score)` — see `exact_name_rank` for each
+/// element and `NameHit::outranks` for the order. The wire form the partitioned router merges on.
+pub type NameRank = (u8, String, u8, String, f64);
+
+/// One candidate of the name scan: its rank's five elements, and the card and printing it answers.
+#[derive(Debug, Clone)]
 struct NameHit<'a> {
     tier: u8,
     /// The card's collated name on the whole-name and face tiers, empty on the others.
     name: &'a str,
     served: u8,
+    /// `name_tie_key` on the whole-name and face tiers, empty on the others.
+    tie: String,
     score: f64,
     cid: usize,
     vpid: u32,
 }
 
 impl NameHit<'_> {
-    /// The rank's order: the HIGHER tier, then the LOWER name, then served, then the higher score —
-    /// the order `beatsExactRank` in src/engine/partitioned-engine.ts applies to the wire form.
+    /// The rank's order: the HIGHER tier, then the LOWER name, then served, then the LOWER tie key,
+    /// then the higher score — the order `beatsExactRank` in src/engine/partitioned-engine.ts
+    /// applies to the wire form (a number higher-wins, a string lower-wins).
     fn outranks(&self, other: &Self) -> bool {
-        match self.tier.cmp(&other.tier).then_with(|| other.name.cmp(self.name)).then_with(|| self.served.cmp(&other.served)) {
+        match self
+            .tier
+            .cmp(&other.tier)
+            .then_with(|| other.name.cmp(self.name))
+            .then_with(|| self.served.cmp(&other.served))
+            .then_with(|| other.tie.cmp(&self.tie))
+        {
             std::cmp::Ordering::Equal => self.score > other.score,
             order => order.is_gt(),
         }
     }
+}
+
+/// Which of two cards of ONE name (and one served class) a name lookup answers: the one whose key
+/// is LOWER, compared as bytes — Rust's `str` order, and JavaScript's `<` over the same ASCII-led
+/// string on the router's side (`beatsExactRank`).
+///
+/// LOCAL ADDITION (Cloudflare port, x27). The key is the FRONT face's (the card's own, for a card
+/// without faces), four fields joined by a space, which sorts below every character a field holds:
+///
+///   colors     its WUBRG letters in that order (`R` < `RG` < `U`), EMPTY for a colorless card
+///              AND for any Enchantment (`Token Enchantment Creature`), which sorts as colorless
+///   power      `0` none, `1` a non-number with no rules text, `2` + a number (16 order-preserving
+///   toughness  hex digits of its f64), `3` a non-number WITH rules text — so a bare `*` comes
+///              before every number and a `*` defined by its text after them
+///   text       the rules text, lowercased, every non-alphanumeric removed (spaces, punctuation
+///              and mana braces do not order it: `deathtouchhaste` < `deathtouchwhenever…`)
+///
+/// FITTED TO api.scryfall.com, 2026-09-26: every `exact=` answer probed among cards of one name —
+/// armed fmsc/31 (text `…{B}` over `…{W}`), illusion tsoc/7, spirit jtla/16 (a colorless front
+/// card over 22 tokens), very cryptic command ust/49e and knight of the kitchen sink ust/12a
+/// (text), rat ttmt/6, cat tdmr/3 (B over G), beast tkld/1 (colorless first), ox tclb/13 (G 4/4
+/// over W 2/2: color before power), dog tsnc/10, sphinx tjou/1, vampire tzen/6 and construct
+/// tkld/2 (a bare `*` over 1/1 and 0/0), horse twho/4 (power before text), knight ttsr/5, snake
+/// tjou/6 and cleric tcmm/62 (an Enchantment token over black and white ones), assassin totc/7,
+/// pest tsos/8, counters ftla/6, everythingamajig ust/147c and firebending ftla/7 (collated
+/// text; byte order answers otherwise on all five), shark tblc/16 (a 3/3 over a `*` with text),
+/// goblin soldier tgk1/4 (the FRONT face's colors: R over WR) — 24 of 24, where the prefer
+/// score answered 4 (two of them only by partition order, on equal scores). Scryfall's
+/// `!"name"` search lists cards of one name in this order too, first result the `exact=` answer
+/// on every one of six probed (armed, illusion, elemental, spirit, very cryptic command, knight
+/// of the kitchen sink).
+///
+/// NOT the whole of Scryfall's order, and where it is not is recorded: of 31 Elemental tokens in
+/// that search, the `*/*` tinr/13 with rules text sorts after the GR tokens and the `*/1` tthb/8
+/// between 1/1s and 2/1s. Neither decides a first answer in the 2026-09-26 corpus: both are
+/// Elemental tokens, and `exact=elemental` is City's Blessing // Elemental, by name.
+fn name_tie_key(card: &AOracleCard, strings: &AStrings) -> String {
+    let at = |id: u32| str_at(strings, id);
+    let (type_line, colors, power, toughness, text) = match card.faces.first() {
+        Some(face) => (
+            at(u32::from(face.type_line_id)),
+            face.card_colors.as_ref().map_or(card.card_colors, |v| *v),
+            at(u32::from(face.creature_power_text_id)),
+            at(u32::from(face.creature_toughness_text_id)),
+            at(u32::from(face.oracle_text_id)),
+        ),
+        None => (
+            at(u32::from(card.type_line_id)),
+            card.card_colors,
+            at(u32::from(card.creature_power_text_id)),
+            at(u32::from(card.creature_toughness_text_id)),
+            at(u32::from(card.oracle_text_id)),
+        ),
+    };
+    let text = text.unwrap_or("");
+    let mut key = String::with_capacity(48 + text.len());
+    if !type_line.unwrap_or("").contains("Enchantment") {
+        for (bit, letter) in [(1u8, 'W'), (2, 'U'), (4, 'B'), (8, 'R'), (16, 'G')] {
+            if colors & bit != 0 {
+                key.push(letter);
+            }
+        }
+    }
+    for stat in [power, toughness] {
+        key.push(' ');
+        match stat.map(|s| s.trim().parse::<f64>()) {
+            None => key.push('0'),
+            Some(Ok(x)) if x.is_finite() => {
+                // IEEE-754 bits made order-preserving: flip every bit of a negative, set the sign
+                // bit of a positive — then fixed-width hex compares like the number.
+                let bits = x.to_bits();
+                let ordered = if bits >> 63 == 1 { !bits } else { bits | (1 << 63) };
+                key.push('2');
+                key.push_str(&format!("{ordered:016x}"));
+            }
+            Some(_) => key.push(if text.is_empty() { '1' } else { '3' }),
+        }
+    }
+    key.push(' ');
+    key.extend(text.chars().flat_map(char::to_lowercase).filter(|c| c.is_alphanumeric()));
+    key
 }
 
 /// Which name keys a lookup may match. `/cards/named?exact=` reads a strict SUPERSET of what a
@@ -4549,6 +4665,9 @@ mod tests {
     // ─── Foreign-printing annex round trips ──────────────────────────────────
 
     /// One engine row in the shape `card_from_json` reads: minimal, but grouping-complete.
+    /// `name_tie_key` of an `annex_row` card: red, no power or toughness, "Do a thing."
+    const ANNEX_TIE: &str = "R 0 0 doathing";
+
     fn annex_row(name: &str, oracle: &str, scry: &str, lang: &str, prefer: f64) -> Value {
         json!({
             "card_name": name,
@@ -5308,8 +5427,8 @@ mod tests {
         // The rank the partitioned router merges on is the scope's own score: under
         // `prefer:atypical` the promo outranks the plain printing, so a partition holding only
         // the plain one loses to a partition holding the promo.
-        let (_, _, _, unscoped) = store.collection_name_rank("clive, ifrit's dominant", None, None).expect("rank").expect("hit");
-        let (_, _, _, scoped_rank) =
+        let (_, _, _, _, unscoped) = store.collection_name_rank("clive, ifrit's dominant", None, None).expect("rank").expect("hit");
+        let (_, _, _, _, scoped_rank) =
             store.collection_name_rank("clive, ifrit's dominant", None, Some(&atypical)).expect("rank").expect("hit");
         assert!(scoped_rank > unscoped, "the atypical class bonus is in the merged rank");
     }
@@ -5847,7 +5966,7 @@ mod tests {
         // flag: the sorcery's (whole, "earthrumble", 1, 100) beats the front card's (whole,
         // "earthrumble", 0, 900) where a (tier, score) rank lost — and the cross-partition fuzzy
         // race breaks its score tie the same way.
-        assert_eq!(store.exact_name_rank("earth rumble", None), Some((3, "earthrumble".to_owned(), 1, 100.0)));
+        assert_eq!(store.exact_name_rank("earth rumble", None), Some((3, "earthrumble".to_owned(), 1, ANNEX_TIE.to_owned(), 100.0)));
         let cands = store.fuzzy_candidates("earth rumbel", 0.4, 8);
         assert_eq!(cands.len(), 2, "two (card, name) classes, one per oracle card");
         assert!(cands[0].served && !cands[1].served, "the served class leads on the tie");
@@ -5857,7 +5976,7 @@ mod tests {
         assert_eq!(exact("cabbages", None).as_deref(), Some("39"));
         assert_eq!(coll("cabbages").as_deref(), Some("39"));
         assert_eq!(fuzzy("cabbage"), ("hit", Some("39".to_owned())));
-        assert_eq!(store.exact_name_rank("cabbages", None), Some((3, "cabbages".to_owned(), 0, 900.0)));
+        assert_eq!(store.exact_name_rank("cabbages", None), Some((3, "cabbages".to_owned(), 0, ANNEX_TIE.to_owned(), 900.0)));
         // And the set filter reaches the front card when it names its set.
         assert_eq!(exact("earth rumble", Some("jtla")).as_deref(), Some("41"));
     }
@@ -5936,9 +6055,9 @@ mod tests {
         }
         // The ranks the partitioned router merges on: a whole-name extra (3, _, 0, _) outranks a
         // served face (2, _, 1, _) whatever the scores; on the face tier the first name wins.
-        assert_eq!(store.exact_name_rank("chaos", None), Some((3, "chaos".to_owned(), 0, 10.0)));
-        assert_eq!(store.exact_name_rank("day", None), Some((2, "daynight".to_owned(), 0, 10.0)));
-        assert_eq!(store.exact_name_rank("order // chaos", None), Some((3, "orderchaos".to_owned(), 1, 900.0)));
+        assert_eq!(store.exact_name_rank("chaos", None), Some((3, "chaos".to_owned(), 0, ANNEX_TIE.to_owned(), 10.0)));
+        assert_eq!(store.exact_name_rank("day", None), Some((2, "daynight".to_owned(), 0, ANNEX_TIE.to_owned(), 10.0)));
+        assert_eq!(store.exact_name_rank("order // chaos", None), Some((3, "orderchaos".to_owned(), 1, ANNEX_TIE.to_owned(), 900.0)));
         // A set filter still reaches the face match when it names the face card's set.
         assert_eq!(at(store.exact_card_by_name("chaos", Some("dmr"), fields.clone()).expect("exact")).as_deref(), Some("dmr/212"));
 
@@ -5952,6 +6071,160 @@ mod tests {
         );
         assert_eq!(exact("delver of secrets").as_deref(), Some("isd/51"));
         assert_eq!(exact("delver of secrets // delver of secrets"), None, "exact= never answers an art series");
+    }
+
+    /// A DOUBLE-FACED TOKEN'S FACES ARE WHOLE NAMES, and of cards of ONE name the CARD decides —
+    /// `name_tie_key`, not the prefer score. api.scryfall.com, 2026-09-26 (x27):
+    ///
+    ///   elemental      -> City's Blessing // Elemental f18/2 (a double_faced_token, first by name)
+    ///                     over the Elemental tokens it names whole — also `{"name":"Elemental"}`
+    ///   jump           -> Jump m10/59: a `prepare` card's face stays a face
+    ///   night          -> Day // Night tvow/21 (the token, now on the whole-name tier)
+    ///   armed          -> Armed fmsc/31 "(Theme color: {B})" over fj25/2 "(Theme color: {W})"
+    ///   spirit         -> Spirit jtla/16, a colorless front card, over the tokens
+    ///   snake          -> Snake tjou/6, an Enchantment token (sorts as colorless), over a black one
+    ///   ox             -> Ox tclb/13, green 4/4 over white 2/4 (colors before power)
+    ///   vampire        -> Vampire tzen/6, a bare */* over a 1/1
+    ///   shark          -> Shark tblc/16, a 3/3 over a */* whose power its text defines
+    ///   assassin       -> Assassin totc/7, "Deathtouch, haste" over "Deathtouch\nWhenever…"
+    ///   horse          -> Horse twho/4, a 2/2 with text over a textless 5/5 (power before text)
+    ///   goblin soldier -> Goblin // Soldier tgk1/4, its FRONT face red, over the WR Goblin Soldier
+    ///   very cryptic command -> ust/49e "…• Counter…" over ust/49b "…• Untap…", both served
+    ///
+    /// Every loser OUTSCORES its winner and is staged first, so neither the score nor the card
+    /// order can answer the winner.
+    #[test]
+    fn a_double_faced_tokens_faces_are_whole_names_and_one_name_breaks_on_the_card() {
+        let row = |name: &str, set: &str, cn: &str, prefer: f64, extra: bool, fields: Value| {
+            let mut r = annex_row(name, &format!("oracle-{set}-{cn}"), &format!("row-{set}-{cn}"), "en", prefer);
+            r["card_set_code"] = json!(set);
+            r["collector_number"] = json!(cn);
+            r["oracle_text"] = json!("");
+            r["card_colors"] = json!({});
+            if extra {
+                r["card_is_tags"] = json!({ "extra": true });
+            }
+            for (k, v) in fields.as_object().unwrap() {
+                r[k] = v.clone();
+            }
+            r
+        };
+        let token = |colors: &[&str], pow: &str, tou: &str, text: &str, type_line: &str| {
+            let colors: Map<String, Value> = colors.iter().map(|c| ((*c).to_owned(), json!(true))).collect();
+            json!({
+                "card_layout": "token", "type_line": type_line, "card_colors": colors,
+                "creature_power_text": pow, "creature_toughness_text": tou, "oracle_text": text,
+            })
+        };
+        let creature = |c: &[&str], p: &str, t: &str, text: &str| token(c, p, t, text, "Token Creature");
+        let front_card = |text: &str| json!({ "card_layout": "front_card", "type_line": "Card", "oracle_text": text });
+        let dfc = |faces: Value| json!({ "card_layout": "double_faced_token", "card_faces": faces });
+        let store = build_store(&[
+            row("Elemental", "totc", "14", 900.0, true, creature(&["R"], "1", "1", "")),
+            row(
+                "City's Blessing // Elemental",
+                "f18",
+                "2",
+                10.0,
+                true,
+                dfc(json!([
+                    { "name": "City's Blessing", "type_line": "Card", "colors": [] },
+                    { "name": "Elemental", "type_line": "Token Creature — Elemental", "power": "0", "toughness": "1", "colors": ["R"] },
+                ])),
+            ),
+            row("Encouraging Aviator // Jump", "woe", "48", 900.0, false, json!({ "card_layout": "prepare" })),
+            row("Jump", "m10", "59", 10.0, false, json!({})),
+            row("Night // Day", "dmr", "214", 900.0, false, json!({ "card_layout": "split" })),
+            row(
+                "Day // Night",
+                "tvow",
+                "21",
+                10.0,
+                true,
+                dfc(json!([{ "name": "Day", "type_line": "Card" }, { "name": "Night", "type_line": "Card" }])),
+            ),
+            row("Armed", "fj25", "2", 900.0, true, front_card("(Theme color: {W})")),
+            row("Armed", "fmsc", "31", 10.0, true, front_card("(Theme color: {B})")),
+            row("Spirit", "t2x2", "2", 900.0, true, creature(&[], "1", "1", "")),
+            row("Spirit", "jtla", "16", 10.0, true, front_card("(Theme color: {U})")),
+            row("Snake", "tsoc", "11", 900.0, true, creature(&["B"], "1", "1", "Deathtouch")),
+            row("Snake", "tjou", "6", 10.0, true, token(&["B", "G"], "1", "1", "Deathtouch", "Token Enchantment Creature")),
+            row("Ox", "tcmm", "65", 900.0, true, creature(&["W"], "2", "4", "")),
+            row("Ox", "tclb", "13", 10.0, true, creature(&["G"], "4", "4", "")),
+            row("Vampire", "tinr", "7", 900.0, true, creature(&["B"], "1", "1", "")),
+            row("Vampire", "tzen", "6", 10.0, true, creature(&["B"], "*", "*", "")),
+            row("Shark", "tfrc", "6", 900.0, true, creature(&["U"], "*", "*", "Flying")),
+            row("Shark", "tblc", "16", 10.0, true, creature(&["U"], "3", "3", "")),
+            row(
+                "Assassin",
+                "twar",
+                "6",
+                900.0,
+                true,
+                creature(&["B"], "1", "1", "Deathtouch\nWhenever this creature deals damage to a planeswalker, destroy that planeswalker."),
+            ),
+            row("Assassin", "totc", "7", 10.0, true, creature(&["B"], "1", "1", "Deathtouch, haste")),
+            row("Horse", "thou", "10", 900.0, true, creature(&["W"], "5", "5", "")),
+            row("Horse", "twho", "4", 10.0, true, creature(&["W"], "2", "2", "Doctors you control have horsemanship.")),
+            row("Goblin Soldier", "tema", "15", 900.0, true, creature(&["W", "R"], "1", "1", "")),
+            row(
+                "Goblin // Soldier",
+                "tgk1",
+                "4",
+                10.0,
+                true,
+                dfc(json!([
+                    { "name": "Goblin", "type_line": "Token Creature — Goblin", "power": "1", "toughness": "1", "colors": ["R"] },
+                    { "name": "Soldier", "type_line": "Token Creature — Soldier", "power": "1", "toughness": "1", "colors": ["W"] },
+                ])),
+            ),
+            row("Very Cryptic Command", "ust", "49b", 900.0, false, json!({ "oracle_text": "Choose two — • Untap two target permanents." })),
+            row("Very Cryptic Command", "ust", "49e", 10.0, false, json!({ "oracle_text": "Choose two — • Counter target black-bordered spell." })),
+        ])
+        .1;
+
+        let fields = Some(vec!["set_code".to_owned(), "collector_number".to_owned()]);
+        let at = |c: Option<Value>| {
+            c.map(|c| format!("{}/{}", c["set_code"].as_str().unwrap(), c["collector_number"].as_str().unwrap()))
+        };
+        let exact = |n: &str| at(store.exact_card_by_name(n, None, fields.clone()).expect("exact"));
+        let coll = |n: &str| at(store.collection_card_by_name(n, None, fields.clone(), None).expect("coll"));
+        for (needle, want) in [
+            ("elemental", "f18/2"),
+            ("jump", "m10/59"),
+            ("night", "tvow/21"),
+            ("day", "tvow/21"),
+            ("armed", "fmsc/31"),
+            ("spirit", "jtla/16"),
+            ("snake", "tjou/6"),
+            ("ox", "tclb/13"),
+            ("vampire", "tzen/6"),
+            ("shark", "tblc/16"),
+            ("assassin", "totc/7"),
+            ("horse", "twho/4"),
+            ("goblin soldier", "tgk1/4"),
+            ("very cryptic command", "ust/49e"),
+        ] {
+            assert_eq!(exact(needle).as_deref(), Some(want), "exact={needle}");
+        }
+        for (needle, want) in [("elemental", "f18/2"), ("armed", "fmsc/31"), ("spirit", "jtla/16"), ("jump", "m10/59")] {
+            assert_eq!(coll(needle).as_deref(), Some(want), "{{\"name\":\"{needle}\"}}");
+        }
+
+        // The wire: the token's FACE match on the whole-name tier, and the tie key the router
+        // compares as a string, lower-wins — colors, then power and toughness (a number as `2` and
+        // 16 order-preserving hex digits), then the collated text.
+        assert_eq!(
+            store.exact_name_rank("elemental", None),
+            Some((3, "citysblessingelemental".to_owned(), 0, " 0 0 ".to_owned(), 10.0))
+        );
+        assert_eq!(store.exact_name_rank("night", None).map(|r| r.0), Some(3), "the Day // Night token, whole");
+        assert_eq!(store.exact_name_rank("armed", None).map(|r| r.3), Some(" 0 0 themecolorb".to_owned()));
+        assert_eq!(store.exact_name_rank("ox", None).map(|r| r.3), Some("G 2c010000000000000 2c010000000000000 ".to_owned()));
+        assert_eq!(store.exact_name_rank("snake", None).map(|r| r.3), Some(" 2bff0000000000000 2bff0000000000000 deathtouch".to_owned()));
+        assert_eq!(store.exact_name_rank("vampire", None).map(|r| r.3), Some("B 1 1 ".to_owned()));
+        // A set filter still reaches the loser in its own set.
+        assert_eq!(at(store.exact_card_by_name("armed", Some("fj25"), fields.clone()).expect("exact")).as_deref(), Some("fj25/2"));
     }
 
     /// Inside ONE card the served printing leads whatever the extras printing scores, and a set
@@ -5981,10 +6254,10 @@ mod tests {
         );
         let (status, card) = store.fuzzy_card_by_name("counterspel", 0.4, 0.05, fields.clone()).unwrap();
         assert_eq!((status, cn(card).as_deref()), ("hit", Some("57")), "the typo stage materializes the served printing");
-        assert_eq!(store.exact_name_rank("counterspell", None), Some((3, "counterspell".to_owned(), 1, 100.0)));
+        assert_eq!(store.exact_name_rank("counterspell", None), Some((3, "counterspell".to_owned(), 1, ANNEX_TIE.to_owned(), 100.0)));
         // The memorabilia printing is still addressable by its set, and ranked as an extra.
         assert_eq!(cn(store.exact_card_by_name("counterspell", Some("wc98"), fields).unwrap()).as_deref(), Some("rb57"));
-        assert_eq!(store.exact_name_rank("counterspell", Some("wc98")), Some((3, "counterspell".to_owned(), 0, 500.0)));
+        assert_eq!(store.exact_name_rank("counterspell", Some("wc98")), Some((3, "counterspell".to_owned(), 0, ANNEX_TIE.to_owned(), 500.0)));
     }
 
     /// `exact=` is scoped to the ORACLE name and never reads printed names — the negative
