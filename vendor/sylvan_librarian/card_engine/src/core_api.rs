@@ -40,7 +40,7 @@ use super::{
     COMPAT_BOOSTER, COMPAT_DIGITAL, COMPAT_FOIL, COMPAT_FULL_ART, COMPAT_HIGHRES_IMAGE,
     COMPAT_NONFOIL, COMPAT_OVERSIZED, COMPAT_PROMO, COMPAT_REPRINT, COMPAT_STORY_SPOTLIGHT,
     COMPAT_TEXTLESS, COMPAT_VARIATION, FINISH_ETCHED, FINISH_FOIL, FINISH_GLOSSY, FINISH_NONFOIL,
-    FINISH_NAMES, VOCAB_NONE, bits_to_names, compat_flag, games_pack, games_to_names,
+    FINISH_NAMES, NONE_STR, VOCAB_NONE, bits_to_names, compat_flag, games_pack, games_to_names,
     // The engine surface #912 adds: external-id addressing, fuzzy name match, autocomplete.
     EXT_ARENA, EXT_CARDMARKET, EXT_MTGO, EXT_MULTIVERSE, EXT_TCGPLAYER, FuzzyOutcome, fuzzy_name_match_in, record_of_exact_name,
     // The multilingual surface: the widened driver and the virtual-pid resolvers. The by-id
@@ -299,6 +299,7 @@ fn jv_face_layout(d: &Value) -> Option<String> {
 fn jv_faces(
     d: &Value,
     it: &mut Interner,
+    vocab: &mut VocabInterner,
     artists: &mut VocabInterner,
     mana: &mut ManaVocabInterner,
 ) -> Result<Vec<FaceRow>, EngineError> {
@@ -331,8 +332,14 @@ fn jv_faces(
             Some(s) => Some(face_mana_cost(&s, mana)?),
             None => None,
         };
+        // The face's Scryfall `artist_id`, verbatim — see PrintingFace::artist_id_vid.
+        let artist_id_vid = match jv_opt_str(face, "artist_id") {
+            Some(id) => vocab.intern(id)?,
+            None => VOCAB_NONE,
+        };
         faces.push(FaceRow {
             card_artist_name_id,
+            artist_id_vid,
             // Scryfall's face watermarks are lowercase already — all 76 distinct values across
             // the 2026-08-16 all_cards bulk, top level and face alike — so the one interned id
             // serves both `wm:`, which compares lowercase, and the card object, which prints it.
@@ -391,6 +398,67 @@ fn jv_games_bits(d: &Value, key: &str) -> u8 {
 /// on — an id or a price of 0 is not a value Scryfall sends.
 fn jv_opt_nonzero_u32(d: &Value, key: &str) -> Option<NonZeroU32> {
     jv_opt_u32(d, key).and_then(NonZeroU32::new)
+}
+
+/// Scryfall's shared card back — the `card_back_id` of every one-image printing but a few
+/// thousand (planes, schemes, vanguards, the oversized and memorabilia sets, Unfinity's
+/// attractions). The card-object writers emit it when the stored residue names no other back, so
+/// the residue only ever carries the exceptions.
+pub(crate) const DEFAULT_CARD_BACK_ID: &str = crate::card_object::CARD_BACK_ID;
+
+/// The residue keys `Printing::extras_id` holds, in the order the card object emits them. Each is
+/// kept VERBATIM when the printing's residue carries it — a value, an array or an object alike —
+/// and absent otherwise, so the writers can emit exactly what Scryfall sent.
+pub(crate) const PRINTING_EXTRA_KEYS: [&str; 6] =
+    ["resource_id", "variation_of", "attraction_lights", "card_back_id", "preview", "content_warning"];
+
+/// `Printing::artist_ids_vid`: the residue's `artist_ids`, joined with `,` and interned into the
+/// collection vocab; VOCAB_NONE when Scryfall sent no list at all. An EMPTY list interns the empty
+/// string, so `[]` round-trips as `[]` rather than vanishing — a uuid never contains a comma, so
+/// the join is lossless.
+fn jv_artist_ids(d: &Value, vocab: &mut VocabInterner) -> Result<u16, EngineError> {
+    let Some(ids) = d
+        .get("card_compat_blob")
+        .and_then(|b| b.get("artist_ids"))
+        .and_then(Value::as_array)
+    else {
+        return Ok(VOCAB_NONE);
+    };
+    let joined = ids.iter().filter_map(Value::as_str).collect::<Vec<_>>().join(",");
+    vocab.intern(joined)
+}
+
+/// `Printing::extras_id`: the rare residue keys (PRINTING_EXTRA_KEYS) as one compact JSON object,
+/// interned into the string table; NONE_STR when the printing carries none of them. A
+/// `card_back_id` naming Scryfall's shared back is dropped here, because the writers emit that
+/// back by default and storing it would give ~540k printings a residue string for no information.
+fn jv_printing_extras(d: &Value, it: &mut Interner) -> u32 {
+    let Some(blob) = d.get("card_compat_blob").and_then(Value::as_object) else {
+        return NONE_STR;
+    };
+    let mut extras = Map::new();
+    for key in PRINTING_EXTRA_KEYS {
+        match blob.get(key) {
+            None | Some(Value::Null) => {}
+            Some(Value::String(s)) if key == "card_back_id" && s == DEFAULT_CARD_BACK_ID => {}
+            Some(v) => {
+                extras.insert(key.to_owned(), v.clone());
+            }
+        }
+    }
+    if extras.is_empty() {
+        return NONE_STR;
+    }
+    it.intern(Value::Object(extras).to_string())
+}
+
+/// One key of a printing's rare residue (see `Printing::extras_id`), or `null` when the printing
+/// does not carry it.
+fn printing_extra(p: &APrinting, s: &AStrings, key: &str) -> Value {
+    str_at(s, u32::from(p.extras_id))
+        .and_then(|text| serde_json::from_str::<Map<String, Value>>(text).ok())
+        .and_then(|mut extras| extras.remove(key))
+        .unwrap_or(Value::Null)
 }
 
 /// Mirror of `compat_from_pydict`: the residue Scryfall sends that no column holds, read out of
@@ -660,7 +728,9 @@ pub(crate) fn card_from_json(
         // not "this row belongs in it".
         is_canonical: d.get("is_canonical").and_then(Value::as_bool).unwrap_or(true),
 
-        card_faces: jv_faces(d, it, artists, mana)?,
+        artist_ids_vid: jv_artist_ids(d, vocab)?,
+        extras_id: jv_printing_extras(d, it),
+        card_faces: jv_faces(d, it, vocab, artists, mana)?,
         all_parts: jv_all_parts(d, it, vocab)?,
         compat: jv_compat(d, vocab)?,
     })
@@ -1309,6 +1379,10 @@ fn encode_card_row(r: &CardRow) -> Vec<u8> {
     e.u32v(r.flavor_name_folded_id);
     e.u32v(r.life_modifier_id);
     e.u32v(r.hand_modifier_id);
+    // The card-object residues (x27): lost here, they are absent from every card object this
+    // port serves — `artist_ids` and the rare `extras` keys alike — with no other symptom.
+    e.u16v(r.artist_ids_vid);
+    e.u32v(r.extras_id);
     e.u8v(u8::from(r.is_canonical));
     // Faces ride the spill too. This codec has no upstream twin — it exists because the Worker
     // build is alarm-chained and rows are spilled between invocations to fit a 30s alarm — so
@@ -1346,6 +1420,7 @@ fn encode_card_row(r: &CardRow) -> Vec<u8> {
         });
         e.u128v(f.illustration_id);
         e.u16v(f.card_artist_vid);
+        e.u16v(f.artist_id_vid);
         e.u32v(f.card_artist_name_id);
         // The face's watermark rides the spill for the same reason its artist does: the DO build
         // is alarm-chained and this is the only copy between invocations, so a value dropped here
@@ -1463,6 +1538,8 @@ fn decode_card_row(buf: &[u8]) -> Result<CardRow, EngineError> {
         flavor_name_folded_id: d.u32v(),
         life_modifier_id: d.u32v(),
         hand_modifier_id: d.u32v(),
+        artist_ids_vid: d.u16v(),
+        extras_id: d.u32v(),
         is_canonical: d.u8v() != 0,
         // These three must stay LAST, in this order, and in exactly the encoder's field order:
         // struct-literal initializers are evaluated top-to-bottom and each one consumes from the
@@ -1493,6 +1570,7 @@ fn decode_card_row(buf: &[u8]) -> Result<CardRow, EngineError> {
                     }),
                     illustration_id: d.u128v(),
                     card_artist_vid: d.u16v(),
+                    artist_id_vid: d.u16v(),
                     card_artist_name_id: d.u32v(),
                     card_watermark_id: d.u32v(),
                     flavor_text_id: d.u32v(),
@@ -3490,7 +3568,7 @@ const JSON_FIELD_TABLE: &[(&str, JsonFieldExtractor)] = &[
     // Same standing note as #877's five above: FIELD_TABLE is pyo3-gated and compiles to nothing
     // in this port, so these hand-written twins are the live table. The residue fields are NOT
     // here — they moved to JSON_COMPAT_FIELD_TABLE below with the second archive.
-    ("card_faces", |c, p, s, _v| faces_to_json(c, p, s)),
+    ("card_faces", |c, p, s, v| faces_to_json(c, p, s, v)),
     ("colors", |c, _p, _s, _v| str_vec_value(identity_letters(c.card_colors))),
     // See FIELD_TABLE's note: upstream emits `border_color: null` on every engine-served card and
     // omits `frame`, because neither had an accessor. Scryfall always sends both.
@@ -3583,6 +3661,22 @@ const JSON_FIELD_TABLE: &[(&str, JsonFieldExtractor)] = &[
     ("variation", |_c, p, _s, _v| Value::from(compat_flag(&p.compat, COMPAT_VARIATION))),
     // Off the PRINTING, not the card: Scryfall's related-card list varies by printing (see the
     // field's note on `Printing`), so every printing answers with its own or with none.
+    // ── The card object's printing-level residue beyond the compat struct (x27) ──
+    // Scryfall's `artist_ids`, off the collection vocab — see `Printing::artist_ids_vid`. `null`
+    // is "no list", and an interned empty string is the list `[]`.
+    ("artist_ids", |_c, p, _s, v| match coll_str_opt(v, u16::from(p.artist_ids_vid)) {
+        None => Value::Null,
+        Some("") => Value::Array(Vec::new()),
+        Some(ids) => str_vec_value(ids.split(',').collect()),
+    }),
+    // The rare residue, verbatim — see `Printing::extras_id` and PRINTING_EXTRA_KEYS. Each is
+    // `null` when the printing does not carry the key.
+    ("resource_id", |_c, p, s, _v| printing_extra(p, s, "resource_id")),
+    ("variation_of", |_c, p, s, _v| printing_extra(p, s, "variation_of")),
+    ("attraction_lights", |_c, p, s, _v| printing_extra(p, s, "attraction_lights")),
+    ("card_back_id", |_c, p, s, _v| printing_extra(p, s, "card_back_id")),
+    ("preview", |_c, p, s, _v| printing_extra(p, s, "preview")),
+    ("content_warning", |_c, p, s, _v| printing_extra(p, s, "content_warning")),
     ("all_parts", |_c, p, s, v| {
         Value::Array(
             p.all_parts
@@ -3939,7 +4033,7 @@ fn name_key_tier(folded: &str, collated: &str, needle: &str, scope: NameScope) -
 /// the second a pure function of the card's id and the face's position, so the caller re-emits
 /// both. A printing carrying fewer face-art records than the card has faces leaves those faces
 /// without art rather than borrowing the wrong face's, exactly as the pydict twin does.
-fn faces_to_json(card: &AOracleCard, printing: &APrinting, strings: &AStrings) -> Value {
+fn faces_to_json(card: &AOracleCard, printing: &APrinting, strings: &AStrings, vocab: &AStrings) -> Value {
     // Whichever of the card's two face lists THIS printing prints -- see OracleCard::divergent.
     // `divergent_of` is the whole of that decision (there is no flag on the printing): it returns
     // None for every printing but the 81 reversible ones, and a None reads `card.faces` exactly as
@@ -3989,6 +4083,11 @@ fn faces_to_json(card: &AOracleCard, printing: &APrinting, strings: &AStrings) -
                 if let Some(art) = printing.faces.get(i) {
                     // Original case from the string table — see JSON_FIELD_TABLE's `artist` arm.
                     m.insert("artist".to_owned(), opt_str_value(str_at(strings, u32::from(art.card_artist_name_id))));
+                    // The face's own artist uuid — see PrintingFace::artist_id_vid. Present only
+                    // when Scryfall sent one, like the watermark below.
+                    if let Some(v) = coll_str_opt(vocab, u16::from(art.artist_id_vid)) {
+                        m.insert("artist_id".to_owned(), Value::String(v.to_owned()));
+                    }
                     m.insert("illustration_id".to_owned(), uuid_value(u128::from(art.illustration_id)));
                     m.insert("flavor_text".to_owned(), opt_str_value(str_at(strings, u32::from(art.flavor_text_id))));
                     // Present only when THIS face carries one — absence is exact, like the
@@ -4065,7 +4164,7 @@ fn card_to_json(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{NONE_STR, find_printing_by_external_id};
+    use crate::find_printing_by_external_id;
     use serde_json::json;
 
     /// The LIVE gate for a result field in this port. A name that reaches
@@ -4166,7 +4265,7 @@ mod tests {
                   "oracle_text": "Flying", "flavor_text": "", "colors": ["U"] },
             ]
         });
-        let faces = jv_faces(&d, &mut it, &mut artists, &mut ManaVocabInterner::new()).expect("faces");
+        let faces = jv_faces(&d, &mut it, &mut VocabInterner::new(), &mut artists, &mut ManaVocabInterner::new()).expect("faces");
         assert_eq!(faces.len(), 2);
 
         // Front: mana_cost present.
@@ -4203,7 +4302,7 @@ mod tests {
                 { "name": "Ice", "mana_cost": "{1}{U}", "type_line": "Instant" },
             ]
         });
-        let split = jv_faces(&d, &mut it, &mut artists, &mut ManaVocabInterner::new()).expect("faces");
+        let split = jv_faces(&d, &mut it, &mut VocabInterner::new(), &mut artists, &mut ManaVocabInterner::new()).expect("faces");
         assert_eq!(split[0].card_colors, None, "an omitted key is not a colourless face");
         assert_eq!(split[1].card_colors, None);
 
@@ -4214,7 +4313,7 @@ mod tests {
                 { "name": "Kabira Plateau", "mana_cost": "", "type_line": "Land", "colors": [] },
             ]
         });
-        let mdfc = jv_faces(&d, &mut it, &mut artists, &mut ManaVocabInterner::new()).expect("faces");
+        let mdfc = jv_faces(&d, &mut it, &mut VocabInterner::new(), &mut artists, &mut ManaVocabInterner::new()).expect("faces");
         assert_eq!(mdfc[0].card_colors, Some(0b0000_0001), "W");
         assert_eq!(mdfc[1].card_colors, Some(0), "a declared empty list IS colourless");
     }
@@ -4239,7 +4338,7 @@ mod tests {
                   "illustration_id": "c2b5f731-771b-4949-90f3-0ad40d676100", "artist": "Nils Hamm" },
             ]
         });
-        let faces = jv_faces(&d, &mut it, &mut artists, &mut ManaVocabInterner::new()).expect("faces");
+        let faces = jv_faces(&d, &mut it, &mut VocabInterner::new(), &mut artists, &mut ManaVocabInterner::new()).expect("faces");
 
         let mut row = decode_card_row(&encode_card_row(&CardRow {
             card_faces: faces,
@@ -4740,7 +4839,7 @@ mod tests {
         assert_eq!(u32::from(p.printed_faces[1].printed_text_id), NONE_STR);
 
         // faces_to_json inserts a printed key only where the face carries it — never a null.
-        let out = faces_to_json(&d.cards[0], p, &d.strings);
+        let out = faces_to_json(&d.cards[0], p, &d.strings, &d.coll_vocab);
         let front = out[0].as_object().expect("front face");
         assert_eq!(front["printed_name"], json!("Rescate repentino"));
         assert_eq!(front["printed_type_line"], json!("Instantáneo"));
@@ -4750,7 +4849,7 @@ mod tests {
             assert!(!back.contains_key(key), "the back face must not sprout {key}");
         }
         // And the English printing's faces stay printed-free.
-        let plain = faces_to_json(&d.cards[0], &d.printings[0], &d.strings);
+        let plain = faces_to_json(&d.cards[0], &d.printings[0], &d.strings, &d.coll_vocab);
         assert!(!plain[0].as_object().unwrap().contains_key("printed_name"));
     }
 
@@ -6540,9 +6639,110 @@ mod tests {
         ]);
         let (_b, store) = build_store(&[row]);
         let d = store.data();
-        let out = faces_to_json(&d.cards[0], &d.printings[0], &d.strings);
+        let out = faces_to_json(&d.cards[0], &d.printings[0], &d.strings, &d.coll_vocab);
         assert_eq!(out[0]["artist"], json!("Milivoj Ćeran"));
         assert_eq!(out[1]["artist"], json!(null), "the artistless face stays null, never scrambled");
+    }
+
+    /// The x27 residue, through ingest and back out: `artist_ids` (top level) and `artist_id` (per
+    /// face) off the collection vocab, and the rare keys off `Printing::extras_id` — each verbatim,
+    /// each absent where the printing does not carry it, and Scryfall's shared card back never
+    /// stored at all.
+    #[test]
+    fn the_card_object_residue_round_trips_through_the_store() {
+        let mut faced = annex_row("Fire // Ice", "oracle-f", "row-f-en", "en", 200.0);
+        faced["card_faces"] = json!([
+            { "name": "Fire", "type_line": "Instant", "oracle_text": "x", "artist": "David Martin",
+              "artist_id": "996ad764-4ae0-4952-8bb5-5a75c9d68275" },
+            { "name": "Ice", "type_line": "Instant", "oracle_text": "y", "artist": "Franz Vohwinkel",
+              "artist_id": "3a243c17-3baa-4b53-9599-645311cd7d3d" },
+        ]);
+        faced["card_compat_blob"] = json!({
+            "lang": "en",
+            "artist_ids": ["996ad764-4ae0-4952-8bb5-5a75c9d68275", "3a243c17-3baa-4b53-9599-645311cd7d3d"],
+            "resource_id": "A59396A4D646C69A1DD41F9906BE9A9CDECE83F18DC5C53501DD7BAE50511DBB",
+            "preview": {"source": "Wizards of the Coast", "source_uri": "", "previewed_at": "2025-01-07"},
+            "card_back_id": DEFAULT_CARD_BACK_ID,
+        });
+        let mut plane = annex_row("Academy at Tolaria West", "oracle-p", "row-p-en", "en", 200.0);
+        plane["card_compat_blob"] = json!({
+            "lang": "en",
+            "artist_ids": [],
+            "card_back_id": "7840c131-f96b-4700-9347-2215c43156e6",
+            "variation_of": "3d170015-b125-49a6-a15e-8fd116bbcb14",
+            "attraction_lights": [2, 6],
+            "content_warning": true,
+        });
+        let bare = annex_row("Lightning Bolt", "oracle-b", "row-b-en", "en", 200.0);
+        let (_b, store) = build_store(&[faced, plane, bare]);
+        let d = store.data();
+        let names = [
+            "artist_ids", "resource_id", "variation_of", "attraction_lights", "card_back_id", "preview",
+            "content_warning", "card_faces",
+        ];
+        let fields = resolve_fields_json(Some(names.iter().map(|n| (*n).to_owned()).collect())).expect("resolves");
+        let row_of = |name: &str| {
+            (0..d.cards.len())
+                .find_map(|c| {
+                    let card = &d.cards[c];
+                    let row = card_to_json(card, &d.printings[c], &d.strings, &d.coll_vocab, &fields);
+                    (str_at(&d.strings, u32::from(card.card_name_id)) == Some(name)).then_some(row)
+                })
+                .expect(name)
+        };
+
+        let fire = row_of("Fire // Ice");
+        assert_eq!(fire["artist_ids"], json!(["996ad764-4ae0-4952-8bb5-5a75c9d68275", "3a243c17-3baa-4b53-9599-645311cd7d3d"]));
+        assert_eq!(fire["card_faces"][0]["artist_id"], json!("996ad764-4ae0-4952-8bb5-5a75c9d68275"));
+        assert_eq!(fire["card_faces"][1]["artist_id"], json!("3a243c17-3baa-4b53-9599-645311cd7d3d"));
+        assert_eq!(fire["resource_id"], json!("A59396A4D646C69A1DD41F9906BE9A9CDECE83F18DC5C53501DD7BAE50511DBB"));
+        assert_eq!(fire["preview"], json!({"source": "Wizards of the Coast", "source_uri": "", "previewed_at": "2025-01-07"}));
+        assert_eq!(fire["card_back_id"], json!(null), "the shared back is never stored");
+        assert_eq!(fire["content_warning"], json!(null));
+
+        let plane = row_of("Academy at Tolaria West");
+        assert_eq!(plane["artist_ids"], json!([]), "an empty list stays a list");
+        assert_eq!(plane["card_back_id"], json!("7840c131-f96b-4700-9347-2215c43156e6"));
+        assert_eq!(plane["variation_of"], json!("3d170015-b125-49a6-a15e-8fd116bbcb14"));
+        assert_eq!(plane["attraction_lights"], json!([2, 6]));
+        assert_eq!(plane["content_warning"], json!(true));
+        assert_eq!(plane["resource_id"], json!(null));
+
+        let bolt = row_of("Lightning Bolt");
+        for absent in &names[..7] {
+            assert_eq!(bolt[*absent], json!(null), "{absent} is absent on a printing that carries none");
+        }
+        let bolt_at = (0..d.cards.len())
+            .find(|&c| str_at(&d.strings, u32::from(d.cards[c].card_name_id)) == Some("Lightning Bolt"))
+            .expect("bolt");
+        assert_eq!(u32::from(d.printings[bolt_at].extras_id), NONE_STR, "no residue, no string");
+    }
+
+    /// The same two ids survive the spill codec the alarm-chained Worker build rides between
+    /// invocations — dropped there, they would vanish from production stores alone.
+    #[test]
+    fn the_card_object_residue_survives_the_spill_round_trip() {
+        let mut it = Interner::new();
+        let mut vocab = VocabInterner::new();
+        let d = json!({
+            "card_faces": [{ "name": "Front", "artist_id": "996ad764-4ae0-4952-8bb5-5a75c9d68275" }],
+            "card_compat_blob": { "artist_ids": ["996ad764-4ae0-4952-8bb5-5a75c9d68275"], "resource_id": "AB" },
+        });
+        let faces = jv_faces(&d, &mut it, &mut vocab, &mut VocabInterner::new(), &mut ManaVocabInterner::new()).expect("faces");
+        let artist_ids_vid = jv_artist_ids(&d, &mut vocab).expect("vocab");
+        let extras_id = jv_printing_extras(&d, &mut it);
+        let row = decode_card_row(&encode_card_row(&CardRow {
+            card_faces: faces,
+            artist_ids_vid,
+            extras_id,
+            ..empty_card_row()
+        }))
+        .expect("round trip");
+        assert_ne!(row.artist_ids_vid, VOCAB_NONE);
+        assert_eq!(row.artist_ids_vid, artist_ids_vid);
+        assert_eq!(row.extras_id, extras_id);
+        assert_ne!(row.extras_id, NONE_STR);
+        assert_eq!(row.card_faces[0].artist_id_vid, artist_ids_vid, "one uuid, one vocab entry");
     }
 
     /// `a:` IS AN ARTIST-ENTITY MATCH: a needle matching ANY of an artist's credited spellings
@@ -6674,7 +6874,7 @@ mod tests {
 
         // 2. THE CARD OBJECT puts it on the faces...
         let split_cid = u32::from(d.indexes.printing_to_card[split_pid]) as usize;
-        let faces = faces_to_json(&d.cards[split_cid], &d.printings[split_pid], &d.strings);
+        let faces = faces_to_json(&d.cards[split_cid], &d.printings[split_pid], &d.strings, &d.coll_vocab);
         assert_eq!(faces[0]["watermark"], json!("simic"));
         assert_eq!(faces[1]["watermark"], json!("izzet"));
 

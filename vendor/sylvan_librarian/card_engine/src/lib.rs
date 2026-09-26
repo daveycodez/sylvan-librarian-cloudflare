@@ -570,6 +570,15 @@ struct RelatedCard {
 struct PrintingFace {
     illustration_id: u128,
     card_artist_vid: u16,
+    /// Scryfall's FACE-level `artist_id` — the uuid of THIS face's artist, which every face of
+    /// every faced printing carries (Delver of Secrets' two faces, Fire // Ice's two different
+    /// ones) — interned into `coll_vocab` as its hyphenated string; VOCAB_NONE = key absent.
+    ///
+    /// Free: it sits in the two bytes the u128 alignment leaves after `card_artist_vid`, the slot
+    /// the 2026081702 note on `the_archived_row_sizes_stay_pinned` measured and left empty, so
+    /// the face stays 48 bytes. A `coll_vocab` id rather than the raw u128 because a raw uuid
+    /// does not fit there and ~2.4k artists stand behind ~24k faces.
+    artist_id_vid: u16,
     /// Scryfall's FACE-level `watermark`, interned (NONE_STR = absent).
     ///
     /// PER FACE, and per PRINTING within that — a guild watermark belongs to the printing that
@@ -1019,10 +1028,32 @@ struct Printing {
     // strings live on the printing... for SEARCH. The card object needs the
     // artist as Scryfall prints it, which the lowercased vocab cannot recover:
     card_artist_vid: u16,
+    // Dense id of this printing's illustration within its own card's printing
+    // range: 0 = first-seen illustration (stored order — descending prefer_score),
+    // 1 = next, shared artwork shares the id. Assigned by assign_artwork_groups;
+    // #629's replacement for comparing/deduping on the full illustration_id UUID
+    // in the artwork-mode match-count and emission hot paths.
+    //
+    // HERE, beside `card_artist_vid`, since 2026092601 (it sat after `card_frame_data`). The two
+    // u16s share one 4-byte lane: `card_artist_vid` alone left two bytes of padding in front of
+    // `card_artist_name_id`, and this u16 alone left two in front of `faces` — so moving it
+    // vacated a whole u32 slot for `extras_id` below without the row growing a byte.
+    artwork_group_id: u16,
     // ...so the original-case string is interned into CardData.strings under its own id
     // (NONE_STR = absent). Emission-only; every predicate and rank keeps using the vid.
     card_artist_name_id: u32,
     card_set_code: InlineStr<8>,
+    /// Scryfall's top-level `artist_ids`: the printing's artist uuids, in Scryfall's order,
+    /// joined with `,` and interned into `coll_vocab` (VOCAB_NONE = key absent). A LIST, not one
+    /// id: a split card credited "David Martin & Franz Vohwinkel" (Fire // Ice, dmr/215) carries
+    /// both artists' uuids, one per face.
+    ///
+    /// Emission-only, and free: `card_set_code` is a 9-byte inline string, so the next u32 started
+    /// three bytes later at offset 60 — this u16 sits at 58, in that padding. Interned rather than
+    /// stored as uuids because a list of u128s would be an 8-byte Vec header plus 16 bytes per
+    /// artist on every printing (~9 MB over the ~540k all_cards rows), where the distinct lists
+    /// number a few thousand per archive.
+    artist_ids_vid: u16,
     /// Scryfall's `layout`. PRINTING-level, which it did not look like: this hung off the
     /// OracleCard on the reading that "a card's layout does not vary by printing". Measured
     /// against the 2026-08-16 bulk, it does — every `reversible_card` is a SECOND printing of an
@@ -1112,12 +1143,18 @@ struct Printing {
     card_is_tags: Vec<u16>,
     card_frame_data: Vec<u16>,
 
-    // Dense id of this printing's illustration within its own card's printing
-    // range: 0 = first-seen illustration (stored order — descending prefer_score),
-    // 1 = next, shared artwork shares the id. Assigned by assign_artwork_groups;
-    // #629's replacement for comparing/deduping on the full illustration_id UUID
-    // in the artwork-mode match-count and emission hot paths.
-    artwork_group_id: u16,
+    /// The RARE printing-level residue a Scryfall card object carries, as one interned string
+    /// (NONE_STR = the printing carries none of it): a JSON object holding whichever of
+    /// `resource_id`, `variation_of`, `attraction_lights`, `card_back_id` (only when it is not
+    /// Scryfall's shared back), `preview` and `content_warning` Scryfall sent, verbatim. Read back
+    /// by the JSON_FIELD_TABLE arms of the same names (`printing_extra` in core_api.rs).
+    ///
+    /// One string rather than six fields because none of these is common and the row had one u32
+    /// to spare (see `artwork_group_id`, which moved to free it): six columns would have rounded
+    /// the row to 320 bytes, ~8.6 MB over the ~540k all_cards rows, for values most printings do
+    /// not have. Interning dedupes the common shapes — a set's printings previewed together share
+    /// one `preview` string — and an absent residue costs the row nothing but the id.
+    extras_id: u32,
 
     // Parallel to the owning OracleCard's `faces`, so index i is the same face in both. Empty for
     // single-faced cards, and empty when a multi-face card's printing carries no per-face art.
@@ -1260,6 +1297,10 @@ struct CardRow {
     // pair on OracleCard for why they land on the CARD rather than here on the printing.
     life_modifier_id: u32,
     hand_modifier_id: u32,
+    // The card object's two printing-level residues that ride the Printing's padding — see
+    // `Printing::artist_ids_vid` and `Printing::extras_id`.
+    artist_ids_vid: u16,
+    extras_id: u32,
     // Whether this row is one of Scryfall's canonical (default_cards) printings. Canonical rows
     // become `CardData.printings`; the rest become the `foreign` annex. Decided by the importer
     // (id-membership in default_cards), never re-derived here.
@@ -1295,6 +1336,8 @@ struct FaceRow {
     mana_cost: Option<ManaCost>,
     illustration_id: u128,
     card_artist_vid: u16,
+    // The face's Scryfall `artist_id` (see PrintingFace.artist_id_vid).
+    artist_id_vid: u16,
     // The face's original-case artist string (see PrintingFace.card_artist_name_id).
     card_artist_name_id: u32,
     // The face's own watermark (see PrintingFace.card_watermark_id).
@@ -19663,7 +19706,19 @@ const ARCHIVE_MAGIC: [u8; 8] = *b"ATCARDS\0";
 //                and a reader pairing this code with a 2026090301 store would read the high half of
 //                an old `set_rank` (always zero) as every set's release key. Paired with
 //                STORE_CONTENT_GENERATION 53 and SORT_KEY_VERSION 3.
-const ARCHIVE_FORMAT_VERSION: u32 = 2026092501;
+//   2026092601 — THE CARD OBJECT'S MISSING RESIDUE (x27). `Printing` gains `artist_ids_vid` (the
+//                top-level `artist_ids`, a coll_vocab id) and `extras_id` (the rare keys —
+//                `resource_id`, `variation_of`, `attraction_lights`, a non-shared `card_back_id`,
+//                `preview`, `content_warning` — as one interned JSON string), and `PrintingFace`
+//                gains `artist_id_vid`; `artwork_group_id` moves up beside `card_artist_vid` to free
+//                the u32 slot. Every one lands in padding the rows already had, so
+//                `size_of::<APrinting>` stays 304 and `APrintingFace` 48 — the header cannot see the
+//                change, and a reader pairing this code with a 2026092501 store would read every
+//                `artwork_group_id` out of old padding (always zero — `unique=art` collapses to one
+//                row per card) and the old group id as an `extras_id` into the string table (a
+//                garbage residue on every printing). Paired with STORE_CONTENT_GENERATION 54;
+//                SORT_KEY_VERSION does not move.
+const ARCHIVE_FORMAT_VERSION: u32 = 2026092601;
 const ARCHIVE_HEADER_LEN: usize = 16;
 
 fn archive_header() -> [u8; ARCHIVE_HEADER_LEN] {
@@ -20462,8 +20517,10 @@ fn build_card_data_sorted(
             flavor_text_id: row.flavor_text_id,
             flavor_text_lower_id: row.flavor_text_lower_id,
             card_artist_vid: row.card_artist_vid,
+            artwork_group_id: 0, // placeholder; assign_artwork_groups fills every printing below
             card_artist_name_id: row.card_artist_name_id,
             card_set_code: row.card_set_code,
+            artist_ids_vid: row.artist_ids_vid,
             // The row IS the printing, so this is simply carried across — the same field the
             // OracleCard used to take, taken by the half of the split that owns it.
             card_layout_id: row.card_layout_id,
@@ -20483,7 +20540,7 @@ fn build_card_data_sorted(
             card_art_tags: row.card_art_tags,
             card_is_tags: row.card_is_tags,
             card_frame_data: row.card_frame_data,
-            artwork_group_id: 0, // placeholder; assign_artwork_groups fills every printing below
+            extras_id: row.extras_id,
             // Placeholders, same shape as name_rank above: assigned after grouping, by
             // assign_set_ranks / assign_artist_ranks below (upstream #913).
             set_rank: 0,
@@ -20497,6 +20554,7 @@ fn build_card_data_sorted(
                 .map(|f| PrintingFace {
                     illustration_id: f.illustration_id,
                     card_artist_vid: f.card_artist_vid,
+                    artist_id_vid: f.artist_id_vid,
                     card_artist_name_id: f.card_artist_name_id,
                     card_watermark_id: f.card_watermark_id,
                     flavor_text_id: f.flavor_text_id,

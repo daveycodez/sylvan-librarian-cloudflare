@@ -1707,8 +1707,28 @@ export async function gzipBytes(bytes: Uint8Array): Promise<Uint8Array> {
  *      manifest by format (see MANIFEST_KEY), so the next format bump publishes beside the running
  *      build rather than over it. SORT_KEY_VERSION moves 2 -> 3 with
  *      it, because the cross-partition key gains the batch byte and the collated number.
+ *
+ *   54 (2026-09-26): THE CARD OBJECT'S MISSING RESIDUE (backlog x27). A 63-printing differential
+ *      against api.scryfall.com found keys Scryfall sends that no store had ever held: the
+ *      top-level `artist_ids` and each face's `artist_id` (63 and 15 of 63), `preview` (17),
+ *      `resource_id` (4), a non-shared `card_back_id` (6 — planes, schemes, vanguards, oversized,
+ *      memorabilia, attractions), `variation_of`, `attraction_lights` and `content_warning` (1 each).
+ *      All of them were already IN the builder's residue (or, for `resource_id` and `card_back_id`,
+ *      one line from it — COMPAT_BLOB_EXCLUDED listed both as "re-emitted on read", and neither
+ *      was) and dropped at the archive. They now ride `Printing::artist_ids_vid`,
+ *      `Printing::extras_id` and `PrintingFace::artist_id_vid`, all three in padding, so no row
+ *      grows. The render-only half of the same fix (Scryfall's key order everywhere, `game_changer`,
+ *      `foil`/`nonfoil`, `image_updated_at`, `all_parts[].uri`, the encoded collector number, the
+ *      glyph-language gatherer link, the content-warning link rule) needs no store and ships with
+ *      the Worker.
+ *
+ *      A FORMAT BUMP AS WELL (ARCHIVE_FORMAT_VERSION 2026092601): `artwork_group_id` moved to free
+ *      the `extras_id` slot, so a generation-53 store read by this code would misread both. The
+ *      pairing is 45/48/53's; and since x19 keys the manifest by format (MANIFEST_KEY), the new
+ *      store publishes beside the running build's rather than over it, so the deploy is not dark
+ *      between its two steps.
  */
-export const STORE_CONTENT_GENERATION = 53;
+export const STORE_CONTENT_GENERATION = 54;
 
 /**
  * Chunk key for a store. Keyed by store_key, so publishes never collide.

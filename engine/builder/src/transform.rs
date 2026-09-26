@@ -409,7 +409,7 @@ pub struct RowDraft {
 /// `prices` is deliberately absent even though price_usd/eur/tix are columns — usd_foil,
 /// usd_etched and eur_foil are not, and keeping the object whole costs a few bytes against losing
 /// three fields.
-const COMPAT_BLOB_EXCLUDED: [&str; 54] = [
+const COMPAT_BLOB_EXCLUDED: [&str; 52] = [
     // stored in a column of their own
     "id",
     "oracle_id",
@@ -451,10 +451,15 @@ const COMPAT_BLOB_EXCLUDED: [&str; 54] = [
     "set_uri",
     "set_search_uri",
     "scryfall_set_uri",
-    "card_back_id",
     "related_uris",
     "purchase_uris",
-    "resource_id",
+    // NOT here any more, though both sat in this list as "pure functions … re-emitted on read"
+    // until 2026-09-26 (x27), which neither is: `card_back_id` differs from Scryfall's shared back
+    // on every plane, scheme, vanguard, oversized, memorabilia and attraction printing (six
+    // distinct backs in a 63-card sample), and `resource_id` is an opaque hash Scryfall sends on
+    // the newest printings (msc/806, soc/190, sos/113). Both now ride the residue into
+    // `Printing::extras_id`; `compat_blob` drops a `card_back_id` naming the shared back, which is
+    // the value the writers emit by default.
     // its own column
     "card_faces",
     // stored in a column of their own (the printed-language triple; their per-face halves ride
@@ -483,9 +488,15 @@ const COMPAT_BLOB_EXCLUDED: [&str; 54] = [
 fn compat_blob(card: &Map<String, Value>) -> Map<String, Value> {
     card.iter()
         .filter(|(key, _)| !COMPAT_BLOB_EXCLUDED.contains(&key.as_str()))
+        .filter(|(key, value)| !(key.as_str() == "card_back_id" && value.as_str() == Some(DEFAULT_CARD_BACK_ID)))
         .map(|(key, value)| (key.clone(), value.clone()))
         .collect()
 }
+
+/// Scryfall's shared card back, which ~99% of one-image printings name. Kept out of the residue
+/// (see `compat_blob`) because the card-object writers emit it when the residue names no other —
+/// storing it would cost every row's residue ~55 bytes for no information.
+const DEFAULT_CARD_BACK_ID: &str = "0aeebaf5-8c7d-4636-9e82-8c27447861f7";
 
 /// What `card_faces` stores per face, in Scryfall's own key names and value
 /// shapes (upstream `_FACE_OBJECT_FIELDS`).

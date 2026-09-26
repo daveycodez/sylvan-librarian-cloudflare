@@ -265,6 +265,8 @@ fn stub_printing(scryfall_id: u128, illustration_id: u128, prefer_score: Option<
         card_artist_vid: ARTIST_NONE,
         card_artist_name_id: NONE_STR,
         card_set_code: InlineStr::from_str(""),
+        artist_ids_vid: VOCAB_NONE,
+        extras_id: NONE_STR,
         card_layout_id: NONE_STR,
         set_rank: 0,
         release_set_key: 0,
@@ -8709,6 +8711,7 @@ fn watermark_is_per_face_and_every_leaf_still_matches_tri() {
     let face = |wm: u32| PrintingFace {
         illustration_id: 0,
         card_artist_vid: ARTIST_NONE,
+        artist_id_vid: VOCAB_NONE,
         card_artist_name_id: NONE_STR,
         card_watermark_id: wm,
         flavor_text_id: NONE_STR,
@@ -16487,8 +16490,8 @@ fn two_faces() -> (Vec<OracleFace>, Vec<PrintingFace>) {
         },
     ];
     let printing = vec![
-        PrintingFace { illustration_id: 0xAAAA, card_artist_vid: 1, card_artist_name_id: NONE_STR, card_watermark_id: NONE_STR, flavor_text_id: 7, flavor_name_id: NONE_STR },
-        PrintingFace { illustration_id: 0xBBBB, card_artist_vid: 2, card_artist_name_id: NONE_STR, card_watermark_id: NONE_STR, flavor_text_id: NONE_STR, flavor_name_id: NONE_STR },
+        PrintingFace { illustration_id: 0xAAAA, card_artist_vid: 1, artist_id_vid: VOCAB_NONE, card_artist_name_id: NONE_STR, card_watermark_id: NONE_STR, flavor_text_id: 7, flavor_name_id: NONE_STR },
+        PrintingFace { illustration_id: 0xBBBB, card_artist_vid: 2, artist_id_vid: VOCAB_NONE, card_artist_name_id: NONE_STR, card_watermark_id: NONE_STR, flavor_text_id: NONE_STR, flavor_name_id: NONE_STR },
     ];
     (oracle, printing)
 }
@@ -18796,6 +18799,10 @@ fn the_archived_row_sizes_stay_pinned() {
     // the u32 after a 62-byte inline started at 64 with two padding bytes in front of it, and a
     // 58-byte inline puts the id at 60 inside the same 64. The names between 58 and 61 bytes take
     // the strings-table path as a result, which is one interned string each.
+    // 304 STAYS 304 through 2026092601 (x27), which adds `artist_ids_vid` and `extras_id` to the
+    // printing and `artist_id_vid` to its faces: all three land in padding the rows already had,
+    // mid-row rather than at the tail these notes kept measuring. The offsets are pinned in
+    // `the_card_object_residue_rides_padding_the_rows_already_had`.
     assert_eq!(std::mem::size_of::<Archived<Printing>>(), 304);
     assert_eq!(std::mem::size_of::<Archived<OracleCard>>(), 288);
     assert_eq!(std::mem::size_of::<Archived<RelatedCard>>(), 32);
@@ -18944,6 +18951,7 @@ fn faced_printing(scryfall_id: u128, ills: &[u128]) -> Printing {
         .map(|&illustration_id| PrintingFace {
             illustration_id,
             card_artist_vid: ARTIST_NONE,
+            artist_id_vid: VOCAB_NONE,
             card_artist_name_id: NONE_STR,
             card_watermark_id: NONE_STR,
             flavor_text_id: NONE_STR,
@@ -19475,4 +19483,37 @@ fn limit_zero_yields_no_rows_and_the_full_total() {
             }
         }
     }
+}
+
+/// The x27 residue costs the rows NOTHING, and this is where that is held: the three new ids sit
+/// in padding the rows already had, found by measuring offsets rather than trusting the "no padding
+/// left" notes above (which were about the row's TAIL — the holes were in the middle).
+///
+///   * `Printing::artwork_group_id` moved beside `card_artist_vid`, filling the two bytes the u16
+///     left in front of `card_artist_name_id` — which vacated the four bytes (two of them padding)
+///     after `card_frame_data`, where `extras_id` now sits.
+///   * `Printing::artist_ids_vid` sits in the three bytes after the 9-byte `card_set_code`.
+///   * `PrintingFace::artist_id_vid` sits in the two bytes after `card_artist_vid`.
+///
+/// A field added in front of any of these moves them, and the size pins in
+/// `the_archived_row_sizes_stay_pinned` alone would not notice a reshuffle that kept the total.
+#[test]
+fn the_card_object_residue_rides_padding_the_rows_already_had() {
+    use std::mem::offset_of;
+    type P = Archived<Printing>;
+    type F = Archived<PrintingFace>;
+    assert_eq!(offset_of!(P, card_artist_vid), 40);
+    assert_eq!(offset_of!(P, artwork_group_id), 42);
+    assert_eq!(offset_of!(P, card_artist_name_id), 44);
+    assert_eq!(offset_of!(P, card_set_code), 48);
+    assert_eq!(offset_of!(P, artist_ids_vid), 58);
+    assert_eq!(offset_of!(P, card_layout_id), 60);
+    assert_eq!(offset_of!(P, card_frame_data), 160);
+    assert_eq!(offset_of!(P, extras_id), 168);
+    assert_eq!(offset_of!(P, faces), 172);
+    assert_eq!(std::mem::size_of::<P>(), 304);
+    assert_eq!(offset_of!(F, card_artist_vid), 16);
+    assert_eq!(offset_of!(F, artist_id_vid), 18);
+    assert_eq!(offset_of!(F, card_watermark_id), 20);
+    assert_eq!(std::mem::size_of::<F>(), 48);
 }

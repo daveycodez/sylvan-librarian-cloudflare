@@ -16,21 +16,23 @@
 //! for two reasons:
 //!
 //!   - `serde_json` here has no `preserve_order` feature, so `Map` is a `BTreeMap` and a `Value`
-//!     would come out ALPHABETICAL. Both existing implementations emit insertion order, and while
-//!     Scryfall's own order matches neither of them (its `arena_id` is 4th, `legalities` 27th),
-//!     changing our own output order for every card is a gratuitous break for clients and tests.
+//!     would come out ALPHABETICAL — which is also why every nested object the engine hands over
+//!     (a face, a related card, `legalities`) arrives alphabetical and is re-ordered here.
 //!   - It is faster, which is the point: no intermediate tree, and no freshly allocated `String`
 //!     key per field per card.
 //!
-//! Key order follows UPSTREAM's dict literal. The port's `toScryfallCard` agreed with it
-//! everywhere except `security_stamp`, which sat 6th in the optional tail there and 14th upstream —
-//! cosmetic, but the two should not disagree, and upstream is the reference for a port, so the port
-//! moved to match this rather than the other way round.
+//! Key order is API.SCRYFALL.COM'S, at every level (x27, 2026-09-26). It used to be upstream #912's
+//! dict literal, on the reading that Scryfall's own order was a gratuitous change for clients; but
+//! `/cards/*` is held to byte compatibility with Scryfall, and every object this wrote differed
+//! from Scryfall's in key order — the top level, every face, every related card, `legalities` — on
+//! 63 of 63 printings of the x27 differential. The port's `toScryfallCard` moved with it, and
+//! `tests/routes/card-object-parity.test.ts` holds the two to the same bytes.
 
 use serde_json::{Map, Value};
 
-/// Scryfall's shared card back, the same id on every card object.
-const CARD_BACK_ID: &str = "0aeebaf5-8c7d-4636-9e82-8c27447861f7";
+/// Scryfall's shared card back — the `card_back_id` of every one-image printing but the few
+/// thousand whose residue names another (see core_api's `jv_printing_extras`).
+pub(crate) const CARD_BACK_ID: &str = "0aeebaf5-8c7d-4636-9e82-8c27447861f7";
 
 /// Image size -> file extension, in Scryfall's own order.
 ///
@@ -208,9 +210,18 @@ fn slug(name: &str) -> String {
             hyphenated.push(ch);
         }
     }
+    percent_encode_path(&hyphenated)
+}
+
+/// UTF-8 percent-encoding, uppercase hex, sparing exactly the bytes `scryfall_uri` serves
+/// literally across the bulk corpus: alphanumerics and `!&()+-:;=_`. Shared by the slug and the
+/// collector-number segment, which Scryfall encodes the same way: oarc's `1★` is
+/// `/card/oarc/1%E2%98%85/…` and arn's `2†` is `/card/arn/2%E2%80%A0/…` (both live, 2026-09-26),
+/// where this writer used to serve the raw UTF-8.
+fn percent_encode_path(text: &str) -> String {
     const HEX: &[u8; 16] = b"0123456789ABCDEF";
-    let mut out = String::with_capacity(hyphenated.len());
-    for byte in hyphenated.as_bytes() {
+    let mut out = String::with_capacity(text.len());
+    for byte in text.as_bytes() {
         match byte {
             b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'!' | b'&' | b'(' | b')' | b'+' | b'-'
             | b':' | b';' | b'=' | b'_' => out.push(*byte as char),
@@ -347,6 +358,7 @@ fn scryfall_uri(row: &Map<String, Value>, name: &str, set_code: &str, number: &s
     let english = slug(name);
     let printed = printed_full_name(row, lang).map(|full| slug(&full)).unwrap_or_default();
     let path = if printed.is_empty() { english } else { format!("{printed}-({english})") };
+    let number = percent_encode_path(number);
     format!("https://scryfall.com/card/{set_code}/{number}/{segment}{path}?utm_source=api")
 }
 
@@ -420,31 +432,43 @@ fn write_prices(out: &mut Vec<u8>, row: &Map<String, Value>) {
 /// wrapper — emitting the wrapper from this host would route another service's revenue to them.
 ///
 /// `gatherer` LEADS the object when the printing has multiverse ids, built from the FIRST id,
-/// with `printed=true` for every non-English printing and `printed=false` for English — verified
-/// against the bulk corpus at 540,430 of 540,484 printings. The 54 exceptions are foreign-only
-/// promos (dd2-ja, snc launch, one-ph, ltc-qya) whose Gatherer entries carry no translation; that
-/// fact lives on Scryfall's side of the wire and is not derivable from the row, so they stay a
-/// known limit rather than a rule.
+/// with `printed=true` for every translated printing and `printed=false` for English — verified
+/// against the bulk corpus at 540,430 of 540,484 printings. Most of the 54 exceptions were the
+/// PHYREXIAN and QUENYA printings (one-ph, ltc-qya), and they are a rule rather than an exception:
+/// measured on api.scryfall.com 2026-09-26, every `lang:ph` and `lang:qya` printing that links to
+/// Gatherer at all says `printed=false` (19 and 3 of them) — the glyph languages have no Gatherer
+/// translation, the same reason `SLUG_PRINTED_IGNORED` keeps their printed names out of the slug.
+/// What is left (dd2's two ja printings) lives on Scryfall's side of the wire and is not derivable
+/// from the row, so it stays a known limit.
 ///
 /// `edhrec` takes `search_name`, which is the front face's on most multi-face layouts — see
 /// JOINED_SEARCH_LAYOUTS. The two tcgplayer searches take the joined name on every layout.
+///
+/// A printing with a `content_warning` keeps the gatherer link and NOTHING ELSE: Scryfall sends no
+/// tcgplayer or edhrec entry for it (measured on leg/62, Invoke Prejudice), just as it sends no
+/// `purchase_uris` — the marketplace links are what the warning withdraws.
 fn write_related_uris(
     out: &mut Vec<u8>,
     name: &str,
     search_name: &str,
     multiverse_first: Option<u64>,
     lang: &str,
+    content_warning: bool,
 ) {
     let quoted = quote_plus(name);
     out.push(b'{');
     let mut first = true;
     if let Some(id) = multiverse_first {
-        let printed = if lang == "en" { "false" } else { "true" };
+        let printed = if matches!(lang, "en" | "ph" | "qya") { "false" } else { "true" };
         write_key(out, &mut first, "gatherer");
         write_json_str(
             out,
             &format!("https://gatherer.wizards.com/Pages/Card/Details.aspx?multiverseid={id}&printed={printed}"),
         );
+    }
+    if content_warning {
+        out.push(b'}');
+        return;
     }
     for (key, url) in [
         (
@@ -540,9 +564,148 @@ fn joined_mana_cost(faces: &[Value]) -> String {
         .join(" // ")
 }
 
+/// A face's keys in Scryfall's own order — `object` (and, on a reversible printing, the card's
+/// `oracle_id`) lead, and `image_uris` closes. Merged from every face object in a 63-printing
+/// api.scryfall.com sample (2026-09-26, zero ordering conflicts), with the pairs that sample never
+/// shows together taken from the corpus-wide measurements already on record: `name -> flavor_name
+/// -> mana_cost` (vow/338, sld/1079) and `flavor_text -> watermark -> artist` (all 1,075 face
+/// watermarks in the 2026-08-16 bulk).
+///
+/// The engine hands a face over as a map, which serde_json (no `preserve_order`) iterates
+/// ALPHABETICALLY — so this writer used to emit `artist, colors, illustration_id, mana_cost, name`,
+/// the reverse of the object on every faced printing Scryfall serves.
+const FACE_KEY_ORDER: [&str; 20] = [
+    "layout",
+    "name",
+    "printed_name",
+    "flavor_name",
+    "mana_cost",
+    "type_line",
+    "printed_type_line",
+    "oracle_text",
+    "printed_text",
+    "colors",
+    "color_indicator",
+    "power",
+    "toughness",
+    "loyalty",
+    "defense",
+    "flavor_text",
+    "watermark",
+    "artist",
+    "artist_id",
+    "illustration_id",
+];
+
+/// A related card's keys in Scryfall's order. `uri` closes it and is derived — the card's own
+/// `/cards/:id` on this host, exactly as the top-level `uri` is — so nothing is stored for it.
+const RELATED_KEY_ORDER: [&str; 5] = ["object", "id", "component", "name", "type_line"];
+
+/// `preview`'s keys in Scryfall's order (17 of 17 previews in the sample).
+const PREVIEW_KEY_ORDER: [&str; 3] = ["source", "source_uri", "previewed_at"];
+
+/// Scryfall's order of the formats in `legalities` — its own, fixed, and the same on every card
+/// object (63 of 63 in the sample). The engine decodes the legality word into a map, which
+/// iterates alphabetically; a format Scryfall adds later that this list does not know yet is
+/// written after these, in the map's order, rather than dropped.
+const LEGALITY_ORDER: [&str; 23] = [
+    "standard",
+    "future",
+    "historic",
+    "timeless",
+    "gladiator",
+    "pioneer",
+    "modern",
+    "legacy",
+    "pauper",
+    "vintage",
+    "penny",
+    "commander",
+    "oathbreaker",
+    "standardbrawl",
+    "brawl",
+    "competitivebrawl",
+    "alchemy",
+    "paupercommander",
+    "duel",
+    "oldschool",
+    "premodern",
+    "predh",
+    "tlr",
+];
+
+/// A map's members in a fixed key order, then any member the order does not name, in the map's
+/// own order. Values are written verbatim, `null` included.
+fn write_ordered_object(out: &mut Vec<u8>, map: &Map<String, Value>, order: &[&str]) {
+    out.push(b'{');
+    let mut first = true;
+    for key in order {
+        if let Some(v) = map.get(*key) {
+            write_value(out, &mut first, key, v);
+        }
+    }
+    for (key, v) in map {
+        if !order.contains(&key.as_str()) {
+            write_value(out, &mut first, key, v);
+        }
+    }
+    out.push(b'}');
+}
+
+/// `all_parts`, each related card in Scryfall's key order and closed by its derived `uri`.
+fn write_all_parts(out: &mut Vec<u8>, parts: &[Value], base_url: &str) {
+    out.push(b'[');
+    for (index, part) in parts.iter().enumerate() {
+        if index > 0 {
+            out.push(b',');
+        }
+        let Value::Object(map) = part else {
+            serde_json::to_writer(&mut *out, part).expect("writing a Value cannot fail");
+            continue;
+        };
+        out.push(b'{');
+        let mut first = true;
+        for key in RELATED_KEY_ORDER {
+            if let Some(v) = map.get(key) {
+                write_value(out, &mut first, key, v);
+            }
+        }
+        if let Some(id) = str_of(map, "id") {
+            write_key(out, &mut first, "uri");
+            write_json_str(out, &format!("{base_url}/cards/{id}"));
+        }
+        for (key, v) in map {
+            if !RELATED_KEY_ORDER.contains(&key.as_str()) && key != "uri" {
+                write_value(out, &mut first, key, v);
+            }
+        }
+        out.push(b'}');
+    }
+    out.push(b']');
+}
+
+/// Epoch seconds as Scryfall's `image_updated_at`: ISO-8601 UTC to the second, `Z`-suffixed
+/// (`"2026-07-13T00:36:48Z"`). The store keeps the seconds (the image cache-buster is the same
+/// number), so the string is rebuilt here — Howard Hinnant's civil-from-days, exact for any date.
+fn iso8601_utc(secs: u64) -> String {
+    let days = i64::try_from(secs / 86_400).unwrap_or(0);
+    let rem = secs % 86_400;
+    let z = days + 719_468;
+    let era = z.div_euclid(146_097);
+    let doe = z - era * 146_097;
+    let yoe = (doe - doe / 1_460 + doe / 36_524 - doe / 146_096) / 365;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let day = doy - (153 * mp + 2) / 5 + 1;
+    let month = if mp < 10 { mp + 3 } else { mp - 9 };
+    let year = yoe + era * 400 + i64::from(month <= 2);
+    format!("{year:04}-{month:02}-{day:02}T{:02}:{:02}:{:02}Z", rem / 3_600, rem % 3_600 / 60, rem % 60)
+}
+
 /// The card's faces, with the two keys the engine deliberately does not store re-added: `object`
 /// is the constant, and a face's `image_uris` is the card's own CDN function with the face swapped
-/// — on the two-image layouts, which are the only ones whose faces have their own picture.
+/// — on the two-image layouts, which are the only ones whose faces have their own picture. Keys in
+/// Scryfall's order (FACE_KEY_ORDER), never the row map's alphabetical one.
 fn write_faces(
     out: &mut Vec<u8>,
     faces: &[Value],
@@ -552,8 +715,29 @@ fn write_faces(
     // The card's `oracle_id` and `cmc`, to be written on EVERY face -- `Some` only for a
     // reversible printing, which is the one layout whose faces carry them (and whose top-level
     // object omits them). Both faces of all 81 send the card's own values, never a second one.
+    // Scryfall puts the id right after `object` and the cmc right after `mana_cost`.
     card_ids: Option<(&str, Option<&Value>)>,
 ) {
+    // Absent stays absent: null, "" and [] mean Scryfall did not send this face that key --
+    // EXCEPT for `mana_cost` and `oracle_text`, where "" is a value Scryfall does send. Every
+    // face of every multi-face printing in the corpus carries both keys (8,620 of 8,620 transform
+    // faces, 4,356 of them with an empty cost), so an empty string there is a costless back face,
+    // never an omission. `colors` is a face key only where the faces own their own art: every
+    // face of every two-image printing carries one, empty included (Agadeem, the Undercrypt is
+    // colorless and still sends `"colors": []`), and no face of a split, flip, adventure or
+    // prepare printing carries one at all. The engine always writes the key, so both halves of
+    // that are decided here.
+    let emits = |key: &str, value: &Value| -> bool {
+        if key == "colors" {
+            return two_image && !value.is_null();
+        }
+        match value {
+            Value::Null => false,
+            Value::String(s) => !s.is_empty() || matches!(key, "mana_cost" | "oracle_text"),
+            Value::Array(a) => !a.is_empty(),
+            _ => true,
+        }
+    };
     out.push(b'[');
     for (index, face) in faces.iter().enumerate() {
         if index > 0 {
@@ -563,42 +747,34 @@ fn write_faces(
         let mut first = true;
         write_key(out, &mut first, "object");
         write_json_str(out, "card_face");
-        if let Some((oid, cmc)) = card_ids {
+        if let Some((oid, _)) = card_ids {
             write_key(out, &mut first, "oracle_id");
             write_json_str(out, oid);
-            write_key(out, &mut first, "cmc");
-            match cmc.and_then(serde_json::Value::as_f64) {
-                Some(v) => serde_json::to_writer(&mut *out, &v).expect("number"),
-                None => out.extend_from_slice(b"null"),
+        }
+        let empty = Map::new();
+        let map = match face {
+            Value::Object(map) => map,
+            _ => &empty,
+        };
+        for key in FACE_KEY_ORDER {
+            if let Some(value) = map.get(key)
+                && emits(key, value)
+            {
+                write_value(out, &mut first, key, value);
+            }
+            if key == "mana_cost"
+                && let Some((_, cmc)) = card_ids
+            {
+                write_key(out, &mut first, "cmc");
+                match cmc.and_then(serde_json::Value::as_f64) {
+                    Some(v) => serde_json::to_writer(&mut *out, &v).expect("number"),
+                    None => out.extend_from_slice(b"null"),
+                }
             }
         }
-        if let Value::Object(map) = face {
-            for (key, value) in map {
-                // `colors` is a face key only where the faces own their own art: every face of
-                // every two-image printing carries one, empty included (Agadeem, the Undercrypt is
-                // colorless and still sends `"colors": []`), and no face of a split, flip,
-                // adventure or prepare printing carries one at all. The engine always writes the
-                // key, so both halves of that are decided here.
-                if key == "colors" {
-                    if two_image {
-                        write_value(out, &mut first, key, value);
-                    }
-                    continue;
-                }
-                // Absent stays absent: null, "" and [] mean Scryfall did not send this face that
-                // key -- EXCEPT for `mana_cost` and `oracle_text`, where "" is a value Scryfall
-                // does send. Every face of every multi-face printing in the corpus carries both
-                // keys (8,620 of 8,620 transform faces, 4,356 of them with an empty cost), so an
-                // empty string there is a costless back face, never an omission.
-                let empty = match value {
-                    Value::Null => true,
-                    Value::String(s) => s.is_empty() && !matches!(key.as_str(), "mana_cost" | "oracle_text"),
-                    Value::Array(a) => a.is_empty(),
-                    _ => false,
-                };
-                if !empty {
-                    write_value(out, &mut first, key, value);
-                }
+        for (key, value) in map {
+            if !FACE_KEY_ORDER.contains(&key.as_str()) && key != "object" && emits(key, value) {
+                write_value(out, &mut first, key, value);
             }
         }
         if two_image {
@@ -612,10 +788,19 @@ fn write_faces(
 
 // ─── the card object ─────────────────────────────────────────────────────────
 
-/// Write one engine row as a Scryfall card object.
+/// Write one engine row as a Scryfall card object, in api.scryfall.com's own key order.
 ///
 /// `base_url` is the host self-referencing URIs should address — the deployment's own, not
 /// Scryfall's, so a client following `uri` or `prints_search_uri` stays on this API.
+///
+/// THE ORDER IS SCRYFALL'S (x27, 2026-09-26), and it is part of the byte contract `/cards/*` is
+/// held to. This writer used to follow upstream #912's dict literal, and so did `toScryfallCard`:
+/// every card object either served differed from api.scryfall.com's in key order on the top level
+/// (`arena_id` is Scryfall's 4th-8th key and was this one's ~50th), on every face, on every
+/// related card and in `legalities` — 63 of 63 printings in the x27 differential, which the
+/// parity harnesses could not see because both sort keys before comparing. The order below is
+/// the merge of all 63 objects (zero conflicts), each conditional key in the one position
+/// Scryfall gives it.
 pub fn write_scryfall_card(out: &mut Vec<u8>, row: &Map<String, Value>, base_url: &str) {
     let scryfall_id = str_of(row, "scryfall_id").unwrap_or("");
     let oracle_id = str_of(row, "oracle_id").unwrap_or("");
@@ -644,6 +829,17 @@ pub fn write_scryfall_card(out: &mut Vec<u8>, row: &Map<String, Value>, base_url
     } else {
         name
     };
+    // Scryfall's `content_warning`, verbatim from the residue. `true` withdraws every marketplace
+    // link — see `write_related_uris`.
+    let content_warning = row.get("content_warning") == Some(&Value::Bool(true));
+    // A residue value, verbatim, when the row carries one (see core_api's PRINTING_EXTRA_KEYS).
+    let extra = |key: &str| row.get(key).filter(|v| !v.is_null());
+    let is_tag = |tag: &str| {
+        list_of(row, "card_is_tags").is_some_and(|tags| tags.iter().any(|t| t.as_str() == Some(tag)))
+    };
+    // A key the faces own on EVERY faced layout (`watermark`) or on the two-image ones (see
+    // `is_face_owned_key`); a top-level copy of either is never written.
+    let top_level = |key: &str| !(two_image && is_face_owned_key(key)) && !(faces.is_some() && is_faced_owned_key(key));
 
     out.push(b'{');
     let mut first = true;
@@ -657,13 +853,20 @@ pub fn write_scryfall_card(out: &mut Vec<u8>, row: &Map<String, Value>, base_url
         write_json_str(out, oracle_id);
     }
     write_list(out, &mut first, "multiverse_ids", list_of(row, "multiverse_ids"));
+    if let Some(v) = extra("resource_id") {
+        write_value(out, &mut first, "resource_id", v);
+    }
+    // The marketplace and client ids, where Scryfall puts them: straight after the multiverse ids.
+    for key in ["mtgo_id", "mtgo_foil_id", "arena_id", "tcgplayer_id", "tcgplayer_etched_id", "cardmarket_id"] {
+        if let Some(v) = num_of(row, key) {
+            write_value(out, &mut first, key, v);
+        }
+    }
     write_key(out, &mut first, "name");
     write_json_str(out, name);
-    // Between `name` and `lang`, where api.scryfall.com puts it (verified on grn/212/pt and
-    // khm/1/ja) — and PRESENT only when the printing carries one, which is why this is
-    // `write_opt_str` mid-object rather than an entry in the optional tail: the tail would put it
-    // after `legalities`, and key position is part of the parity contract here the same way
-    // security_stamp's position was (see the note at the tail).
+    // Between `name` and `lang`, and PRESENT only when the printing carries one: `printed_name`
+    // (verified on grn/212/pt and khm/1/ja), then `flavor_name` — "immediately before `lang`" on
+    // all 669 top-level occurrences in the 2026-08-16 all_cards bulk (prm/80925, sld/2236/ja).
     write_opt_str(out, &mut first, "printed_name", str_of(row, "printed_name"));
     write_opt_str(out, &mut first, "flavor_name", str_of(row, "flavor_name"));
     write_key(out, &mut first, "lang");
@@ -676,35 +879,61 @@ pub fn write_scryfall_card(out: &mut Vec<u8>, row: &Map<String, Value>, base_url
     write_str_or_null(out, &mut first, "layout", str_of(row, "layout"));
     write_bool(out, &mut first, "highres_image", bool_of(row, "highres_image"));
     write_str_or_null(out, &mut first, "image_status", str_of(row, "image_status"));
+    if let Some(secs) = image_updated_at {
+        write_key(out, &mut first, "image_updated_at");
+        write_json_str(out, &iso8601_utc(secs));
+    }
+    // A multi-face card carries its faces and NOT the top-level ORACLE TEXT they replace; a
+    // single-faced one carries the text and no `card_faces`. `mana_cost` and `image_uris` are
+    // the two the multi-face branch keeps, on the one-image layouts only: one piece of cardboard
+    // has one picture and one printed cost, so Scryfall sends both at top level for
+    // split/flip/adventure/prepare — and neither for transform/modal_dfc, where each face has its
+    // own.
+    if faces.is_none() || !two_image {
+        write_key(out, &mut first, "image_uris");
+        write_image_uris(out, scryfall_id, image_updated_at, "front");
+    }
+    match faces {
+        // The faces' costs, joined — see `joined_mana_cost`.
+        Some(faces) if !two_image => {
+            write_key(out, &mut first, "mana_cost");
+            write_json_str(out, &joined_mana_cost(faces));
+        }
+        Some(_) => {}
+        // An empty string is a VALUE — every basic land carries `"mana_cost": ""` — so it reads
+        // through `present_str_of` rather than the empty-is-absent `str_of`.
+        None => write_str_or_null(out, &mut first, "mana_cost", present_str_of(row, "mana_cost")),
+    }
     // `cmc` and `type_line` are the two the ordinary multi-face branch keeps and a REVERSIBLE
     // printing does not — see the note on `reversible` above.
     if !reversible {
         write_key(out, &mut first, "cmc");
-        // As a DECIMAL, which is what api.scryfall.com answers with: `"cmc":1.0`, not `"cmc":1`
-        // (see https://api.scryfall.com/cards/named?exact=Lightning+Bolt). Writing the stored
-        // number directly emits `1`, because the engine holds cmc as an integer -- and that would
-        // also put the engine at odds with `toScryfallCard`, which carries the same value as a
-        // decimal. The two must agree byte for byte: tests/routes/card-object-parity.test.ts holds
-        // them to it.
-        //
-        // The PRECISION behind the formatting is now real too: the stored value is an
-        // `Option<f32>` (`opt_f32(d, "cmc")` in lib.rs, `jv_opt_f32` in core_api.rs), so Little
-        // Girl's 0.5 survives the archive and arrives here as 0.5 rather than 0. The corpus still
-        // excludes funny sets -- this is the capability, not a decision to import them.
+        // As a DECIMAL, which is what api.scryfall.com answers with: `"cmc":1.0`, not `"cmc":1`.
+        // The stored value is an `Option<f32>`, so Little Girl's 0.5 arrives here as 0.5.
         match num_of(row, "cmc").and_then(serde_json::Value::as_f64) {
             Some(v) => serde_json::to_writer(&mut *out, &v).expect("number"),
             None => out.extend_from_slice(b"null"),
         }
-    }
-    if !reversible {
         write_str_or_null(out, &mut first, "type_line", str_of(row, "type_line"));
     }
     // Directly after the oracle `type_line` it translates, per the live objects.
     write_opt_str(out, &mut first, "printed_type_line", str_of(row, "printed_type_line"));
-    // Vanguard's two starting-total deltas, in Scryfall's own key position: measured on the live
-    // object for `Akroma, Angel of Wrath Avatar` (61b07ae0), the order is
-    // `oracle_text -> life_modifier -> hand_modifier -> colors`. Absent on every other layout, and
-    // `write_opt_str` is what keeps the key out rather than writing null — all 119 printings that
+    if faces.is_none() {
+        // `""` is a value here too: 7,266 printings carry `"oracle_text": ""`.
+        write_str_or_null(out, &mut first, "oracle_text", present_str_of(row, "oracle_text"));
+        // Directly after the `oracle_text` it translates — single-face only, like the text it
+        // shadows; a multi-face printing's printed text rides its face objects.
+        write_opt_str(out, &mut first, "printed_text", str_of(row, "printed_text"));
+    }
+    // The creature and planeswalker stats — the PRINTED strings, so "X" and "1+*" survive — which
+    // belong to a face on a two-image layout.
+    for key in ["power", "toughness", "loyalty"] {
+        if top_level(key) {
+            write_opt_str(out, &mut first, key, str_of(row, key));
+        }
+    }
+    // Vanguard's two starting-total deltas: `oracle_text -> life_modifier -> hand_modifier ->
+    // colors` on the live `Akroma, Angel of Wrath Avatar` (61b07ae0). All 119 printings that
     // carry them are `vanguard`, and all 119 carry BOTH.
     write_opt_str(out, &mut first, "life_modifier", str_of(row, "life_modifier"));
     write_opt_str(out, &mut first, "hand_modifier", str_of(row, "hand_modifier"));
@@ -713,19 +942,51 @@ pub fn write_scryfall_card(out: &mut Vec<u8>, row: &Map<String, Value>, base_url
     if !two_image {
         write_list(out, &mut first, "colors", list_of(row, "colors"));
     }
+    // The printed colour dot on a card whose cost cannot state its colours — a face's on a
+    // two-image layout.
+    if top_level("color_indicator")
+        && let Some(a) = list_of(row, "color_indicator").filter(|a| !a.is_empty())
+    {
+        write_value(out, &mut first, "color_indicator", &Value::Array(a.clone()));
+    }
     write_list(out, &mut first, "color_identity", list_of(row, "color_identity"));
     write_list(out, &mut first, "keywords", list_of(row, "card_keywords"));
+    // The mana a card can make (the `produces:` filter reads the same byte); on a modal DFC the
+    // union over the faces, which is what the store holds.
+    if let Some(a) = list_of(row, "produced_mana").filter(|a| !a.is_empty()) {
+        write_value(out, &mut first, "produced_mana", &Value::Array(a.clone()));
+    }
+    if let Some(faces) = faces {
+        write_key(out, &mut first, "card_faces");
+        write_faces(out, faces, scryfall_id, image_updated_at, two_image, reversible.then_some((oracle_id, num_of(row, "cmc"))));
+    }
+    if let Some(parts) = list_of(row, "all_parts").filter(|a| !a.is_empty()) {
+        write_key(out, &mut first, "all_parts");
+        write_all_parts(out, parts, base_url);
+    }
+    if let Some(v) = row.get("legalities").filter(|v| !v.is_null()) {
+        write_key(out, &mut first, "legalities");
+        match v {
+            Value::Object(map) => write_ordered_object(out, map, &LEGALITY_ORDER),
+            other => serde_json::to_writer(&mut *out, other).expect("writing a Value cannot fail"),
+        }
+    }
     write_list(out, &mut first, "games", list_of(row, "games"));
-    // `reserved` is a tag rather than a column: the reserved list is a property of the card, and
-    // the engine stores it in the same is-tag set everything else uses.
-    let reserved = list_of(row, "card_is_tags")
-        .is_some_and(|tags| tags.iter().any(|t| t.as_str() == Some("reserved")));
-    write_bool(out, &mut first, "reserved", reserved);
+    // `reserved` and `game_changer` are tags rather than columns: both are properties of the
+    // card, and the engine stores them in the same is-tag set everything else uses.
+    write_bool(out, &mut first, "reserved", is_tag("reserved"));
+    write_bool(out, &mut first, "game_changer", is_tag("gamechanger"));
+    // Deprecated by `finishes`, and still on every object api.scryfall.com serves.
+    write_bool(out, &mut first, "foil", bool_of(row, "foil"));
+    write_bool(out, &mut first, "nonfoil", bool_of(row, "nonfoil"));
     write_list(out, &mut first, "finishes", list_of(row, "finishes"));
     write_bool(out, &mut first, "oversized", bool_of(row, "oversized"));
     write_bool(out, &mut first, "promo", bool_of(row, "promo"));
     write_bool(out, &mut first, "reprint", bool_of(row, "reprint"));
     write_bool(out, &mut first, "variation", bool_of(row, "variation"));
+    if let Some(v) = extra("variation_of") {
+        write_value(out, &mut first, "variation_of", v);
+    }
     write_str_or_null(out, &mut first, "set_id", set_id);
     write_key(out, &mut first, "set");
     write_json_str(out, set_code);
@@ -751,132 +1012,77 @@ pub fn write_scryfall_card(out: &mut Vec<u8>, row: &Map<String, Value>, base_url
     write_json_str(out, number);
     write_bool(out, &mut first, "digital", bool_of(row, "digital"));
     write_str_or_null(out, &mut first, "rarity", str_of(row, "rarity"));
+    for key in ["watermark", "flavor_text"] {
+        if top_level(key) {
+            write_opt_str(out, &mut first, key, str_of(row, key));
+        }
+    }
+    if let Some(v) = extra("attraction_lights") {
+        write_value(out, &mut first, "attraction_lights", v);
+    }
     // No shared card back on a two-image layout, and no card-level illustration: both belong to a
-    // face there, and Scryfall omits the top-level keys entirely.
+    // face there, and Scryfall omits the top-level keys entirely. Elsewhere the back is the
+    // residue's when it names one (planes, schemes, vanguards, the oversized and memorabilia
+    // sets, attractions) and Scryfall's shared back otherwise.
     if !two_image {
         write_key(out, &mut first, "card_back_id");
-        write_json_str(out, CARD_BACK_ID);
+        write_json_str(out, str_of(row, "card_back_id").unwrap_or(CARD_BACK_ID));
     }
     write_str_or_null(out, &mut first, "artist", present_str_of(row, "artist"));
+    if let Some(ids) = list_of(row, "artist_ids") {
+        write_list(out, &mut first, "artist_ids", Some(ids));
+    }
     if !two_image {
         write_str_or_null(out, &mut first, "illustration_id", str_of(row, "illustration_id"));
     }
     write_str_or_null(out, &mut first, "border_color", str_of(row, "border_color"));
+    write_opt_str(out, &mut first, "frame", str_of(row, "frame"));
+    if let Some(a) = list_of(row, "frame_effects").filter(|a| !a.is_empty()) {
+        write_value(out, &mut first, "frame_effects", &Value::Array(a.clone()));
+    }
+    write_opt_str(out, &mut first, "security_stamp", str_of(row, "security_stamp"));
     write_bool(out, &mut first, "full_art", bool_of(row, "full_art"));
     write_bool(out, &mut first, "textless", bool_of(row, "textless"));
     write_bool(out, &mut first, "booster", bool_of(row, "booster"));
     write_bool(out, &mut first, "story_spotlight", bool_of(row, "story_spotlight"));
-    write_key(out, &mut first, "prices");
-    write_prices(out, row);
-    write_key(out, &mut first, "related_uris");
-    let multiverse_first = list_of(row, "multiverse_ids").and_then(|ids| ids.first()).and_then(Value::as_u64);
-    write_related_uris(out, name, search_name, multiverse_first, lang);
-    // A printing NO MARKETPLACE SELLS omits the key rather than carrying three dead links, and
-    // the rule is the marketplaces rather than `digital` — measured 2026-08-16: prm/80925
-    // (games ["mtgo"], digital true) HAS purchase_uris, ymid/59 and khm/A-198 (games ["arena"],
-    // digital true) do not. tcgplayer and cardmarket sell cardboard, cardhoarder sells MTGO, and
-    // nothing sells Arena.
-    // An ABSENT or empty `games` emits: the omission is a positive statement ("this printing is
-    // sold nowhere"), and a row that never carried the column has made no such statement.
-    let sold = list_of(row, "games").is_none_or(|gs| {
-        gs.is_empty() || gs.iter().any(|g| matches!(g.as_str(), Some("paper") | Some("mtgo")))
-    });
-    if sold {
-        write_key(out, &mut first, "purchase_uris");
-        write_purchase_uris(out, row, search_name);
+    if let Some(a) = list_of(row, "promo_types").filter(|a| !a.is_empty()) {
+        write_value(out, &mut first, "promo_types", &Value::Array(a.clone()));
     }
-
-    // A multi-face card carries its faces and NOT the top-level ORACLE TEXT they replace; a
-    // single-faced one carries the text and no `card_faces`. Which keys sit at top level varies by
-    // LAYOUT, which is why this is a branch rather than a fixed key set.
-    //
-    // `mana_cost` and `image_uris` are the two the multi-face branch keeps, on the one-image
-    // layouts only: one piece of cardboard has one picture and one printed cost, so Scryfall sends
-    // both at top level for split/flip/adventure/prepare — and neither for transform/modal_dfc,
-    // where each face has its own.
-    if let Some(faces) = faces {
-        write_key(out, &mut first, "card_faces");
-        write_faces(out, faces, scryfall_id, image_updated_at, two_image, reversible.then_some((oracle_id, num_of(row, "cmc"))));
-        if !two_image {
-            write_key(out, &mut first, "mana_cost");
-            write_json_str(out, &joined_mana_cost(faces));
-            write_key(out, &mut first, "image_uris");
-            write_image_uris(out, scryfall_id, image_updated_at, "front");
-        }
-    } else {
-        // An empty string is a VALUE for both of these — every basic land carries
-        // `"mana_cost": ""` and 7,266 printings carry `"oracle_text": ""` — so they read through
-        // `present_str_of` rather than the empty-is-absent `str_of`.
-        write_str_or_null(out, &mut first, "mana_cost", present_str_of(row, "mana_cost"));
-        write_str_or_null(out, &mut first, "oracle_text", present_str_of(row, "oracle_text"));
-        // Directly after the `oracle_text` it translates — single-face only, like the text it
-        // shadows; a multi-face printing's printed text rides its face objects.
-        write_opt_str(out, &mut first, "printed_text", str_of(row, "printed_text"));
-        write_key(out, &mut first, "image_uris");
-        write_image_uris(out, scryfall_id, image_updated_at, "front");
-    }
-
-    // Keys Scryfall sends only when the card HAS them. Emitting null instead would differ from
-    // Scryfall on every card that lacks them, which for most of these is most cards.
-    for (key, value) in [
-        ("power", str_of(row, "power")),
-        ("toughness", str_of(row, "toughness")),
-        // Beside the creature stats it is the planeswalker analogue of, as the PRINTED string --
-        // the `planeswalker_loyalty` the planner filters on is a u8 and loses "X" and "1+*".
-        ("loyalty", str_of(row, "loyalty")),
-        ("flavor_text", str_of(row, "flavor_text")),
-        ("watermark", str_of(row, "watermark")),
-        ("frame", str_of(row, "frame")),
-    ] {
-        // Four of these six belong to a face on a two-image layout; `frame` is the printing's and
-        // stays. See is_face_owned_key.
-        if two_image && is_face_owned_key(key) {
-            continue;
-        }
-        // ...and `watermark` belongs to a face on EVERY faced layout. See is_faced_owned_key.
-        if faces.is_some() && is_faced_owned_key(key) {
-            continue;
-        }
-        if let Some(v) = value {
-            write_key(out, &mut first, key);
-            write_json_str(out, v);
-        }
-    }
-    for key in [
-        "edhrec_rank",
-        "penny_rank",
-        "arena_id",
-        "mtgo_id",
-        "mtgo_foil_id",
-        "tcgplayer_id",
-        "tcgplayer_etched_id",
-        "cardmarket_id",
-    ] {
+    for key in ["edhrec_rank", "penny_rank"] {
         if let Some(v) = num_of(row, key) {
             write_value(out, &mut first, key, v);
         }
     }
-    // After the ids, matching upstream's dict literal. The port's TypeScript had it up with the
-    // other strings; upstream is the reference for a port, so the port moved rather than this.
-    if let Some(v) = str_of(row, "security_stamp") {
-        write_key(out, &mut first, "security_stamp");
-        write_json_str(out, v);
-    }
-    // `produced_mana` joins them: the engine has always stored the mana a card can make (the
-    // `produces:` filter reads the same byte) and no card object ever carried it, so every land
-    // this port served was missing a key Scryfall sends. On a modal DFC it is the union over the
-    // faces, which is what the store already holds.
-    for key in ["color_indicator", "produced_mana", "promo_types", "frame_effects", "all_parts"] {
-        // `color_indicator` is the one of these five that belongs to a face on a two-image layout.
-        if two_image && is_face_owned_key(key) {
-            continue;
-        }
-        if let Some(a) = list_of(row, key).filter(|a| !a.is_empty()) {
-            write_value(out, &mut first, key, &Value::Array(a.clone()));
+    if let Some(v) = extra("preview") {
+        write_key(out, &mut first, "preview");
+        match v {
+            Value::Object(map) => write_ordered_object(out, map, &PREVIEW_KEY_ORDER),
+            other => serde_json::to_writer(&mut *out, other).expect("writing a Value cannot fail"),
         }
     }
-    if let Some(v) = row.get("legalities").filter(|v| !v.is_null()) {
-        write_value(out, &mut first, "legalities", v);
+    if let Some(v) = extra("content_warning") {
+        write_value(out, &mut first, "content_warning", v);
+    }
+    write_key(out, &mut first, "prices");
+    write_prices(out, row);
+    write_key(out, &mut first, "related_uris");
+    let multiverse_first = list_of(row, "multiverse_ids").and_then(|ids| ids.first()).and_then(Value::as_u64);
+    write_related_uris(out, name, search_name, multiverse_first, lang, content_warning);
+    // A printing NO MARKETPLACE SELLS omits the key rather than carrying three dead links, and
+    // the rule is the marketplaces rather than `digital` — measured 2026-08-16: prm/80925
+    // (games ["mtgo"], digital true) HAS purchase_uris, ymid/59 and khm/A-198 (games ["arena"],
+    // digital true) do not. tcgplayer and cardmarket sell cardboard, cardhoarder sells MTGO, and
+    // nothing sells Arena. An ABSENT or empty `games` emits: the omission is a positive statement
+    // ("this printing is sold nowhere"), and a row that never carried the column has made no such
+    // statement. A `content_warning` printing is sold nowhere either, as far as Scryfall's links
+    // go — see `write_related_uris`.
+    let sold = !content_warning
+        && list_of(row, "games").is_none_or(|gs| {
+            gs.is_empty() || gs.iter().any(|g| matches!(g.as_str(), Some("paper") | Some("mtgo")))
+        });
+    if sold {
+        write_key(out, &mut first, "purchase_uris");
+        write_purchase_uris(out, row, search_name);
     }
 
     out.push(b'}');
@@ -1231,8 +1437,10 @@ mod tests {
         assert!(at(r#""printed_name":"#) < at(r#""flavor_name":"#));
         assert!(at(r#""flavor_name":"#) < at(r#""lang":"#));
         assert!(at(r#""type_line":"#) < at(r#""printed_type_line":"#));
+        assert!(at(r#""printed_type_line":"#) < at(r#""oracle_text":"#));
         assert!(at(r#""oracle_text":"#) < at(r#""printed_text":"#));
-        assert!(at(r#""printed_text":"#) < at(r#""image_uris":"#));
+        // Scryfall's picture leads the text: `image_uris -> mana_cost -> cmc -> type_line`.
+        assert!(at(r#""image_uris":"#) < at(r#""cmc":"#));
     }
 
     /// gatherer leads related_uris for an English printing too, with printed=false — and is
@@ -1363,11 +1571,184 @@ mod tests {
 
         assert!(text.starts_with(r#"{"object":"card","id":"#), "object and id lead: {}", &text[..40]);
         let at = |needle: &str| text.find(needle).unwrap_or_else(|| panic!("{needle} missing"));
-        // `name` before `prices` before the optional tail, and `security_stamp` AFTER the ids —
-        // upstream's order, which alphabetical sorting would not produce for any of these.
-        assert!(at(r#""name":"#) < at(r#""prices":"#));
-        assert!(at(r#""prices":"#) < at(r#""watermark":"#));
-        assert!(at(r#""watermark":"#) < at(r#""cardmarket_id":"#));
-        assert!(at(r#""cardmarket_id":"#) < at(r#""security_stamp":"#));
+        // api.scryfall.com's order, which neither alphabetical sorting nor upstream's dict literal
+        // produces: the marketplace ids BEFORE `name`, `watermark` after `rarity`, and
+        // `security_stamp` after `frame`, all ahead of `prices`.
+        assert!(at(r#""cardmarket_id":"#) < at(r#""name":"#));
+        assert!(at(r#""rarity":"#) < at(r#""watermark":"#));
+        assert!(at(r#""watermark":"#) < at(r#""security_stamp":"#));
+        assert!(at(r#""security_stamp":"#) < at(r#""prices":"#));
+    }
+
+    /// The whole key sequence of a live object, byte for byte: Lightning Bolt msc/806 as
+    /// api.scryfall.com served it on 2026-09-26 (x27), every key in order. The row is what the
+    /// engine hands this writer for that printing; a key out of place anywhere fails here.
+    #[test]
+    fn a_single_faced_card_carries_scryfalls_keys_in_scryfalls_order() {
+        let card: serde_json::Value = serde_json::from_str(
+            r#"{
+            "name": "Lightning Bolt", "scryfall_id": "7673784e-db4b-43a1-8d55-1bb9fc1e284f",
+            "oracle_id": "4457ed35-7c10-48c8-9776-456485fdf070", "multiverse_ids": [],
+            "resource_id": "A59396A4D646C69A1DD41F9906BE9A9CDECE83F18DC5C53501DD7BAE50511DBB",
+            "mtgo_id": 1, "arena_id": 2, "tcgplayer_id": 3, "cardmarket_id": 4,
+            "lang": "en", "released_at": "2026-06-26", "layout": "normal", "highres_image": true,
+            "image_status": "highres_scan", "image_updated_at": 1783903008, "mana_cost": "{R}",
+            "cmc": 1.0, "type_line": "Instant", "oracle_text": "Lightning Bolt deals 3 damage to any target.",
+            "colors": ["R"], "color_identity": ["R"], "card_keywords": [],
+            "all_parts": [{"object": "related_card", "id": "7673784e-db4b-43a1-8d55-1bb9fc1e284f",
+                "component": "combo_piece", "name": "Lightning Bolt", "type_line": "Instant"}],
+            "legalities": {"vintage": "legal", "standard": "not_legal", "modern": "legal"},
+            "games": ["paper"], "card_is_tags": ["gamechanger"], "foil": true, "nonfoil": true,
+            "finishes": ["nonfoil", "foil"], "set_id": "11111111-0000-0000-0000-000000000001",
+            "set_code": "msc", "set_name": "Marvel Super Heroes Commander", "set_type": "commander",
+            "collector_number": "806", "rarity": "common", "flavor_text": "Zap.",
+            "artist": "Milivoj Ćeran", "artist_ids": ["1eced451-4da5-42bc-b49d-70c41246581f"],
+            "illustration_id": "22222222-0000-0000-0000-000000000002", "border_color": "black",
+            "frame": "2015", "promo_types": ["boosterfun"], "edhrec_rank": 5, "penny_rank": 6,
+            "preview": {"previewed_at": "2026-06-01", "source_uri": "", "source": "Wizards of the Coast"}
+            }"#,
+        )
+        .expect("fixture parses");
+        let serde_json::Value::Object(map) = card else { panic!() };
+        let mut out = Vec::new();
+        write_scryfall_card(&mut out, &map, "https://api.scryfall.com");
+        let text = String::from_utf8(out).expect("utf-8");
+        // Top-level keys in order: every `"key":` at nesting depth one.
+        let (mut depth, mut keys, mut in_str, mut esc, mut start) = (0, Vec::new(), false, false, 0);
+        for (i, ch) in text.char_indices() {
+            if in_str {
+                if esc {
+                    esc = false;
+                } else if ch == '\\' {
+                    esc = true;
+                } else if ch == '"' {
+                    in_str = false;
+                    if depth == 1 && text[i + 1..].starts_with(':') {
+                        keys.push(text[start + 1..i].to_owned());
+                    }
+                }
+                continue;
+            }
+            match ch {
+                '"' => {
+                    in_str = true;
+                    start = i;
+                }
+                '{' | '[' => depth += 1,
+                '}' | ']' => depth -= 1,
+                _ => {}
+            }
+        }
+        assert_eq!(
+            keys.join(","),
+            "object,id,oracle_id,multiverse_ids,resource_id,mtgo_id,arena_id,tcgplayer_id,cardmarket_id,\
+             name,lang,released_at,uri,scryfall_uri,layout,highres_image,image_status,image_updated_at,\
+             image_uris,mana_cost,cmc,type_line,oracle_text,colors,color_identity,keywords,all_parts,\
+             legalities,games,reserved,game_changer,foil,nonfoil,finishes,oversized,promo,reprint,\
+             variation,set_id,set,set_name,set_type,set_uri,set_search_uri,scryfall_set_uri,\
+             rulings_uri,prints_search_uri,collector_number,digital,rarity,flavor_text,card_back_id,\
+             artist,artist_ids,illustration_id,border_color,frame,full_art,textless,booster,\
+             story_spotlight,promo_types,edhrec_rank,penny_rank,preview,prices,related_uris,purchase_uris"
+        );
+        assert!(text.contains(r#""image_updated_at":"2026-07-13T00:36:48Z""#), "ISO-8601, not the epoch");
+        assert!(text.contains(r#""game_changer":true,"foil":true,"nonfoil":true"#));
+        assert!(text.contains(
+            r#""uri":"https://api.scryfall.com/cards/7673784e-db4b-43a1-8d55-1bb9fc1e284f"}]"#
+        ), "a related card closes with its own uri");
+        assert!(text.contains(r#""legalities":{"standard":"not_legal","modern":"legal","vintage":"legal"}"#));
+        assert!(text.contains(
+            r#""preview":{"source":"Wizards of the Coast","source_uri":"","previewed_at":"2026-06-01"}"#
+        ));
+    }
+
+    /// A face's keys in Scryfall's order — never the row map's alphabetical one — carrying its
+    /// own `artist_id`; a reversible face's `cmc` sits after `mana_cost`, as on sld/379.
+    #[test]
+    fn faces_carry_scryfalls_key_order_and_their_artist_id() {
+        // The face map as the engine hands it over: serde_json's map, so ALPHABETICAL.
+        let serde_json::Value::Object(map) = json!({
+            "name": "Delver of Secrets // Insectile Aberration",
+            "scryfall_id": "6904ea20-e504-47da-95a0-08739fdde260",
+            "layout": "transform",
+            "card_faces": [
+                {"artist": "Nils Hamm", "artist_id": "c540d1fc-1500-457f-93cf-d6069ee66546", "colors": ["U"],
+                 "color_indicator": [], "illustration_id": "1c2fee9b-89ea-4ab1-a751-451c3cd65a88",
+                 "mana_cost": "{U}", "name": "Delver of Secrets", "oracle_text": "Upkeep.", "power": "1",
+                 "toughness": "1", "type_line": "Creature — Human Wizard"},
+            ],
+        }) else { panic!() };
+        let mut out = Vec::new();
+        write_scryfall_card(&mut out, &map, "https://api.example/v1");
+        let text = String::from_utf8(out).expect("utf-8");
+        let face = &text[text.find(r#""card_faces":[{"#).expect("faces")..];
+        assert!(face.starts_with(
+            r#""card_faces":[{"object":"card_face","name":"Delver of Secrets","mana_cost":"{U}","type_line":"Creature — Human Wizard","oracle_text":"Upkeep.","colors":["U"],"power":"1","toughness":"1","artist":"Nils Hamm","artist_id":"c540d1fc-1500-457f-93cf-d6069ee66546","illustration_id":"1c2fee9b-89ea-4ab1-a751-451c3cd65a88","image_uris":{"#
+        ), "{}", &face[..300.min(face.len())]);
+
+        let serde_json::Value::Object(map) = json!({
+            "name": "Temple Garden // Temple Garden", "scryfall_id": "d5dfd236-b1da-4552-b94f-ebf6bb9dafdf",
+            "oracle_id": "0f7f1148-7b1c-4aeb-9a40-ab11b4ae0ad8", "layout": "reversible_card", "cmc": 0.0,
+            "card_faces": [{"layout": "normal", "name": "Temple Garden", "mana_cost": "", "type_line": "Land"}],
+        }) else { panic!() };
+        let mut out = Vec::new();
+        write_scryfall_card(&mut out, &map, "https://api.example/v1");
+        let text = String::from_utf8(out).expect("utf-8");
+        assert!(text.contains(
+            r#"{"object":"card_face","oracle_id":"0f7f1148-7b1c-4aeb-9a40-ab11b4ae0ad8","layout":"normal","name":"Temple Garden","mana_cost":"","cmc":0.0,"type_line":"Land","#
+        ), "{text}");
+    }
+
+    /// The residue keys: a non-default card back replaces Scryfall's shared one, the rare extras
+    /// ride verbatim in their positions, and a `content_warning` withdraws every marketplace link
+    /// but gatherer (leg/62, Invoke Prejudice, live 2026-09-26).
+    #[test]
+    fn the_residue_keys_and_the_content_warning() {
+        let planar = build(json!({"name": "x", "scryfall_id": "36ab24d3-ca9d-4b9c-8c28-4dd1f05a2314",
+            "card_back_id": "7840c131-f96b-4700-9347-2215c43156e6", "variation_of": "3d170015-b125-49a6-a15e-8fd116bbcb14",
+            "attraction_lights": [2, 6]}));
+        assert_eq!(planar["card_back_id"], "7840c131-f96b-4700-9347-2215c43156e6");
+        assert_eq!(planar["variation_of"], "3d170015-b125-49a6-a15e-8fd116bbcb14");
+        assert_eq!(planar["attraction_lights"], json!([2, 6]));
+        let plain = build(json!({"name": "x", "scryfall_id": "36ab24d3-ca9d-4b9c-8c28-4dd1f05a2314"}));
+        assert_eq!(plain["card_back_id"], CARD_BACK_ID);
+        for absent in ["resource_id", "variation_of", "attraction_lights", "preview", "content_warning", "artist_ids"] {
+            assert!(plain.get(absent).is_none(), "{absent} is absent unless the row carries it");
+        }
+
+        let warned = build(json!({"name": "Invoke Prejudice", "scryfall_id": "903d9fde-d7da-4a0e-a337-b63023c6d74b",
+            "multiverse_ids": [485302], "games": ["paper"], "content_warning": true}));
+        assert_eq!(warned["content_warning"], true);
+        assert_eq!(
+            warned["related_uris"],
+            json!({"gatherer": "https://gatherer.wizards.com/Pages/Card/Details.aspx?multiverseid=485302&printed=false"})
+        );
+        assert!(warned.get("purchase_uris").is_none());
+    }
+
+    /// The collector number is percent-encoded in `scryfall_uri` like the slug (oarc/1★, arn/2†),
+    /// and the glyph languages link Gatherer's untranslated page (every live ph and qya printing).
+    #[test]
+    fn the_collector_number_encodes_and_glyph_languages_link_gatherer_untranslated() {
+        let star = build(json!({"name": "All in Good Time", "scryfall_id": "17b941e9-5dcc-473e-a461-709d74e32a3c",
+            "set_code": "oarc", "collector_number": "1★"}));
+        assert_eq!(star["scryfall_uri"], "https://scryfall.com/card/oarc/1%E2%98%85/all-in-good-time?utm_source=api");
+        for (lang, printed) in [("ph", "false"), ("qya", "false"), ("en", "false"), ("ja", "true")] {
+            let card = build(json!({"name": "x", "scryfall_id": "09705595-47c6-4f7c-9351-4004bfa39218",
+                "lang": lang, "multiverse_ids": [604957]}));
+            assert_eq!(
+                card["related_uris"]["gatherer"],
+                format!("https://gatherer.wizards.com/Pages/Card/Details.aspx?multiverseid=604957&printed={printed}"),
+                "{lang}"
+            );
+        }
+    }
+
+    /// Epoch seconds render as Scryfall's ISO-8601 string, across a leap day and a year edge.
+    #[test]
+    fn image_updated_at_renders_iso8601_utc() {
+        assert_eq!(iso8601_utc(1_783_903_008), "2026-07-13T00:36:48Z");
+        assert_eq!(iso8601_utc(951_782_400), "2000-02-29T00:00:00Z");
+        assert_eq!(iso8601_utc(1_704_067_199), "2023-12-31T23:59:59Z");
+        assert_eq!(iso8601_utc(0), "1970-01-01T00:00:00Z");
     }
 }

@@ -38,7 +38,8 @@ const CARD_OBJECT_FIELDS: &[&str] = &[
     "tcgplayer_etched_id", "cardmarket_id", "penny_rank", "image_updated_at", "price_usd_foil", "price_usd_etched",
     "price_eur_foil", "multiverse_ids", "promo_types", "frame_effects", "games", "finishes", "booster", "digital",
     "foil", "nonfoil", "full_art", "highres_image", "oversized", "promo", "reprint", "story_spotlight", "textless",
-    "variation", "card_faces", "all_parts",
+    "variation", "card_faces", "all_parts", "artist_ids", "resource_id", "variation_of", "attraction_lights",
+    "card_back_id", "preview", "content_warning",
 ];
 
 fn newest(prefix: &str) -> Option<std::path::PathBuf> {

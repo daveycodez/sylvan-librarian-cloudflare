@@ -106,6 +106,9 @@ const FULL: Record<string, unknown> = {
 	price_tix: 0.03,
 	legalities: { standard: "not_legal", modern: "legal", commander: "legal" },
 	all_parts: [{ object: "related_card", id: "eeeeeeee-0000-0000-0000-000000000001", component: "token" }],
+	foil: true,
+	nonfoil: true,
+	artist_ids: ["ffffffff-0000-0000-0000-000000000001"],
 };
 
 /**
@@ -167,7 +170,14 @@ const CASES: [string, Record<string, unknown>][] = [
 		{
 			...FULL,
 			card_faces: [
-				{ name: "Delver of Secrets", mana_cost: "{U}", oracle_text: "At the beginning...", power: "1" },
+				{
+					name: "Delver of Secrets",
+					mana_cost: "{U}",
+					oracle_text: "At the beginning...",
+					power: "1",
+					artist: "Nils Hamm",
+					artist_id: "c540d1fc-1500-457f-93cf-d6069ee66546",
+				},
 				{ name: "Insectile Aberration", mana_cost: "", oracle_text: "Flying", colors: [], watermark: null },
 			],
 		},
@@ -598,6 +608,34 @@ const CASES: [string, Record<string, unknown>][] = [
 
 	// Text that has to survive JSON escaping identically on both sides.
 	["oracle text with quotes, newlines and a backslash", { ...FULL, oracle_text: 'Draw "a" card.\nThen \\ discard.' }],
+
+	// ─── the x27 residue ─────────────────────────────────────────────────────────
+	// The rare keys a printing's `extras_id` string holds, each verbatim in the one position
+	// Scryfall gives it, and a card back that is not the shared one (planes, schemes, vanguards…).
+	[
+		"the rare residue, verbatim",
+		{
+			...FULL,
+			card_is_tags: ["gamechanger"],
+			resource_id: "A59396A4D646C69A1DD41F9906BE9A9CDECE83F18DC5C53501DD7BAE50511DBB",
+			variation_of: "3d170015-b125-49a6-a15e-8fd116bbcb14",
+			attraction_lights: [2, 6],
+			card_back_id: "7840c131-f96b-4700-9347-2215c43156e6",
+			preview: { previewed_at: "2022-09-23", source: "CoolStuffInc", source_uri: "https://example.com/x" },
+		},
+	],
+	// A content warning keeps gatherer and withdraws every marketplace link (leg/62, live).
+	["a content-warning printing", { ...FULL, content_warning: true }],
+	// An empty artist list is a list, and the glyph languages link Gatherer's untranslated page.
+	["an empty artist_ids list", { ...FULL, artist_ids: [] }],
+	["a Phyrexian printing — gatherer printed=false", { ...FULL_FOREIGN, lang: "ph" }],
+	// A non-ASCII collector number percent-encodes in scryfall_uri, as the slug does (oarc/1★).
+	["a starred collector number", { ...FULL, collector_number: "1★" }],
+	// A format Scryfall adds after LEGALITY_ORDER was written follows the known ones, not dropped.
+	[
+		"legalities with a format the order does not know",
+		{ ...FULL, legalities: { zzz_future_format: "legal", vintage: "legal", standard: "not_legal" } },
+	],
 ];
 
 describe("card objects: Rust engine vs the TypeScript reference", () => {
@@ -754,6 +792,205 @@ describe("card objects: Rust engine vs the TypeScript reference", () => {
 		expect(perFace, "fixtures reaching a per-face image_uris").toBeGreaterThan(0);
 	});
 
+	// ─── Scryfall's key ORDER, which both builders missed together ───────────────
+	//
+	// The same blind spot a third time, and the widest: until x27 (2026-09-26) both builders
+	// followed upstream #912's dict literal, so every card object either one built differed from
+	// api.scryfall.com's in key ORDER — top level, every face, every related card, `legalities` —
+	// and every byte comparison in this file agreed, because both were wrong identically. The live
+	// harnesses could not see it either: both sort keys before comparing.
+	//
+	// These orders are SCRYFALL'S, not ours: the merge of the key sequences of 63 printings fetched
+	// from api.scryfall.com for x27 (every layout and object shape, zero ordering conflicts), with
+	// `printed_name -> flavor_name` taken from sld/2236/ja where the sample had no printing with
+	// both. Written down here so that changing the builders' order alone cannot make the suite agree
+	// with itself again.
+	const SCRYFALL_CARD_ORDER = [
+		"object",
+		"id",
+		"oracle_id",
+		"multiverse_ids",
+		"resource_id",
+		"mtgo_id",
+		"mtgo_foil_id",
+		"arena_id",
+		"tcgplayer_id",
+		"tcgplayer_etched_id",
+		"cardmarket_id",
+		"name",
+		"printed_name",
+		"flavor_name",
+		"lang",
+		"released_at",
+		"uri",
+		"scryfall_uri",
+		"layout",
+		"highres_image",
+		"image_status",
+		"image_updated_at",
+		"image_uris",
+		"mana_cost",
+		"cmc",
+		"type_line",
+		"printed_type_line",
+		"oracle_text",
+		"printed_text",
+		"power",
+		"toughness",
+		"loyalty",
+		"life_modifier",
+		"hand_modifier",
+		"colors",
+		"color_indicator",
+		"color_identity",
+		"keywords",
+		"produced_mana",
+		"card_faces",
+		"all_parts",
+		"legalities",
+		"games",
+		"reserved",
+		"game_changer",
+		"foil",
+		"nonfoil",
+		"finishes",
+		"oversized",
+		"promo",
+		"reprint",
+		"variation",
+		"variation_of",
+		"set_id",
+		"set",
+		"set_name",
+		"set_type",
+		"set_uri",
+		"set_search_uri",
+		"scryfall_set_uri",
+		"rulings_uri",
+		"prints_search_uri",
+		"collector_number",
+		"digital",
+		"rarity",
+		"watermark",
+		"flavor_text",
+		"attraction_lights",
+		"card_back_id",
+		"artist",
+		"artist_ids",
+		"illustration_id",
+		"border_color",
+		"frame",
+		"frame_effects",
+		"security_stamp",
+		"full_art",
+		"textless",
+		"booster",
+		"story_spotlight",
+		"promo_types",
+		"edhrec_rank",
+		"penny_rank",
+		"preview",
+		"content_warning",
+		"prices",
+		"related_uris",
+		"purchase_uris",
+	];
+	const SCRYFALL_FACE_ORDER = [
+		"object",
+		"oracle_id",
+		"layout",
+		"name",
+		"printed_name",
+		"flavor_name",
+		"mana_cost",
+		"cmc",
+		"type_line",
+		"printed_type_line",
+		"oracle_text",
+		"printed_text",
+		"colors",
+		"color_indicator",
+		"power",
+		"toughness",
+		"loyalty",
+		"defense",
+		"flavor_text",
+		"watermark",
+		"artist",
+		"artist_id",
+		"illustration_id",
+		"image_uris",
+	];
+	const SCRYFALL_RELATED_ORDER = ["object", "id", "component", "name", "type_line", "uri"];
+	const SCRYFALL_LEGALITY_ORDER = [
+		"standard",
+		"future",
+		"historic",
+		"timeless",
+		"gladiator",
+		"pioneer",
+		"modern",
+		"legacy",
+		"pauper",
+		"vintage",
+		"penny",
+		"commander",
+		"oathbreaker",
+		"standardbrawl",
+		"brawl",
+		"competitivebrawl",
+		"alchemy",
+		"paupercommander",
+		"duel",
+		"oldschool",
+		"premodern",
+		"predh",
+		"tlr",
+	];
+
+	/** The keys `order` does not know follow the ones it does; the known ones keep its order. */
+	const inOrder = (keys: string[], order: readonly string[]): boolean => {
+		const known = keys.filter((k) => order.includes(k));
+		const sorted = [...known].sort((a, b) => order.indexOf(a) - order.indexOf(b));
+		const trailing = keys.slice(known.length);
+		return known.join() === sorted.join() && trailing.every((k) => !order.includes(k));
+	};
+
+	test("both builders emit Scryfall's key order — top level, faces, related cards, legalities", () => {
+		let faces = 0;
+		let parts = 0;
+		for (const [label, row] of CASES) {
+			const clean = asRow(row);
+			for (const [who, built] of [
+				["TypeScript", JSON.parse(stringifyScryfall(toScryfallCard(clean, BASE)))],
+				["Rust", JSON.parse(scryfall_card_from_row(JSON.stringify(clean), BASE))],
+			] as const) {
+				const card = built as Record<string, unknown>;
+				expect(inOrder(Object.keys(card), SCRYFALL_CARD_ORDER), `${label}: ${who} top level ${Object.keys(card)}`).toBe(
+					true,
+				);
+				for (const face of (card.card_faces ?? []) as Record<string, unknown>[]) {
+					faces++;
+					expect(inOrder(Object.keys(face), SCRYFALL_FACE_ORDER), `${label}: ${who} face ${Object.keys(face)}`).toBe(
+						true,
+					);
+				}
+				for (const part of (card.all_parts ?? []) as Record<string, unknown>[]) {
+					parts++;
+					expect(Object.keys(part), `${label}: ${who} related card`).toEqual(
+						SCRYFALL_RELATED_ORDER.filter((k) => k in part),
+					);
+				}
+				if (card.legalities && typeof card.legalities === "object") {
+					const keys = Object.keys(card.legalities);
+					expect(inOrder(keys, SCRYFALL_LEGALITY_ORDER), `${label}: ${who} legalities ${keys}`).toBe(true);
+				}
+			}
+		}
+		expect(faces, "fixtures reaching a face").toBeGreaterThan(0);
+		expect(parts, "fixtures reaching a related card").toBeGreaterThan(0);
+	});
+
 	// ─── guard the guard ─────────────────────────────────────────────────────────
 	//
 	// The byte comparison above can only catch a divergence a fixture REACHES. Commit 1cea214's
@@ -823,7 +1060,7 @@ describe("card objects: Rust engine vs the TypeScript reference", () => {
 		price_eur_foil: [],
 		watermark: ["watermark"],
 		card_frame_data: [], // requested for upstream parity; never read by either builder
-		card_is_tags: ["reserved"],
+		card_is_tags: ["reserved", "game_changer"],
 		border_color: ["border_color"],
 		frame: ["frame"],
 		lang: ["lang"],
@@ -838,7 +1075,7 @@ describe("card objects: Rust engine vs the TypeScript reference", () => {
 		tcgplayer_etched_id: ["tcgplayer_etched_id"],
 		cardmarket_id: ["cardmarket_id"],
 		penny_rank: ["penny_rank"],
-		image_updated_at: [], // the cache-buster inside the derived image_uris
+		image_updated_at: ["image_updated_at"], // also the cache-buster inside the derived image_uris
 		multiverse_ids: ["multiverse_ids"], // also gatherer, inside the derived related_uris
 		promo_types: ["promo_types"],
 		frame_effects: ["frame_effects"],
@@ -846,8 +1083,8 @@ describe("card objects: Rust engine vs the TypeScript reference", () => {
 		finishes: ["finishes"],
 		booster: ["booster"],
 		digital: ["digital"],
-		foil: [], // requested for upstream parity; not stored, never emitted (ledgered Scryfall-only)
-		nonfoil: [],
+		foil: ["foil"], // deprecated by `finishes`, and still on every Scryfall card object
+		nonfoil: ["nonfoil"],
 		full_art: ["full_art"],
 		highres_image: ["highres_image"],
 		oversized: ["oversized"],
@@ -860,6 +1097,13 @@ describe("card objects: Rust engine vs the TypeScript reference", () => {
 		all_parts: ["all_parts"],
 		produced_mana: ["produced_mana"],
 		color_indicator: ["color_indicator"],
+		artist_ids: ["artist_ids"],
+		resource_id: ["resource_id"],
+		variation_of: ["variation_of"],
+		attraction_lights: ["attraction_lights"],
+		card_back_id: [], // feeds the derived `card_back_id`, whose default is Scryfall's shared back
+		preview: ["preview"],
+		content_warning: ["content_warning"],
 	};
 
 	test("every CARD_OBJECT_FIELDS entry is classified, and only those", () => {

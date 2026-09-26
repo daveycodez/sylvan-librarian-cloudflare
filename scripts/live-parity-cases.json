@@ -1,26 +1,6 @@
 {
-	"scryfall_only_keys": [
-		"resource_id",
-		"game_changer",
-		"foil",
-		"nonfoil",
-		"artist_ids",
-		"**.card_faces.*.artist_id",
-		"image_updated_at",
-		"**.all_parts.*.uri",
-		"preview"
-	],
-	"scryfall_only_key_notes": {
-		"resource_id": "api.scryfall.com envelope id; no upstream #912 column (plan C4 seed).",
-		"game_changer": "Commander bracket flag Scryfall added; no upstream #912 column (plan C4 seed).",
-		"foil": "Deprecated by `finishes`; Scryfall still sends it, upstream #912 does not store it (plan C4 seed).",
-		"nonfoil": "Deprecated by `finishes`; Scryfall still sends it, upstream #912 does not store it (plan C4 seed).",
-		"artist_ids": "Top-level and per-face artist id lists; upstream #912 stores only the artist name (plan C4 seed).",
-		"**.card_faces.*.artist_id": "Per-face artist id; upstream #912 stores only the artist name (plan C4 seed).",
-		"image_updated_at": "Image pipeline timestamp, the field the image_uris cache-buster is derived from; no upstream #912 column (observed live 2026-08-15).",
-		"preview": "Preview metadata (source/source_uri/previewed_at); in the bulk files but upstream #912 has no column, so the mirror never emits it (observed live 2026-08-15).",
-		"**.all_parts.*.uri": "Self-referential related-card URI; upstream #912's RelatedCard (mirrored by card_engine core_api.rs jv_all_parts) stores only id/name/type_line/component, so neither upstream nor the mirror can emit it (observed live 2026-08-15)."
-	},
+	"scryfall_only_keys": [],
+	"scryfall_only_key_notes": {},
 	"field_deviations": [
 		{
 			"name": "printing-preference-on-name-hits",
@@ -109,6 +89,29 @@
 			"paths": ["**.scryfall_uri"],
 			"normalize": "percent-decode",
 			"note": "Plan C3: the mirror does not UTF-8 percent-encode non-ASCII scryfall_uri slug bytes (joetun-grunt umlaut raw vs %C3%B6). Both sides must still agree percent-DECODED. FIX IN-TREE (2026-08-16): slug() in objects.ts/card_object.rs/objects.py now percent-encodes per the live rule; PRODUCTION still serves the old bytes until the next deploy, so this entry stays. At the first post-deploy run it flips to a plain byte-equal field — delete this entry then."
+		},
+		{
+			"name": "card-object-residue-pending-deploy",
+			"paths": [
+				"resource_id",
+				"game_changer",
+				"foil",
+				"nonfoil",
+				"artist_ids",
+				"**.card_faces.*.artist_id",
+				"image_updated_at",
+				"**.all_parts.*.uri",
+				"preview",
+				"card_back_id",
+				"variation_of",
+				"attraction_lights",
+				"content_warning",
+				"related_uris.tcgplayer_infinite_articles",
+				"related_uris.tcgplayer_infinite_decks",
+				"related_uris.edhrec",
+				"purchase_uris"
+			],
+			"note": "DEPLOY AND REBUILD LAG, not a parity definition (backlog x27, 2026-09-26). Nine of these paths were scryfall_only_keys ledger entries on the reading that upstream #912 has no column for them — which STRIPPED them from Scryfall's side, so their values were never compared. The serializers now emit every one (Scryfall's key order too, which this harness cannot see: it sorts keys), and a store built by generation 54 holds the data (`Printing::artist_ids_vid`, `Printing::extras_id`, `PrintingFace::artist_id_vid`): a 64-printing differential built from api.scryfall.com's own objects renders 64 of 64 byte-identical. PRODUCTION serves none of it until that deploy AND its store rebuild, so against the deployed origin these fire as missing-ours (and card_back_id / the content-warning links as value / missing-scryfall) diffs. Delete this entry at the first run against a generation-54 store; every path then byte-compares like any other."
 		}
 	],
 	"cases": [
@@ -1306,6 +1309,306 @@
 			"method": "GET",
 			"path": "/cards/named?exact=Who",
 			"note": "404 on both sides: a card's face keys exist only when its name splits in exactly two."
+		},
+		{
+			"name": "cards-id-x27-split-aftermath",
+			"method": "GET",
+			"path": "/cards/66b1cbf0-1273-406a-bc99-ce20ce53e5aa",
+			"note": "x27 differential sample (every layout and object shape, 2026-09-26)."
+		},
+		{
+			"name": "cards-id-x27-transform-pw-jace-vryn",
+			"method": "GET",
+			"path": "/cards/02d6d693-f1f3-4317-bcc0-c21fa8490d38",
+			"note": "x27 differential sample (every layout and object shape, 2026-09-26)."
+		},
+		{
+			"name": "cards-id-x27-leveler",
+			"method": "GET",
+			"path": "/cards/8452b0b7-8157-4a3f-8bef-a34e322b9463",
+			"note": "x27 differential sample (every layout and object shape, 2026-09-26)."
+		},
+		{
+			"name": "cards-id-x27-class",
+			"method": "GET",
+			"path": "/cards/47ce8b7e-d8e1-489a-a69e-99089eeb8739",
+			"note": "x27 differential sample (every layout and object shape, 2026-09-26)."
+		},
+		{
+			"name": "cards-id-x27-saga",
+			"method": "GET",
+			"path": "/cards/3a613a01-6145-4e34-987c-c9bdcb068370",
+			"note": "x27 differential sample (every layout and object shape, 2026-09-26)."
+		},
+		{
+			"name": "cards-id-x27-battle",
+			"method": "GET",
+			"path": "/cards/73f8fc4f-2f36-4932-8d04-3c2651c116dc",
+			"note": "x27 differential sample (every layout and object shape, 2026-09-26)."
+		},
+		{
+			"name": "cards-id-x27-planeswalker-jtms",
+			"method": "GET",
+			"path": "/cards/0e606072-a3aa-4300-ba90-ec92a721fa76",
+			"note": "x27 differential sample (every layout and object shape, 2026-09-26)."
+		},
+		{
+			"name": "cards-id-x27-planeswalker-x-loyalty",
+			"method": "GET",
+			"path": "/cards/c79036a1-2239-4d4f-8b58-6cf9ac4863fc",
+			"note": "x27 differential sample (every layout and object shape, 2026-09-26)."
+		},
+		{
+			"name": "cards-id-x27-token",
+			"method": "GET",
+			"path": "/cards/91098481-46c2-49bf-8123-e9cab2f22b84",
+			"note": "x27 differential sample (every layout and object shape, 2026-09-26)."
+		},
+		{
+			"name": "cards-id-x27-dfc-token",
+			"method": "GET",
+			"path": "/cards/9c0f7843-4cbb-4d0f-8887-ec823a9238da",
+			"note": "x27 differential sample (every layout and object shape, 2026-09-26)."
+		},
+		{
+			"name": "cards-id-x27-emblem",
+			"method": "GET",
+			"path": "/cards/56b191fe-7a92-4d08-91a4-036699d08bc4",
+			"note": "x27 differential sample (every layout and object shape, 2026-09-26)."
+		},
+		{
+			"name": "cards-id-x27-art-series",
+			"method": "GET",
+			"path": "/cards/161d1277-05e8-4503-a3a5-4d47309abdd0",
+			"note": "x27 differential sample (every layout and object shape, 2026-09-26)."
+		},
+		{
+			"name": "cards-id-x27-reversible",
+			"method": "GET",
+			"path": "/cards/d5dfd236-b1da-4552-b94f-ebf6bb9dafdf",
+			"note": "x27 differential sample. A reversible printing: faces carry oracle_id, layout and cmc in Scryfall's order."
+		},
+		{
+			"name": "cards-id-x27-reversible-sibling",
+			"method": "GET",
+			"path": "/cards/76c33402-a022-4d2f-9a83-4b8ddc04e971",
+			"note": "x27 differential sample (every layout and object shape, 2026-09-26)."
+		},
+		{
+			"name": "cards-id-x27-augment",
+			"method": "GET",
+			"path": "/cards/bf0053e1-96c7-40cd-84b2-b213195199c9",
+			"note": "x27 differential sample (every layout and object shape, 2026-09-26)."
+		},
+		{
+			"name": "cards-id-x27-host",
+			"method": "GET",
+			"path": "/cards/2729cce6-f380-4c94-ac64-3a2487da6130",
+			"note": "x27 differential sample (every layout and object shape, 2026-09-26)."
+		},
+		{
+			"name": "cards-id-x27-planar",
+			"method": "GET",
+			"path": "/cards/36ab24d3-ca9d-4b9c-8c28-4dd1f05a2314",
+			"note": "x27 differential sample. A non-shared card_back_id (planes, schemes, vanguards, oversized, memorabilia, attractions)."
+		},
+		{
+			"name": "cards-id-x27-scheme",
+			"method": "GET",
+			"path": "/cards/17b941e9-5dcc-473e-a461-709d74e32a3c",
+			"note": "x27 differential sample. A starred collector number, percent-encoded in scryfall_uri (1%E2%98%85), and a non-shared card back."
+		},
+		{
+			"name": "cards-id-x27-vanguard",
+			"method": "GET",
+			"path": "/cards/5cbb9b5d-9199-4a5b-957d-8fa681caeb7c",
+			"note": "x27 differential sample (every layout and object shape, 2026-09-26)."
+		},
+		{
+			"name": "cards-id-x27-prototype",
+			"method": "GET",
+			"path": "/cards/d5dee863-e6ef-4061-a877-ddd3c4dbe87e",
+			"note": "x27 differential sample (every layout and object shape, 2026-09-26)."
+		},
+		{
+			"name": "cards-id-x27-mutate",
+			"method": "GET",
+			"path": "/cards/cc322744-5d8f-448d-b868-381bb86b68f9",
+			"note": "x27 differential sample (every layout and object shape, 2026-09-26)."
+		},
+		{
+			"name": "cards-id-x27-case",
+			"method": "GET",
+			"path": "/cards/2a70f0ae-d49b-4cc8-9f76-895039c3dc39",
+			"note": "x27 differential sample (every layout and object shape, 2026-09-26)."
+		},
+		{
+			"name": "cards-id-x27-all-parts-young-pyro",
+			"method": "GET",
+			"path": "/cards/e349c204-3a93-4bf7-b79a-5f5f261ea2d3",
+			"note": "x27 differential sample. all_parts with a derived uri per related card (a known x27 gap)."
+		},
+		{
+			"name": "cards-id-x27-color-indicator-ancestral-vision",
+			"method": "GET",
+			"path": "/cards/bccedc4d-38c7-4bf3-9ca7-4febd6c49d3d",
+			"note": "x27 differential sample (every layout and object shape, 2026-09-26)."
+		},
+		{
+			"name": "cards-id-x27-watermark-guild",
+			"method": "GET",
+			"path": "/cards/2be39fed-4b39-4027-9c80-f2186f7dd941",
+			"note": "x27 differential sample (every layout and object shape, 2026-09-26)."
+		},
+		{
+			"name": "cards-id-x27-promo-prerelease",
+			"method": "GET",
+			"path": "/cards/160d705f-48fb-4bff-a677-cdf1c3305080",
+			"note": "x27 differential sample (every layout and object shape, 2026-09-26)."
+		},
+		{
+			"name": "cards-id-x27-serialized",
+			"method": "GET",
+			"path": "/cards/dba1cf83-e13d-401e-b76f-b12a51b307f9",
+			"note": "x27 differential sample (every layout and object shape, 2026-09-26)."
+		},
+		{
+			"name": "cards-id-x27-oversized",
+			"method": "GET",
+			"path": "/cards/5e03c1ab-dd9c-434a-9aa2-59a4d314579e",
+			"note": "x27 differential sample (every layout and object shape, 2026-09-26)."
+		},
+		{
+			"name": "cards-id-x27-digital-mtgo-only",
+			"method": "GET",
+			"path": "/cards/2398892d-28e9-4009-81ec-0d544af79d2b",
+			"note": "x27 differential sample (every layout and object shape, 2026-09-26)."
+		},
+		{
+			"name": "cards-id-x27-arena-only-alchemy",
+			"method": "GET",
+			"path": "/cards/7a7640d4-72e0-42e4-96ea-eaedc7ffb304",
+			"note": "x27 differential sample (every layout and object shape, 2026-09-26)."
+		},
+		{
+			"name": "cards-id-x27-multiverse-empty-sld",
+			"method": "GET",
+			"path": "/cards/e20726fa-d99b-4e3d-8054-b7d313ceb02f",
+			"note": "x27 differential sample (every layout and object shape, 2026-09-26)."
+		},
+		{
+			"name": "cards-id-x27-prices-null-memorabilia",
+			"method": "GET",
+			"path": "/cards/b1fe1429-d008-4a41-b16f-b823d5979026",
+			"note": "x27 differential sample (every layout and object shape, 2026-09-26)."
+		},
+		{
+			"name": "cards-id-x27-preview",
+			"method": "GET",
+			"path": "/cards/c5ee6651-9946-4bae-b21e-6cf28fa77b13",
+			"note": "x27 differential sample (every layout and object shape, 2026-09-26)."
+		},
+		{
+			"name": "cards-id-x27-etched-frame-effects",
+			"method": "GET",
+			"path": "/cards/be898edb-35dd-4896-96d9-323aca64a2ce",
+			"note": "x27 differential sample (every layout and object shape, 2026-09-26)."
+		},
+		{
+			"name": "cards-id-x27-reserved-list",
+			"method": "GET",
+			"path": "/cards/b0faa7f2-b547-42c4-a810-839da50dadfe",
+			"note": "x27 differential sample (every layout and object shape, 2026-09-26)."
+		},
+		{
+			"name": "cards-id-x27-game-changer",
+			"method": "GET",
+			"path": "/cards/3394cefd-a3c6-4917-8f46-234e441ecfb6",
+			"note": "x27 differential sample (every layout and object shape, 2026-09-26)."
+		},
+		{
+			"name": "cards-id-x27-un-acorn-stamp",
+			"method": "GET",
+			"path": "/cards/d4a72769-f691-48c1-939f-54df244fb209",
+			"note": "x27 differential sample (every layout and object shape, 2026-09-26)."
+		},
+		{
+			"name": "cards-id-x27-attraction",
+			"method": "GET",
+			"path": "/cards/2e9eaed8-e956-4fb2-a23d-3d442cd2fa5c",
+			"note": "x27 differential sample. attraction_lights, and a preview with a source_uri."
+		},
+		{
+			"name": "cards-id-x27-content-warning",
+			"method": "GET",
+			"path": "/cards/903d9fde-d7da-4a0e-a337-b63023c6d74b",
+			"note": "x27 differential sample. content_warning: true, and related_uris keeps gatherer alone with no purchase_uris."
+		},
+		{
+			"name": "cards-id-x27-variation-of",
+			"method": "GET",
+			"path": "/cards/9899352a-a4c9-47bf-b9cb-0c34060ae1c4",
+			"note": "x27 differential sample. variation_of, and a dagger collector number percent-encoded in scryfall_uri."
+		},
+		{
+			"name": "cards-id-x27-flavor-name-prm-80925",
+			"method": "GET",
+			"path": "/cards/ecde8642-23fc-447f-a89b-5399c3681f4b",
+			"note": "x27 differential sample (every layout and object shape, 2026-09-26)."
+		},
+		{
+			"name": "cards-id-x27-face-flavor-vow-338",
+			"method": "GET",
+			"path": "/cards/0954ed3d-a5d8-4330-b07c-bf3e51192e4b",
+			"note": "x27 differential sample (every layout and object shape, 2026-09-26)."
+		},
+		{
+			"name": "cards-id-x27-arena-id-khm",
+			"method": "GET",
+			"path": "/cards/2de25ea4-284a-4c16-b823-048ff00c6a03",
+			"note": "x27 differential sample (every layout and object shape, 2026-09-26)."
+		},
+		{
+			"name": "cards-id-x27-mtgo-foil-id-m21",
+			"method": "GET",
+			"path": "/cards/9c017fa9-7021-417a-9c2e-3df409644fcf",
+			"note": "x27 differential sample (every layout and object shape, 2026-09-26)."
+		},
+		{
+			"name": "cards-id-x27-tcgplayer-etched",
+			"method": "GET",
+			"path": "/cards/77d6f813-a1ff-49fe-9678-e0fcd12dea48",
+			"note": "x27 differential sample (every layout and object shape, 2026-09-26)."
+		},
+		{
+			"name": "cards-id-x27-zhs-no-printed",
+			"method": "GET",
+			"path": "/cards/0001b119-a224-4d24-879c-aeb2cc9861af",
+			"note": "x27 differential sample (every layout and object shape, 2026-09-26)."
+		},
+		{
+			"name": "cards-id-x27-ph-glyph",
+			"method": "GET",
+			"path": "/cards/09705595-47c6-4f7c-9351-4004bfa39218",
+			"note": "x27 differential sample. A Phyrexian printing: gatherer printed=false, like every live lang:ph printing."
+		},
+		{
+			"name": "cards-id-x27-future-frame",
+			"method": "GET",
+			"path": "/cards/5b8ede8a-5317-4662-b964-a9bd202a4aab",
+			"note": "x27 differential sample (every layout and object shape, 2026-09-26)."
+		},
+		{
+			"name": "cards-id-x27-hybrid-mana-watermark",
+			"method": "GET",
+			"path": "/cards/82a18b07-38b8-4854-9735-3cfe83b11bf1",
+			"note": "x27 differential sample (every layout and object shape, 2026-09-26)."
+		},
+		{
+			"name": "cards-id-x27-token-with-parts",
+			"method": "GET",
+			"path": "/cards/fd7094d6-6e23-47f2-a9da-4dd680294ac8",
+			"note": "x27 differential sample (every layout and object shape, 2026-09-26)."
 		}
 	]
 }
