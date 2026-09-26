@@ -887,6 +887,52 @@ impl Default for StoreBuilder {
     }
 }
 
+// ─── Grouping-vector sizes (LOCAL PATCH, backlog x14) ────────────────────────
+
+/// What `build_card_data_sorted`'s grouping loop will push, counted before it starts, so each of
+/// its big vectors is allocated ONCE at its final length instead of grown into it. Here beside
+/// `SpillingStoreBuilder`, which counts half of it as rows are staged; lib.rs's loop only reads it.
+///
+/// Measured in the nightly's 128MB isolate (import harness, synthetic multilingual corpus): the
+/// loop had `printings` sized to EVERY staged row and `foreign` grown by doubling from empty. The
+/// annex is ~79% of a partition's rows, so `printings` carried ~4.7x the capacity it filled, and
+/// `foreign` crossed a power of two at 32,768 annex rows — between two partitions of 31.8MB and
+/// 32.0MB, where the build's wasm heap peak stepped 55.2 -> 65.6MB and its linear memory 67.8 ->
+/// 89.3MB: the doubled buffer (65,536 printings) held beside the one it was copied from, then kept
+/// at twice what it needed for the rest of the build. Every partition past that line paid it,
+/// production's ~42MB ones included. Sized, the same partitions build at 44.4 / 44.5MB of heap and
+/// 53.9 / 53.3MB of linear memory, and the real-like 1x corpus's ~41MB partitions peak at 68.8MB
+/// of linear memory where they took up to 98.9MB.
+///
+/// Capacity never reaches the archive (rkyv writes lengths), so the bytes are unchanged — the
+/// harness's archives and KV values are byte-identical at 1x, 2x, 3x and 4x. The counts are upper
+/// bounds, not promises: an annex-only group the loop drops leaves its slots unused, and a caller
+/// that under-counts only brings the growth back.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct BuildSizes {
+    /// Rows that land in `printings` (`is_canonical`).
+    pub(crate) canonical: usize,
+    /// Rows that land in the annex (`foreign`).
+    pub(crate) foreign: usize,
+    /// Distinct oracle ids: the cards, and one less than each CSR offset array's length.
+    pub(crate) cards: usize,
+}
+
+impl BuildSizes {
+    pub(crate) fn new(rows: usize, canonical: usize, cards: usize) -> Self {
+        BuildSizes { canonical, foreign: rows.saturating_sub(canonical), cards }
+    }
+
+    /// Rows already in build order: each card is one run of equal oracle ids.
+    pub(crate) fn of_sorted(rows: &[crate::CardRow]) -> Self {
+        Self::new(
+            rows.len(),
+            rows.iter().filter(|r| r.is_canonical).count(),
+            rows.chunk_by(|a, b| a.oracle_id == b.oracle_id).count(),
+        )
+    }
+}
+
 // ─── Spilling store builder (memory-capped build path) ───────────────────────
 
 /// StoreBuilder variant for memory-capped environments (a 128MB Worker
@@ -907,6 +953,9 @@ pub struct SpillingStoreBuilder {
     /// (oracle_id, prefer_score, illustration_id, scryfall_id) per staged row,
     /// in add order — the inputs to card_row_build_order.
     keys: Vec<(u128, Option<f32>, u128, u128)>,
+    /// Staged rows that are canonical — the half of `BuildSizes` the keys cannot give
+    /// (LOCAL PATCH, backlog x14).
+    canonical_rows: usize,
 }
 
 impl SpillingStoreBuilder {
@@ -918,6 +967,7 @@ impl SpillingStoreBuilder {
             artist_entities: Value::Null,
             mana: ManaVocabInterner::new(),
             keys: Vec::new(),
+            canonical_rows: 0,
         }
     }
 
@@ -930,6 +980,7 @@ impl SpillingStoreBuilder {
     pub fn add_card(&mut self, card: &Value) -> Result<Vec<u8>, EngineError> {
         let row = card_from_json(card, &mut self.interner, &mut self.vocab, &mut self.artists, &mut self.mana)?;
         self.keys.push((row.oracle_id, row.prefer_score, row.illustration_id, row.scryfall_id));
+        self.canonical_rows += usize::from(row.is_canonical);
         Ok(encode_card_row(&row))
     }
 
@@ -957,14 +1008,22 @@ impl SpillingStoreBuilder {
         rows: impl Iterator<Item = Vec<u8>>,
         w: &mut W,
     ) -> Result<StoreStats, EngineError> {
-        let SpillingStoreBuilder { interner, vocab, artists, artist_entities, mana, keys } = self;
-        let expected = keys.len();
+        let SpillingStoreBuilder { interner, vocab, artists, artist_entities, mana, keys, canonical_rows } = self;
+        // The card count is the distinct oracle ids, which the keys hold in ADD order — so they are
+        // sorted here, in a buffer freed before the grouping loop allocates anything.
+        let cards = {
+            let mut oracle_ids: Vec<u128> = keys.iter().map(|k| k.0).collect();
+            oracle_ids.sort_unstable();
+            oracle_ids.dedup();
+            oracle_ids.len()
+        };
+        let sizes = BuildSizes::new(keys.len(), canonical_rows, cards);
         drop(keys);
         let rows = rows.map(|bytes| decode_card_row(&bytes));
         let built =
             crate::build_card_data_sorted(
                 rows,
-                expected,
+                sizes,
                 interner,
                 vocab,
                 artists,
@@ -4334,6 +4393,52 @@ mod tests {
         b.finish_to_writer(&mut bytes).expect("build store");
         let store = BufferStore::from_bytes(&bytes).expect("load store");
         (bytes, store)
+    }
+
+    /// The grouping loop's vectors are allocated at their final length, on both build paths — the
+    /// LOCAL PATCH (backlog x14) that removed a +22MB step from the wasm build: `foreign` grown by
+    /// doubling, and `printings` sized to every row rather than the canonical ones.
+    #[test]
+    fn the_grouping_vectors_are_allocated_at_their_final_length() {
+        let mut rows = Vec::new();
+        for (card, langs) in [("a", 7), ("b", 3), ("c", 1)] {
+            let oracle = format!("oracle-{card}");
+            rows.push(annex_row(card, &oracle, &format!("row-{card}-en"), "en", 200.0));
+            for k in 0..langs {
+                let mut foreign = annex_row(card, &oracle, &format!("row-{card}-{k}"), "ja", 100.0 - k as f64);
+                foreign["is_canonical"] = json!(false);
+                rows.push(foreign);
+            }
+        }
+        // Vec path: the sizes come from the rows themselves.
+        let mut b = StoreBuilder::new();
+        for r in &rows {
+            b.add_card(r).expect("stage row");
+        }
+        let StoreBuilder { rows: staged, interner, vocab, artists, artist_entities, mana } = b;
+        let built = crate::build_card_data(
+            staged,
+            interner,
+            vocab,
+            artists,
+            crate::artist_entity_index_from_json(Some(&artist_entities)),
+            mana,
+        )
+        .expect("build");
+        let d = &built.card_data;
+        assert_eq!((d.cards.len(), d.printings.len(), d.foreign.len()), (3, 3, 11));
+        assert_eq!(d.cards.capacity(), d.cards.len(), "cards");
+        assert_eq!(d.printings.capacity(), d.printings.len(), "printings: the canonical rows, not every row");
+        assert_eq!(d.foreign.capacity(), d.foreign.len(), "foreign: allocated once, never doubled");
+        assert_eq!(d.offsets.capacity(), d.offsets.len(), "offsets");
+        assert_eq!(d.foreign_offsets.capacity(), d.foreign_offsets.len(), "foreign_offsets");
+
+        // Spill path: the builder counts the canonical rows as they are staged.
+        let mut s = SpillingStoreBuilder::new();
+        for r in &rows {
+            s.add_card(r).expect("spill row");
+        }
+        assert_eq!((s.staged_rows(), s.canonical_rows), (14, 3));
     }
 
     /// The whole annex contract in one build→archive→read pass: non-canonical rows land in

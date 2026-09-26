@@ -20010,8 +20010,8 @@ fn build_card_data(
         (b.oracle_id, b.prefer_score, b.illustration_id, b.scryfall_id),
     ));
 
-    let expected_rows = rows.len();
-    build_card_data_sorted(rows.into_iter().map(Ok), expected_rows, interner, vocab, artists, artist_entities, mana)
+    let sizes = crate::core_api::BuildSizes::of_sorted(&rows);
+    build_card_data_sorted(rows.into_iter().map(Ok), sizes, interner, vocab, artists, artist_entities, mana)
 }
 
 /// The exact ordering build_card_data sorts rows into before grouping,
@@ -20039,7 +20039,7 @@ pub(crate) fn card_row_build_order(
 /// here, so both paths produce identical archives by construction.
 fn build_card_data_sorted(
     rows: impl Iterator<Item = Result<CardRow, EngineError>>,
-    expected_rows: usize,
+    sizes: crate::core_api::BuildSizes,
     interner: Interner,
     vocab: VocabInterner,
     artists: VocabInterner,
@@ -20069,14 +20069,14 @@ fn build_card_data_sorted(
     // printing's value). Legality is the exception: a group whose rows
     // disagree gets legality_divergent set, deferring legality filters to
     // each printing's own word.
-    let mut cards: Vec<OracleCard> = Vec::new();
-    let mut printings: Vec<Printing> = Vec::with_capacity(expected_rows);
-    let mut offsets: Vec<u32> = Vec::new();
+    let mut cards: Vec<OracleCard> = Vec::with_capacity(sizes.cards); // LOCAL PATCH (x14): BuildSizes
+    let mut printings: Vec<Printing> = Vec::with_capacity(sizes.canonical);
+    let mut offsets: Vec<u32> = Vec::with_capacity(sizes.cards + 1);
     // The foreign annex: non-canonical rows land here instead of `printings`, CSR'd by the same
     // cards in the same build order (the sort interleaves the two; the split preserves each
     // side's relative order). See CardData.foreign.
-    let mut foreign: Vec<Printing> = Vec::new();
-    let mut foreign_offsets: Vec<u32> = Vec::new();
+    let mut foreign: Vec<Printing> = Vec::with_capacity(sizes.foreign);
+    let mut foreign_offsets: Vec<u32> = Vec::with_capacity(sizes.cards + 1);
     // A group that closes with ZERO canonical rows is dropped whole, annex rows included: this is
     // what enforces the every-card-has-a-canonical-representative invariant the entire canonical
     // space is built on.

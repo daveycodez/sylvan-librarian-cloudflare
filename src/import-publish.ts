@@ -65,7 +65,10 @@ export const MIN_PARTITION_COUNT = 2;
  * of ~50MB built at 106-122MB and the 18th TRAPPED (`build_store_stream` unreachable), so the run
  * failed; 40 partitions of ~41MB built at 101-103MB and published. The ceiling of 32 bound at
  * ~3.2x the real corpus (1.77GB staged x 3.24 x 0.24 / 43MB = 32). At 48 partitions stay at the
- * target through 4.8x.
+ * target through 4.8x. Since backlog x14 (the store build allocates its grouping vectors once, at
+ * their final length, instead of doubling the annex past 32,768 rows) the same runs build at
+ * 68.8 / 71.4 / 72.4MB at 1x / 2x / 3x and at 71.9MB at 4x (N=40): a ~41MB partition's build is
+ * no longer near the cap, but a partition's size is still what its build costs.
  *
  * WHY NOT HIGHER. Everything below grows with N and none of it with the corpus bytes a partition
  * holds, so the ceiling is the lowest one that keeps partitions at the target past the 3x stress
