@@ -561,8 +561,27 @@ async function main(): Promise<number> {
 		return 1;
 	}
 
+	// ── x19: the nightly writes its format's manifest, and the legacy mirror with the same bytes ──
+	const { formatManifestKey, ARCHIVE_FORMAT_VERSION } = await import("../../src/engine/store-kv");
+	const ownManifest = await kv.get(formatManifestKey(), { type: "text" });
+	const legacyManifest = await kv.get("store:manifest", { type: "text" });
+	const ownFormat = ownManifest
+		? (JSON.parse(String(ownManifest)) as { format_version?: number }).format_version
+		: null;
+	console.log(
+		`manifests: ${formatManifestKey()} ${ownManifest ? "written" : "ABSENT"}, legacy mirror ` +
+			`${legacyManifest === ownManifest ? "identical" : "DIFFERENT"}`,
+	);
+	if (!ownManifest || legacyManifest !== ownManifest || ownFormat !== ARCHIVE_FORMAT_VERSION) {
+		console.error(
+			`\nFAILED: x19 — the nightly must write ${formatManifestKey()} (format ${ARCHIVE_FORMAT_VERSION}) and ` +
+				"mirror it to store:manifest while that holds the same format",
+		);
+		return 1;
+	}
+
 	// ── g1 and r3: the blocks the nightly decides, and what the fan-out did with them ──────────
-	const published = JSON.parse(String((await kv.get("store:manifest", { type: "text" })) ?? "null")) as {
+	const published = JSON.parse(String((await kv.get(formatManifestKey(), { type: "text" })) ?? "null")) as {
 		placement?: { checked?: string; alias?: Record<string, { to: string }>; obs?: Record<string, string[][]> };
 		cache?: { v?: number; codec?: string };
 	} | null;

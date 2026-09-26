@@ -20,7 +20,7 @@ import { cardNamesKey } from "../src/engine/card-names";
 import {
 	chunkForKv,
 	chunkKey,
-	MANIFEST_KEY,
+	manifestKeysToWrite,
 	manifestShapeProblem,
 	PARTITION_HASH_ALGO,
 	routingFilterKey,
@@ -169,13 +169,14 @@ if (cardNames) {
 } else {
 	console.warn(`No ${CARD_NAMES_FILE} in ${dir}: /cards/autocomplete will fan out across every partition.`);
 }
-// The manifest LAST, at the one key, exactly as seed-remote-kv.ts publishes it:
-// dev reads through the identical loader, so seeding anywhere else would test a
-// path production does not have.
+// The manifest LAST, at the keys seed-remote-kv.ts publishes it to — this format's
+// `store:manifest:v<fmt>` and the legacy mirror (x19): dev reads through the
+// identical loader, so seeding anywhere else would test a path production does
+// not have. A dev namespace has one build, so the mirror always follows.
 const manifestTmp = join(tmpdir(), "sylvan-local-manifest.json");
 await writeFile(manifestTmp, JSON.stringify(manifest));
 try {
-	await localKvPut(MANIFEST_KEY, manifestTmp);
+	for (const key of manifestKeysToWrite(manifest.format_version, null)) await localKvPut(key, manifestTmp);
 } finally {
 	await unlink(manifestTmp).catch(() => {});
 }

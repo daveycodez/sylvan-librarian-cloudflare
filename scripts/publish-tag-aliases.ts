@@ -24,7 +24,7 @@ import { join } from "node:path";
 import { createGunzip } from "node:zlib";
 import { plugin } from "bun";
 import { kvBytesMetadata } from "../src/engine/kv-retention";
-import { MANIFEST_KEY } from "../src/engine/store-kv";
+import { ARCHIVE_FORMAT_VERSION, formatManifestKey, MANIFEST_KEY } from "../src/engine/store-kv";
 import { parseTagAliasTables, tagAliasesKey } from "../src/engine/tag-aliases";
 import type { StoreManifest } from "../src/engine/types";
 import { kvTargetArgs, requireDeployEnvironment } from "./kv-target";
@@ -79,12 +79,23 @@ async function kvPut(key: string, path: string): Promise<void> {
 
 // ── which build, and does it already have a map ────────────────────────────────
 
-const manifestText = await kvGet(MANIFEST_KEY);
+// The build THIS deploy's Worker will serve: its own format's manifest, else a same-format legacy
+// one (the fallback readManifest takes, x19). Another format's store is not this build's to fix.
+const ownText = await kvGet(formatManifestKey(ARCHIVE_FORMAT_VERSION));
+const legacyText = ownText === null ? await kvGet(MANIFEST_KEY) : null;
+const manifestText = ownText ?? legacyText;
 if (manifestText === null) {
 	console.log("No store manifest is published; nothing to attach an alias map to.");
 	process.exit(0);
 }
 const manifest = JSON.parse(manifestText) as StoreManifest;
+if (manifest.format_version !== ARCHIVE_FORMAT_VERSION) {
+	console.log(
+		`The live manifest (${manifest.store_key}) is archive format ${manifest.format_version}, not this build's ` +
+			`${ARCHIVE_FORMAT_VERSION}; the import publishes this build's store with its map.`,
+	);
+	process.exit(0);
+}
 if (!manifest.format_version || !manifest.built_at) {
 	console.log(`The live manifest (${manifest.store_key}) carries no format_version/built_at; nothing to key a map by.`);
 	process.exit(0);

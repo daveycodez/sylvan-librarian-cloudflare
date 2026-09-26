@@ -109,11 +109,30 @@ describe("the coordinator runs one pipeline", () => {
 		expect(src).toContain("TRANSFORM_KIND");
 	});
 
-	test("the publish writes the one manifest key", () => {
-		// writeManifest derives nothing from a mode any more, and the notify phase
-		// pushes what it just wrote from the same single key.
+	test("the publish writes its own format's manifest, and notify pushes exactly that (x19)", () => {
+		// writeManifest derives nothing from a mode any more (the old shape switch's name stays
+		// banned); the key is the archive format's, and the notify phase pushes what it just wrote
+		// from that same key — never another format's store to an object running this build.
 		expect(src).not.toContain("manifestKeyFor");
-		expect(src).toContain("MANIFEST_KEY");
+		expect(src).toContain("await writeManifest(this.env, published)");
+		expect(src).toMatch(/this\.env\.STORE_KV\.get\(formatManifestKey\(this\.runFormat\(\)\), \{ type: "text" \}\)/);
+	});
+
+	test("deployed code retires older formats before it plans, and after its manifest (x19)", () => {
+		// The coordinator is the one writer guaranteed to run DEPLOYED code, so it is the one that
+		// decides an older format has no reader; a deploy's build never does.
+		const begin = src.slice(src.indexOf("private async beginFamilyUpload"), src.indexOf("private async putJson"));
+		expect(begin.indexOf("this.retireOlderFormats(")).toBeGreaterThan(0);
+		expect(begin.indexOf("this.retireOlderFormats(")).toBeLessThan(begin.indexOf("planRetention("));
+		expect(begin).toContain("otherLive:");
+		const sweep = src.slice(src.indexOf("private async sweepByRole"), src.indexOf("private async pruneOldKeys"));
+		expect(sweep).toContain("withOwnManifest(read.published, formatManifestKey(live.format_version), live)");
+		expect(sweep).toContain("this.retireOlderFormats(");
+		const upload = readFileSync(join(import.meta.dir, "../../scripts/deploy-upload.ts"), "utf8");
+		expect(upload).not.toContain("planFormatRetirement(");
+		expect(readFileSync(join(import.meta.dir, "../../scripts/seed-remote-kv.ts"), "utf8")).not.toContain(
+			"planFormatRetirement(",
+		);
 	});
 });
 

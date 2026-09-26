@@ -27,7 +27,7 @@ import {
 	oracleIndexEntries,
 	planOracleIndexPublish,
 } from "../../src/engine/oracle-index";
-import { MANIFEST_KEY } from "../../src/engine/store-kv";
+import { formatManifestKey } from "../../src/engine/store-kv";
 import type { StoreManifest } from "../../src/engine/types";
 import { readPairs } from "../seed-oracle-index";
 import type { Corpus } from "./corpus";
@@ -143,7 +143,7 @@ export async function checkOracleIndex(
 	mkdirSync(out, { recursive: true });
 	// At the NIGHTLY's partition count: the oracle index and the card-names blob do not depend on it,
 	// but the routing filter the same build dir is compared against (routing-filter-check.ts) does.
-	const nightly = (await kv.get(MANIFEST_KEY, "json")) as StoreManifest | null;
+	const nightly = (await kv.get(formatManifestKey(), "json")) as StoreManifest | null;
 	const partitions = String(nightly?.partition_count ?? 2);
 	const proc = Bun.spawn([join(repo, BUILDER), "--out", out, "--partitions", partitions], {
 		cwd: repo,

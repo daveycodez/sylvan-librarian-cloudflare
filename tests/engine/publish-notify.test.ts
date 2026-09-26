@@ -18,7 +18,7 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { engineName, parseEngineName, replicaGroupOf } from "../../src/engine/engine-namespace";
 import { notifyRetireReason, type PlacementBlock } from "../../src/engine/placement-policy";
-import { manifestServableBy } from "../../src/engine/store-kv";
+import { ARCHIVE_FORMAT_VERSION, manifestServableBy } from "../../src/engine/store-kv";
 import type { StoreManifest } from "../../src/engine/types";
 
 interface FakeObject {
@@ -390,6 +390,7 @@ describe("a pushed manifest the object cannot serve is refused, not cached", () 
 		store_key: "card-store-v2-2.store",
 		store_bytes: 10,
 		partition_count: 2,
+		format_version: ARCHIVE_FORMAT_VERSION,
 	} as StoreManifest;
 
 	/** The rule as the DO applies it: its own name's partition against the shape. */
@@ -406,6 +407,16 @@ describe("a pushed manifest the object cannot serve is refused, not cached", () 
 		expect(servable("engine-wnam-p0", unpartitioned)).toBe(false);
 		expect(servable("engine-wnam-2-p1", unpartitioned)).toBe(false);
 		expect(servable("engine-wnam", unpartitioned)).toBe(false);
+	});
+
+	test("another archive format's manifest is refused by every object (x19)", () => {
+		// A coordinator reset by a deploy mid-notify can reach an object already running the next
+		// build. That object's engine refuses the other format's store after fetching every byte, so
+		// recording it would wedge its next cold load exactly as an unpartitioned one would.
+		for (const format of [ARCHIVE_FORMAT_VERSION - 1, ARCHIVE_FORMAT_VERSION + 1]) {
+			expect(servable("engine-wnam-p0", { ...partitioned, format_version: format })).toBe(false);
+		}
+		expect(manifestServableBy(0, { ...partitioned, format_version: 7 }, 7)).toBe(true);
 	});
 
 	test("a label carrying no partition refuses everything — that is a naming bug", () => {

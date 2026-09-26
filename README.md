@@ -242,6 +242,16 @@ republishing the previous manifest), and the one holding the upload lease — ne
 a fourth. Near the free plan's 1 GB a byte guard drops the rollback before a new
 upload starts, and refuses the upload if even that does not fit.
 
+The manifest is keyed by ARCHIVE FORMAT (`store:manifest:v<fmt>`, mirrored to the
+legacy `store:manifest` while that holds the same format), and each build reads
+its own. So a deploy that bumps the format publishes beside the running Worker
+instead of over it: the old code keeps answering from its store until `wrangler
+deploy` switches, the new code starts on its own manifest, and there is no dark
+window. The old format's manifest retires at the next nightly (the only publisher
+guaranteed to run deployed code), and its family a publish later, when it stops
+being the rollback. During the overlap both live families count as live for
+retention and the byte guard.
+
 **Caching.** `/search` caches for 90s plus a day of stale-while-revalidate;
 `/cards/*` carries Scryfall's own tiers (16h, `no-cache` for random, private for
 the collection POST); page HTML carries no card data; `no-store` routes are never

@@ -19,6 +19,21 @@
  * Everything else under GENERATION_KEY_PREFIX is deleted. The rollback is dropped too — only — when
  * the byte guard says the next family would not fit beside it (decideByteGuard).
  *
+ * ── TWO LIVE FAMILIES, ONE PER ARCHIVE FORMAT (backlog x19) ─────────────────
+ *
+ * A reader reads the manifest of its own archive format (`store:manifest:v<fmt>`, store-kv.ts), so
+ * a deploy that bumps the format publishes beside the running build instead of over it, and for the
+ * minutes until `wrangler deploy` switches the code — and until the next publish by the new code —
+ * TWO manifests are live. Both are the LIVE role: `live` is the newest format's (the primary, whose
+ * `previous_built_at` names the rollback), `otherLive` every other family a live manifest or the
+ * legacy mirror names. Neither the sweep nor the byte guard ever deletes a live family; a guard that
+ * cannot fit the new family beside both refuses it.
+ *
+ * STILL AT MOST THREE: the rollback is kept only while live + in flight + rollback is three families
+ * or fewer. In the usual overlap it costs nothing — the new format's rollback IS the old format's
+ * live family — and the old format stops being live at the next publish by code that reads the new
+ * one (planFormatRetirement), when it becomes that rollback and then goes a publish later.
+ *
  * ── WHAT A FAMILY IS ─────────────────────────────────────────────────────────
  *
  * Every key named `store:card-<kind>-v<fmt>-<built_at>[-p<k>][.<ext>[:<n>]]` belongs to the family
@@ -61,6 +76,11 @@ export function generationKey(kind: string, formatVersion: number, builtAt: stri
 export interface RetentionRoles {
 	/** The live manifest's built_at. Null means no readable manifest: nothing is deleted at all. */
 	live: string | null;
+	/**
+	 * Every OTHER family a live manifest names (x19): another archive format's, or the legacy mirror's
+	 * while it lags. Kept exactly like `live` — a deployed build may be reading it.
+	 */
+	otherLive?: string[];
 	/** The family the live manifest replaced, or null when there is none or the byte guard dropped it. */
 	rollback: string | null;
 	/** The upload-lease holder's built_at, or null when nothing is uploading. */
@@ -70,7 +90,9 @@ export interface RetentionRoles {
 /** The families retention keeps: at most three, by construction. */
 export function retainedFamilies(roles: RetentionRoles): Set<string> {
 	const kept = new Set<string>();
-	for (const builtAt of [roles.live, roles.rollback, roles.inFlight]) if (builtAt) kept.add(builtAt);
+	for (const builtAt of [roles.live, ...(roles.otherLive ?? []), roles.rollback, roles.inFlight]) {
+		if (builtAt) kept.add(builtAt);
+	}
 	return kept;
 }
 
@@ -103,7 +125,7 @@ export function keysToRetire(names: Iterable<string>, roles: RetentionRoles): st
 
 /** What retention needs from a manifest; every publisher's manifest has it. */
 export type ManifestRoles = Pick<StoreManifest, "built_at"> &
-	Partial<Pick<StoreManifest, "previous_built_at" | "partitions" | "store_gzip_bytes">>;
+	Partial<Pick<StoreManifest, "previous_built_at" | "partitions" | "store_gzip_bytes" | "format_version">>;
 
 /**
  * The rollback role for `live`: the family it replaced.
@@ -117,6 +139,7 @@ export function rollbackFor(
 	live: ManifestRoles | null,
 	present: Iterable<string>,
 	inFlight: string | null = null,
+	otherLive: readonly string[] = [],
 ): string | null {
 	if (!live?.built_at) return null;
 	const liveAt = String(live.built_at);
@@ -125,7 +148,7 @@ export function rollbackFor(
 		return prev === liveAt ? null : prev;
 	}
 	for (const at of generationsPresent(present)) {
-		if (at !== inFlight && Number(at) < Number(liveAt)) return at;
+		if (at !== inFlight && !otherLive.includes(at) && Number(at) < Number(liveAt)) return at;
 	}
 	return null;
 }
@@ -151,6 +174,116 @@ export function withPreviousBuiltAt<M extends { built_at: string; previous_built
 	} else {
 		delete out.previous_built_at;
 	}
+	return out;
+}
+
+// ── the live manifests, one per archive format (x19) ──────────────────────────
+
+/** A manifest as found in KV: a per-format key (`store:manifest:v<fmt>`) or the legacy mirror. */
+export interface PublishedManifest<M extends ManifestRoles = ManifestRoles> {
+	key: string;
+	/** True for the legacy mirror (`store:manifest`), which pre-x19 builds read. */
+	legacy: boolean;
+	manifest: M;
+}
+
+/**
+ * The roles the live manifests give: `primary` is the newest archive format's (its
+ * `previous_built_at` is THE rollback), `others` every other family a live manifest names. Every
+ * writer decides from this, so they agree on which family is which whatever order KV lists them in.
+ * Pure.
+ */
+export function liveManifestRoles<M extends ManifestRoles>(
+	published: readonly PublishedManifest<M>[],
+): { primary: M | null; others: M[] } {
+	const usable = published.filter((p) => p.manifest?.built_at);
+	const fmt = (p: PublishedManifest<M>) => Number(p.manifest.format_version ?? 0) || 0;
+	const sorted = [...usable].sort(
+		(a, b) =>
+			fmt(b) - fmt(a) ||
+			Number(a.legacy) - Number(b.legacy) ||
+			Number(b.manifest.built_at) - Number(a.manifest.built_at),
+	);
+	const primary = sorted[0]?.manifest ?? null;
+	const seen = new Set<string>(primary ? [String(primary.built_at)] : []);
+	const others: M[] = [];
+	for (const p of sorted.slice(1)) {
+		const at = String(p.manifest.built_at);
+		if (seen.has(at)) continue;
+		seen.add(at);
+		others.push(p.manifest);
+	}
+	return { primary, others };
+}
+
+/**
+ * The manifest a publish of `format` REPLACES — its rollback (previous_built_at) and the source of
+ * the blocks it carries forward (carryManifestBlocks): its own format's manifest when there is one,
+ * else the newest live manifest of any format, so a format bump's rollback is the family the
+ * running build serves. Pure.
+ */
+export function replacedManifest<M extends ManifestRoles>(
+	published: readonly PublishedManifest<M>[],
+	format: number,
+): M | null {
+	const own = published.find((p) => !p.legacy && p.manifest?.format_version === format);
+	return own ? own.manifest : liveManifestRoles(published).primary;
+}
+
+export interface FormatRetirement<M extends ManifestRoles = ManifestRoles> {
+	/** Per-format manifest keys of OLDER formats, to delete. */
+	retireKeys: string[];
+	/** What the legacy mirror should hold now (the retiring code's own manifest), or null to leave it. */
+	legacyTo: M | null;
+}
+
+/**
+ * Which older formats stop being live, decided by code of archive `format` that is RUNNING DEPLOYED
+ * — the nightly coordinator, and nothing in a deploy's build, which runs before `wrangler deploy`
+ * and cannot tell whether the switch will happen.
+ *
+ * Every per-format manifest of a LOWER format is retired, and the legacy mirror moves forward to
+ * this format's manifest if it held a lower one: no deployed reader reads them once this code
+ * runs. Nothing happens unless this format's own manifest exists (a build with no store of its own
+ * keeps the old one, which is then still the rollback's code), and a HIGHER format is never
+ * touched — its deploy may be half way through. The retired family stays in KV while it is the new
+ * manifest's rollback (the usual case), and goes at the publish after. Pure.
+ */
+export function planFormatRetirement<M extends ManifestRoles>(
+	published: readonly PublishedManifest<M>[],
+	format: number,
+): FormatRetirement<M> {
+	const own = published.find((p) => !p.legacy && p.manifest?.format_version === format)?.manifest;
+	if (!own) return { retireKeys: [], legacyTo: null };
+	const lower = (p: PublishedManifest<M>) => Number(p.manifest?.format_version ?? 0) < format;
+	const retireKeys = published.filter((p) => !p.legacy && lower(p)).map((p) => p.key);
+	const legacy = published.find((p) => p.legacy);
+	const legacyTo = !legacy || lower(legacy) ? own : null;
+	return { retireKeys, legacyTo };
+}
+
+/**
+ * `published` with `manifest` as the entry at `key` (its own format's key) — a publisher's
+ * just-written manifest, which a read straight after the put may still answer with the old one. Pure.
+ */
+export function withOwnManifest<M extends ManifestRoles>(
+	published: readonly PublishedManifest<M>[],
+	key: string,
+	manifest: M,
+): PublishedManifest<M>[] {
+	return [...published.filter((p) => p.key !== key), { key, legacy: false, manifest }];
+}
+
+/** `published` as it stands once `retirement` has been carried out. Pure. */
+export function afterFormatRetirement<M extends ManifestRoles>(
+	published: readonly PublishedManifest<M>[],
+	retirement: FormatRetirement<M>,
+	legacyKey: string,
+): PublishedManifest<M>[] {
+	const out = published.filter((p) => !p.legacy && !retirement.retireKeys.includes(p.key));
+	const legacy = published.find((p) => p.legacy);
+	if (retirement.legacyTo) out.push({ key: legacyKey, legacy: true, manifest: retirement.legacyTo });
+	else if (legacy) out.push(legacy);
 	return out;
 }
 
@@ -315,10 +448,10 @@ const LEGACY_ESTIMATES: readonly [prefix: string, bytes: number][] = [
 /** Everything else is a small control value: the manifest, the lease, pointers, `engine:live:*`. */
 const LEGACY_SMALL_BYTES = 16_384;
 
-/** The chunk sizes the live manifest records, for its own legacy chunks. */
-export function manifestChunkSizes(live: ManifestRoles | null): Map<string, number> {
+/** The chunk sizes the live manifest(s) record, for their own legacy chunks. */
+export function manifestChunkSizes(live: ManifestRoles | null, ...others: ManifestRoles[]): Map<string, number> {
 	const out = new Map<string, number>();
-	for (const p of live?.partitions ?? []) {
+	for (const p of [live, ...others].flatMap((m) => m?.partitions ?? [])) {
 		if (!p.store_key || !p.chunk_count) continue;
 		const per = Math.ceil((p.store_gzip_bytes ?? p.store_bytes) / p.chunk_count);
 		for (let seq = 0; seq < p.chunk_count; seq++) out.set(`store:${p.store_key}:${seq}`, per);
@@ -395,17 +528,37 @@ export interface RetentionPlan {
  */
 export function planRetention(
 	keys: readonly ListedKey[],
-	opts: { live: ManifestRoles | null; inFlight: string | null; incomingBytes?: number; limit?: number },
+	opts: {
+		live: ManifestRoles | null;
+		/** x19: every other live manifest — another format's, the legacy mirror's (liveManifestRoles). */
+		otherLive?: readonly ManifestRoles[];
+		inFlight: string | null;
+		incomingBytes?: number;
+		limit?: number;
+	},
 ): RetentionPlan {
 	const names = keys.map((k) => k.name);
 	const liveAt = opts.live?.built_at ? String(opts.live.built_at) : null;
+	const others = (opts.otherLive ?? []).filter((m) => m?.built_at);
+	// With no primary there is no manifest to judge by, and nothing is deleted — whatever else is live.
+	const otherLive = liveAt ? [...new Set(others.map((m) => String(m.built_at)))].filter((at) => at !== liveAt) : [];
 	const roles: RetentionRoles = {
 		live: liveAt,
-		rollback: rollbackFor(opts.live, names, opts.inFlight),
+		otherLive,
+		rollback: rollbackFor(opts.live, names, opts.inFlight, otherLive),
 		inFlight: opts.inFlight,
 	};
-	if (roles.rollback && (roles.rollback === roles.live || roles.rollback === roles.inFlight)) roles.rollback = null;
-	const known = manifestChunkSizes(opts.live);
+	if (
+		roles.rollback &&
+		(roles.rollback === roles.live || roles.rollback === roles.inFlight || otherLive.includes(roles.rollback))
+	) {
+		roles.rollback = null;
+	}
+	// Three families at most: with two formats live and an upload in flight, the rollback goes first.
+	if (roles.rollback && new Set([liveAt, ...otherLive, roles.inFlight, roles.rollback].filter(Boolean)).size > 3) {
+		roles.rollback = null;
+	}
+	const known = manifestChunkSizes(opts.live, ...others);
 	const perFamily = new Map<string, { keys: string[]; bytes: number }>();
 	let total = 0;
 	let estimatedKeys = 0;
@@ -450,7 +603,7 @@ export function planRetention(
 			keys: fam.keys.length,
 			bytes: fam.bytes,
 			role:
-				builtAt === roles.live
+				builtAt === roles.live || otherLive.includes(builtAt)
 					? "live"
 					: builtAt === roles.inFlight
 						? "inFlight"
@@ -468,7 +621,9 @@ export function describePlan(plan: RetentionPlan): string {
 	const mb = (n: number) => `${(n / 1_000_000).toFixed(1)}MB`;
 	const fams = plan.families.map((f) => `${f.builtAt}=${f.role}(${f.keys} keys, ${mb(f.bytes)})`).join(" ");
 	return (
-		`live ${plan.roles.live ?? "-"}, rollback ${plan.roles.rollback ?? "-"}, in flight ${plan.roles.inFlight ?? "-"}; ` +
+		`live ${plan.roles.live ?? "-"}` +
+		(plan.roles.otherLive?.length ? ` (+ ${plan.roles.otherLive.join(", ")}, another format's)` : "") +
+		`, rollback ${plan.roles.rollback ?? "-"}, in flight ${plan.roles.inFlight ?? "-"}; ` +
 		`${plan.retire.length} key(s) to retire; ${mb(plan.usedBytes)} used after` +
 		(plan.decision === "sweep" ? "" : `, ${mb(plan.projectedBytes)} projected with the new family → ${plan.decision}`) +
 		(plan.estimatedKeys > 0 ? ` (${plan.estimatedKeys} key(s) sized by estimate)` : "") +

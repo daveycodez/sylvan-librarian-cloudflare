@@ -105,8 +105,9 @@ import {
 	scryfallIdKey,
 } from "./routing-filter";
 import {
+	ARCHIVE_FORMAT_VERSION,
+	formatManifestKey,
 	isPartitionedManifest,
-	MANIFEST_KEY,
 	readManifest,
 	readRoutingFilter,
 	readRoutingFilterFromColo,
@@ -166,10 +167,17 @@ import {
  * Only SUCCESSFUL reads are memoized or put — a failure must not pin an isolate (or a colo)
  * to a bad answer for a minute. A cache entry that does not parse to a partitioned manifest is
  * treated as a miss, never served.
+ *
+ * THE COLO ENTRY IS KEYED BY FORMAT (x19), like the KV key it caches. Two builds share a colo's
+ * Cache API during a deploy — the one being replaced and the one replacing it — and one entry for
+ * both would hand each the other's manifest for up to a minute at a time: exactly the store its
+ * engine refuses. So each build caches `store:manifest:v<its format>` under that key's URL, and an
+ * entry of any other format is a miss.
  */
 let manifestCache: { at: number; manifest: StoreManifest } | null = null;
 const MANIFEST_CACHE_MS = 60_000;
-const MANIFEST_EDGE_URL = edgeCacheUrl(MANIFEST_KEY);
+const MANIFEST_KEY_READ = formatManifestKey(ARCHIVE_FORMAT_VERSION);
+const MANIFEST_EDGE_URL = edgeCacheUrl(MANIFEST_KEY_READ);
 const MANIFEST_EDGE_TTL_S = 60;
 const utf8 = new TextDecoder();
 
@@ -183,7 +191,11 @@ function usableManifest(bytes: Uint8Array | null): StoreManifest | null {
 	if (bytes === null) return null;
 	try {
 		const parsed = JSON.parse(utf8.decode(bytes)) as StoreManifest;
-		return isPartitionedManifest(parsed) && parsed.partitions?.length ? parsed : null;
+		return isPartitionedManifest(parsed) &&
+			parsed.partitions?.length &&
+			parsed.format_version === ARCHIVE_FORMAT_VERSION
+			? parsed
+			: null;
 	} catch {
 		return null;
 	}
@@ -221,11 +233,13 @@ function commitManifest(manifest: StoreManifest | null, now: number): StoreManif
 		// Deliberately the same posture as the loader's: building the index is the
 		// deploy's job (scripts/import-store.sh), and a request finding no store
 		// means the deploy did not publish one.
-		throw new EngineUnavailableError(`No store manifest at ${MANIFEST_KEY}; the deploy has not published an index`);
+		throw new EngineUnavailableError(
+			`No store manifest at ${MANIFEST_KEY_READ}; the deploy has not published an index for this build's format`,
+		);
 	}
 	if (!manifest.partitions?.length) {
 		throw new EngineUnavailableError(
-			`The manifest at ${MANIFEST_KEY} (${manifest.store_key}) declares partition_count ` +
+			`The manifest at ${MANIFEST_KEY_READ} (${manifest.store_key}) declares partition_count ` +
 				`${manifest.partition_count} but carries no partitions[] records, so there is nothing to route to.`,
 		);
 	}

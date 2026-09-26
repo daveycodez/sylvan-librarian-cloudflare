@@ -20,7 +20,7 @@ import { existsSync, rmSync } from "node:fs";
 import { gunzipSync } from "node:zlib";
 import { cardNamesCount, cardNamesOf, encodeCardNames, ledByPartition } from "../../src/engine/card-names";
 import { mergeAutocomplete } from "../../src/engine/partitioned-engine";
-import { chunkKey, MANIFEST_KEY } from "../../src/engine/store-kv";
+import { chunkKey, formatManifestKey } from "../../src/engine/store-kv";
 import type { StoreManifest } from "../../src/engine/types";
 import { foldAccents } from "../../src/parser/pystr";
 import { cardNamesFromBuildDir } from "../card-names-build";
@@ -43,7 +43,7 @@ export async function checkCardNames(kv: FakeKV, nativeDir: string | null): Prom
 	const fail = (why: string): CardNamesCheck => ({ ok: false, lines: [...lines, `FAILED: ${why}`] });
 
 	// ── 1. what the nightly published ───────────────────────────────────────
-	const manifest = (await kv.get(MANIFEST_KEY, "json")) as StoreManifest | null;
+	const manifest = (await kv.get(formatManifestKey(), "json")) as StoreManifest | null;
 	if (!manifest) return fail("no manifest was published");
 	const names = cardNamesOf(manifest);
 	if (!names) return fail(`the manifest names no card-names blob (names_key=${manifest.names_key})`);

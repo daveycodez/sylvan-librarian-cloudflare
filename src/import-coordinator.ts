@@ -83,6 +83,7 @@ import {
 	transientWasm,
 } from "./engine/import-wasm";
 import {
+	afterFormatRetirement,
 	DEPLOY_FENCE_KEY,
 	DEPLOY_LEASE_OWNER,
 	decideUploadLease,
@@ -91,11 +92,16 @@ import {
 	GENERATION_KEY_PREFIX,
 	kvBytesMetadata,
 	type ListedKey,
+	liveManifestRoles,
 	NEW_FAMILY_ALLOWANCE,
+	type PublishedManifest,
 	parseDeployFence,
 	parseUploadLease,
+	planFormatRetirement,
 	planRetention,
+	replacedManifest,
 	type UploadLease,
+	withOwnManifest,
 	withPreviousBuiltAt,
 } from "./engine/kv-retention";
 import { staleKeys } from "./engine/kv-versions";
@@ -159,9 +165,13 @@ import {
 } from "./engine/rulings-kv";
 import { GridChunker } from "./engine/store-chunks";
 import {
+	ARCHIVE_FORMAT_VERSION,
 	assembleChunk,
 	chunkHeadroomWarning,
 	chunkKey,
+	FORMAT_MANIFEST_PREFIX,
+	formatManifestKey,
+	formatOfManifestKey,
 	gzipBytes,
 	KV_CHUNK_BYTES_SAFE,
 	KV_VALUE_CAP_BYTES,
@@ -1549,16 +1559,22 @@ export class ImportCoordinator extends DurableObject<Env> {
 		}
 		await this.putLease(me);
 
-		const live = await this.readLiveManifest();
+		// Every live manifest (x19), and first the formats this code has made obsolete: the coordinator
+		// runs DEPLOYED code, so no deployed reader reads an older format any more. Their families lose
+		// the live role here, before the plan, so the older store is only the new one's rollback now
+		// and KV still never holds a fourth family through this upload.
+		const read = await this.readPublishedManifests();
+		const live = read.failed ? read : { ...read, published: await this.retireOlderFormats(read.published) };
+		const { primary, others } = liveManifestRoles(live.published);
+		const own = replacedManifest(live.published, this.runFormat());
 		const keys = await this.listAllKeysWithMetadata("");
 		const incoming =
-			live.manifest?.store_gzip_bytes !== undefined
-				? Math.ceil(live.manifest.store_gzip_bytes * NEW_FAMILY_ALLOWANCE)
-				: undefined;
+			own?.store_gzip_bytes !== undefined ? Math.ceil(own.store_gzip_bytes * NEW_FAMILY_ALLOWANCE) : undefined;
 		// An unreadable manifest decides nothing: no roles, so nothing is deleted (planRetention), and
 		// no size to project from, so the guard does not run. The next publish decides again.
 		const plan = planRetention(keys, {
-			live: live.failed ? null : live.manifest,
+			live: live.failed ? null : primary,
+			otherLive: live.failed ? [] : others,
 			inFlight: me.built_at,
 			incomingBytes: live.failed ? undefined : incoming,
 		});
@@ -1594,13 +1610,68 @@ export class ImportCoordinator extends DurableObject<Env> {
 		});
 	}
 
-	/** The live manifest, or `failed` when the read did not answer (not the same as absent). */
-	private async readLiveManifest(): Promise<{ manifest: StoreManifest | null; failed: string | null }> {
+	/** The archive format this run builds and publishes — its manifest key (x19). */
+	private runFormat(): number {
+		return Number(this.metaGet("format_version") ?? 0) || ARCHIVE_FORMAT_VERSION;
+	}
+
+	/**
+	 * Every live manifest (x19) — the legacy mirror and each `store:manifest:v<fmt>` a list shows —
+	 * or `failed` when a read did not answer (not the same as absent). One list and one get per
+	 * format, normally one or two.
+	 */
+	private async readPublishedManifests(): Promise<{
+		published: PublishedManifest<StoreManifest>[];
+		failed: string | null;
+	}> {
+		const parse = (text: string | null): StoreManifest | null => {
+			try {
+				const v = text ? (JSON.parse(text) as StoreManifest) : null;
+				return v?.built_at ? v : null;
+			} catch {
+				return null;
+			}
+		};
 		try {
-			const text = await this.env.STORE_KV.get(MANIFEST_KEY, { type: "text" });
-			return { manifest: text ? (JSON.parse(text) as StoreManifest) : null, failed: null };
+			const published: PublishedManifest<StoreManifest>[] = [];
+			const legacy = parse(await this.env.STORE_KV.get(MANIFEST_KEY, { type: "text" }));
+			if (legacy) published.push({ key: MANIFEST_KEY, legacy: true, manifest: legacy });
+			for (const key of await this.listAllKeys(FORMAT_MANIFEST_PREFIX)) {
+				if (formatOfManifestKey(key) === null) continue;
+				const manifest = parse(await this.env.STORE_KV.get(key, { type: "text" }));
+				if (manifest) published.push({ key, legacy: false, manifest });
+			}
+			return { published, failed: null };
 		} catch (err) {
-			return { manifest: null, failed: String(err) };
+			return { published: [], failed: String(err) };
+		}
+	}
+
+	/**
+	 * Retire every OLDER archive format's manifest and move the legacy mirror forward to this run's
+	 * format (kv-retention.ts planFormatRetirement) — only when this format already has its own
+	 * manifest. Deployed code is the only thing allowed to decide this: a deploy's build runs before
+	 * `wrangler deploy` and cannot know the switch will happen, and this object only ever runs the
+	 * code that IS deployed. What is returned is the set as it stands after. Best effort: a failure
+	 * leaves both formats live one more publish, which costs storage and never a reader.
+	 */
+	private async retireOlderFormats(
+		published: PublishedManifest<StoreManifest>[],
+	): Promise<PublishedManifest<StoreManifest>[]> {
+		const retirement = planFormatRetirement(published, this.runFormat());
+		if (retirement.retireKeys.length === 0 && !retirement.legacyTo) return published;
+		try {
+			if (retirement.legacyTo) await this.putJson(MANIFEST_KEY, retirement.legacyTo);
+			await this.deleteKeys(retirement.retireKeys, "retired: manifests of an older archive format");
+			console.log(
+				`Archive format ${this.runFormat()} is deployed: ` +
+					(retirement.retireKeys.length ? `retired ${retirement.retireKeys.join(", ")}` : "no older manifest") +
+					(retirement.legacyTo ? `; ${MANIFEST_KEY} now mirrors ${formatManifestKey(this.runFormat())}` : ""),
+			);
+			return afterFormatRetirement(published, retirement, MANIFEST_KEY);
+		} catch (err) {
+			console.warn(`Could not retire older archive formats' manifests (both stay live one more publish): ${err}`);
+			return published;
 		}
 	}
 
@@ -4102,16 +4173,19 @@ export class ImportCoordinator extends DurableObject<Env> {
 		return decision.placement;
 	}
 
-	/** The manifest KV serves right now, parsed, or null — never a throw: the gates fall back to defaults. */
+	/**
+	 * The manifest this run's publish REPLACES, parsed, or null — never a throw: the gates fall back
+	 * to defaults. Its own archive format's (x19) when there is one, else the newest live manifest of
+	 * any format (replacedManifest), so a format bump carries the running build's blocks forward and
+	 * names its family as the rollback.
+	 */
 	private async liveManifestJson(): Promise<StoreManifest | null> {
-		try {
-			return JSON.parse(
-				(await this.env.STORE_KV.get(MANIFEST_KEY, { type: "text" })) ?? "null",
-			) as StoreManifest | null;
-		} catch (err) {
-			console.warn(`Manifest gates: could not read the live manifest (${err}); deciding from defaults`);
+		const read = await this.readPublishedManifests();
+		if (read.failed) {
+			console.warn(`Manifest gates: could not read the live manifest (${read.failed}); deciding from defaults`);
 			return null;
 		}
+		return replacedManifest(read.published, this.runFormat());
 	}
 
 	/**
@@ -4215,7 +4289,11 @@ export class ImportCoordinator extends DurableObject<Env> {
 		// Hand the manifest over rather than making each object read it back out of KV. That read is
 		// ~124ms and it is paid IN FRONT OF whatever requests arrive during the swap, for a value
 		// this phase just wrote at the one manifest key.
-		const published = JSON.parse((await this.env.STORE_KV.get(MANIFEST_KEY, { type: "text" })) ?? "null");
+		// THIS format's manifest (x19): every object being told runs this same deployed code, and an
+		// object pushed another format's store would refuse it after fetching every byte.
+		const published = JSON.parse(
+			(await this.env.STORE_KV.get(formatManifestKey(this.runFormat()), { type: "text" })) ?? "null",
+		);
 
 		// ONLY OBJECTS THAT ALREADY EXIST. An engine announces itself under
 		// REGION_LIVE_PREFIX when it loads a store, so this set is exactly the objects a real
@@ -4581,10 +4659,17 @@ export class ImportCoordinator extends DurableObject<Env> {
 	 */
 	private async sweepByRole(live: StoreManifest): Promise<void> {
 		try {
+			// Every live manifest (x19), this run's own replaced by the one just written, and an older
+			// format retired first if the first-key pass could not (kv-retention.ts planFormatRetirement).
+			const read = await this.readPublishedManifests();
+			if (read.failed) throw new Error(`could not read the live manifests: ${read.failed}`);
+			const withOwn = withOwnManifest(read.published, formatManifestKey(live.format_version), live);
+			const { primary, others } = liveManifestRoles(await this.retireOlderFormats(withOwn));
 			const keys = await this.listAllKeysWithMetadata(GENERATION_KEY_PREFIX);
 			const held = parseUploadLease(await this.env.STORE_KV.get(PUBLISHING_KEY));
-			const inFlight = held && held.built_at !== String(live.built_at) ? held.built_at : null;
-			const plan = planRetention(keys, { live, inFlight });
+			const liveAts = new Set([primary, ...others].map((m) => String(m?.built_at)));
+			const inFlight = held && !liveAts.has(held.built_at) ? held.built_at : null;
+			const plan = planRetention(keys, { live: primary, otherLive: others, inFlight });
 			await this.deleteKeys(plan.retire, `from generations with no role (${describePlan(plan)})`);
 		} catch (err) {
 			console.warn(`Retention: could not sweep store generations by role: ${err}`);

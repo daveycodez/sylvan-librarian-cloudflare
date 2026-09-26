@@ -21,6 +21,12 @@
 //      whose run wakes past its top-of-alarm check (the write-time fence stops it); a deploy landing
 //      mid-nightly (the deploy wins); and the byte guard dropping the rollback, then refusing.
 //
+//   8-9. NO DARK WINDOW ON A FORMAT BUMP (x19), each re-reading every reader after EVERY KV write:
+//      old code serving format A while a deploy publishes format B, both answering throughout, then
+//      the nightly on B retiring A's manifest and, one publish later, its family — from the
+//      single-key world (8a, the first x19 deploy) and from per-format keys (8b); and the migration
+//      from the single key with no bump at all (9).
+//
 // Bun, not workerd — see run.ts for what a green harness does and does not prove. What this one
 // proves is the protocol: who writes what, in which order, and that the fence holds.
 
@@ -478,8 +484,9 @@ function watchGenerations(kv: FakeKV): { max: () => number; violations: string[]
 	return { max: () => max, violations };
 }
 
-async function manifestOf(kv: FakeKV): Promise<StoreManifest> {
-	return JSON.parse(String(await kv.get(storeKv.MANIFEST_KEY, "text"))) as StoreManifest;
+/** The manifest THIS build reads (x19): its own archive format's key. */
+async function manifestOf(kv: FakeKV, format: number = storeKv.ARCHIVE_FORMAT_VERSION): Promise<StoreManifest> {
+	return JSON.parse(String(await kv.get(storeKv.formatManifestKey(format), "text"))) as StoreManifest;
 }
 
 function generations(kv: FakeKV): string[] {
@@ -554,13 +561,20 @@ function fakeDeployKv(kv: FakeKV, clock = { offset: 0 }): DeployKv {
 /**
  * A deploy publishing a store: scripts/import-store.sh's fence, then seed-remote-kv.ts's sequence
  * through the REAL deploy-upload functions — begin (fence settle, lease, sweep, guard), the family's
- * keys, the lease check, the manifest, finish. The family is the live one's bytes under a new
- * built_at, so the result is a servable store.
+ * keys, the lease check, the manifest(s), finish. The family is `source`'s bytes (the live store by
+ * default) under a new built_at — and, for x19's scenarios, a new archive FORMAT — so the result is
+ * a servable store of that format.
  */
-async function deployPublish(kv: FakeKV, builtAt: string): Promise<StoreManifest> {
-	const live = await manifestOf(kv);
-	const from = String(live.built_at);
-	const rename = (k: string) => k.replace(`-${from}`, `-${builtAt}`);
+async function deployPublish(
+	kv: FakeKV,
+	builtAt: string,
+	opts: { source?: StoreManifest; format?: number } = {},
+): Promise<StoreManifest> {
+	const format = opts.format ?? storeKv.ARCHIVE_FORMAT_VERSION;
+	const source = opts.source ?? (await manifestOf(kv, format));
+	const from = String(source.built_at);
+	const fromFormat = source.format_version;
+	const rename = (k: string) => k.replace(`-v${fromFormat}-${from}`, `-v${format}-${builtAt}`);
 	const family = keysOf(kv, from);
 	const values = new Map<string, Uint8Array>();
 	for (const k of family) values.set(k, new Uint8Array((await kv.get(k, "arrayBuffer")) as ArrayBuffer));
@@ -572,13 +586,19 @@ async function deployPublish(kv: FakeKV, builtAt: string): Promise<StoreManifest
 	for (const [k, v] of values) await kv.put(rename(k), v, { metadata: retention.kvBytesMetadata(v.byteLength) });
 	if (!(await deployUpload.deployStillHoldsLease(dkv, builtAt))) throw new Error("deploy lost its lease");
 	const next: StoreManifest = {
-		...live,
+		...source,
 		built_at: builtAt,
-		store_key: rename(live.store_key),
-		partitions: live.partitions?.map((p) => ({ ...p, store_key: rename(p.store_key) })),
+		format_version: format,
+		store_key: rename(source.store_key),
+		partitions: source.partitions?.map((p) => ({ ...p, store_key: rename(p.store_key) })),
+		...(source.names_key ? { names_key: rename(source.names_key) } : {}),
 	};
-	const published = retention.withPreviousBuiltAt(next, live);
-	await kv.put(storeKv.MANIFEST_KEY, JSON.stringify(published));
+	// seed-remote-kv.ts: the manifest this one replaces is its own format's, else the newest live one.
+	const live = await deployUpload.readPublishedManifests<StoreManifest>(dkv);
+	const replaced = retention.replacedManifest(live.published, format);
+	const published = retention.withPreviousBuiltAt(next, replaced);
+	const legacy = live.published.find((p) => p.legacy)?.manifest ?? null;
+	for (const key of storeKv.manifestKeysToWrite(format, legacy)) await kv.put(key, JSON.stringify(published));
 	await deployUpload.finishDeployUpload(dkv, published);
 	return published;
 }
@@ -796,10 +816,265 @@ async function deployPublish(kv: FakeKV, builtAt: string): Promise<StoreManifest
 	);
 }
 
+// ── x19: a format bump deploys without a dark window ─────────────────────────
+// Readers of two archive formats over one namespace. The harness's coordinator and engine speak ONE
+// format — the real one, R — so the NEW code here is R, and "format A" is R-1: the seeded
+// generations are rewritten under A's key names exactly as a store of the previous format would be
+// laid out. Every reader runs the REAL selection (store-kv.ts readManifest, with the format it
+// speaks), over a snapshot of KV taken at each write — so "answered throughout" is checked at every
+// intermediate state a colo could see, not just between steps.
+
+/** A read-only KV over a copy of `kv` as it stands now (the values are immutable per put). */
+function snapshotKv(kv: FakeKV): KVNamespace {
+	const store = new Map((kv as unknown as { store: Map<string, Uint8Array> }).store);
+	return {
+		async get(key: string, options?: unknown): Promise<unknown> {
+			const bytes = store.get(key);
+			if (!bytes) return null;
+			const type = typeof options === "string" ? options : ((options as { type?: string } | undefined)?.type ?? "text");
+			if (type === "arrayBuffer") return bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength);
+			const text = new TextDecoder().decode(bytes);
+			return type === "json" ? JSON.parse(text) : text;
+		},
+		has: (key: string) => store.has(key),
+	} as unknown as KVNamespace;
+}
+
+type Reader = { name: string; read: (kv: KVNamespace) => Promise<StoreManifest | null>; format: number };
+/** A Worker that never heard of per-format keys: the legacy key, and its engine's format. */
+const pre19Reader = (format: number): Reader => ({
+	name: `pre-x19 reader of format ${format}`,
+	format,
+	read: async (kv) => {
+		const text = (await kv.get(storeKv.MANIFEST_KEY, "text")) as string | null;
+		return text ? (JSON.parse(text) as StoreManifest) : null;
+	},
+});
+/** This code's reader, speaking `format` — the real readManifest. */
+const x19Reader = (format: number): Reader => ({
+	name: `x19 reader of format ${format}`,
+	format,
+	read: (kv) => storeKv.readManifest({ STORE_KV: kv } as unknown as Parameters<typeof storeKv.readManifest>[0], format),
+});
+
+/** Why `reader` could not answer from `kv`, or null when it can: a manifest of its format, every key it names present. */
+async function cannotAnswer(reader: Reader, kv: KVNamespace): Promise<string | null> {
+	let m: StoreManifest | null;
+	try {
+		m = await reader.read(kv);
+	} catch (err) {
+		return `${reader.name}: ${err}`;
+	}
+	if (!m) return `${reader.name}: no manifest`;
+	if (m.format_version !== reader.format) return `${reader.name}: handed format ${m.format_version}`;
+	const has = (key: string) => (kv as unknown as { has(k: string): boolean }).has(key);
+	const missing = storeKv
+		.missingManifestChunks(m, [])
+		.concat([storeKv.routingFilterKeyFor(m) ?? "", ...(m.names_key ? [m.names_key] : [])])
+		.filter((k) => k && !has(k));
+	return missing.length
+		? `${reader.name}: build ${m.built_at} is missing ${missing.length} key(s), e.g. ${missing[0]}`
+		: null;
+}
+
+/** After every write, check each reader in `readers()` against a snapshot; collect what failed. */
+function watchReaders(
+	kv: FakeKV,
+	readers: () => Reader[],
+): { failures: string[]; writes: () => number; done: () => Promise<void> } {
+	const pending: Promise<void>[] = [];
+	const failed: string[] = [];
+	let writes = 0;
+	const previous = kv.onWrite;
+	kv.onWrite = (key, op) => {
+		previous?.(key, op);
+		writes += 1;
+		const snap = snapshotKv(kv);
+		const at = `${op} ${key}`;
+		for (const reader of readers()) {
+			pending.push(cannotAnswer(reader, snap).then((why) => void (why && failed.push(`${at}: ${why}`))));
+		}
+	};
+	return { failures: failed, writes: () => writes, done: async () => void (await Promise.all(pending)) };
+}
+
+/**
+ * Rewrite the namespace's store generations and manifest from format `from` to `to`, as a namespace
+ * the previous format's code published would hold them: every generation key renamed, the live
+ * manifest re-stamped. `perFormatKey` false leaves ONLY the legacy key — the world before x19.
+ */
+async function reformat(kv: FakeKV, from: number, to: number, perFormatKey: boolean): Promise<StoreManifest> {
+	const live = await manifestOf(kv, from);
+	const rename = (k: string) => k.replace(`-v${from}-`, `-v${to}-`);
+	for (const { name, metadata } of (await kv.list({ prefix: retention.GENERATION_KEY_PREFIX })).keys) {
+		const bytes = new Uint8Array((await kv.get(name, "arrayBuffer")) as ArrayBuffer);
+		await kv.delete(name);
+		await kv.put(rename(name), bytes, metadata !== undefined ? { metadata } : undefined);
+	}
+	const manifest: StoreManifest = {
+		...live,
+		format_version: to,
+		store_key: rename(live.store_key),
+		partitions: live.partitions?.map((p) => ({ ...p, store_key: rename(p.store_key) })),
+		...(live.names_key ? { names_key: rename(live.names_key) } : {}),
+	};
+	await kv.delete(storeKv.formatManifestKey(from));
+	await kv.put(storeKv.MANIFEST_KEY, JSON.stringify(manifest));
+	if (perFormatKey) await kv.put(storeKv.formatManifestKey(to), JSON.stringify(manifest));
+	return manifest;
+}
+
+for (const variant of ["a", "b"] as const) {
+	const fromSingleKey = variant === "a";
+	console.log(
+		`\n8${variant}. x19: old code serves format A while a deploy publishes format B — ` +
+			(fromSingleKey ? "the FIRST x19 deploy, from the single-key world" : "both builds on per-format keys"),
+	);
+	const kv = new FakeKV();
+	const instances = new Map<string, Instance>();
+	const ns = namespace(kv, instances);
+	const env = { STORE_KV: kv, IMPORT_COORDINATOR: ns } as unknown as Parameters<typeof watchdog.runImportWatchdog>[0];
+	const B = storeKv.ARCHIVE_FORMAT_VERSION;
+	const A = B - 1;
+	const { g1, g2, a } = await seedTwoGenerations(kv, ns, env);
+	const aLive = await reformat(kv, B, A, !fromSingleKey);
+	check(
+		(await cannotAnswer(pre19Reader(A), snapshotKv(kv))) === null &&
+			(await cannotAnswer(x19Reader(A), snapshotKv(kv))) === null &&
+			(await kv.get(storeKv.formatManifestKey(B))) === null,
+		`seeded: format A (${A}) serves build ${g2} from ${fromSingleKey ? "store:manifest alone" : `store:manifest and ${storeKv.formatManifestKey(A)}`}; nothing of format B exists`,
+	);
+	const watch = watchGenerations(kv);
+
+	// ── the deploy's install step publishes format B; the old code is still what serves ──
+	let serving: Reader[] = [pre19Reader(A), x19Reader(A)];
+	let bLive = false;
+	const readers = watchReaders(kv, () => [...serving, ...(bLive ? [x19Reader(B)] : [])]);
+	const writeFlag = kv.onWrite;
+	kv.onWrite = (key, op) => {
+		if (op === "put" && key === storeKv.formatManifestKey(B)) bLive = true;
+		writeFlag?.(key, op);
+	};
+	await Bun.sleep(1_100);
+	const d = String(Math.floor(Date.now() / 1000));
+	const deployed = await deployPublish(kv, d, { source: aLive, format: B });
+	check(
+		(await kv.get(storeKv.MANIFEST_KEY, "json")) !== null &&
+			((await kv.get(storeKv.MANIFEST_KEY, "json")) as StoreManifest).format_version === A,
+		"the deploy wrote format B's manifest beside A's and left store:manifest on format A",
+	);
+	check(
+		deployed.previous_built_at === g2 && generations(kv).join() === [d, g2].join() && keysOf(kv, g1).length === 0,
+		`B's rollback is A's live build ${g2}; KV holds ${d} (B) and ${g2} (A) — A's old rollback ${g1} is gone`,
+	);
+
+	// ── wrangler deploy: the new code serves; an old isolate may still finish a request ──
+	serving = [x19Reader(B), pre19Reader(A), x19Reader(A)];
+	await readers.done();
+	check(
+		readers.failures.length === 0,
+		`every reader answered after each of the deploy's ${readers.writes()} KV writes` +
+			(readers.failures.length ? ` — ${readers.failures.slice(0, 2).join(" | ")}` : ""),
+	);
+
+	// ── the nightly, on the new code: A's manifest retires, then (one publish later) its family ──
+	serving = [x19Reader(B)];
+	let aManifestGoneAt = -1;
+	let legacyMovedAt = -1;
+	let g2GoneAt = -1;
+	let newManifestAt = -1;
+	let n = 0;
+	const nightlyFlag = kv.onWrite;
+	kv.onWrite = (key, op) => {
+		nightlyFlag?.(key, op);
+		n += 1;
+		const store = (kv as unknown as { store: Map<string, Uint8Array> }).store;
+		const legacy = store.get(storeKv.MANIFEST_KEY);
+		if (legacyMovedAt < 0 && legacy && JSON.parse(new TextDecoder().decode(legacy)).format_version === B)
+			legacyMovedAt = n;
+		if (aManifestGoneAt < 0 && !store.has(storeKv.formatManifestKey(A))) aManifestGoneAt = n;
+		if (g2GoneAt < 0 && keysOf(kv, g2).length === 0) g2GoneAt = n;
+		if (newManifestAt < 0 && key === storeKv.formatManifestKey(B) && op === "put") newManifestAt = n;
+	};
+	await watchdog.startNightlyImport(env);
+	await a.drive();
+	const g5 = String((await manifestOf(kv)).built_at);
+	await readers.done();
+	check(a.runState() === "done" && g5 !== d, `the nightly on format B published ${g5}`);
+	check(
+		legacyMovedAt > 0 && legacyMovedAt < newManifestAt && (fromSingleKey || aManifestGoneAt < newManifestAt),
+		`format A stopped being live at the nightly's first key: store:manifest moved to B (write ${legacyMovedAt})` +
+			(fromSingleKey ? "" : `, ${storeKv.formatManifestKey(A)} retired (write ${aManifestGoneAt})`) +
+			`, before its manifest (write ${newManifestAt})`,
+	);
+	check(
+		g2GoneAt > newManifestAt,
+		`A's family ${g2} stayed in KV — as B's rollback — until the nightly's manifest (write ${newManifestAt}), and went at write ${g2GoneAt}`,
+	);
+	const legacyNow = (await kv.get(storeKv.MANIFEST_KEY, "json")) as StoreManifest;
+	check(
+		generations(kv).join() === [g5, d].join() &&
+			String(legacyNow.built_at) === g5 &&
+			(await kv.get(storeKv.formatManifestKey(A))) === null,
+		`KV ends as a single-format namespace: ${g5} live, ${d} its rollback, store:manifest mirroring format B`,
+	);
+	check(
+		readers.failures.length === 0,
+		`the new code answered after every one of the ${readers.writes()} KV writes, deploy and nightly` +
+			(readers.failures.length ? ` — ${readers.failures.slice(0, 2).join(" | ")}` : ""),
+	);
+	check(
+		watch.violations.length === 0 && watch.max() <= 3,
+		`never more than three generations at any write (max ${watch.max()}${watch.violations.length ? `; ${watch.violations[0]}` : ""})`,
+	);
+}
+
+// ── 9. the migration from the single key, no format bump ─────────────────────────
+{
+	console.log("\n9. x19: the first deploy of per-format keys, same format — nothing changes for either reader");
+	const kv = new FakeKV();
+	const instances = new Map<string, Instance>();
+	const ns = namespace(kv, instances);
+	const env = { STORE_KV: kv, IMPORT_COORDINATOR: ns } as unknown as Parameters<typeof watchdog.runImportWatchdog>[0];
+	const R = storeKv.ARCHIVE_FORMAT_VERSION;
+	const { g2, a } = await seedTwoGenerations(kv, ns, env);
+	await kv.delete(storeKv.formatManifestKey(R)); // the world before x19: store:manifest alone
+	const readers = watchReaders(kv, () => [pre19Reader(R), x19Reader(R)]);
+	check(
+		(await cannotAnswer(x19Reader(R), snapshotKv(kv))) === null,
+		`with only store:manifest, the x19 reader falls back to it (same format) and serves ${g2}`,
+	);
+	const dkv = fakeDeployKv(kv);
+	const swept = await deployUpload.sweepGenerationsByRole(dkv);
+	const first = await deployUpload.ensureFormatManifest(dkv, R);
+	const again = await deployUpload.ensureFormatManifest(dkv, R);
+	check(
+		swept === 0 && first === "copied" && again === "present",
+		`the deploy's sweep deletes nothing, then copies store:manifest to ${storeKv.formatManifestKey(R)} once (${first}, then ${again})`,
+	);
+	check(
+		(await kv.get(storeKv.MANIFEST_KEY)) === (await kv.get(storeKv.formatManifestKey(R))),
+		"both keys hold the same manifest, and store:manifest was not rewritten",
+	);
+	await watchdog.startNightlyImport(env);
+	await a.drive();
+	const g3 = String((await manifestOf(kv)).built_at);
+	await readers.done();
+	check(
+		a.runState() === "done" && (await kv.get(storeKv.MANIFEST_KEY)) === (await kv.get(storeKv.formatManifestKey(R))),
+		`the nightly published ${g3} to both keys`,
+	);
+	check(
+		readers.failures.length === 0,
+		`both readers answered after every one of the ${readers.writes()} KV writes` +
+			(readers.failures.length ? ` — ${readers.failures.slice(0, 2).join(" | ")}` : ""),
+	);
+}
+
 server.stop();
 if (failures.length > 0) {
 	console.error(`\nFAILED: ${failures.length} check(s)`);
 	process.exit(1);
 }
-console.log("\nOK — kick, failover and release all hold");
+console.log("\nOK — kick, failover, release, retention by role and the format-bump overlap all hold");
 process.exit(0);

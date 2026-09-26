@@ -19,9 +19,18 @@ import { describe, expect, mock, test } from "bun:test";
 import { gunzipSync } from "node:zlib";
 import type { ArchiveCacheStorage } from "../../src/engine/store-cache";
 import * as cache from "../../src/engine/store-cache";
-import { chunkKey, gzipBytes, PARTITION_HASH_ALGO } from "../../src/engine/store-kv";
+import {
+	ARCHIVE_FORMAT_VERSION,
+	chunkKey,
+	formatManifestKey,
+	gzipBytes,
+	PARTITION_HASH_ALGO,
+} from "../../src/engine/store-kv";
 import type { Env, StoreManifest } from "../../src/engine/types";
 import { EngineUnavailableError } from "../../src/engine/types";
+
+/** The manifest this build's engine reads (x19): its own archive format's key. */
+const MANIFEST_READ = formatManifestKey();
 
 // ── The wasm fake: one instance per label, like the real shim ─────────────────
 
@@ -370,7 +379,7 @@ async function publishV2(builtAt = "100"): Promise<{
 		card_count: 20,
 		printing_count: 40,
 		upstream_commit: "abc",
-		format_version: 1,
+		format_version: ARCHIVE_FORMAT_VERSION,
 		store_bytes: (raw[0] as Uint8Array).length + (raw[1] as Uint8Array).length,
 		store_gzip_bytes: (gz[0] as Uint8Array).length + (gz[1] as Uint8Array).length,
 		chunk_count: 2,
@@ -379,7 +388,7 @@ async function publishV2(builtAt = "100"): Promise<{
 		partitions,
 	};
 	const entries = new Map<string, Uint8Array | string>();
-	entries.set("store:manifest", JSON.stringify(manifest));
+	entries.set(MANIFEST_READ, JSON.stringify(manifest));
 	for (let k = 0; k < 2; k++)
 		entries.set(chunkKey((partitions[k] as { store_key: string }).store_key, 0), gz[k] as Uint8Array);
 	return { entries, manifest, raw };
@@ -425,7 +434,7 @@ describe("the partitioned loader", () => {
 
 	test("an unknown partition_hash is refused, loudly", async () => {
 		const { entries, manifest } = await publishV2("102");
-		entries.set("store:manifest", JSON.stringify({ ...manifest, partition_hash: "sha256/oracle_id/v9" }));
+		entries.set(MANIFEST_READ, JSON.stringify({ ...manifest, partition_hash: "sha256/oracle_id/v9" }));
 		const { env } = fakeEnv(entries);
 		expect(store.getEngine(env, ctxFor("engine-hash-p0", 0))).rejects.toThrow(/does not implement/);
 	});
@@ -444,14 +453,14 @@ describe("the partitioned loader", () => {
 		const raw = rawArchive(3);
 		const entries = new Map<string, Uint8Array | string>();
 		entries.set(
-			"store:manifest",
+			MANIFEST_READ,
 			JSON.stringify({
 				store_key: "card-store-v1-104.store",
 				built_at: "104",
 				card_count: 1,
 				printing_count: 1,
 				upstream_commit: "abc",
-				format_version: 1,
+				format_version: ARCHIVE_FORMAT_VERSION,
 				store_bytes: raw.length,
 			}),
 		);
@@ -494,7 +503,7 @@ describe("the compressed archive cache", () => {
 			manifest.chunk_count = manifest.partitions.reduce((s, p) => s + p.chunk_count, 0);
 			manifest.store_gzip_bytes = manifest.partitions.reduce((s, p) => s + (p.store_gzip_bytes ?? 0), 0);
 		}
-		entries.set("store:manifest", JSON.stringify(manifest));
+		entries.set(MANIFEST_READ, JSON.stringify(manifest));
 		entries.set(chunkKey(part.store_key, 0), gz[0] as Uint8Array);
 		entries.set(chunkKey(part.store_key, 1), gz[1] as Uint8Array);
 
@@ -588,7 +597,7 @@ describe("prepare/commit at the loader level", () => {
 			store.refreshNow(env, ctx),
 		]);
 		expect(results).toEqual([true, true, true]);
-		expect(reads.filter((k) => k === "store:manifest").length).toBe(1);
+		expect(reads.filter((k) => k === MANIFEST_READ).length).toBe(1);
 		expect(chunkReads().length).toBe(1);
 		expect(instanceFor("engine-refresh-p1").loaded).toEqual(raw[1] as Uint8Array);
 		expect(manifest.built_at).toBe("126");
@@ -610,7 +619,7 @@ describe("the LZ4 cache (r3)", () => {
 	async function publishWith(builtAt: string, codec: "lz4" | "gzip" | undefined) {
 		const pub = await publishV2(builtAt);
 		if (codec) pub.manifest.cache = { v: 1, codec, projected_lz4_bytes: 1 };
-		pub.entries.set("store:manifest", JSON.stringify(pub.manifest));
+		pub.entries.set(MANIFEST_READ, JSON.stringify(pub.manifest));
 		return pub;
 	}
 	/** A load context whose background work the test can wait for — the fill runs after the load. */
@@ -692,10 +701,7 @@ describe("the LZ4 cache (r3)", () => {
 		await Promise.all(w.pending);
 		// The same build, re-announced with the codec off: the copy is not thrown away for a KV load.
 		const off = new Map(on.entries);
-		off.set(
-			"store:manifest",
-			JSON.stringify({ ...on.manifest, cache: { v: 1, codec: "gzip", projected_lz4_bytes: 9 } }),
-		);
+		off.set(MANIFEST_READ, JSON.stringify({ ...on.manifest, cache: { v: 1, codec: "gzip", projected_lz4_bytes: 9 } }));
 		const again = fakeEnv(off);
 		await store.getEngine(again.env, ctxFor("engine-lz4off-p0", 0, storage));
 		expect(again.chunkReads().length).toBe(0);
@@ -855,6 +861,23 @@ describe("a pushed record NEWER than KV's colo-cached manifest", () => {
 		expect(await engine.cardCount()).toBe(7);
 		expect((cache.readLiveManifest(storage) as StoreManifest).built_at).toBe("132");
 	});
+
+	test("a record of ANOTHER archive format is ignored, however new — KV's manifest of this format loads (x19)", async () => {
+		// The previous build's coordinator pushed this record, and then a deploy reset the object
+		// onto this build: its engine would refuse that store after fetching every byte of it.
+		const live = await publishV2("134");
+		const pushed = await publishV2("135");
+		const entries = new Map(live.entries);
+		for (const [key, value] of pushed.entries) if (key.startsWith("store:card-")) entries.set(key, value);
+		const storage = fakeStorage();
+		const cache = await import("../../src/engine/store-cache");
+		cache.recordLiveManifest(storage, { ...pushed.manifest, format_version: ARCHIVE_FORMAT_VERSION - 1 });
+
+		const { env, chunkReads } = fakeEnv(entries);
+		await store.getEngine(env, ctxFor("engine-other-format-p0", 0, storage));
+		expect(instanceFor("engine-other-format-p0").loaded).toEqual(live.raw[0] as Uint8Array);
+		expect(chunkReads().every((k) => k.includes("-134-"))).toBe(true);
+	});
 });
 
 describe("the announcement is written once per store, not once per wake", () => {
@@ -940,7 +963,7 @@ describe("drop, then fill (x1)", () => {
 			card_count: 20,
 			printing_count: 40,
 			upstream_commit: "abc",
-			format_version: 1,
+			format_version: ARCHIVE_FORMAT_VERSION,
 			store_bytes: raw.reduce((s, r) => s + r.length, 0),
 			store_gzip_bytes: gz.reduce((s, g) => s + g.length, 0),
 			chunk_count: 2,
@@ -950,7 +973,7 @@ describe("drop, then fill (x1)", () => {
 			cache: { v: 1, codec, projected_lz4_bytes: 1 },
 		};
 		const entries = new Map<string, Uint8Array | string>();
-		entries.set("store:manifest", JSON.stringify(manifest));
+		entries.set(MANIFEST_READ, JSON.stringify(manifest));
 		partitions.forEach((p, k) => {
 			entries.set(chunkKey(p.store_key, 0), gz[k] as Uint8Array);
 		});
@@ -1006,7 +1029,7 @@ describe("drop, then fill (x1)", () => {
 			// Evicted, never prepared (a straggler): a fresh label on the same storage, KV names 411.
 			const next = settlingCtx(`engine-x1cold${codec}b-p1`, storage);
 			const kv = merged(old, fresh);
-			kv.set("store:manifest", JSON.stringify(fresh.manifest));
+			kv.set(MANIFEST_READ, JSON.stringify(fresh.manifest));
 			await store.getEngine(fakeEnv(kv).env, next.ctx);
 			await next.settle();
 			expect(meterOf(storage).peakBuilds).toBe(1);
@@ -1174,7 +1197,7 @@ describe("the card-names blob (n8)", () => {
 		const key = `store:card-names-v1-${builtAt}.store:0`;
 		const manifest = { ...published.manifest, names_key: key, names_bytes: gz.byteLength };
 		published.entries.set(key, gz);
-		published.entries.set("store:manifest", JSON.stringify(manifest));
+		published.entries.set(MANIFEST_READ, JSON.stringify(manifest));
 		return { ...published, manifest, key };
 	}
 	const archiveOf = (manifest: StoreManifest, k: number) => (manifest.partitions ?? [])[k]?.store_key ?? "";
@@ -1256,7 +1279,7 @@ describe("the card-names blob (n8)", () => {
 		const key = `store:card-names-v1-${builtAt}.store:0`;
 		const manifest = { ...published.manifest, names_key: key, names_bytes: gz.byteLength };
 		published.entries.set(key, gz);
-		published.entries.set("store:manifest", JSON.stringify(manifest));
+		published.entries.set(MANIFEST_READ, JSON.stringify(manifest));
 		return { ...published, manifest, key };
 	}
 	const bare = (value: string) =>

@@ -47,7 +47,14 @@
 // is exactly the failure this split exists to make visible. Every path says
 // why on stderr; callers must show that text, not discard it.
 
-import { chunkKey, MANIFEST_KEY, routingFilterKey, STORE_CONTENT_GENERATION } from "../src/engine/store-kv";
+import {
+	ARCHIVE_FORMAT_VERSION,
+	chunkKey,
+	formatManifestKey,
+	MANIFEST_KEY,
+	routingFilterKey,
+	STORE_CONTENT_GENERATION,
+} from "../src/engine/store-kv";
 import { kvName } from "./project-config";
 import { readArchiveFormatVersion } from "./wasm-provenance";
 import { wranglerArgv } from "./wrangler-cmd";
@@ -145,16 +152,36 @@ if (LOCAL) {
 /** `wrangler kv key get <key>` against whichever namespace this run targets. */
 const kvGetArgv = (key: string): string[] => [...wranglerArgv(), "kv", "key", "get", key, ...kvTarget];
 
-const proc = Bun.spawn(kvGetArgv(MANIFEST_KEY), { stdout: "pipe", stderr: "pipe" });
-const out = await new Response(proc.stdout).text();
-const errText = await new Response(proc.stderr).text();
-if ((await proc.exited) !== 0) {
-	const noise = /Logs were written to|^\s*$|^\s*🪵/;
-	const detail = (errText.trim() || out.trim() || "no output")
+// WHICH manifest (x19): the one THIS deploy's Worker will read — its own archive format's key —
+// and only when that is absent, the legacy key, exactly as readManifest falls back. A legacy
+// manifest of another format is then judged by the format check below and found not to be this
+// build's store (exit 1), which is the answer that makes a format-bump deploy import; a namespace
+// with neither is exit 3.
+const OWN_MANIFEST_KEY = formatManifestKey(ARCHIVE_FORMAT_VERSION);
+async function readKv(key: string): Promise<{ status: number; out: string; errText: string }> {
+	const proc = Bun.spawn(kvGetArgv(key), { stdout: "pipe", stderr: "pipe" });
+	const out = await new Response(proc.stdout).text();
+	const errText = await new Response(proc.stderr).text();
+	return { status: await proc.exited, out, errText };
+}
+const noise = /Logs were written to|^\s*$|^\s*🪵/;
+const detailOf = (r: { out: string; errText: string }): string =>
+	(r.errText.trim() || r.out.trim() || "no output")
 		.split("\n")
 		.filter((line) => !noise.test(line))
 		.join("\n  ")
 		.trim();
+const isMissing = (r: { status: number; out: string; errText: string }): boolean =>
+	(r.status !== 0 && /not found|does not exist|no value/i.test(detailOf(r))) || (r.status === 0 && !r.out.trim());
+let manifestKey = OWN_MANIFEST_KEY;
+let read = await readKv(OWN_MANIFEST_KEY);
+if (isMissing(read)) {
+	manifestKey = MANIFEST_KEY;
+	read = await readKv(MANIFEST_KEY);
+}
+const out = read.out;
+if (read.status !== 0) {
+	const detail = detailOf(read);
 	// A namespace that has never been published to simply has no manifest key.
 	// That is an ANSWER — "nothing here yet" — not a failure to ask, and it gets
 	// its OWN exit code (3) because a caller on a preview branch must tell it
@@ -164,7 +191,9 @@ if ((await proc.exited) !== 0) {
 	// republished the shared index at generation 40, retention dropped the
 	// generation-39 chunks, and production (still on 39) lost every search.
 	if (/not found|does not exist|no value/i.test(detail)) {
-		console.error(`store-age: ${WHERE} holds no manifest at ${MANIFEST_KEY} — nothing has been published.`);
+		console.error(
+			`store-age: ${WHERE} holds no manifest at ${OWN_MANIFEST_KEY} or ${MANIFEST_KEY} — nothing has been published.`,
+		);
 		process.exit(3);
 	}
 	console.error(`store-age: could not read the manifest from ${WHERE} —\n  ${detail}`);
@@ -268,7 +297,7 @@ if (
 	manifest.partitions.some((p) => !p.store_key || !p.store_bytes || !p.chunk_count)
 ) {
 	console.error(
-		`store-age: the manifest at ${MANIFEST_KEY} is generation ${STORE_CONTENT_GENERATION} but its ` +
+		`store-age: the manifest at ${manifestKey} is generation ${STORE_CONTENT_GENERATION} but its ` +
 			`partition shape is malformed or absent (partition_count=${manifest.partition_count}, ` +
 			`partitions=${manifest.partitions?.length}). This deployment serves partitioned archives only.`,
 	);

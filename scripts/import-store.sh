@@ -29,6 +29,12 @@
 # It happens ONCE, on the transition deploy. Every deploy after it publishes the
 # shape the live Worker already reads, so this paragraph is history, not a
 # runbook step. Nothing here needs doing about it.
+#
+# (The same window used to open on every ARCHIVE FORMAT bump too — generations
+# 45, 48 and 53 — because the publish overwrote the one manifest the running
+# Worker read. Since backlog x19 each build reads `store:manifest:v<its format>`,
+# so a format-bump deploy publishes beside the running build rather than over
+# it; see src/engine/store-kv.ts at MANIFEST_KEY.)
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -193,6 +199,15 @@ bun scripts/seed-reference.ts --remote $IF_MISSING || echo "!!! Reference publis
 #     deploy resets — and the coordinator then published a manifest over the deleted chunks.
 echo "==> Retiring superseded store builds..."
 bun scripts/prune-kv.ts --remote || echo "!!! Store retention failed — superseded builds stay in KV until the next import."
+
+#     The manifest this build's Worker reads is `store:manifest:v<its archive format>` (backlog x19).
+#     On the first deploy of that code the namespace holds only the legacy `store:manifest`; when it
+#     is this build's format it is copied to the per-format key here, and the legacy key — what the
+#     build still serving reads — is left alone. One read on every later deploy. Not fatal: readers
+#     fall back to a same-format legacy manifest while their own key is absent.
+echo "==> Making sure this build's archive format has its own manifest key..."
+bun scripts/ensure-format-manifest.ts --remote \
+    || echo "!!! Per-format manifest not ensured — readers fall back to a same-format store:manifest meanwhile."
 
 if [[ "${FORCE_IMPORT:-}" != "1" && -n "$STORE_AGE" ]]; then
     # The live build's tag alias map, for a build that predates the map shipping with the store

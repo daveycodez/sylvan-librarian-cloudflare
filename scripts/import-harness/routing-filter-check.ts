@@ -14,7 +14,7 @@
 import { gunzipSync } from "node:zlib";
 import { partitionOfOracleId } from "../../src/engine/partition";
 import { nameKey, RoutingFilter } from "../../src/engine/routing-filter";
-import { MANIFEST_KEY, routingFilterKeyFor } from "../../src/engine/store-kv";
+import { formatManifestKey, routingFilterKeyFor } from "../../src/engine/store-kv";
 import type { StoreManifest } from "../../src/engine/types";
 import { foldAccents } from "../../src/parser/pystr";
 import { routingFilterFromBuildDir } from "../routing-filter-build";
@@ -35,7 +35,7 @@ export async function checkRoutingFilter(
 	const fail = (why: string): RoutingFilterCheck => ({ ok: false, lines: [...lines, `FAILED: ${why}`] });
 
 	// ── 1. what the nightly published ───────────────────────────────────────
-	const manifest = (await kv.get(MANIFEST_KEY, "json")) as StoreManifest | null;
+	const manifest = (await kv.get(formatManifestKey(), "json")) as StoreManifest | null;
 	if (!manifest) return fail("no manifest was published");
 	const key = routingFilterKeyFor(manifest);
 	const n = manifest.partition_count as number;

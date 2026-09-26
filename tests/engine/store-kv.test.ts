@@ -9,7 +9,9 @@
 import { describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
+import { readArchiveFormatVersion } from "../../scripts/wasm-provenance";
 import {
+	ARCHIVE_FORMAT_VERSION,
 	assembleChunk,
 	CARRIED_MANIFEST_BLOCKS,
 	CHUNK_HEADROOM_WARN_BYTES,
@@ -19,13 +21,18 @@ import {
 	chunkHeadroom,
 	chunkHeadroomWarning,
 	chunkKey,
+	FORMAT_MANIFEST_PREFIX,
+	formatManifestKey,
+	formatOfManifestKey,
 	gzipBytes,
 	isPartitionedManifest,
 	KV_CHUNK_BYTES,
 	KV_CHUNK_BYTES_SAFE,
 	KV_VALUE_CAP_BYTES,
 	kvSourceStream,
+	legacyManifestFollows,
 	MANIFEST_KEY,
+	manifestKeysToWrite,
 	manifestServableBy,
 	manifestShapeProblem,
 	missingManifestChunks,
@@ -231,7 +238,7 @@ const manifestFor = (store: Uint8Array, key = "card-store-v1-123.store"): StoreM
 	card_count: 1,
 	printing_count: 1,
 	upstream_commit: "vendored",
-	format_version: 1,
+	format_version: ARCHIVE_FORMAT_VERSION,
 	store_bytes: store.length,
 	chunk_count: splitStore(store).length,
 });
@@ -476,7 +483,7 @@ describe("the manifest", () => {
 		card_count: 8_000,
 		printing_count: 24_000,
 		upstream_commit: "vendored",
-		format_version: 2026081501,
+		format_version: ARCHIVE_FORMAT_VERSION,
 		content_generation: 20,
 		store_bytes: 80_000_000,
 		store_gzip_bytes: 34_000_000,
@@ -517,25 +524,89 @@ describe("the manifest", () => {
 		expect(await readManifest(env)).toEqual(manifest);
 	});
 
-	// ONE POINTER. There is no shape→key derivation left to get wrong because
-	// there is no second key: a partitioned manifest is the only thing that can
-	// be written, and `store:manifest` is the only place it goes.
-	describe("the one manifest pointer", () => {
-		test("the key is store:manifest, and a publish writes exactly it", async () => {
+	// ONE MANIFEST PER ARCHIVE FORMAT (x19). A reader reads its own format's key, so a deploy that
+	// bumps the format publishes beside the running build instead of over it; the legacy key is a
+	// mirror that follows only while it holds the same format.
+	describe("one manifest per archive format", () => {
+		test("the key is store:manifest:v<format>, and this build's format is the committed engine's", () => {
 			expect(MANIFEST_KEY).toBe("store:manifest");
-			const { kv, entries } = fakeKvStore();
-			await writeManifest({ STORE_KV: kv } as Env, v2());
-			expect(Object.keys(entries)).toEqual([MANIFEST_KEY]);
+			expect(formatManifestKey(2026092501)).toBe("store:manifest:v2026092501");
+			expect(formatManifestKey()).toBe(`${FORMAT_MANIFEST_PREFIX}${ARCHIVE_FORMAT_VERSION}`);
+			expect(formatOfManifestKey("store:manifest:v2026092501")).toBe(2026092501);
+			expect(formatOfManifestKey(MANIFEST_KEY)).toBeNull();
+			expect(formatOfManifestKey("store:manifest:vX")).toBeNull();
+			// The key a Worker reads and the engine it ships must name one format: the provenance record
+			// the constant comes from is pinned to the Rust source by wasm-blob-freshness.test.ts.
+			expect(ARCHIVE_FORMAT_VERSION).toBe(readArchiveFormatVersion());
 		});
 
-		test("a republish overwrites in place rather than opening a second pointer", async () => {
+		test("a publish writes its own key, then the mirror while that holds the same format or nothing", async () => {
 			const { kv, entries } = fakeKvStore();
 			const env = { STORE_KV: kv } as Env;
-			await writeManifest(env, v2());
+			expect(await writeManifest(env, v2())).toEqual([formatManifestKey(), MANIFEST_KEY]);
+			expect(Object.keys(entries).sort()).toEqual([MANIFEST_KEY, formatManifestKey()].sort());
+			expect(entries[MANIFEST_KEY]).toBe(entries[formatManifestKey()]);
 			const next = v2({ built_at: "1755400000" });
-			await writeManifest(env, next);
-			expect(Object.keys(entries)).toEqual([MANIFEST_KEY]);
+			expect(await writeManifest(env, next)).toEqual([formatManifestKey(), MANIFEST_KEY]);
 			expect(await readManifest(env)).toEqual(next);
+			expect(JSON.parse(entries[MANIFEST_KEY] as string)).toEqual(next);
+		});
+
+		test("a new format's publish leaves the legacy key on the format the running build reads", async () => {
+			const { kv, entries } = fakeKvStore();
+			const env = { STORE_KV: kv } as Env;
+			const old = v2({ built_at: "1755300000", format_version: ARCHIVE_FORMAT_VERSION - 1 });
+			entries[MANIFEST_KEY] = JSON.stringify(old);
+			const next = v2({ built_at: "1755400000" });
+			expect(await writeManifest(env, next)).toEqual([formatManifestKey()]);
+			expect(JSON.parse(entries[MANIFEST_KEY] as string)).toEqual(old);
+			// Each build reads its own: the old one through the mirror, this one through its key.
+			expect(await readManifest(env)).toEqual(next);
+			expect(await readManifest(env, ARCHIVE_FORMAT_VERSION - 1)).toEqual(old);
+		});
+
+		test("legacyManifestFollows: absent, unreadable or the same format — never another format", () => {
+			expect(legacyManifestFollows(null, 5)).toBe(true);
+			expect(legacyManifestFollows({}, 5)).toBe(true);
+			expect(legacyManifestFollows({ format_version: "5" }, 5)).toBe(true);
+			expect(legacyManifestFollows({ format_version: 5 }, 5)).toBe(true);
+			expect(legacyManifestFollows({ format_version: 4 }, 5)).toBe(false);
+			expect(legacyManifestFollows({ format_version: 6 }, 5)).toBe(false);
+			expect(manifestKeysToWrite(5, { format_version: 4 })).toEqual(["store:manifest:v5"]);
+			expect(manifestKeysToWrite(5, null)).toEqual(["store:manifest:v5", MANIFEST_KEY]);
+		});
+
+		test("the reader: its own key, then a same-format legacy manifest, and nothing of another format", async () => {
+			const reads: string[] = [];
+			const own = v2({ built_at: "1755400000" });
+			const legacySame = v2({ built_at: "1755300000" });
+			const legacyOther = v2({ built_at: "1755200000", format_version: ARCHIVE_FORMAT_VERSION - 1 });
+			const env = (entries: Record<string, string>) => ({ STORE_KV: fakeKv(entries, (k) => reads.push(k)) }) as Env;
+			// Steady state: ONE read, as before x19.
+			expect(
+				await readManifest(
+					env({ [formatManifestKey()]: JSON.stringify(own), [MANIFEST_KEY]: JSON.stringify(legacySame) }),
+				),
+			).toEqual(own);
+			expect(reads).toEqual([formatManifestKey()]);
+			// The migration: no key of its own yet, the single key holds this format.
+			reads.length = 0;
+			expect(await readManifest(env({ [MANIFEST_KEY]: JSON.stringify(legacySame) }))).toEqual(legacySame);
+			expect(reads).toEqual([formatManifestKey(), MANIFEST_KEY]);
+			// Another format's store is not this build's: null, never a store its engine refuses.
+			expect(await readManifest(env({ [MANIFEST_KEY]: JSON.stringify(legacyOther) }))).toBeNull();
+		});
+
+		test("a manifest under another format's key is a writer bug, refused loudly", async () => {
+			const wrong = v2({ format_version: ARCHIVE_FORMAT_VERSION + 1 });
+			const env = { STORE_KV: fakeKv({ [formatManifestKey()]: JSON.stringify(wrong) }) } as Env;
+			expect(readManifest(env)).rejects.toThrow(EngineUnavailableError);
+			expect(readManifest(env)).rejects.toThrow(/wrong key/);
+		});
+
+		test("a manifest with no usable format_version is refused before it has a key", () => {
+			expect(manifestShapeProblem(v2({ format_version: 0 }))).toContain("format_version");
+			expect(manifestShapeProblem(v2({ format_version: 1.5 }))).toContain("format_version");
 		});
 
 		test("nothing published yet reads as null, not as an error", async () => {
@@ -551,7 +622,7 @@ describe("the manifest", () => {
 	describe("a manifest that predates the partitioned store", () => {
 		test("readManifest refuses it, naming the format and the repair", async () => {
 			const { kv, entries } = fakeKvStore();
-			entries[MANIFEST_KEY] = JSON.stringify(manifestFor(syntheticStore(1000)));
+			entries[formatManifestKey()] = JSON.stringify(manifestFor(syntheticStore(1000)));
 			const env = { STORE_KV: kv } as Env;
 			expect(readManifest(env)).rejects.toThrow(EngineUnavailableError);
 			expect(readManifest(env)).rejects.toThrow(/partition_count/);
@@ -567,6 +638,7 @@ describe("the manifest", () => {
 			const env = { STORE_KV: kv } as Env;
 			expect(writeManifest(env, manifestFor(syntheticStore(1000)))).rejects.toThrow(/partitions auto/);
 			expect(entries[MANIFEST_KEY]).toBeUndefined();
+			expect(entries[formatManifestKey()]).toBeUndefined();
 		});
 	});
 
@@ -633,6 +705,7 @@ describe("the manifest", () => {
 			const env = { STORE_KV: kv } as Env;
 			expect(writeManifest(env, v2({ partition_count: 9 }))).rejects.toThrow(/refusing to publish/);
 			expect(entries[MANIFEST_KEY]).toBeUndefined();
+			expect(entries[formatManifestKey()]).toBeUndefined();
 		});
 	});
 });
@@ -661,7 +734,13 @@ describe("the dev and deploy staleness gates are the same gate", () => {
 		// second hand-built argv is how one of them ends up on production while
 		// the other is on the dev namespace, so `kv key get` is spelled once.
 		expect(src.match(/"kv", "key", "get"/g)?.length ?? 0).toBe(1);
-		expect(src).toMatch(/kvGetArgv\(MANIFEST_KEY\)/);
+		// x19: this build's own format's key first, the legacy key only when that is absent — both
+		// through the one argv builder.
+		expect(src).toContain("const OWN_MANIFEST_KEY = formatManifestKey(ARCHIVE_FORMAT_VERSION)");
+		expect(src).toMatch(/Bun\.spawn\(kvGetArgv\(key\)/);
+		expect(src).toMatch(
+			/let read = await readKv\(OWN_MANIFEST_KEY\);\s*if \(isMissing\(read\)\) \{\s*manifestKey = MANIFEST_KEY;\s*read = await readKv\(MANIFEST_KEY\);/,
+		);
 		// The chunk probe is a prefix LISTING against the same target, with the direct read as the
 		// fallback for a key the listing lags — both spelled through kvTarget / kvGetArgv.
 		expect(src).toMatch(/"kv", "key", "list", "--prefix", "store:card-", \.\.\.kvTarget/);
@@ -687,6 +766,7 @@ describe("the dev and deploy staleness gates are the same gate", () => {
 	test("store-age validates the partition shape with no mode selection", () => {
 		const src = read("store-age.ts");
 		expect(src).not.toContain("PARTITIONED_STORE");
+		// The old shape switch's name; the per-format key (x19) is selected by the engine's format alone.
 		expect(src).not.toContain("manifestKeyFor");
 		expect(src).toContain("MANIFEST_KEY");
 		// The shape check is a plain refusal, not an arm of a conditional.
@@ -709,30 +789,37 @@ describe("the dev and deploy staleness gates are the same gate", () => {
 describe("the publishers", () => {
 	const read = (p: string) => readFileSync(join(import.meta.dir, "../../scripts", p), "utf8");
 
-	test("seed-remote-kv publishes the manifest at the one key", () => {
+	test("seed-remote-kv publishes its format's key and the mirror only when it follows (x19)", () => {
 		const src = read("seed-remote-kv.ts");
-		expect(src).toMatch(/"put", MANIFEST_KEY/);
+		expect(src).toContain("const manifestKeys = manifestKeysToWrite(ARCHIVE_FORMAT_VERSION, legacy)");
+		expect(src).toMatch(/for \(const key of manifestKeys\) \{\s*await kv\(\["key", "put", key,/);
+		expect(src).not.toMatch(/"put", MANIFEST_KEY/);
+		// A builder of another format would publish under a key the shipped Worker never reads.
+		expect(src).toContain("manifest.format_version !== ARCHIVE_FORMAT_VERSION");
 		expect(src).not.toContain("MANIFEST_KEY_V2");
 	});
 
-	test("seed-local-store seeds the same key, so dev reads through the same loader", () => {
+	test("seed-local-store seeds the same keys, so dev reads through the same loader", () => {
 		const src = read("seed-local-store.ts");
-		expect(src).toMatch(/localKvPut\(MANIFEST_KEY/);
+		expect(src).toMatch(/manifestKeysToWrite\(manifest\.format_version, null\)\) await localKvPut\(key/);
 		expect(src).not.toContain("MANIFEST_KEY_V2");
 	});
 
 	test("every deploy sweep is retention by role, from the live manifest (x3)", () => {
 		const upload = read("deploy-upload.ts");
-		// Both deploy-side entry points read the live manifest for the roles and plan through the
-		// one shared decision; the post-manifest sweep is handed the manifest it just wrote.
-		expect(upload.match(/kv\.get\(MANIFEST_KEY\)/g)?.length).toBe(2);
+		// Both deploy-side entry points read EVERY live manifest (x19: each format's and the legacy
+		// mirror) for the roles and plan through the one shared decision; the post-manifest sweep is
+		// handed the manifest it just wrote.
+		expect(upload.match(/await readPublishedManifests\(kv\)/g)?.length).toBe(2);
+		expect(upload.match(/liveManifestRoles\(/g)?.length).toBe(2);
 		expect(upload.match(/planRetention\(/g)?.length).toBe(2);
 		expect(upload).not.toContain("MANIFEST_KEY_V2");
 		expect(read("prune-kv.ts")).toContain("sweepGenerationsByRole(wranglerDeployKv(remote))");
 		const seed = read("seed-remote-kv.ts");
 		expect(seed).toContain("beginDeployUpload(deployKv, { builtAt, incomingBytes })");
 		expect(seed).toContain("finishDeployUpload(deployKv, published)");
-		expect(seed).toContain("withPreviousBuiltAt(carryManifestBlocks(manifest, live.manifest), live.manifest)");
+		expect(seed).toContain("const replaced = replacedManifest(live.published, ARCHIVE_FORMAT_VERSION)");
+		expect(seed).toContain("withPreviousBuiltAt(carryManifestBlocks(manifest, replaced), replaced)");
 		// The deploy writes its fence before it builds.
 		const sh = readFileSync(join(import.meta.dir, "../../scripts/import-store.sh"), "utf8");
 		expect(sh.indexOf("scripts/deploy-fence.ts --remote")).toBeGreaterThan(0);
@@ -742,7 +829,7 @@ describe("the publishers", () => {
 	test("the deploy publishes the nightly's decided blocks forward, never its bare skeleton", () => {
 		// A deploy that wrote the builder's skeleton would reset r3's cache codec every time.
 		const src = read("seed-remote-kv.ts");
-		expect(src).toContain("carryManifestBlocks(manifest, live.manifest)");
+		expect(src).toContain("carryManifestBlocks(manifest, replaced)");
 		expect(src).toContain("JSON.stringify(published)");
 		expect(src).not.toContain("JSON.stringify(manifest)");
 	});

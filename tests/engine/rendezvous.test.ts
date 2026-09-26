@@ -14,6 +14,7 @@
 // reports cannot keep a higher value alive.
 
 import { afterEach, beforeEach, describe, expect, mock, spyOn, test } from "bun:test";
+import { ARCHIVE_FORMAT_VERSION } from "../../src/engine/store-kv";
 
 let clock = 5_000_000;
 let nowSpy: ReturnType<typeof spyOn> | null = null;
@@ -156,6 +157,7 @@ describe("the two-step publish delegates swap to COMMIT, never prepare", () => {
 	type PublishDo = {
 		preparePublish(m?: unknown): Promise<{ prepared: boolean; shards: number }>;
 		commitPublish(): Promise<{ swapped: boolean; shards: number }>;
+		notifyPublish(m?: unknown): Promise<{ swapped: boolean; shards: number }>;
 	};
 
 	/** Just enough SQLite for recordLiveManifest/readLiveManifest. */
@@ -191,6 +193,7 @@ describe("the two-step publish delegates swap to COMMIT, never prepare", () => {
 		built_at: "1",
 		card_count: 1,
 		partition_count: 1,
+		format_version: ARCHIVE_FORMAT_VERSION,
 		partitions: [{ store_key: "card-store-v1-1-p0.store", store_bytes: 10, chunk_count: 1, card_count: 1 }],
 	};
 
@@ -266,6 +269,20 @@ describe("the two-step publish delegates swap to COMMIT, never prepare", () => {
 		expect((await engine.preparePublish(unpartitioned)).prepared).toBe(true);
 		expect(publishCalls).toEqual([]); // no prefetch of a shape it cannot hold
 		expect((await engine.commitPublish()).swapped).toBe(false); // nothing was recorded
+		expect(publishCalls).toEqual([]);
+	});
+
+	test("another archive format's manifest is ACKED but never cached or prefetched (x19)", async () => {
+		// The previous build's coordinator, reset by a deploy mid-notify, can still reach an object
+		// that already runs this build. Its engine would refuse that store after fetching all of it.
+		publishCalls.length = 0;
+		objectIsWarm = true;
+		const engine = makePublishDo();
+		const older = { ...MANIFEST, format_version: ARCHIVE_FORMAT_VERSION - 1 };
+		expect((await engine.preparePublish(older)).prepared).toBe(true);
+		expect(publishCalls).toEqual([]);
+		expect((await engine.commitPublish()).swapped).toBe(false);
+		expect((await engine.notifyPublish(older)).swapped).toBe(false);
 		expect(publishCalls).toEqual([]);
 	});
 });
@@ -395,6 +412,7 @@ describe("a cold gather wakes every partition at once", () => {
 		built_at: "7",
 		card_count: 2,
 		partition_count: 2,
+		format_version: ARCHIVE_FORMAT_VERSION,
 		partitions: [
 			{ store_key: "card-store-v1-7-p0.store", store_bytes: 10, chunk_count: 1, card_count: 1 },
 			{ store_key: "card-store-v1-7-p1.store", store_bytes: 10, chunk_count: 1, card_count: 1 },
@@ -531,6 +549,7 @@ describe("a gather awaiting its siblings is concurrency, not queue depth", () =>
 				built_at: "7",
 				card_count: 2,
 				partition_count: 2,
+				format_version: ARCHIVE_FORMAT_VERSION,
 				partitions: [
 					{ store_key: "card-store-v1-7-p0.store", store_bytes: 10, chunk_count: 1, card_count: 1 },
 					{ store_key: "card-store-v1-7-p1.store", store_bytes: 10, chunk_count: 1, card_count: 1 },
@@ -590,6 +609,7 @@ describe("a name-only gather asks only the partitions its names index names (n15
 		built_at: "7",
 		card_count: 3,
 		partition_count: 3,
+		format_version: ARCHIVE_FORMAT_VERSION,
 		partitions: [0, 1, 2].map((k) => ({
 			store_key: `card-store-v1-7-p${k}.store`,
 			store_bytes: 10,

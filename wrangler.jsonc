@@ -98,8 +98,10 @@
 	// The engine store lives here, and KV is the SOURCE OF TRUTH for it: nothing
 	// else holds an authoritative copy. The store is one complete rkyv archive PER
 	// PARTITION, each published under its own immutable chunk family, plus one
-	// routing filter and one manifest at `store:manifest` — written by the deploy
-	// and the nightly cron, read by every SearchEngine DO.
+	// routing filter and one manifest PER ARCHIVE FORMAT at `store:manifest:v<fmt>`
+	// (mirrored to the legacy `store:manifest` while it holds the same format) —
+	// written by the deploy and the nightly cron, read by the Worker and every
+	// SearchEngine DO of that format (backlog x19, src/engine/store-kv.ts).
 	//
 	// DO NOT WRITE THE PARTITION COUNT DOWN HERE. The builder derives it per build
 	// from the corpus it just measured (TARGET_PARTITION_BYTES, src/import-publish.ts)

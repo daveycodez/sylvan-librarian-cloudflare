@@ -95,6 +95,7 @@
 // wake pays that decompression too, so the gap is the fetch — smaller than these
 // numbers, and not re-measured. See store-cache.ts.
 
+import wasmProvenance from "../../engine/wasm-provenance.json";
 import { edgeCacheUrl, matchEdgeCache, readThroughEdgeCache } from "./edge-cache";
 import { kvBytesMetadata } from "./kv-retention";
 import type { Env, StoreManifest, StoreManifestPartition } from "./types";
@@ -231,17 +232,70 @@ export async function announceSelf(env: Env, label?: string): Promise<boolean> {
 }
 
 /**
- * THE manifest key. There is exactly one, and it always holds a PARTITIONED
- * manifest.
+ * The archive format THIS build's engine reads (card_engine's ARCHIVE_FORMAT_VERSION), which is
+ * also the manifest key this build reads (formatManifestKey). Taken from the committed provenance
+ * record rather than restated: `bun run build` writes it beside the wasm blobs it describes, and
+ * tests/engine/wasm-blob-freshness.test.ts fails CI when it disagrees with the Rust source or the
+ * blobs — so a Worker cannot be built whose key and engine name different formats.
+ */
+export const ARCHIVE_FORMAT_VERSION: number = wasmProvenance.archive_format_version;
+
+/**
+ * THE LEGACY MANIFEST KEY — what every build before x19 reads, and still a mirror now.
  *
- * There was briefly a second pointer (`store:manifest2`) so a partitioned store
- * and an unpartitioned one could be live at once behind an env flag. That dual
- * window is deleted: the partitioned store is the setup, not a mode, so there is
- * one pointer, one shape, and no shape-to-key derivation to get wrong.
- * writeManifest refuses an unpartitioned manifest outright and readManifest
- * refuses to hand one back.
+ * ── ONE MANIFEST PER ARCHIVE FORMAT (backlog x19) ───────────────────────────
+ *
+ * A reader reads `store:manifest:v<its own format>` (formatManifestKey), so a deploy that bumps the
+ * format publishes the new store under a key the RUNNING Worker never reads. Before x19 there was
+ * only this key: the deploy's publish overwrote it minutes before `wrangler deploy` switched the
+ * code, the running Worker was handed a store its engine refuses, and /cards/* was dark on each
+ * account for those minutes (generations 45, 48 and 53). Now both builds read their own manifest
+ * and answer throughout the overlap; the old format's family retires once no deployed reader needs
+ * it (kv-retention.ts, planFormatRetirement).
+ *
+ * This key stays, as a MIRROR with one rule (legacyManifestFollows): a publish copies its manifest
+ * here only when the key is absent or holds the SAME format. A build that never heard of per-format
+ * keys therefore keeps reading the format it understands while a new-format deploy lands — which is
+ * what makes the first deploy of x19 safe even if it bumps the format too — and a rollback to such a
+ * build finds a same-format store. When the old format retires, the mirror moves forward with it.
+ *
+ * Every manifest is still PARTITIONED — writeManifest refuses anything else and readManifest refuses
+ * to hand one back. (A `store:manifest2` once let a partitioned and an unpartitioned store be live at
+ * once behind an env flag. That was a SHAPE switch and is gone; these keys are selected by the
+ * engine's format and nothing else.)
  */
 export const MANIFEST_KEY = "store:manifest";
+
+/** Every per-format manifest key starts with this; the legacy key does not. */
+export const FORMAT_MANIFEST_PREFIX = "store:manifest:v";
+
+/** The manifest key a reader of archive `format` reads, and a publisher of it writes. */
+export function formatManifestKey(format: number = ARCHIVE_FORMAT_VERSION): string {
+	return `${FORMAT_MANIFEST_PREFIX}${format}`;
+}
+
+/** The archive format a per-format manifest key names, or null for any other key (the legacy one included). */
+export function formatOfManifestKey(name: string): number | null {
+	if (!name.startsWith(FORMAT_MANIFEST_PREFIX)) return null;
+	const rest = name.slice(FORMAT_MANIFEST_PREFIX.length);
+	return /^\d+$/.test(rest) ? Number(rest) : null;
+}
+
+/**
+ * Whether a publish of `format` also writes the legacy key, given what it holds now: when it is
+ * absent or unreadable, or already holds `format`. A DIFFERENT format there is being read by a build
+ * that may not know per-format keys — overwriting it is the pre-x19 dark window — so it is left for
+ * the retirement of that format to move forward. Pure.
+ */
+export function legacyManifestFollows(legacy: { format_version?: unknown } | null, format: number): boolean {
+	const held = legacy?.format_version;
+	return typeof held !== "number" || !Number.isFinite(held) || held === format;
+}
+
+/** The keys a publish of `format` writes its manifest to, in order: its own, then the mirror if it follows. */
+export function manifestKeysToWrite(format: number, legacy: { format_version?: unknown } | null): string[] {
+	return [formatManifestKey(format), ...(legacyManifestFollows(legacy, format) ? [MANIFEST_KEY] : [])];
+}
 
 /**
  * THE UPLOAD LEASE: the one generation allowed to be uploading, as `{built_at, owner, epoch}`
@@ -283,9 +337,19 @@ export const PUBLISHING_TTL_SECONDS = 7 * 24 * 3600;
  * either would wedge its next cold load on archiveOfManifest's refusal, so
  * notifyPublish/preparePublish check THIS before recordLiveManifest and refuse
  * loudly (ack, log, cache nothing) on a mismatch.
+ *
+ * AND THE FORMAT (x19): a pushed manifest of another archive format is a store this object's engine
+ * refuses at `finish_store_load`, after fetching every byte of it. Recording one would wedge the next
+ * cold load the same way, so it is refused here — the publisher only ever pushes its own format's
+ * manifest, but a coordinator reset by a deploy mid-notify can reach an object already running the
+ * next build.
  */
-export function manifestServableBy(partition: number | undefined, manifest: StoreManifest): boolean {
-	return partition !== undefined && isPartitionedManifest(manifest);
+export function manifestServableBy(
+	partition: number | undefined,
+	manifest: StoreManifest,
+	format: number = ARCHIVE_FORMAT_VERSION,
+): boolean {
+	return partition !== undefined && isPartitionedManifest(manifest) && manifest.format_version === format;
 }
 
 /** A one-shot stream over bytes already in memory, without a Blob's extra copy. */
@@ -1639,7 +1703,9 @@ export async function gzipBytes(bytes: Uint8Array): Promise<Uint8Array> {
  *      reader the halves mean something new. Same pairing as 45 and 48, for the same reason —
  *      store-age.ts rebuilds on THIS constant, so a format bump alone would leave the old store in
  *      place and every reader refusing it. The running Worker refuses the new store between the
- *      two steps of scripts/deploy.sh, as it did for 45 and 48. SORT_KEY_VERSION moves 2 -> 3 with
+ *      two steps of scripts/deploy.sh, as it did for 45 and 48 — the last time: backlog x19 keys the
+ *      manifest by format (see MANIFEST_KEY), so the next format bump publishes beside the running
+ *      build rather than over it. SORT_KEY_VERSION moves 2 -> 3 with
  *      it, because the cross-partition key gains the batch byte and the collated number.
  */
 export const STORE_CONTENT_GENERATION = 53;
@@ -1809,7 +1875,7 @@ export function isPartitionedManifest(manifest: StoreManifest): boolean {
  */
 function unpartitionedManifestMessage(storeKey: string): string {
 	return (
-		`The manifest at ${MANIFEST_KEY} (${storeKey}) carries no partition_count, so it was published by a ` +
+		`The store manifest (${storeKey}) carries no partition_count, so it was published by a ` +
 		`builder that predates the partitioned store. This deployment serves partitioned archives only — there ` +
 		`is no unpartitioned path to fall back to. The next import (scripts/import-store.sh, or the nightly ` +
 		`coordinator) replaces it.`
@@ -1910,6 +1976,11 @@ export function manifestShapeProblem(manifest: StoreManifest): string | null {
 			`unpartitioned path to serve it through`
 		);
 	}
+	// The manifest's KEY is derived from this (formatManifestKey), so a manifest without it has
+	// nowhere to be published that any reader looks.
+	if (!Number.isInteger(manifest.format_version) || manifest.format_version <= 0) {
+		return `format_version ${JSON.stringify(manifest.format_version)} is not a positive integer`;
+	}
 	const n = manifest.partition_count as number;
 	if (!Number.isInteger(n) || n < 1) return `partition_count ${n} is not a positive integer`;
 	if (manifest.partition_hash !== PARTITION_HASH_ALGO) {
@@ -1962,16 +2033,30 @@ export function carryManifestBlocks<M extends object>(next: M, live: Record<stri
  *
  * Every earlier write in a publish is invisible to readers (chunk keys are
  * per-build); THIS write is what makes them act, so it is the one place a shape
- * check must gate. ONE KEY, ONE SHAPE: an unpartitioned manifest is refused
- * here as a builder bug (see manifestShapeProblem) rather than routed to a
- * second pointer — there is no second pointer, and no reader that could serve
+ * check must gate. ONE SHAPE: an unpartitioned manifest is refused here as a
+ * builder bug (see manifestShapeProblem) — there is no reader that could serve
  * such a store.
+ *
+ * TWO KEYS AT MOST (x19): the manifest's own format's key, which is what readers of that format
+ * read, and then the legacy mirror when it follows (legacyManifestFollows) — one extra small write
+ * per publish. The per-format key goes first: it is the commit point for every x19 reader, and the
+ * mirror only ever repeats it.
  */
-export async function writeManifest(env: Env, manifest: StoreManifest): Promise<void> {
+export async function writeManifest(env: Env, manifest: StoreManifest): Promise<string[]> {
 	const problem = manifestShapeProblem(manifest);
 	if (problem) throw new Error(`refusing to publish the manifest: ${problem}`);
 	const json = JSON.stringify(manifest);
-	await env.STORE_KV.put(MANIFEST_KEY, json, { metadata: kvBytesMetadata(json.length) });
+	let legacy: { format_version?: unknown } | null = null;
+	try {
+		const text = await env.STORE_KV.get(MANIFEST_KEY, { type: "text" });
+		legacy = text ? (JSON.parse(text) as { format_version?: unknown }) : null;
+	} catch {
+		// Unreadable or unparseable: the mirror follows (legacyManifestFollows) — a value nothing can
+		// parse serves no reader, so replacing it is never the dark window.
+	}
+	const keys = manifestKeysToWrite(manifest.format_version, legacy);
+	for (const key of keys) await env.STORE_KV.put(key, json, { metadata: kvBytesMetadata(json.length) });
+	return keys;
 }
 
 // Store retention — which generations stay in KV — is decided BY ROLE in src/engine/kv-retention.ts
@@ -2151,10 +2236,18 @@ export function assembleChunk(
 }
 
 /**
- * Read the manifest. A namespace with no manifest is "no index published yet",
- * reported as null; anything else (binding gone, KV unreachable) becomes an
- * EngineUnavailableError carrying the platform's own message so the reason
- * reaches the response instead of a generic 500.
+ * Read the manifest of archive `format` — this build's own, unless a caller that deliberately
+ * speaks for another format says so (the import harness's old-code readers). A namespace with no
+ * manifest for it is "no index published for this build", reported as null; anything else (binding
+ * gone, KV unreachable) becomes an EngineUnavailableError carrying the platform's own message so the
+ * reason reaches the response instead of a generic 500.
+ *
+ * `store:manifest:v<format>` first (x19). Only when that key is ABSENT does the legacy mirror
+ * answer, and only if it holds the same format: that is the migration from the single key (a
+ * namespace no x19 publisher has written yet) and costs nothing once the per-format key exists —
+ * the steady state reads exactly one key, as before. A legacy manifest of another format is not
+ * this build's store, so it reads as null rather than as a store the engine would refuse after
+ * fetching it.
  *
  * What comes back is ALWAYS the partitioned shape. An unpartitioned manifest
  * found at the key is a store that predates the partitioned format, and it is
@@ -2163,18 +2256,33 @@ export function assembleChunk(
  * the failure into whichever caller forgot to check. The next import replaces
  * it — see unpartitionedManifestMessage.
  */
-export async function readManifest(env: Env): Promise<StoreManifest | null> {
+export async function readManifest(env: Env, format: number = ARCHIVE_FORMAT_VERSION): Promise<StoreManifest | null> {
 	let manifest: StoreManifest | null;
+	let key = formatManifestKey(format);
 	try {
 		// cacheTtl is deliberately short: the manifest is the ONE mutable key,
 		// and a nightly publish should reach isolates within minutes, not hours.
-		const json = await env.STORE_KV.get(MANIFEST_KEY, { type: "text", cacheTtl: 60 });
+		const json = await env.STORE_KV.get(key, { type: "text", cacheTtl: 60 });
 		manifest = json ? (JSON.parse(json) as StoreManifest) : null;
+		if (!manifest) {
+			key = MANIFEST_KEY;
+			const legacy = await env.STORE_KV.get(MANIFEST_KEY, { type: "text", cacheTtl: 60 });
+			const parsed = legacy ? (JSON.parse(legacy) as StoreManifest) : null;
+			manifest = parsed && parsed.format_version === format ? parsed : null;
+		}
 	} catch (err) {
 		throw new EngineUnavailableError(`Cannot read the store manifest from KV: ${err}`);
 	}
 	if (manifest && !isPartitionedManifest(manifest)) {
 		throw new EngineUnavailableError(unpartitionedManifestMessage(manifest.store_key));
+	}
+	if (manifest && manifest.format_version !== format) {
+		// Only a writer bug puts one format's manifest under another's key; serving it would hand
+		// every engine a store it refuses after fetching all of it.
+		throw new EngineUnavailableError(
+			`The manifest at ${key} (${manifest.store_key}) is archive format ${manifest.format_version}, but this ` +
+				`build reads format ${format}. A publisher wrote it under the wrong key; the next import replaces it.`,
+		);
 	}
 	return manifest;
 }

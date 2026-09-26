@@ -4,6 +4,7 @@
 
 import { describe, expect, test } from "bun:test";
 import {
+	afterFormatRetirement,
 	DEPLOY_LEASE_OWNER,
 	decideByteGuard,
 	decideUploadLease,
@@ -15,13 +16,18 @@ import {
 	keysToRetire,
 	type ListedKey,
 	listedKeyBytes,
+	liveManifestRoles,
 	manifestChunkSizes,
+	type PublishedManifest,
 	parseDeployFence,
 	parseUploadLease,
+	planFormatRetirement,
 	planRetention,
+	replacedManifest,
 	retainedFamilies,
 	rollbackFor,
 	type UploadLease,
+	withOwnManifest,
 	withPreviousBuiltAt,
 } from "../../src/engine/kv-retention";
 import { chunkKey, routingFilterKey } from "../../src/engine/store-kv";
@@ -272,7 +278,7 @@ describe("planRetention — the whole decision", () => {
 		const keys = [...gen("1000", 150), ...gen("2000", 150), ...gen("2500", 70), ...stable];
 		const plan = planRetention(keys, { live: live("2000", "1000", 150), inFlight: "3000", incomingBytes: 165 * MB });
 		expect(plan.decision).toBe("go");
-		expect(plan.roles).toEqual({ live: "2000", rollback: "1000", inFlight: "3000" });
+		expect(plan.roles).toEqual({ live: "2000", otherLive: [], rollback: "1000", inFlight: "3000" });
 		expect(plan.retire.sort()).toEqual(family("2500").sort());
 		expect(plan.usedBytes).toBe(350 * MB);
 	});
@@ -305,5 +311,176 @@ describe("planRetention — the whole decision", () => {
 		const plan = planRetention(keys, { live: live("2000", "2000", 100), inFlight: null, incomingBytes: 2_000 * MB });
 		expect(plan.retire).toEqual([]);
 		expect(plan.decision).toBe("refuse");
+	});
+});
+
+// ── x19: one manifest per archive format — two live families during a format bump ──────────────
+describe("two live families, one per archive format (x19)", () => {
+	const MB = 1_000_000;
+	const A = 2026092401;
+	const B = 2026092501;
+	const gen = (builtAt: string, mb: number): ListedKey[] =>
+		family(builtAt).map((name) => ({ name, metadata: { b: name.includes("card-store-") ? (mb * MB) / 4 : 0 } }));
+	const stable = sized(OTHERS, 10 * MB);
+	type M = { built_at: string; format_version: number; store_gzip_bytes: number; previous_built_at?: string };
+	const m = (built_at: string, format_version: number, previous_built_at?: string, mb = 150): M => ({
+		built_at,
+		format_version,
+		store_gzip_bytes: mb * MB,
+		...(previous_built_at ? { previous_built_at } : {}),
+	});
+	const at = (key: string, manifest: M, legacy = false): PublishedManifest<M> => ({ key, legacy, manifest });
+
+	test("liveManifestRoles: the newest format is primary, every other live family is also live", () => {
+		// During a format-bump deploy: A serves (its key and the legacy mirror), B has just published.
+		const published = [
+			at("store:manifest", m("2000", A, "1000"), true),
+			at(`store:manifest:v${A}`, m("2000", A, "1000")),
+			at(`store:manifest:v${B}`, m("3000", B, "2000")),
+		];
+		const { primary, others } = liveManifestRoles(published);
+		expect(primary?.built_at).toBe("3000");
+		expect(others.map((o) => o.built_at)).toEqual(["2000"]);
+		// Order-independent: KV lists in key order, readers in whatever order they read.
+		expect(liveManifestRoles([...published].reverse()).primary?.built_at).toBe("3000");
+		// One format, one family: the mirror adds nothing.
+		expect(liveManifestRoles(published.slice(0, 2)).others).toEqual([]);
+	});
+
+	test("replacedManifest: own format's manifest, else the newest live one — a bump's rollback is the running build", () => {
+		const legacyA = at("store:manifest", m("2000", A, "1000"), true);
+		expect(replacedManifest([legacyA], B)?.built_at).toBe("2000");
+		const withB = [legacyA, at(`store:manifest:v${B}`, m("3000", B, "2000"))];
+		expect(replacedManifest(withB, B)?.built_at).toBe("3000");
+		expect(replacedManifest(withB, A)?.built_at).toBe("3000"); // no A key: the newest there is
+		expect(replacedManifest([], B)).toBeNull();
+	});
+
+	test("the sweep never retires a live family of either format, and drops only the old rollback", () => {
+		// After B's deploy: A live (2000, rollback 1000), B live (3000, whose rollback IS 2000).
+		const keys = [...gen("1000", 150), ...gen("2000", 150), ...gen("3000", 150), ...stable];
+		const plan = planRetention(keys, { live: m("3000", B, "2000"), otherLive: [m("2000", A, "1000")], inFlight: null });
+		expect(plan.roles).toEqual({ live: "3000", otherLive: ["2000"], rollback: null, inFlight: null });
+		expect(plan.retire.sort()).toEqual(family("1000").sort());
+		expect(plan.families.filter((f) => f.role === "live").map((f) => f.builtAt)).toEqual(["3000", "2000"]);
+	});
+
+	test("still three at most: with two formats live and an upload in flight, the rollback goes first", () => {
+		// A second deploy of B before any nightly: A live, B' live (rollback B), B'' uploading.
+		const keys = [...gen("2000", 150), ...gen("3000", 150), ...gen("3500", 150), ...stable];
+		const plan = planRetention(keys, {
+			live: m("3500", B, "3000"),
+			otherLive: [m("2000", A, "1000")],
+			inFlight: "4000",
+			incomingBytes: 150 * MB,
+		});
+		expect(plan.roles.rollback).toBeNull();
+		expect(plan.retire.sort()).toEqual(family("3000").sort());
+		expect(retainedFamilies(plan.roles)).toEqual(new Set(["3500", "2000", "4000"]));
+		// Without an upload the rollback fits in three and is kept.
+		const sweep = planRetention(keys, { live: m("3500", B, "3000"), otherLive: [m("2000", A)], inFlight: null });
+		expect(sweep.roles.rollback).toBe("3000");
+	});
+
+	test("with no primary manifest nothing is deleted, whatever else is listed", () => {
+		const keys = [...gen("1000", 10), ...gen("2000", 10)];
+		expect(planRetention(keys, { live: null, otherLive: [m("2000", A)], inFlight: null }).retire).toEqual([]);
+	});
+
+	test("the pre-x3 rollback fallback never picks the other format's live family", () => {
+		expect(rollbackFor({ built_at: "3000" }, [...family("2000"), ...family("1000")], null, ["2000"])).toBe("1000");
+	});
+
+	test("the byte guard counts BOTH live families, and drops only a rollback that is not live", () => {
+		// 2x corpus, deploying a new format: A live 300, A's rollback 300, B uploading 330.
+		const keys = [...gen("1000", 300), ...gen("2000", 300), ...stable];
+		const plan = planRetention(keys, { live: m("2000", A, "1000", 300), inFlight: "3000", incomingBytes: 330 * MB });
+		expect(plan.decision).toBe("drop-rollback");
+		expect(plan.retire.sort()).toEqual(family("1000").sort());
+		// Once B is live beside A, a further upload must fit beside BOTH — and neither is droppable.
+		const both = [...gen("2000", 300), ...gen("3000", 330), ...stable];
+		const next = planRetention(both, {
+			live: m("3000", B, "2000", 330),
+			otherLive: [m("2000", A, "1000", 300)],
+			inFlight: "4000",
+			incomingBytes: 363 * MB,
+		});
+		expect(next.usedBytes).toBe(680 * MB);
+		expect(next.decision).toBe("refuse");
+		expect(next.retire).toEqual([]);
+	});
+
+	test("at today's size an overlap costs no more than today's live + rollback", () => {
+		// ~150 MB a generation and ~116 MB of everything else (416 MB used after the gen-53 deploy).
+		const other = sized(["rulings:v2:00", "reference:v2:sets:list", "oracle-index:v1:3f", "store:manifest"], 29 * MB);
+		const deploying = planRetention([...gen("1000", 150), ...gen("2000", 150), ...other], {
+			live: m("2000", A, "1000"),
+			inFlight: "3000",
+			incomingBytes: 150 * MB,
+		});
+		expect(deploying.decision).toBe("go");
+		expect(deploying.projectedBytes).toBe(566 * MB);
+		const overlap = planRetention([...gen("1000", 150), ...gen("2000", 150), ...gen("3000", 150), ...other], {
+			live: m("3000", B, "2000"),
+			otherLive: [m("2000", A, "1000")],
+			inFlight: null,
+		});
+		expect(overlap.usedBytes).toBe(416 * MB);
+	});
+});
+
+describe("retiring an older archive format (x19)", () => {
+	const A = 2026092401;
+	const B = 2026092501;
+	const m = (built_at: string, format_version: number) => ({ built_at, format_version });
+	const legacy = (fmt: number, builtAt = "2000"): PublishedManifest => ({
+		key: "store:manifest",
+		legacy: true,
+		manifest: m(builtAt, fmt),
+	});
+	const key = (fmt: number, builtAt: string): PublishedManifest => ({
+		key: `store:manifest:v${fmt}`,
+		legacy: false,
+		manifest: m(builtAt, fmt),
+	});
+
+	test("deployed code of format B retires A's key and moves the mirror forward", () => {
+		const published = [legacy(A), key(A, "2000"), key(B, "3000")];
+		const r = planFormatRetirement(published, B);
+		expect(r.retireKeys).toEqual([`store:manifest:v${A}`]);
+		expect(r.legacyTo?.built_at).toBe("3000");
+		const after = afterFormatRetirement(published, r, "store:manifest");
+		expect(after.map((p) => `${p.key}=${p.manifest.built_at}`).sort()).toEqual(
+			["store:manifest=3000", `store:manifest:v${B}=3000`].sort(),
+		);
+		expect(liveManifestRoles(after).others).toEqual([]);
+	});
+
+	test("from the single-key world: only the mirror moves", () => {
+		const r = planFormatRetirement([legacy(A), key(B, "3000")], B);
+		expect(r.retireKeys).toEqual([]);
+		expect(r.legacyTo?.built_at).toBe("3000");
+	});
+
+	test("nothing moves while this format has no manifest of its own", () => {
+		expect(planFormatRetirement([legacy(A), key(A, "2000")], B)).toEqual({ retireKeys: [], legacyTo: null });
+	});
+
+	test("a HIGHER format is never touched — its deploy may be half way through", () => {
+		// Old code still deployed (the B deploy's `wrangler deploy` failed or has not run): its nightly.
+		expect(planFormatRetirement([legacy(A), key(A, "2000"), key(B, "3000")], A)).toEqual({
+			retireKeys: [],
+			legacyTo: null,
+		});
+	});
+
+	test("one format, nothing to retire", () => {
+		expect(planFormatRetirement([legacy(B, "3000"), key(B, "3000")], B)).toEqual({ retireKeys: [], legacyTo: null });
+	});
+
+	test("withOwnManifest replaces a stale read of the key just written", () => {
+		const out = withOwnManifest([legacy(B, "2000"), key(B, "2000")], `store:manifest:v${B}`, m("3000", B));
+		expect(out.filter((p) => !p.legacy).map((p) => p.manifest.built_at)).toEqual(["3000"]);
+		expect(liveManifestRoles(out).primary?.built_at).toBe("3000");
 	});
 });

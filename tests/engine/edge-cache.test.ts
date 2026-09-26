@@ -6,7 +6,12 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { edgeCacheUrl, readThroughEdgeCache } from "../../src/engine/edge-cache";
 import { livePartitionedManifest, resetManifestMemoForTests } from "../../src/engine/partitioned-engine";
-import { readRoutingFilter, routingFilterKeyFor } from "../../src/engine/store-kv";
+import {
+	ARCHIVE_FORMAT_VERSION,
+	formatManifestKey,
+	readRoutingFilter,
+	routingFilterKeyFor,
+} from "../../src/engine/store-kv";
 import { readTagAliases, tagAliasesKeyFor } from "../../src/engine/tag-aliases";
 import type { Env, StoreManifest } from "../../src/engine/types";
 
@@ -16,7 +21,7 @@ const manifest: StoreManifest = {
 	card_count: 40,
 	printing_count: 100,
 	upstream_commit: "abc",
-	format_version: 1,
+	format_version: ARCHIVE_FORMAT_VERSION,
 	store_bytes: 1000,
 	chunk_count: 2,
 	partition_count: 2,
@@ -76,7 +81,7 @@ describe("the three tiers", () => {
 		const { env, reads } = envAnswering(JSON.stringify(manifest));
 		const got = await livePartitionedManifest(env);
 		expect(got.store_key).toBe(manifest.store_key);
-		expect(reads).toEqual(["store:manifest"]);
+		expect(reads).toEqual([formatManifestKey()]);
 		expect(c.puts.length).toBe(1);
 		// The memo answers the same isolate's next request with no read of either tier.
 		await livePartitionedManifest(env);
@@ -128,7 +133,7 @@ describe("what the cache tier refuses", () => {
 	test("a colo entry that is not a partitioned manifest is a miss, not an answer", async () => {
 		const c = fakeCaches();
 		c.install();
-		c.entries.set(edgeCacheUrl("store:manifest"), '{"store_key":"old","built_at":"1"}');
+		c.entries.set(edgeCacheUrl(formatManifestKey()), '{"store_key":"old","built_at":"1"}');
 		const { env, reads } = envAnswering(JSON.stringify(manifest));
 		const got = await livePartitionedManifest(env);
 		expect(got.partition_count).toBe(2);
@@ -138,7 +143,7 @@ describe("what the cache tier refuses", () => {
 	test("a colo entry holding garbage falls through to KV", async () => {
 		const c = fakeCaches();
 		c.install();
-		c.entries.set(edgeCacheUrl("store:manifest"), "not json");
+		c.entries.set(edgeCacheUrl(formatManifestKey()), "not json");
 		const { env, reads } = envAnswering(JSON.stringify(manifest));
 		await livePartitionedManifest(env);
 		expect(reads.length).toBe(1);
@@ -172,12 +177,65 @@ describe("what the cache tier refuses", () => {
 	});
 });
 
+// x19: two builds share a colo's Cache API during a deploy — the one being replaced and the one
+// replacing it. Each reads its own format's manifest, so each must cache under its own key.
+describe("two archive formats in one colo", () => {
+	/** A KV holding the old format's manifest at the legacy key and this format's at its own. */
+	function envOfBoth(own: StoreManifest | null) {
+		const old = { ...manifest, built_at: "90", format_version: ARCHIVE_FORMAT_VERSION - 1 };
+		const values: Record<string, string> = { "store:manifest": JSON.stringify(old) };
+		if (own) values[formatManifestKey()] = JSON.stringify(own);
+		const reads: string[] = [];
+		const env = {
+			STORE_KV: {
+				get: async (key: string) => {
+					reads.push(key);
+					return values[key] ?? null;
+				},
+			},
+		} as unknown as Env;
+		return { env, reads };
+	}
+
+	test("the old build's colo entry is never this build's answer", async () => {
+		const c = fakeCaches();
+		c.install();
+		// What a build before x19 left in the colo: its manifest, under the legacy key's URL.
+		c.entries.set(
+			edgeCacheUrl("store:manifest"),
+			JSON.stringify({ ...manifest, built_at: "90", format_version: ARCHIVE_FORMAT_VERSION - 1 }),
+		);
+		const { env, reads } = envOfBoth(manifest);
+		const got = await livePartitionedManifest(env);
+		expect(got.built_at).toBe("100");
+		expect(reads).toEqual([formatManifestKey()]);
+		expect(c.puts).toEqual([edgeCacheUrl(formatManifestKey())]);
+	});
+
+	test("an entry of another format under this build's URL is a miss, not an answer", async () => {
+		const c = fakeCaches();
+		c.install();
+		c.entries.set(
+			edgeCacheUrl(formatManifestKey()),
+			JSON.stringify({ ...manifest, built_at: "90", format_version: ARCHIVE_FORMAT_VERSION + 1 }),
+		);
+		const { env } = envOfBoth(manifest);
+		expect((await livePartitionedManifest(env)).built_at).toBe("100");
+	});
+
+	test("with no manifest of this format, another format's is the loud 503 — never served", async () => {
+		const { env, reads } = envOfBoth(null);
+		await expect(livePartitionedManifest(env)).rejects.toThrow(/No store manifest/);
+		expect(reads).toEqual([formatManifestKey(), "store:manifest"]);
+	});
+});
+
 describe("without a Cache API at all", () => {
 	test("the KV path is unchanged", async () => {
 		const { env, reads } = envAnswering(JSON.stringify(manifest));
 		const got = await livePartitionedManifest(env);
 		expect(got.store_key).toBe(manifest.store_key);
-		expect(reads).toEqual(["store:manifest"]);
+		expect(reads).toEqual([formatManifestKey()]);
 	});
 });
 

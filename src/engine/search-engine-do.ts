@@ -1179,7 +1179,7 @@ export class SearchEngine extends DurableObject<Env> {
 		if (manifest && !manifestServableBy(parseEngineName(this.label)?.partition, manifest)) {
 			console.error(
 				`[${this.label}] REFUSING a pushed manifest this object cannot serve ` +
-					`(${manifest.store_key}, partition_count ${manifest.partition_count ?? "none"}); not caching it`,
+					`(${manifest.store_key}, format ${manifest.format_version}, partition_count ${manifest.partition_count ?? "none"}); not caching it`,
 			);
 			return { swapped: false, shards: this.announcedShards };
 		}
@@ -1246,7 +1246,7 @@ export class SearchEngine extends DurableObject<Env> {
 		if (manifest && !manifestServableBy(parseEngineName(this.label)?.partition, manifest)) {
 			console.error(
 				`[${this.label}] REFUSING a pushed manifest this object cannot serve ` +
-					`(${manifest.store_key}, partition_count ${manifest.partition_count ?? "none"}); not caching it`,
+					`(${manifest.store_key}, format ${manifest.format_version}, partition_count ${manifest.partition_count ?? "none"}); not caching it`,
 			);
 			return { prepared: true, shards: this.announcedShards };
 		}

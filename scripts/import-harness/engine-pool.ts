@@ -17,7 +17,7 @@
 //         lower (workerd's databaseSize reports live pages; the file keeps the mark: see the x1
 //         commit for the workerd measurement)
 
-import { chunkKey, MANIFEST_KEY } from "../../src/engine/store-kv";
+import { chunkKey, formatManifestKey } from "../../src/engine/store-kv";
 import type { StoreManifest } from "../../src/engine/types";
 import { type FakeKV, MeteredStorage } from "./storage";
 
@@ -95,7 +95,7 @@ const mb = (n: number) => `${(n / 1e6).toFixed(2)}MB`;
 export async function measureEnginePool(kv: FakeKV): Promise<EnginePoolReport> {
 	const store = await import("../../src/engine/store");
 	const cache = await import("../../src/engine/store-cache");
-	const published = JSON.parse(String(await kv.get(MANIFEST_KEY, { type: "text" }))) as StoreManifest;
+	const published = JSON.parse(String(await kv.get(formatManifestKey(), { type: "text" }))) as StoreManifest;
 	const older = await olderBuild(kv, published, String(Number(published.built_at) - 86_400_000));
 	// The largest partition: the object whose file sets the per-object factor.
 	const parts = published.partitions ?? [];
@@ -123,7 +123,7 @@ export async function measureEnginePool(kv: FakeKV): Promise<EnginePoolReport> {
 	for (const codec of ["gzip", "lz4"] as const) {
 		const withCodec = (m: StoreManifest): StoreManifest => ({ ...m, cache: { v: 1, codec, projected_lz4_bytes: 1 } });
 		const [from, to] = [withCodec(older), withCodec(published)];
-		await kv.put(MANIFEST_KEY, JSON.stringify(to));
+		await kv.put(formatManifestKey(), JSON.stringify(to));
 		for (const path of ["warm publish (prepare → commit)", "cold load of a build it was never told of"] as const) {
 			n += 1;
 			const s = sampledStorage();
@@ -182,7 +182,7 @@ export async function measureEnginePool(kv: FakeKV): Promise<EnginePoolReport> {
 			);
 		}
 	}
-	await kv.put(MANIFEST_KEY, JSON.stringify(published));
+	await kv.put(formatManifestKey(), JSON.stringify(published));
 	lines.push(ok ? "  every object held at most one build at a time" : "  FAILED: an object held two builds at once");
 	return { lines, ok };
 }

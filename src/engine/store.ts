@@ -75,6 +75,7 @@ import {
 	recordLiveManifest,
 } from "./store-cache";
 import {
+	ARCHIVE_FORMAT_VERSION,
 	type ArchiveSource,
 	announceSelf,
 	archiveOfManifest,
@@ -1236,7 +1237,12 @@ async function loadStore(env: Env, ctx?: LoadContext, known?: StoreManifest, fen
 			// object's own name cannot serve is IGNORED, loudly, and the load
 			// falls through to KV. Trusting it would wedge every wake on
 			// archiveOfManifest's refusal without KV ever being consulted.
-			const pushedSource = tryArchiveOfManifest(pushed, ctx.partition);
+			// ...and so is one of ANOTHER ARCHIVE FORMAT (x19): a record the previous build's
+			// publisher pushed before a deploy reset this object onto the next build names a store
+			// this engine refuses after fetching every byte. KV's manifest of this build's format
+			// is the answer instead.
+			const pushedSource =
+				pushed.format_version === ARCHIVE_FORMAT_VERSION ? tryArchiveOfManifest(pushed, ctx.partition) : null;
 			if (pushedSource) {
 				// PER-PARTITION: the comparison is between THIS PARTITION's chunk-family keys under
 				// each manifest, not the manifests' top-level keys — a v2 store_key is a stem
@@ -1280,7 +1286,8 @@ async function loadStore(env: Env, ctx?: LoadContext, known?: StoreManifest, fen
 			} else {
 				console.error(
 					`${tag(ctx)}ignoring a pushed manifest this object cannot serve ` +
-						`(${pushed.store_key}, partition_count ${pushed.partition_count ?? "none"} vs own partition ` +
+						`(${pushed.store_key}, format ${pushed.format_version} vs this engine's ${ARCHIVE_FORMAT_VERSION}, ` +
+						`partition_count ${pushed.partition_count ?? "none"} vs own partition ` +
 						`${ctx.partition ?? "none"}); reading the manifest from KV instead`,
 				);
 			}

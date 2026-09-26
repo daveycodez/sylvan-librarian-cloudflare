@@ -8,10 +8,18 @@
 // a manifest skeleton (partition_count + partitions[], each record naming its
 // own archive file) plus the N archive files. The publish is
 // `sum(chunk_count) + 1` writes: every partition's gzipped chunks in partition
-// order, then the manifest at `store:manifest`. The manifest goes LAST and is
-// the commit point — until it lands, readers keep serving whatever was
-// published before, so a failure at any point leaves the deployment in a valid
-// state rather than a half-swapped one.
+// order, then the manifest at `store:manifest:v<format>` (and the legacy
+// `store:manifest` mirror when it holds the same format — one more write). The
+// manifest goes LAST and is the commit point — until it lands, readers keep
+// serving whatever was published before, so a failure at any point leaves the
+// deployment in a valid state rather than a half-swapped one.
+//
+// A FORMAT BUMP PUBLISHES BESIDE THE RUNNING BUILD, NOT OVER IT (backlog x19). This script runs in
+// Workers Builds' install step, minutes before `wrangler deploy` switches the code. The Worker still
+// serving reads its own format's manifest, which this publish does not touch — nor the legacy
+// mirror, which holds that same older format — so it keeps answering from its store until the
+// switch, and the new code starts on the manifest written here. That window used to be dark
+// (generations 45, 48, 53). The old format's family retires at the next publish by the new code.
 //
 // AN UNPARTITIONED BUILD DIR IS REFUSED, loudly. This deployment serves only
 // partitioned stores; publishing a single archive here would land a manifest
@@ -39,13 +47,14 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { gzipSync } from "node:zlib";
 import { cardNamesKey } from "../src/engine/card-names";
-import { kvBytesMetadata, withPreviousBuiltAt } from "../src/engine/kv-retention";
+import { kvBytesMetadata, replacedManifest, withPreviousBuiltAt } from "../src/engine/kv-retention";
 import {
+	ARCHIVE_FORMAT_VERSION,
 	CARRIED_MANIFEST_BLOCKS,
 	carryManifestBlocks,
 	chunkForKv,
 	chunkKey,
-	MANIFEST_KEY,
+	manifestKeysToWrite,
 	manifestShapeProblem,
 	PARTITION_HASH_ALGO,
 	routingFilterKey,
@@ -54,8 +63,8 @@ import {
 import { tagAliasesKey } from "../src/engine/tag-aliases";
 import type { StoreManifest, StoreManifestPartition } from "../src/engine/types";
 import { CARD_NAMES_FILE, cardNamesFromBuildDir } from "./card-names-build";
-import { beginDeployUpload, deployStillHoldsLease, finishDeployUpload } from "./deploy-upload";
-import { liveManifestObject, wranglerDeployKv } from "./kv-prune";
+import { beginDeployUpload, deployStillHoldsLease, finishDeployUpload, readPublishedManifests } from "./deploy-upload";
+import { wranglerDeployKv } from "./kv-prune";
 import { requireDeployEnvironment } from "./kv-target";
 import { kvName } from "./project-config";
 import { ROUTING_KEYS_FILE, routingFilterFromBuildDir } from "./routing-filter-build";
@@ -132,6 +141,18 @@ manifest.chunks = undefined;
 const problem = manifestShapeProblem(manifest);
 if (problem) {
 	console.error(`refusing to publish the manifest: ${problem}`);
+	process.exit(2);
+}
+// The manifest's KEY is its format (x19), and the Worker this deploy ships reads exactly one:
+// ARCHIVE_FORMAT_VERSION, from the committed engine provenance. A builder of another format would
+// publish a store under a key the new code never reads — dark from `wrangler deploy` on, with a green
+// build. The freshness test keeps the two equal in CI; this is the deploy's own line.
+if (manifest.format_version !== ARCHIVE_FORMAT_VERSION) {
+	console.error(
+		`refusing to publish: the builder wrote archive format ${manifest.format_version}, but the Worker this ` +
+			`deploy ships reads format ${ARCHIVE_FORMAT_VERSION} (engine/wasm-provenance.json). Rebuild the blobs ` +
+			"(`bun run build`) or the builder so the two agree.",
+	);
 	process.exit(2);
 }
 
@@ -301,16 +322,21 @@ if (cardNamesStored) {
 // placement, decided by its probes — are not the builder's to know. Carried from the manifest being
 // replaced, or every deploy would reset them. A read that failed publishes without them, which is
 // each block's safe default (gzip caches; the seed placement), and says so.
-const live = await liveManifestObject(true);
+//
+// "The manifest being replaced" is this format's own when there is one, else the newest live one
+// of any format (replacedManifest): on a format bump that is the running build's, so its family
+// becomes this manifest's rollback — the one family it would take to roll the code back.
+const live = await readPublishedManifests<Record<string, unknown> & StoreManifest>(deployKv);
 if (live.failed) {
 	console.warn(
-		`Could not read the live manifest to carry ${CARRIED_MANIFEST_BLOCKS.join(", ")} forward (${live.failed}); ` +
+		`Could not read the live manifests to carry ${CARRIED_MANIFEST_BLOCKS.join(", ")} forward (${live.failed}); ` +
 			"publishing without them — each reads as its safe default until the next nightly decides it again.",
 	);
 }
+const replaced = replacedManifest(live.published, ARCHIVE_FORMAT_VERSION);
 // The manifest this one replaces becomes the ROLLBACK role (previous_built_at) — read BEFORE the
 // put, so it names yesterday's build and not a second copy of this one.
-const published = withPreviousBuiltAt(carryManifestBlocks(manifest, live.manifest), live.manifest);
+const published = withPreviousBuiltAt(carryManifestBlocks(manifest, replaced), replaced);
 const carried = CARRIED_MANIFEST_BLOCKS.filter((b) => (published as Record<string, unknown>)[b] !== undefined);
 if (carried.length) console.log(`  carried forward from the live manifest: ${carried.join(", ")}`);
 
@@ -326,11 +352,22 @@ if (!(await deployStillHoldsLease(deployKv, builtAt))) {
 const manifestPath = join(tmpdir(), "sylvan-store-manifest.json");
 const manifestJson = JSON.stringify(published);
 await writeFile(manifestPath, manifestJson);
+// This format's key, then the legacy mirror only if it already holds this format (or nothing): a
+// DIFFERENT format there is what the build still serving reads, and overwriting it was the dark
+// window. An unreadable namespace (live.failed) writes only this format's key.
+const legacy = live.failed ? { format_version: -1 } : (live.published.find((p) => p.legacy)?.manifest ?? null);
+const manifestKeys = manifestKeysToWrite(ARCHIVE_FORMAT_VERSION, legacy);
 try {
-	await kv(["key", "put", MANIFEST_KEY, "--path", manifestPath, ...sized(manifestJson.length), "--remote"]);
+	for (const key of manifestKeys) {
+		await kv(["key", "put", key, "--path", manifestPath, ...sized(manifestJson.length), "--remote"]);
+	}
 } finally {
 	await unlink(manifestPath).catch(() => {});
 }
+console.log(
+	`  manifest written to ${manifestKeys.join(" and ")}` +
+		(manifestKeys.length === 1 ? " (the legacy key serves another format until it retires)" : ""),
+);
 
 // AFTER the manifest, which is the commit point: release the lease, then retention by role with the
 // new roles — this build live, the one it replaced as the rollback, any other lease holder's family
