@@ -32,8 +32,9 @@
 // BUCKET = the scryfall id's top six bits. Ids are UUIDv4, so the split is uniform (2026-09-24's
 // build: 542,556 pairs, 8,123–8,715 a bucket → 260–279KB, 17.4MB in all). What is LEFT OUT misses
 // and falls back to the engine, which is exactly today's answer: a printing newer than the last
-// publish, and the reversible printings, whose card object carries no top-level oracle id and so
-// answers `data: []` (see `oracle_pair_of`).
+// publish. The reversible printings are IN, under their faces' oracle id — the id the route reads
+// when a card object has none at top level (`rulingsOracleIdOf`; see `oracle_pair_of`). Content
+// generation 1 left them out, while the route read only the top level and answered them `[]`.
 //
 // STABLE KEYS, overwritten in place, like the rulings buckets and for the same reasons: a reader
 // holds one bucket and nothing spans buckets, so there is no torn read to version away; and stable
@@ -45,8 +46,11 @@
 
 /** Bucket layout version, in the key. Bump on any layout change; the old keys are pruned after. */
 export const ORACLE_INDEX_FORMAT_VERSION = 1;
-/** What the entries mean (which printings are included). Bump to force a full republish. */
-export const ORACLE_INDEX_CONTENT_GENERATION = 1;
+/**
+ * What the entries mean (which printings are included). Bump to force a full republish.
+ * 2 (2026-09-25): the reversible printings are included, under their faces' oracle id.
+ */
+export const ORACLE_INDEX_CONTENT_GENERATION = 2;
 /** Buckets in the set: the scryfall id's top six bits. */
 export const ORACLE_INDEX_BUCKET_COUNT = 64;
 export const ORACLE_INDEX_META_KEY = "oracle-index:meta";
@@ -298,8 +302,7 @@ const probe = new Uint8Array(ID_BYTES);
 
 /**
  * The oracle id a bucket maps `scryfallId` to, or null when the bucket does not carry it (a
- * printing newer than the last publish, a reversible printing, or no printing at all — the caller
- * asks the engine).
+ * printing newer than the last publish, or no printing at all — the caller asks the engine).
  *
  * Throws OracleIndexFormatError when the value is not a bucket of this format, or is a DIFFERENT
  * bucket than the id belongs in. Nothing is decoded but the ~13 entries the search touches.

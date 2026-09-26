@@ -3,6 +3,7 @@
 // miss is a Scryfall-shaped 404 rather than this port's routes listing.
 
 import { describe, expect, spyOn, test } from "bun:test";
+import { readFileSync } from "node:fs";
 import {
 	encodeOracleIndexBuckets,
 	ORACLE_PAIR_BYTES,
@@ -26,6 +27,7 @@ import { setParserForTests } from "../../src/routes/parser-bridge";
 import type { RouteContext } from "../../src/routes/registry";
 import { toScryfallCard } from "../../src/routes/scryfall-compat/objects";
 import { stringifyScryfall } from "../../src/routes/scryfall-compat/respond";
+import { rulingsOracleIdOf } from "../../src/routes/scryfall-compat/routes";
 import { FakeEngine, FakeKV, FIXTURE_CARDS, fakeParse, json, makeCtx, testDispatch } from "./harness";
 
 const ctx = makeCtx();
@@ -1682,9 +1684,15 @@ describe("GET /cards/:id/rulings", () => {
 	/** The fixture cards, with an oracle id — which is what rulings hang off. */
 	class RulingsEngine extends FakeEngine {
 		oracleId = ORACLE_ID;
+		/** A reversible printing's card object: no top-level oracle_id, the card's on every face. */
+		faceOnly = false;
 
 		private withOracle(card: Record<string, unknown> | null): Record<string, unknown> | null {
-			return card === null ? null : { ...card, oracle_id: this.oracleId };
+			if (card === null) return null;
+			if (!this.faceOnly) return { ...card, oracle_id: this.oracleId };
+			const { oracle_id: _, ...rest } = card;
+			const face = { object: "card_face", oracle_id: this.oracleId };
+			return { ...rest, layout: "reversible_card", card_faces: [face, { ...face }] };
 		}
 
 		override async scryfallCardById(id: string, baseUrl: string): Promise<Record<string, unknown> | null> {
@@ -1813,6 +1821,83 @@ describe("GET /cards/:id/rulings", () => {
 		expect(await res.text()).toContain('\n  "data": ');
 	});
 
+	describe("a reversible printing: its oracle id is only on its faces", () => {
+		// Real JSON: Scryfall's card object for Ugin, Eye of the Storms tdm/382 (the 2026-08-16 bulk)
+		// and Scryfall's own answer for its rulings (api.scryfall.com, 2026-09-25). Scryfall's card
+		// object carries no top-level oracle_id here, and neither does the engine's (card_object.rs,
+		// pinned against the native build in engine/builder/tests/face_oracle_ids.rs) — so this
+		// route answered `data: []` for all 81 reversible printings.
+		const UGIN = JSON.parse(
+			readFileSync(`${import.meta.dir}/../../engine/builder/src/fixtures/ugin_tdm_382.json`, "utf8"),
+		) as Record<string, unknown> & { id: string };
+		const SCRYFALL_BODY = readFileSync(`${import.meta.dir}/../fixtures/ugin-tdm-382-rulings.scryfall.json`, "utf8");
+		const UGIN_ORACLE_ID = "5c58353a-fd60-4528-bf0d-669626cda0b2";
+		const UGIN_RULINGS = (JSON.parse(SCRYFALL_BODY) as { data: RulingRow[] }).data;
+
+		class UginEngine extends FakeEngine {
+			calls = 0;
+			override async scryfallCardById(id: string): Promise<Record<string, unknown> | null> {
+				this.calls++;
+				return id === UGIN.id ? UGIN : null;
+			}
+		}
+
+		/**
+		 * The body as Scryfall would compare it: the envelope's keys in order, and every Ruling object
+		 * byte for byte. The three share one date, and WITHIN a date Scryfall's order is not
+		 * reproducible from any data it publishes (see encodeRulingsBucket), so the objects are
+		 * compared as a set — the one known deviation, and the same on every Ugin printing.
+		 */
+		function comparable(body: string): { envelope: string[]; rulings: string[] } {
+			const parsed = JSON.parse(body) as Record<string, unknown> & { data: unknown[] };
+			return { envelope: Object.keys(parsed), rulings: parsed.data.map((r) => JSON.stringify(r)).sort() };
+		}
+
+		function uginCtx(): { ctx: RouteContext; kv: FakeKV; engine: UginEngine } {
+			const kv = new FakeKV();
+			kv.put(rulingsBucketKey(rulingsBucketOf(UGIN_ORACLE_ID) as number), encodeRulingsBucket(UGIN_RULINGS).bytes);
+			const engine = new UginEngine();
+			return { ctx: makeCtx({ engine, kv }), kv, engine };
+		}
+
+		test("the fixture is the shape the bug needs: no top-level oracle_id, the card's on both faces", () => {
+			expect(UGIN.layout).toBe("reversible_card");
+			expect(UGIN.oracle_id).toBeUndefined();
+			expect((UGIN.card_faces as { oracle_id: string }[]).map((f) => f.oracle_id)).toEqual([
+				UGIN_ORACLE_ID,
+				UGIN_ORACLE_ID,
+			]);
+			expect(UGIN_RULINGS.length).toBe(3);
+		});
+
+		test("answers Scryfall's rulings for the print (it answered `data: []`)", async () => {
+			const { ctx } = uginCtx();
+			const res = await testDispatch(ctx, `/cards/${UGIN.id}/rulings`);
+			expect(res.status).toBe(200);
+			expect(comparable(await res.text())).toEqual(comparable(SCRYFALL_BODY));
+		});
+
+		test("through the oracle index: the same bytes, and no engine call", async () => {
+			const { ctx, kv, engine } = uginCtx();
+			const flat = new Uint8Array(ORACLE_PAIR_BYTES);
+			flat.set(uuidBytes(UGIN.id) as Uint8Array, 0);
+			flat.set(uuidBytes(UGIN_ORACLE_ID) as Uint8Array, 16);
+			const { buckets } = encodeOracleIndexBuckets(flat);
+			for (let b = 0; b < buckets.length; b++) kv.put(oracleIndexBucketKey(b), buckets[b] as Uint8Array);
+			const res = await testDispatch(ctx, `/cards/${UGIN.id}/rulings`);
+			expect(comparable(await res.text())).toEqual(comparable(SCRYFALL_BODY));
+			expect(engine.calls).toBe(0);
+		});
+
+		test("rulingsOracleIdOf: the top level first, else the first face that carries one", () => {
+			expect(rulingsOracleIdOf(UGIN)).toBe(UGIN_ORACLE_ID);
+			expect(rulingsOracleIdOf({ oracle_id: ORACLE_ID, card_faces: [{ oracle_id: OTHER_ORACLE_ID }] })).toBe(ORACLE_ID);
+			expect(rulingsOracleIdOf({ card_faces: [{ name: "a" }, { oracle_id: OTHER_ORACLE_ID }] })).toBe(OTHER_ORACLE_ID);
+			expect(rulingsOracleIdOf({ card_faces: [] })).toBe("");
+			expect(rulingsOracleIdOf({})).toBe("");
+		});
+	});
+
 	describe("the oracle index (src/engine/oracle-index.ts)", () => {
 		const PRINTING = "aaaaaaaa-0000-4000-8000-000000000001";
 
@@ -1895,10 +1980,20 @@ describe("GET /cards/:id/rulings", () => {
 					hit: false,
 				},
 				{
-					name: "miss, a card object with no oracle_id (reversible: [])",
+					// Both paths answer the faces' rulings: the engine path reads them off the faces
+					// (`rulingsOracleIdOf`), and the index holds the printing under the same id.
+					name: "hit, a reversible card object (oracle id only on its faces)",
 					path: `/cards/${PRINTING}/rulings`,
 					setup: ({ engine }) => {
-						engine.oracleId = undefined as unknown as string;
+						engine.faceOnly = true;
+					},
+					hit: true,
+				},
+				{
+					name: "miss, a reversible card object the index predates",
+					path: `/cards/${PRINTING}/rulings`,
+					setup: ({ engine }) => {
+						engine.faceOnly = true;
 					},
 					hit: false,
 				},

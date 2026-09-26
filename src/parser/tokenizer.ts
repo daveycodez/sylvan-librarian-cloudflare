@@ -31,6 +31,12 @@ export interface Token {
 	readonly value: string | PyNumber;
 	readonly pos: number;
 	readonly spaceBefore: boolean;
+	/**
+	 * A NUMBER's spelling in the query, which its `value` does not keep: `0796` is the int 796 and
+	 * `1.50` the float 1.5. Wherever a NUMBER is read as TEXT — a value glued from hyphenated
+	 * pieces, like the UUID `9afd8f12-0796-4500-aaa3-10b4a46ef6ec` — it is this, never `value`.
+	 */
+	readonly raw?: string;
 }
 
 // `~` IS AN ORDINARY VALUE CHARACTER, and leaving it out of both sets made every BARE spelling a
@@ -172,8 +178,12 @@ export function tokenize(source: string): Token[] {
 	const n = src.length;
 	let spaceBefore = false;
 
-	const push = (type: TT, value: string | PyNumber, start: number, sb: boolean) => {
-		tokens.push({ type, value, pos: start, spaceBefore: sb });
+	const push = (type: TT, value: string | PyNumber, start: number, sb: boolean, raw?: string) => {
+		tokens.push(
+			raw === undefined
+				? { type, value, pos: start, spaceBefore: sb }
+				: { type, value, pos: start, spaceBefore: sb, raw },
+		);
 	};
 	const slice = (a: number, b: number) => src.slice(a, b).join("");
 
@@ -325,9 +335,9 @@ export function tokenize(source: string): Token[] {
 				// A literal past the double range would serialize as `inf`, which is not JSON,
 				// and the engine refuses it either way; refusing it here is the ordinary 400.
 				if (!Number.isFinite(value)) throw new LexError(`Number out of range at position ${start}`);
-				push(TT.NUMBER, PyNumber.float(value), start, sb);
+				push(TT.NUMBER, PyNumber.float(value), start, sb, text);
 			} else {
-				push(TT.NUMBER, PyNumber.int(BigInt(text)), start, sb);
+				push(TT.NUMBER, PyNumber.int(BigInt(text)), start, sb, text);
 			}
 			pos = j;
 			continue;

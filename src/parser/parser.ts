@@ -148,6 +148,20 @@ function validateMtgYear(value: PyNumber, pos: number): bigint {
 
 const ARITH_OPS: ReadonlySet<TT> = new Set([TT.PLUS, TT.MINUS, TT.STAR, TT.SLASH]);
 
+/**
+ * A token read as TEXT: a NUMBER as the query spelled it, anything else as its value.
+ *
+ * A text value is glued from the lexer's pieces, and a hyphen splits a UUID into WORD and NUMBER
+ * tokens — `9afd8f12-0796-4500-aaa3-10b4a46ef6ec` lexes WORD MINUS NUMBER MINUS NUMBER MINUS WORD
+ * MINUS WORD. Gluing the NUMBERs by value dropped `0796`'s leading zero, so `oracleid:` asked for
+ * `9afd8f12-796-…`, which is no id: a 404 where api.scryfall.com answers Doubling Cube's four
+ * printings, and one oracle id in every ~54 of the 2026-08-16 corpus (720 of 38,626) broken the
+ * same way. Upstream's hand_parser.py glues `str(tok.value)` and carries the same bug.
+ */
+function textOf(tok: Token): string {
+	return tok.raw ?? pyStr(tok.value);
+}
+
 function nameNode(value: string, literal = false): CardBinaryOperatorNode {
 	return new CardBinaryOperatorNode(new CardAttributeNode("name", PC.TEXT), ":", new StringValueNode(value, literal));
 }
@@ -635,7 +649,7 @@ export class Parser {
 				// Only reachable ACROSS a star (`*ft`): the lexer scans adjacent word characters
 				// into one token, so two of them never touch on their own.
 				this.consume();
-				word += pyStr(next.value);
+				word += textOf(next);
 				continue;
 			}
 			if (
@@ -644,7 +658,7 @@ export class Parser {
 				!this.peek(1).spaceBefore
 			) {
 				this.consume(); // MINUS
-				word += `-${pyStr(this.consume().value)}`;
+				word += `-${textOf(this.consume())}`;
 				continue;
 			}
 			break;
@@ -693,7 +707,7 @@ export class Parser {
 		}
 		if (tok.type === TT.WORD || tok.type === TT.NUMBER || tok.type === TT.STAR) {
 			this.consume();
-			let word = tok.type === TT.STAR ? "*" : pyStr(tok.value);
+			let word = tok.type === TT.STAR ? "*" : textOf(tok);
 			// Greedily consume hyphenated and STARRED continuation (no space on either side).
 			//
 			// `*` IS AN ORDINARY CHARACTER IN A VALUE, not a wildcard and not an error. Scryfall
@@ -716,7 +730,7 @@ export class Parser {
 				}
 				if (next.type === TT.WORD || next.type === TT.NUMBER) {
 					this.consume();
-					word += pyStr(next.value);
+					word += textOf(next);
 					continue;
 				}
 				if (
@@ -725,7 +739,7 @@ export class Parser {
 					!this.peek(1).spaceBefore
 				) {
 					this.consume();
-					word += `-${pyStr(this.consume().value)}`;
+					word += `-${textOf(this.consume())}`;
 					continue;
 				}
 				break;

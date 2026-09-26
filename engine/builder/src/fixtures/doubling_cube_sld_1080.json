@@ -1,0 +1,169 @@
+{
+ "artist": "Volta Creation",
+ "artist_ids": [
+  "284782c4-ada1-466c-8115-fe00421975eb"
+ ],
+ "booster": false,
+ "border_color": "borderless",
+ "card_faces": [
+  {
+   "artist": "Volta Creation",
+   "artist_id": "284782c4-ada1-466c-8115-fe00421975eb",
+   "cmc": 2.0,
+   "colors": [],
+   "flavor_name": "The AllSpark",
+   "flavor_text": "\"Freedom is the right of all sentient beings.\"\n—Optimus Prime",
+   "illustration_id": "831c2e1d-91db-496e-8b8f-9b82fecd326b",
+   "image_uris": {
+    "art": "https://cards.scryfall.io/art/front/9/0/9052f5c7-ee3b-457d-97ca-ac6b4518997c.webp?1783918782",
+    "art_crop": "https://cards.scryfall.io/art_crop/front/9/0/9052f5c7-ee3b-457d-97ca-ac6b4518997c.jpg?1783918782",
+    "border_crop": "https://cards.scryfall.io/border_crop/front/9/0/9052f5c7-ee3b-457d-97ca-ac6b4518997c.jpg?1783918782",
+    "crop": "https://cards.scryfall.io/crop/front/9/0/9052f5c7-ee3b-457d-97ca-ac6b4518997c.webp?1783918782",
+    "display": "https://cards.scryfall.io/display/front/9/0/9052f5c7-ee3b-457d-97ca-ac6b4518997c.webp?1783918782",
+    "grid": "https://cards.scryfall.io/grid/front/9/0/9052f5c7-ee3b-457d-97ca-ac6b4518997c.webp?1783918782",
+    "large": "https://cards.scryfall.io/large/front/9/0/9052f5c7-ee3b-457d-97ca-ac6b4518997c.jpg?1783918782",
+    "normal": "https://cards.scryfall.io/normal/front/9/0/9052f5c7-ee3b-457d-97ca-ac6b4518997c.jpg?1783918782",
+    "png": "https://cards.scryfall.io/png/front/9/0/9052f5c7-ee3b-457d-97ca-ac6b4518997c.png?1783918782",
+    "small": "https://cards.scryfall.io/small/front/9/0/9052f5c7-ee3b-457d-97ca-ac6b4518997c.jpg?1783918782",
+    "thumb": "https://cards.scryfall.io/thumb/front/9/0/9052f5c7-ee3b-457d-97ca-ac6b4518997c.webp?1783918782"
+   },
+   "layout": "normal",
+   "mana_cost": "{2}",
+   "name": "Doubling Cube",
+   "object": "card_face",
+   "oracle_id": "9afd8f12-0796-4500-aaa3-10b4a46ef6ec",
+   "oracle_text": "{3}, {T}: Double the amount of each type of unspent mana you have.",
+   "type_line": "Artifact"
+  },
+  {
+   "artist": "Volta Creation",
+   "artist_id": "284782c4-ada1-466c-8115-fe00421975eb",
+   "cmc": 2.0,
+   "colors": [],
+   "flavor_name": "The AllSpark",
+   "flavor_text": "\"Peace through tyranny.\"\n—Megatron",
+   "illustration_id": "fbb094bd-c1e1-4cff-8f1f-3fc93f04c57d",
+   "image_uris": {
+    "art": "https://cards.scryfall.io/art/back/9/0/9052f5c7-ee3b-457d-97ca-ac6b4518997c.webp?1783918782",
+    "art_crop": "https://cards.scryfall.io/art_crop/back/9/0/9052f5c7-ee3b-457d-97ca-ac6b4518997c.jpg?1783918782",
+    "border_crop": "https://cards.scryfall.io/border_crop/back/9/0/9052f5c7-ee3b-457d-97ca-ac6b4518997c.jpg?1783918782",
+    "crop": "https://cards.scryfall.io/crop/back/9/0/9052f5c7-ee3b-457d-97ca-ac6b4518997c.webp?1783918782",
+    "display": "https://cards.scryfall.io/display/back/9/0/9052f5c7-ee3b-457d-97ca-ac6b4518997c.webp?1783918782",
+    "grid": "https://cards.scryfall.io/grid/back/9/0/9052f5c7-ee3b-457d-97ca-ac6b4518997c.webp?1783918782",
+    "large": "https://cards.scryfall.io/large/back/9/0/9052f5c7-ee3b-457d-97ca-ac6b4518997c.jpg?1783918782",
+    "normal": "https://cards.scryfall.io/normal/back/9/0/9052f5c7-ee3b-457d-97ca-ac6b4518997c.jpg?1783918782",
+    "png": "https://cards.scryfall.io/png/back/9/0/9052f5c7-ee3b-457d-97ca-ac6b4518997c.png?1783918782",
+    "small": "https://cards.scryfall.io/small/back/9/0/9052f5c7-ee3b-457d-97ca-ac6b4518997c.jpg?1783918782",
+    "thumb": "https://cards.scryfall.io/thumb/back/9/0/9052f5c7-ee3b-457d-97ca-ac6b4518997c.webp?1783918782"
+   },
+   "layout": "normal",
+   "mana_cost": "{2}",
+   "name": "Doubling Cube",
+   "object": "card_face",
+   "oracle_id": "9afd8f12-0796-4500-aaa3-10b4a46ef6ec",
+   "oracle_text": "{3}, {T}: Double the amount of each type of unspent mana you have.",
+   "type_line": "Artifact"
+  }
+ ],
+ "cardmarket_id": 688187,
+ "collector_number": "1080",
+ "color_identity": [],
+ "digital": false,
+ "edhrec_rank": 3516,
+ "finishes": [
+  "nonfoil",
+  "foil"
+ ],
+ "foil": true,
+ "frame": "2015",
+ "frame_effects": [
+  "inverted"
+ ],
+ "full_art": true,
+ "game_changer": false,
+ "games": [
+  "paper"
+ ],
+ "highres_image": true,
+ "id": "9052f5c7-ee3b-457d-97ca-ac6b4518997c",
+ "image_status": "highres_scan",
+ "image_updated_at": "2026-07-13T04:59:42Z",
+ "keywords": [
+  "Double"
+ ],
+ "lang": "en",
+ "layout": "reversible_card",
+ "legalities": {
+  "alchemy": "not_legal",
+  "brawl": "not_legal",
+  "commander": "legal",
+  "competitivebrawl": "not_legal",
+  "duel": "legal",
+  "future": "not_legal",
+  "gladiator": "not_legal",
+  "historic": "not_legal",
+  "legacy": "legal",
+  "modern": "legal",
+  "oathbreaker": "legal",
+  "oldschool": "not_legal",
+  "pauper": "not_legal",
+  "paupercommander": "not_legal",
+  "penny": "legal",
+  "pioneer": "not_legal",
+  "predh": "legal",
+  "premodern": "not_legal",
+  "standard": "not_legal",
+  "standardbrawl": "not_legal",
+  "timeless": "not_legal",
+  "tlr": "legal",
+  "vintage": "legal"
+ },
+ "multiverse_ids": [],
+ "name": "Doubling Cube // Doubling Cube",
+ "nonfoil": true,
+ "object": "card",
+ "oversized": false,
+ "penny_rank": 10195,
+ "prices": {
+  "eur": "17.44",
+  "eur_foil": "20.10",
+  "tix": null,
+  "usd": "33.37",
+  "usd_etched": null,
+  "usd_foil": "27.57"
+ },
+ "prints_search_uri": "https://api.scryfall.com/cards/search?order=released&q=oracleid%3A9afd8f12-0796-4500-aaa3-10b4a46ef6ec&unique=prints",
+ "promo": false,
+ "promo_types": [
+  "universesbeyond"
+ ],
+ "purchase_uris": {
+  "cardhoarder": "https://www.cardhoarder.com/cards?affiliate_id=scryfall&data%5Bsearch%5D=Doubling+Cube+%2F%2F+Doubling+Cube&ref=card-profile&utm_campaign=affiliate&utm_medium=card&utm_source=scryfall",
+  "cardmarket": "https://www.cardmarket.com/en/Magic/Products?idProduct=688187&referrer=scryfall&utm_campaign=card_prices&utm_medium=text&utm_source=scryfall",
+  "tcgplayer": "https://partner.tcgplayer.com/c/4931599/1830156/21018?subId1=api&u=https%3A%2F%2Fwww.tcgplayer.com%2Fproduct%2F456574%3Fpage%3D1"
+ },
+ "rarity": "rare",
+ "related_uris": {
+  "edhrec": "https://edhrec.com/route/?cc=Doubling+Cube+%2F%2F+Doubling+Cube",
+  "tcgplayer_infinite_articles": "https://partner.tcgplayer.com/c/4931599/1830156/21018?subId1=api&trafcat=tcgplayer.com%2Fsearch%2Farticles&u=https%3A%2F%2Fwww.tcgplayer.com%2Fsearch%2Farticles%3FproductLineName%3Dmagic%26q%3DDoubling%2BCube%2B%252F%252F%2BDoubling%2BCube",
+  "tcgplayer_infinite_decks": "https://partner.tcgplayer.com/c/4931599/1830156/21018?subId1=api&trafcat=tcgplayer.com%2Fsearch%2Fdecks&u=https%3A%2F%2Fwww.tcgplayer.com%2Fsearch%2Fdecks%3FproductLineName%3Dmagic%26q%3DDoubling%2BCube%2B%252F%252F%2BDoubling%2BCube"
+ },
+ "released_at": "2022-12-02",
+ "reprint": true,
+ "reserved": false,
+ "rulings_uri": "https://api.scryfall.com/cards/9052f5c7-ee3b-457d-97ca-ac6b4518997c/rulings",
+ "scryfall_set_uri": "https://scryfall.com/sets/sld?utm_source=api",
+ "scryfall_uri": "https://scryfall.com/card/sld/1080/doubling-cube-doubling-cube?utm_source=api",
+ "security_stamp": "triangle",
+ "set": "sld",
+ "set_id": "4d92a8a7-ccb0-437d-abdc-9d70fc5ed672",
+ "set_name": "Secret Lair Drop",
+ "set_search_uri": "https://api.scryfall.com/cards/search?order=set&q=e%3Asld&unique=prints",
+ "set_type": "box",
+ "set_uri": "https://api.scryfall.com/sets/4d92a8a7-ccb0-437d-abdc-9d70fc5ed672",
+ "story_spotlight": false,
+ "tcgplayer_id": 456574,
+ "textless": false,
+ "uri": "https://api.scryfall.com/cards/9052f5c7-ee3b-457d-97ca-ac6b4518997c",
+ "variation": false
+}

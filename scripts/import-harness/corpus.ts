@@ -81,9 +81,9 @@ interface Derived {
 
 /**
  * The derived dumps' own version, in their cache file's name: a change to `derive` must not read a
- * cache written by the old one. v2 (backlog n13): face-level flavor names.
+ * cache written by the old one. v2 (backlog n13): face-level flavor names. v3: reversible printings.
  */
-const DERIVE_VERSION = 2;
+const DERIVE_VERSION = 3;
 
 /**
  * Face-level flavor names on a few faced printings (backlog n13). memprobe emits none, and the real
@@ -113,9 +113,43 @@ function withFaceFlavorNames(lines: string[]): string[] {
 	});
 }
 
+/**
+ * `reversible_card` printings: memprobe emits none, and they are the one shape whose oracle id lives
+ * only on the faces — the real corpus has 81, and their card object carries no top-level
+ * `oracle_id` (nor `cmc`, `type_line`, `mana_cost`, `colors`, `oracle_text`), each face the card's
+ * own `oracle_id` and `cmc` and a `layout` of its own (Ugin, Eye of the Storms tdm/382 is one). The
+ * oracle index holds them under the faces' id, and both publishers must agree on that byte for
+ * byte (oracle-index-check.ts). Every 40th English two-faced printing.
+ */
+export const REVERSIBLE_EVERY = 40;
+
+function withReversiblePrintings(lines: string[]): string[] {
+	let seen = 0;
+	return lines.map((line) => {
+		if (!line.includes('"card_faces"')) return line;
+		const card = JSON.parse(line) as Record<string, unknown> & {
+			lang?: string;
+			card_faces?: Record<string, unknown>[];
+		};
+		const faces = card.card_faces;
+		if (card.lang !== "en" || !faces || faces.length !== 2 || typeof card.oracle_id !== "string") return line;
+		seen++;
+		if (seen % REVERSIBLE_EVERY !== 0) return line;
+		for (const face of faces) {
+			face.oracle_id = card.oracle_id;
+			face.layout = "normal";
+			if (card.cmc !== undefined) face.cmc = card.cmc;
+			if (face.type_line === undefined && card.type_line !== undefined) face.type_line = card.type_line;
+		}
+		for (const key of ["oracle_id", "cmc", "type_line", "mana_cost", "colors", "oracle_text"]) delete card[key];
+		card.layout = "reversible_card";
+		return JSON.stringify(card);
+	});
+}
+
 /** Turn memprobe's bulk + tag map into the five derived dumps. */
 function derive(rawBulk: string, tags: string): Derived {
-	const lines = withFaceFlavorNames(rawBulk.split("\n").filter((l) => l.length > 0));
+	const lines = withReversiblePrintings(withFaceFlavorNames(rawBulk.split("\n").filter((l) => l.length > 0)));
 	const bulk = `${lines.join("\n")}\n`;
 	const canonicalIds: string[] = [];
 	const oracleRepresentative = new Map<string, string>();

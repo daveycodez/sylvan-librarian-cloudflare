@@ -47,15 +47,14 @@ export const ORACLE_PAIRS_FILE = "oracle-pairs.bin";
 
 /**
  * One finalized row's pair — `transform::oracle_pair_of_row`, in TS, for build dirs that predate
- * the sidecar: both ids must be UUIDs, and a `reversible_card` printing has none (its card object
- * carries no top-level oracle_id, so the engine answers its rulings `data: []`).
+ * the sidecar: both ids must be UUIDs. A `reversible_card` printing is a pair like any other — its
+ * row holds its faces' oracle id, which is the one its rulings hang off (`rulingsOracleIdOf`).
  */
 export function pairFromRow(
 	row: { scryfall_id?: unknown; oracle_id?: unknown; card_layout?: unknown },
 	out: Uint8Array,
 	at: number,
 ): boolean {
-	if (row.card_layout === "reversible_card") return false;
 	if (typeof row.scryfall_id !== "string" || typeof row.oracle_id !== "string") return false;
 	const s = uuidBytes(row.scryfall_id, out.subarray(at, at + 16));
 	if (s === null) return false;

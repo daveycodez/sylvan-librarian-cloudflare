@@ -1,7 +1,8 @@
 // The nightly's half of the oracle index, through the REAL wasm import module: `scores_add_drafts`
 // emits one EMIT_ORACLE_PAIRS run per batch, right after that batch's EMIT_ROUTING, holding one
-// 32-byte (scryfall id, oracle id) record per draft whose card object carries an oracle id — and
-// NONE for a reversible printing, whose card object has no top-level oracle_id. The coordinator
+// 32-byte (scryfall id, oracle id) record per draft — a reversible printing included, under its
+// faces' oracle id, since its card object has none at top level and that is the id its rulings
+// hang off (Ugin, Eye of the Storms tdm/382, real JSON from the 2026-08-16 bulk). The coordinator
 // stages both emits in one routing_keys row per scores slice, the batches' runs concatenated in
 // order (routingStagingRows), so the ordering and the always-emit rule are what that staging leans
 // on. (Which printings get a record is pinned against the NATIVE
@@ -86,14 +87,12 @@ function lengthPrefixed(blobs: Uint8Array[]): Uint8Array {
 	return out;
 }
 
-type Card = Record<string, unknown> & { id: string; oracle_id: string };
+type Card = Record<string, unknown> & { id: string; oracle_id?: string };
 const fixture = async (name: string) =>
 	JSON.parse(await Bun.file(new URL(`../../engine/builder/src/fixtures/${name}.json`, import.meta.url)).text()) as Card;
 const bolt = await fixture("lightning_bolt");
-const reversible = await fixture("delver_of_secrets");
-reversible.layout = "reversible_card";
-for (const face of reversible.card_faces as Record<string, unknown>[]) face.layout = "normal";
-reversible.id = "cccccccc-0000-4000-8000-000000000099";
+const reversible = await fixture("ugin_tdm_382");
+const UGIN_ORACLE_ID = "5c58353a-fd60-4528-bf0d-669626cda0b2";
 
 const CARDS: Card[] = [
 	...Array.from({ length: 6 }, (_, i) => ({
@@ -113,7 +112,7 @@ function drafts(): Uint8Array[] {
 }
 
 describe("EMIT_ORACLE_PAIRS through the real wasm module", () => {
-	test("one run per batch, right after its routing keys, one record per non-reversible draft", () => {
+	test("one run per batch, right after its routing keys, one record per draft", () => {
 		const staged = drafts();
 		expect(staged.length).toBe(CARDS.length);
 		const host = instantiate();
@@ -122,18 +121,25 @@ describe("EMIT_ORACLE_PAIRS through the real wasm module", () => {
 		host.scores(lengthPrefixed(staged.slice(4)), 3);
 		expect(host.emits.map((e) => e.kind)).toEqual([EMIT.ROUTING, EMIT.ORACLE_PAIRS, EMIT.ROUTING, EMIT.ORACLE_PAIRS]);
 		const runs = host.emits.filter((e) => e.kind === EMIT.ORACLE_PAIRS).map((e) => e.bytes);
-		expect(runs.map((r) => r.length / ORACLE_PAIR_BYTES)).toEqual([4, 2]); // the reversible one is left out
+		expect(runs.map((r) => r.length / ORACLE_PAIR_BYTES)).toEqual([4, 3]);
 
 		const { buckets, pairCount } = encodeOracleIndexBuckets(runs);
-		expect(pairCount).toBe(6);
+		expect(pairCount).toBe(7);
 		for (const card of CARDS.slice(0, 6)) {
 			expect(oracleIdLookup(buckets[oracleIndexBucketOf(card.id) as number] as Uint8Array, card.id)).toBe(
-				card.oracle_id,
+				card.oracle_id as string,
 			);
 		}
-		expect(
-			oracleIdLookup(buckets[oracleIndexBucketOf(reversible.id) as number] as Uint8Array, reversible.id),
-		).toBeNull();
+		// Scryfall's JSON carries Ugin's oracle id only on the faces; the index carries it anyway.
+		expect(reversible.layout).toBe("reversible_card");
+		expect(reversible.oracle_id).toBeUndefined();
+		expect((reversible.card_faces as { oracle_id: string }[]).map((f) => f.oracle_id)).toEqual([
+			UGIN_ORACLE_ID,
+			UGIN_ORACLE_ID,
+		]);
+		expect(oracleIdLookup(buckets[oracleIndexBucketOf(reversible.id) as number] as Uint8Array, reversible.id)).toBe(
+			UGIN_ORACLE_ID,
+		);
 	});
 
 	test("an empty batch still emits its (empty) run, and partition_count 0 emits neither", () => {

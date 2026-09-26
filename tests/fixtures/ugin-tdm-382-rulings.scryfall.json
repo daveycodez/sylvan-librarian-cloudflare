@@ -1,0 +1,27 @@
+{
+	"object": "list",
+	"has_more": false,
+	"data": [
+		{
+			"object": "ruling",
+			"oracle_id": "5c58353a-fd60-4528-bf0d-669626cda0b2",
+			"source": "wotc",
+			"published_at": "2025-04-04",
+			"comment": "You must follow the normal timing permissions and restrictions of each spell you cast using the permission granted by Ugin’s last ability."
+		},
+		{
+			"object": "ruling",
+			"oracle_id": "5c58353a-fd60-4528-bf0d-669626cda0b2",
+			"source": "wotc",
+			"published_at": "2025-04-04",
+			"comment": "If you cast a spell “without paying its mana cost,” you can’t choose to cast it for any alternative costs. You can, however, pay additional costs, such as kicker costs. If the spell has any mandatory additional costs those must be paid to cast the spell."
+		},
+		{
+			"object": "ruling",
+			"oracle_id": "5c58353a-fd60-4528-bf0d-669626cda0b2",
+			"source": "wotc",
+			"published_at": "2025-04-04",
+			"comment": "If a spell has {X} in its mana cost, you must choose 0 as the value of X when casting it without paying its mana cost."
+		}
+	]
+}

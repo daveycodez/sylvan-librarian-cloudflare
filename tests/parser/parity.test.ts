@@ -32,6 +32,7 @@ import {
 	parseScryfallQuery,
 	QueryBudgetExceeded,
 } from "../../src/parser";
+import { pyFloatRepr } from "../../src/parser/pystr";
 
 /**
  * A builder sidecar (src/engine/tag-aliases.ts), handed to the parse the way the route hands it
@@ -127,6 +128,39 @@ const PORT_ONLY_TREES: ReadonlyMap<string, string> = new Map([
 	],
 ]);
 
+/**
+ * A THIRD DIVERGENCE, PORT-ONLY: a number inside a text value keeps its SPELLING here. The lexer
+ * hands a hyphenated value over in pieces, and a bare-digit piece is a NUMBER token; the vendored
+ * hand_parser.py glues `str(tok.value)`, so `0796` came back `796` and `oracleid:9afd8f12-0796-…`
+ * searched an id that does not exist (a 404 where api.scryfall.com answers Doubling Cube's four
+ * printings, 2026-09-25). The port glues the token's source text (parser.ts `textOf`).
+ *
+ * The exporter's tree cannot be mapped forward (the zeros are gone from it), so the PORT'S tree is
+ * mapped back: every hyphen-separated piece of a string that is a bare number is re-spelled the
+ * way Python's `str(int)` / `repr(float)` would. Applied only when the trees differ, so a fixture
+ * the port already matches is compared byte for byte; and `the number-spelling reconciliation is
+ * narrow` below pins which fixtures take this path.
+ */
+function pythonNumberSpelling(tree: string): string {
+	return tree.replace(JSON_STRING, (token) => {
+		const text = JSON.parse(token) as string;
+		const glued = text
+			.split("-")
+			.map((piece) =>
+				/^[0-9]+$/.test(piece)
+					? BigInt(piece).toString()
+					: /^[0-9]+\.[0-9]+$/.test(piece)
+						? pyFloatRepr(Number(piece))
+						: piece,
+			)
+			.join("-");
+		return glued === text ? token : JSON.stringify(glued);
+	});
+}
+
+/** A number spelled in a way `str(int)` / `repr(float)` does not write back: `007`, `02`, `1.50`. */
+const RESPELLED_NUMBER = /(?:^|[^0-9.])(?:0[0-9]|[0-9]+\.[0-9]*0(?![0-9]))/;
+
 interface FixtureCase {
 	query: string;
 	tree?: string;
@@ -178,6 +212,38 @@ test("the reconciler preserves number literals verbatim", () => {
 	expect(out).toContain('"e":1e-05');
 });
 
+test("the number-spelling reconciliation is narrow: only queries that spell a number Python re-spells", () => {
+	let reconciled = 0;
+	for (const file of fixtureFiles) {
+		for (const c of JSON.parse(readFileSync(join(FIXTURES_DIR, file), "utf-8")) as FixtureCase[]) {
+			if (c.tree === undefined) continue;
+			const tree = canonicalStringify(parseScryfallQuery(c.query, TAG_ALIASES));
+			const expected = PORT_ONLY_TREES.get(c.query) ?? applyTagAliases(c.tree);
+			if (tree === expected) continue;
+			reconciled += 1;
+			expect(RESPELLED_NUMBER.test(c.query), `${c.query} differs for another reason`).toBe(true);
+		}
+	}
+	// 13 fuzz fixtures on 2026-09-25 (`artist:007`, `type<2024-02-29`, ...). None is a corpus query.
+	expect(reconciled).toBeGreaterThan(0);
+	expect(reconciled).toBeLessThan(30);
+});
+
+test("a number inside a text value keeps its spelling", () => {
+	const value = (q: string) =>
+		(JSON.parse(canonicalStringify(parseScryfallQuery(q))) as { kwargs: { rhs: { kwargs: { value: string } } } }).kwargs
+			.rhs.kwargs.value;
+	// Doubling Cube: the `0796` piece is a NUMBER token, and it lost its zero.
+	expect(value("oracleid:9afd8f12-0796-4500-aaa3-10b4a46ef6ec")).toBe("9afd8f12-0796-4500-aaa3-10b4a46ef6ec");
+	// A leading all-digit piece, and a trailing one.
+	expect(value("oracleid:00037840-6089-42ec-8c5c-281f9f474504")).toBe("00037840-6089-42ec-8c5c-281f9f474504");
+	expect(value("oracleid:5c58353a-fd60-4528-bf0d-000000000001")).toBe("5c58353a-fd60-4528-bf0d-000000000001");
+	expect(value("a:007")).toBe("007");
+	expect(value("o:1.50")).toBe("1.50");
+	// A number that is a NUMBER is still one.
+	expect(canonicalStringify(parseScryfallQuery("cmc=007"))).toContain('"value":7}');
+});
+
 test("every port-only tree names a fixture that exists and still disagrees with it", () => {
 	const byQuery = new Map<string, FixtureCase>();
 	for (const file of fixtureFiles) {
@@ -206,8 +272,9 @@ for (const file of fixtureFiles) {
 		for (const fixture of cases) {
 			test(`parses ${JSON.stringify(fixture.query)} identically`, () => {
 				if (fixture.tree !== undefined) {
-					const tree = parseScryfallQuery(fixture.query, TAG_ALIASES);
-					expect(canonicalStringify(tree)).toBe(PORT_ONLY_TREES.get(fixture.query) ?? applyTagAliases(fixture.tree));
+					const tree = canonicalStringify(parseScryfallQuery(fixture.query, TAG_ALIASES));
+					const expected = PORT_ONLY_TREES.get(fixture.query) ?? applyTagAliases(fixture.tree);
+					expect(tree === expected ? tree : pythonNumberSpelling(tree)).toBe(expected);
 				} else if (fixture.error !== undefined) {
 					let thrown: unknown;
 					try {

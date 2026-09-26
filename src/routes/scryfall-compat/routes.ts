@@ -1410,9 +1410,10 @@ export async function cardsHandler(
 	// `/cards/:id/rulings` — ~all of this route's traffic (every sampled DeckGen request was this
 	// shape) — learns the oracle id from the KV index (src/engine/oracle-index.ts) instead of from
 	// a partition Durable Object. Only a HIT short-cuts: a miss (a printing newer than the last
-	// publish, a reversible printing, an id nothing holds, an index not yet published or
-	// unreadable) falls through to the engine path below, which is exactly the answer this route
-	// gave before the index existed — the index can add no 404 and no 200 the engine would not.
+	// publish, an id nothing holds, an index not yet published or unreadable, a reversible
+	// printing in an index published before those were included) falls through to the engine path
+	// below, which is exactly the answer this route gave before the index existed — the index can
+	// add no 404 and no 200 the engine would not.
 	if (number === "rulings" && !suffix && COLLECTION_UUID_RE.test(identifier)) {
 		const oracleId = await oracleIdFromIndex(ctx, identifier);
 		if (oracleId !== null) return rulingsForOracle(ctx, oracleId, pretty);
@@ -1503,7 +1504,28 @@ const RULINGS_UNREADABLE_DETAILS = "The rulings store could not be read.";
  * is the one `/cards/*` answer the Durable Object has no part in.
  */
 async function rulingsForCard(ctx: RouteContext, card: Record<string, unknown>, pretty: boolean): Promise<Response> {
-	return rulingsForOracle(ctx, typeof card.oracle_id === "string" ? card.oracle_id : "", pretty);
+	return rulingsForOracle(ctx, rulingsOracleIdOf(card), pretty);
+}
+
+/**
+ * The oracle id a card object's rulings hang off: its own, or — when it carries none — its faces'.
+ *
+ * A `reversible_card` printing is the one card object with no top-level `oracle_id` (all 81 in the
+ * 2026-08-16 bulk, and nothing else): the id lives on `card_faces[*].oracle_id`, where the engine
+ * writes the card's one id on every face (card_object.rs, `REVERSIBLE_LAYOUT`). Reading only the
+ * top level answered `data: []` for all of them, where api.scryfall.com answers the card's rulings
+ * — tdm/382 "Ugin, Eye of the Storms" has the same 3 as tdm/1 (2026-09-25). The oracle index holds
+ * these printings too (`transform::oracle_pair_of`), with the same id this returns.
+ */
+export function rulingsOracleIdOf(card: Record<string, unknown>): string {
+	if (typeof card.oracle_id === "string") return card.oracle_id;
+	const faces = card.card_faces;
+	if (!Array.isArray(faces)) return "";
+	for (const face of faces) {
+		const id = (face as { oracle_id?: unknown } | null)?.oracle_id;
+		if (typeof id === "string" && id !== "") return id;
+	}
+	return "";
 }
 
 /**

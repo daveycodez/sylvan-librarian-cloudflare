@@ -241,9 +241,14 @@ describe("the deploy seeder's rows.jsonl fallback", () => {
 		expect(formatUuid(out, 48)).toBe(o);
 	});
 
-	test("a reversible printing, a missing or a malformed id is not", () => {
+	test("a reversible printing is a pair too: its row holds its faces' oracle id", () => {
 		const out = new Uint8Array(32);
-		expect(pairFromRow({ scryfall_id: s, oracle_id: o, card_layout: "reversible_card" }, out, 0)).toBe(false);
+		expect(pairFromRow({ scryfall_id: s, oracle_id: o, card_layout: "reversible_card" }, out, 0)).toBe(true);
+		expect(formatUuid(out, 16)).toBe(o);
+	});
+
+	test("a missing or a malformed id is not", () => {
+		const out = new Uint8Array(32);
 		expect(pairFromRow({ scryfall_id: s, card_layout: "normal" }, out, 0)).toBe(false);
 		expect(pairFromRow({ scryfall_id: s, oracle_id: "", card_layout: "normal" }, out, 0)).toBe(false);
 		expect(pairFromRow({ scryfall_id: "x", oracle_id: o }, out, 0)).toBe(false);

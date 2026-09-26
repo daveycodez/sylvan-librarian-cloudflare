@@ -1,8 +1,9 @@
 // What the harness checks about the oracle index (src/engine/oracle-index.ts) once the run is done.
 //
 //   1. PUBLISHED: the meta and all 64 buckets are in KV, the meta's hashes are the buckets' bytes,
-//      and the entries are EXACTLY the corpus's (id, oracle_id) pairs minus the reversible
-//      printings — every pair round-trips through `oracleIdLookup`, nothing extra is claimed.
+//      and the entries are EXACTLY the corpus's (id, oracle_id) pairs — a reversible printing's
+//      oracle id being its faces' (it has none at top level) — every pair round-trips through
+//      `oracleIdLookup`, nothing extra is claimed.
 //   2. BOTH PUBLISHERS AGREE, byte for byte: the native builder (the deploy path) is run against the
 //      same dump server, its `oracle-pairs.bin` sidecar is encoded exactly as
 //      scripts/seed-oracle-index.ts encodes it, and every bucket must equal the one the nightly
@@ -80,12 +81,19 @@ export async function checkOracleIndex(
 	let reversible = 0;
 	for (const line of new TextDecoder().decode(gunzipSync(corpus.dumps.all_cards as Uint8Array)).split("\n")) {
 		if (!line.trim()) continue;
-		const card = JSON.parse(line) as { id?: unknown; oracle_id?: unknown; layout?: unknown };
-		if (card.layout === "reversible_card") {
+		const card = JSON.parse(line) as {
+			id?: unknown;
+			oracle_id?: unknown;
+			layout?: unknown;
+			card_faces?: { oracle_id?: unknown }[];
+		};
+		// The id `/cards/:id/rulings` reads: the card's own, else its faces' (`rulingsOracleIdOf`).
+		let oracleId = card.oracle_id;
+		if (oracleId === undefined && card.layout === "reversible_card") {
 			reversible++;
-			continue;
+			oracleId = card.card_faces?.[0]?.oracle_id;
 		}
-		if (isUuid(card.id) && isUuid(card.oracle_id)) expected.set(card.id.toLowerCase(), card.oracle_id.toLowerCase());
+		if (isUuid(card.id) && isUuid(oracleId)) expected.set(card.id.toLowerCase(), oracleId.toLowerCase());
 	}
 	const held = new Map<string, string>();
 	for (const bucket of buckets) for (const [s, o] of oracleIndexEntries(bucket)) held.set(s, o);
@@ -100,7 +108,7 @@ export async function checkOracleIndex(
 	lines.push(
 		`oracle index: ${meta.pair_count} pairs published in ${ORACLE_INDEX_BUCKET_COUNT} buckets ` +
 			`(${Math.min(...sizes)}-${Math.max(...sizes)} bytes, ${sizes.reduce((a, b) => a + b, 0)} in all); ` +
-			`every corpus printing round-trips, ${reversible} reversible left out`,
+			`every corpus printing round-trips, ${reversible} reversible under their faces' id`,
 	);
 
 	// ── 2. the native builder's buckets, byte for byte ──────────────────────

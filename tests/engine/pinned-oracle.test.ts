@@ -52,6 +52,53 @@ describe("the owning object's pin check (source pin: the DO cannot load outside 
 	});
 });
 
+describe("Doubling Cube: an id with a zero-led all-digit piece (real JSON, the 2026-08-16 bulk)", () => {
+	// `oracleid:9afd8f12-0796-4500-aaa3-10b4a46ef6ec` lexes WORD MINUS NUMBER …, and the parser glued
+	// the NUMBER `0796` back as 796. The tree then named no UUID, so the search did not pin
+	// (production's `pin=0 … status=404`, ~122 a day), gathered all N partitions for an id no card
+	// has, and answered 404 where api.scryfall.com answers these four printings — every
+	// "Prints" strip for Doubling Cube on mtgseeker came back empty. 720 of the corpus's 38,626
+	// oracle ids have such a piece.
+	const PRINTS = [
+		"doubling_cube_10e_321",
+		"doubling_cube_5dn_116",
+		"doubling_cube_plst_10e_321",
+		"doubling_cube_sld_1080",
+	];
+	const cards = PRINTS.map(
+		(name) =>
+			JSON.parse(readFileSync(join(import.meta.dir, `../../engine/builder/src/fixtures/${name}.json`), "utf8")) as {
+				oracle_id?: string;
+				layout: string;
+				card_faces?: { oracle_id?: string }[];
+			},
+	);
+	const DOUBLING_CUBE = "9afd8f12-0796-4500-aaa3-10b4a46ef6ec";
+
+	test("all four printings carry the one oracle id — the reversible sld/1080 only on its faces", () => {
+		for (const card of cards) {
+			expect(card.oracle_id ?? card.card_faces?.[0]?.oracle_id).toBe(DOUBLING_CUBE);
+		}
+		const reversible = cards.filter((c) => c.oracle_id === undefined);
+		expect(reversible.map((c) => c.layout)).toEqual(["reversible_card"]);
+	});
+
+	test("the search pins that id, and so asks the one partition that owns all four", async () => {
+		expect(pinnedOracleId(await wire(`oracleid:${DOUBLING_CUBE}`, false))).toBe(DOUBLING_CUBE);
+		expect(pinnedOracleId(await wire(`oracleid:${DOUBLING_CUBE} unique:prints`))).toBe(DOUBLING_CUBE);
+		expect(pinnedOracleId(await wire(`oracleid:${DOUBLING_CUBE.toUpperCase()}`))).toBe(DOUBLING_CUBE);
+	});
+
+	test("the id reaches the engine spelled as sent, zeros and all", async () => {
+		expect(await wire(`oracleid:${DOUBLING_CUBE}`, false)).toContain(`"value":"${DOUBLING_CUBE}"`);
+		// A leading all-digit piece, and one that is all zeros.
+		const led = "00037840-6089-42ec-8c5c-281f9f474504";
+		expect(pinnedOracleId(await wire(`oracleid:${led}`))).toBe(led);
+		const zeros = "aa686c34-cf28-4d4a-0000-5a34cccdbf87";
+		expect(pinnedOracleId(await wire(`oracleid:${zeros}`))).toBe(zeros);
+	});
+});
+
 describe("a query fans out when", () => {
 	test("the id sits under an OR", async () => {
 		expect(pinnedOracleId(await wire(`oracleid:${ID} or t:goblin`))).toBeNull();
