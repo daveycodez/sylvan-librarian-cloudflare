@@ -622,8 +622,11 @@ The complete list of intentional differences:
   `name:megatron` and `!"Megatron // Megatron"` find sld/1079 on
   `/cards/search`, and `name:aaargh` finds the Marit Lage token only with
   `include_extras=true`. The face key is derived from the stored faces when a
-  store loads, so it needed no store rebuild; the routing filter does not carry
-  it, so such a needle asks every partition.
+  store loads, so it needed no store rebuild. Both builders also emit the join
+  as a routing-filter name key (the store's own name keys are unchanged), so
+  `exact=Chucky` and `exact=Megatron // Megatron` ask the one partition holding
+  the printing; `fuzzy=recyclops` is containment, which no name key places, and
+  still asks every partition.
 - **`/cards/*` cache tiers are measured from**
   `api.scryfall.com` rather than inherited from `/search`: `public,
   max-age=57600` on the cacheable routes, `no-cache` on `/cards/random`, and

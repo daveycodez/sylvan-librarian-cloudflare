@@ -134,7 +134,8 @@ export function externalIdKey(namespace: string, id: number): string {
 // its folded name, and a name does not say which partition holds it — so all three asked every
 // partition. The builders (`name_routing_keys_of` in engine/builder/src/transform.rs) emit one key
 // per (partition, collated name) for every name the engine can match: canonical rows' whole and
-// face names, and every row's flavor name.
+// face names, every row's flavor name, and every row's FACE-LEVEL flavor names as their one joined
+// key (backlog n13: `exact=Megatron // Megatron`, `exact=Chucky` — never one face alone).
 //
 // A NAME CAN LIVE IN SEVERAL PARTITIONS — a card's whole name is another card's face name, most
 // often an art-series card's — so a name key's value is not "the lowest owner" like an id's:

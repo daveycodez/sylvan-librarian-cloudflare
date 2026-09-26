@@ -2866,7 +2866,16 @@ pub fn routing_keys_of_row(row: &Value, out: &mut Vec<String>) {
         out,
     );
     let extra = row.get("card_is_tags").and_then(Value::as_object).is_some_and(|tags| tags.contains_key(EXTRA_IS_TAG));
-    name_routing_keys_of(text("card_name_folded").unwrap_or(""), text("flavor_name_folded"), canonical, extra, out);
+    let faces = row.get("card_faces").and_then(Value::as_array).map(Vec::as_slice).unwrap_or_default();
+    let face_flavor = face_flavor_name_folded(faces.iter().map(|f| f.get("flavor_name").and_then(Value::as_str)));
+    name_routing_keys_of(
+        text("card_name_folded").unwrap_or(""),
+        text("flavor_name_folded"),
+        face_flavor.as_deref(),
+        canonical,
+        extra,
+        out,
+    );
 }
 
 // ─── the routing filter's NAME keys (LOCAL PATCH, Cloudflare port) ───────────────
@@ -2887,6 +2896,14 @@ pub fn routing_keys_of_row(row: &Value, out: &mut Vec<String>) {
 // WHICH ROWS: canonical rows (the engine's `printings` space, where a card's name and its served
 // printings live) emit their whole and face names; EVERY row carrying a flavor name emits it,
 // canonical or not, because the flavor index covers both spaces.
+//
+// FACE-LEVEL FLAVOR NAMES (backlog n13) are one more key of the same kind: when a printing's flavor
+// names sit on its FACES, the engine keys the printing by their JOIN — `" // "` in face order over
+// the faces that carry one (`FaceFlavorKey` in card_engine lib.rs, derived at load from
+// `PrintingFace.flavor_name_id`) — and never by one face alone, so the join is emitted WHOLE, with
+// no half keys: `exact=Megatron // Megatron` is sld/1079, `exact=Megatron` a 404, and `exact=Chucky`
+// Kardur sld/1807, whose front face alone carries one. Every row, both spaces, like the card-level
+// flavor name. Without it such a needle read an arbitrary byte and asked every partition.
 //
 // SERVED: a row a default search shows (no `extra` tag) writes `ns:` instead of `nm:`. Both hash
 // as `nm:<key>` — the prefix is a flag for the filter build, which stores "the one partition
@@ -2931,11 +2948,27 @@ fn push_name_keys(name: &str, prefix: &str, out: &mut Vec<String>) {
     }
 }
 
-/// Append one row's NAME routing keys — see the section comment. `extra` is whether the row
-/// carries the `extra` `is:` tag; everything else is served.
+/// A printing's FACE-LEVEL flavor-name key, folded: the flavor names its faces carry, in face order,
+/// joined `" // "` — the engine's `FaceFlavorKey` (card_engine lib.rs), which skips a face without
+/// one exactly as this does — then lowercased and accent-folded with the fold every other name key
+/// is built from, since the router folds its needle the same way before `nameKey` collates it. None
+/// when no face carries one (every printing but 15 on the 2026-09-25 corpus).
+///
+/// The engine's own key is lowercased but not accent-folded; the two collate to the same bytes for
+/// every ASCII join, which is every face flavor name in the corpus and the only kind the router
+/// routes (`nameKey` refuses a non-ASCII needle).
+pub fn face_flavor_name_folded<'a>(faces: impl IntoIterator<Item = Option<&'a str>>) -> Option<String> {
+    let names: Vec<&str> = faces.into_iter().flatten().collect();
+    (!names.is_empty()).then(|| fold_accents(&names.join(" // ").to_lowercase()))
+}
+
+/// Append one row's NAME routing keys — see the section comment. `face_flavor_folded` is
+/// [`face_flavor_name_folded`] over the row's faces. `extra` is whether the row carries the `extra`
+/// `is:` tag; everything else is served.
 pub fn name_routing_keys_of(
     card_name_folded: &str,
     flavor_name_folded: Option<&str>,
+    face_flavor_folded: Option<&str>,
     canonical: bool,
     extra: bool,
     out: &mut Vec<String>,
@@ -2946,6 +2979,13 @@ pub fn name_routing_keys_of(
     }
     if let Some(flavor) = flavor_name_folded.filter(|f| !f.is_empty()) {
         push_name_keys(flavor, prefix, out);
+    }
+    // The join is ONE key: the engine never matches a face flavor name alone, nor half a join.
+    if let Some(joined) = face_flavor_folded {
+        let collated = collate_name(joined);
+        if !collated.is_empty() {
+            out.push(format!("{prefix}{collated}"));
+        }
     }
 }
 
@@ -3033,6 +3073,10 @@ pub struct CorpusPassDraft {
     pub card_name_folded: String,
     #[serde(default)]
     pub flavor_name_folded: Option<String>,
+    /// Only each face's `flavor_name` — the face-level flavor key's input; every other face field
+    /// is skipped by the parser rather than built.
+    #[serde(default)]
+    pub card_faces: Vec<CorpusPassFace>,
     #[serde(default)]
     pub card_is_tags: Vec<String>,
     // The artist entity relation's input, read in this same pass for the same reason the
@@ -3043,6 +3087,13 @@ pub struct CorpusPassDraft {
     // top-level oracle id at all.
     #[serde(default)]
     pub card_layout: Option<String>,
+}
+
+/// The one field of a staged draft's `card_faces` entry the corpus-wide pass reads.
+#[derive(Debug, serde::Deserialize)]
+pub struct CorpusPassFace {
+    #[serde(default)]
+    pub flavor_name: Option<String>,
 }
 
 impl CorpusPassDraft {
@@ -3060,9 +3111,11 @@ impl CorpusPassDraft {
             .filter(|_| self.is_canonical);
         routing_keys_of(&self.scryfall_id, self.illustration_id.as_deref(), &self.compat_blob, address, out);
         let extra = self.card_is_tags.iter().any(|t| t == EXTRA_IS_TAG);
+        let face_flavor = face_flavor_name_folded(self.card_faces.iter().map(|f| f.flavor_name.as_deref()));
         name_routing_keys_of(
             &self.card_name_folded,
             self.flavor_name_folded.as_deref(),
+            face_flavor.as_deref(),
             self.is_canonical,
             extra,
             out,
@@ -3149,7 +3202,7 @@ mod tests {
     fn name_routing_keys_are_spelled_like_the_router_spells_them() {
         let keys = |name: &str, flavor: Option<&str>, canonical: bool, extra: bool| {
             let mut out = Vec::new();
-            name_routing_keys_of(name, flavor, canonical, extra, &mut out);
+            name_routing_keys_of(name, flavor, None, canonical, extra, &mut out);
             out
         };
         // Collated: every non-alphanumeric gone, the fold already done by the caller.
@@ -3171,6 +3224,45 @@ mod tests {
         assert_eq!(keys("", None, true, false), Vec::<String>::new());
     }
 
+    /// FACE-LEVEL flavor names (backlog n13) are ONE key, the join in face order over the faces that
+    /// carry one — the engine's `FaceFlavorKey` — never a face alone and never a half. The literals
+    /// are WIRE FORMAT: tests/engine/routing-filter.test.ts looks the same keys up through `nameKey`.
+    #[test]
+    fn a_face_flavor_name_is_one_joined_key() {
+        let joined = |faces: &[Option<&str>]| face_flavor_name_folded(faces.iter().copied());
+        assert_eq!(joined(&[Some("Megatron"), Some("Megatron")]).as_deref(), Some("megatron // megatron"));
+        // Kardur sld/1807: only the front face carries one, so the key is that face's name alone.
+        assert_eq!(joined(&[Some("Chucky"), None]).as_deref(), Some("chucky"));
+        assert_eq!(joined(&[None, Some("Chucky")]).as_deref(), Some("chucky"));
+        // Folded like every other name key: lowercased, accents stripped.
+        assert_eq!(
+            joined(&[Some("Recyclops, Eco-friendly"), Some("Recyclops, Nature\u{2019}s Vengeance")]).as_deref(),
+            Some("recyclops, eco-friendly // recyclops, nature\u{2019}s vengeance")
+        );
+        assert_eq!(joined(&[Some("\u{c9}owyn")]).as_deref(), Some("eowyn"));
+        assert_eq!(joined(&[None, None]), None);
+        assert_eq!(joined(&[]), None);
+
+        let keys = |name: &str, face: Option<&str>, canonical: bool, extra: bool| {
+            let mut out = Vec::new();
+            name_routing_keys_of(name, None, face, canonical, extra, &mut out);
+            out
+        };
+        assert_eq!(
+            keys("blightsteel colossus // blightsteel colossus", Some("megatron // megatron"), true, false),
+            ["ns:blightsteelcolossusblightsteelcolossus", "ns:blightsteelcolossus", "ns:megatronmegatron"],
+            "the join is one key: no `megatron` half"
+        );
+        // Every row carries it, canonical or not, like the card-level flavor name.
+        assert_eq!(keys("kardur, doomscourge // kardur, doomscourge", Some("chucky"), false, false), ["ns:chucky"]);
+        assert_eq!(keys("x", Some("chucky"), false, true), ["nm:chucky"], "an extra row writes `nm:`");
+        assert_eq!(
+            keys("x", Some("recyclops, eco-friendly // recyclops, nature\u{2019}s vengeance"), false, false),
+            ["ns:recyclopsecofriendlyrecyclopsnaturesvengeance"]
+        );
+        assert!(keys("x", Some(" // "), false, false).is_empty(), "a join that collates away is no key");
+    }
+
     /// THE TWO PUBLISHERS EMIT THE SAME KEYS. The native builder reads a FINALIZED row
     /// (`routing_keys_of_row`); the nightly reads the staged DRAFT through `CorpusPassDraft`,
     /// deserialized exactly as `scores_add_drafts` deserializes it. A field renamed on one side
@@ -3179,6 +3271,7 @@ mod tests {
     #[test]
     fn both_publishers_emit_the_same_routing_keys() {
         let mut compared = 0;
+        let mut faced = 0;
         for name in ["lightning_bolt", "fire_ice", "delver_of_secrets", "delver_es", "shock_ja", "prepare_es", "jace_the_mind_sculptor", "llanowar_elves"] {
             for canonical in [true, false] {
                 for extra in [false, true] {
@@ -3187,6 +3280,18 @@ mod tests {
                     if name == "lightning_bolt" {
                         draft.flavor_name = Some("Bolt of Lightning // Other".into());
                         draft.flavor_name_folded = Some("bolt of lightning // other".into());
+                    }
+                    // Face-level flavor names (n13) ride `card_faces`: on both faces (Megatron's
+                    // shape) and on the front face alone (Chucky's).
+                    let faces = match name {
+                        "delver_of_secrets" => [Some("Megatron"), Some("Megatron")],
+                        "fire_ice" => [Some("Chucky"), None],
+                        _ => [None, None],
+                    };
+                    for (face, flavor) in draft.card_faces.iter_mut().zip(faces) {
+                        if let Some(flavor) = flavor {
+                            face.insert("flavor_name".into(), json!(flavor));
+                        }
                     }
                     let staged = serde_json::to_vec(&draft).unwrap();
                     let pass: CorpusPassDraft = serde_json::from_slice(&staged).unwrap();
@@ -3201,11 +3306,22 @@ mod tests {
                         !canonical || native.iter().any(|k| is_name_routing_key(k)),
                         "{name}: a canonical row names its card"
                     );
+                    let face_key = match name {
+                        "delver_of_secrets" => Some("megatronmegatron"),
+                        "fire_ice" => Some("chucky"),
+                        _ => None,
+                    };
+                    if let Some(face_key) = face_key {
+                        let want = format!("{}{face_key}", if extra { "nm:" } else { "ns:" });
+                        assert!(native.contains(&want), "{name} canonical={canonical} extra={extra}: no {want} in {native:?}");
+                        faced += 1;
+                    }
                     compared += 1;
                 }
             }
         }
         assert_eq!(compared, 32);
+        assert_eq!(faced, 8, "both face-flavored fixtures, every canonical/extra combination");
     }
 
     /// THE TWO PUBLISHERS EMIT THE SAME ORACLE PAIRS — the input half of "both publishers write

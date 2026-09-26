@@ -9,9 +9,11 @@
 //! over the name keys `name_routing_keys_of` emits for every row of a built corpus, against that
 //! corpus's own partition stores, and compares with the all-partition merge:
 //!
-//!   * every distinct name the corpus carries — whole, face and flavor, every row, canonical or
-//!     not — and its collated spelling, each × {no set, a set it is printed in, some other set},
-//!     for `exact=` and for a collection `{name}` (with and without a `?q=` scope);
+//!   * every distinct name the corpus carries — whole, face and flavor, and the face-level flavor
+//!     names' join (backlog n13), every row, canonical or not — and its collated spelling, each ×
+//!     {no set, a set it is printed in, some other set}, for `exact=` and for a collection `{name}`
+//!     (with and without a `?q=` scope); every face-level join, asked whole, must be answered by
+//!     ONE partition;
 //!   * 5,000 misspellings, under EVERY hint the filter could read for a key it never held (none,
 //!     sole p and served s for every p and s), because a missing key reads an arbitrary byte;
 //!   * the direct invariants underneath: a partition that ranks a name emitted its key, one that
@@ -32,7 +34,7 @@ use std::io::{BufRead, Write};
 
 use card_engine::{fnv1a64_oracle_id, BufferStore, CollectionScope, QueryOptions};
 use serde_json::{Map, Value};
-use sylvan_store_builder::transform::name_routing_keys_of;
+use sylvan_store_builder::transform::{face_flavor_name_folded, name_routing_keys_of};
 
 /// A reply's rank, as the router compares it: `(served, tier, score)`.
 type Rank = (u8, u8, f64);
@@ -125,6 +127,15 @@ struct RowNames {
     card_is_tags: Map<String, Value>,
     #[serde(default)]
     card_set_code: Option<String>,
+    #[serde(default)]
+    card_faces: Vec<FaceNames>,
+}
+
+/// The one face field the name keys read: the face-level flavor name (backlog n13).
+#[derive(serde::Deserialize)]
+struct FaceNames {
+    #[serde(default)]
+    flavor_name: Option<String>,
 }
 
 fn halves(name: &str) -> Vec<&str> {
@@ -180,6 +191,8 @@ fn name_routes_match_the_all_partition_merge() {
     let mut owners: HashMap<String, Owners> = HashMap::new();
     let mut lines_per_partition: Vec<HashSet<String>> = vec![HashSet::new(); n];
     let mut raw_lines = 0usize;
+    // The face-level flavor keys' joins (backlog n13), each of which must route to ONE partition.
+    let mut face_needles: HashSet<String> = HashSet::new();
     // Every distinct folded name the corpus carries, with a set it is printed in.
     let mut needles: HashMap<String, String> = HashMap::new();
     let mut sets: Vec<String> = Vec::new();
@@ -191,7 +204,15 @@ fn name_routes_match_the_all_partition_merge() {
         let p = (fnv1a64_oracle_id(&row.oracle_id) % n as u64) as usize;
         keys.clear();
         let extra = row.card_is_tags.contains_key("extra");
-        name_routing_keys_of(&row.card_name_folded, row.flavor_name_folded.as_deref(), row.is_canonical, extra, &mut keys);
+        let face_flavor = face_flavor_name_folded(row.card_faces.iter().map(|f| f.flavor_name.as_deref()));
+        name_routing_keys_of(
+            &row.card_name_folded,
+            row.flavor_name_folded.as_deref(),
+            face_flavor.as_deref(),
+            row.is_canonical,
+            extra,
+            &mut keys,
+        );
         raw_lines += keys.len();
         for key in &keys {
             lines_per_partition[p].insert(key.clone());
@@ -212,6 +233,13 @@ fn name_routes_match_the_all_partition_merge() {
         let mut names = vec![row.card_name_folded.as_str()];
         names.extend(halves(&row.card_name_folded));
         if let Some(f) = row.flavor_name_folded.as_deref() {
+            names.push(f);
+            names.extend(halves(f));
+        }
+        // A face-level flavor key is the join alone; its faces and halves are needles too, because
+        // the engine must NOT answer them (`exact=Megatron` is a 404), and the router must agree.
+        if let Some(f) = face_flavor.as_deref() {
+            face_needles.insert(f.to_owned());
             names.push(f);
             names.extend(halves(f));
         }
@@ -328,6 +356,7 @@ fn name_routes_match_the_all_partition_merge() {
     };
     let mut mismatches: Vec<String> = Vec::new();
     let mut single = [0usize; 3];
+    let mut face_settled = 0usize;
     let surfaces: [(&str, Pick); 3] =
         [("exact", |r| &r.0), ("collection", |r| &r.1), ("collection+scope", |r| &r.2)];
     for (i, (needle, set)) in cases.iter().enumerate() {
@@ -344,6 +373,14 @@ fn name_routes_match_the_all_partition_merge() {
                 Hint::None => false,
             };
             single[s] += usize::from(settled);
+            // A face-level flavor key, asked whole with no set, is answered by its ONE partition.
+            if s == 0 && set.is_none() && face_needles.contains(needle) {
+                if settled && col.iter().any(|r| r.rank.is_some()) {
+                    face_settled += 1;
+                } else {
+                    mismatches.push(format!("face flavor key {needle:?} hint={hint:?} is not settled by one partition"));
+                }
+            }
         }
         // The invariants underneath, without the set: a partition that ranks the name emitted its key,
         // and one ranking it SERVED emitted it served.
@@ -392,6 +429,8 @@ fn name_routes_match_the_all_partition_merge() {
         100.0 * single[1] as f64 / cases.len() as f64,
         100.0 * single[2] as f64 / cases.len() as f64,
     );
+    // Every other one is a mismatch above.
+    eprintln!("face flavor keys: {face_settled} of {} answered by one partition", face_needles.len());
 
     // ── `!"name"` pinned to a sole partition finds nothing anywhere else ────────
     let started = std::time::Instant::now();

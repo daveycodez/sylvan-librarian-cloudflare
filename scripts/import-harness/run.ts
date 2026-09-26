@@ -59,6 +59,7 @@ import { buildCorpus, type Corpus } from "./corpus";
 import { serveDumps } from "./dump-server";
 import { measureEnginePool } from "./engine-pool";
 import { checkOracleIndex, type OracleIndexCheck } from "./oracle-index-check";
+import { checkRoutingFilter } from "./routing-filter-check";
 import { FakeKV, MeteredStorage } from "./storage";
 
 interface Options {
@@ -616,6 +617,16 @@ async function main(): Promise<number> {
 	for (const line of pool.lines) console.log(line);
 	if (!pool.ok) {
 		console.error("\nFAILED: an engine object held two builds' caches at once (above)");
+		return 1;
+	}
+
+	// n13: the routing filter — it places the corpus's face-level flavor names, and the native
+	// builder's filter is the nightly's byte for byte. Reads the native build the oracle check left.
+	const routing = await checkRoutingFilter(kv, corpus, oracle.nativeDir ?? null);
+	console.log("");
+	for (const line of routing.lines) console.log(line);
+	if (!routing.ok) {
+		console.error("\nFAILED: the routing-filter check (above)");
 		return 1;
 	}
 

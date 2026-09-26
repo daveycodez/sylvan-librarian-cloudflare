@@ -79,9 +79,44 @@ interface Derived {
 	printings: number;
 }
 
+/**
+ * The derived dumps' own version, in their cache file's name: a change to `derive` must not read a
+ * cache written by the old one. v2 (backlog n13): face-level flavor names.
+ */
+const DERIVE_VERSION = 2;
+
+/**
+ * Face-level flavor names on a few faced printings (backlog n13). memprobe emits none, and the real
+ * corpus carries them on 15 printings — the shape the routing filter's face keys come from: on both
+ * faces (sld/1079 "Megatron" // "Megatron") or on the front face alone (sld/1807 "Chucky"). Every
+ * 25th English faced printing, alternating the two shapes, and every 200th foreign one so a
+ * non-canonical row emits one too. Scryfall never puts a top-level `flavor_name` beside them.
+ */
+export const FACE_FLAVOR_EVERY = { en: 25, foreign: 200 } as const;
+
+function withFaceFlavorNames(lines: string[]): string[] {
+	const seen = { en: 0, foreign: 0 };
+	return lines.map((line) => {
+		if (!line.includes('"card_faces"')) return line;
+		const card = JSON.parse(line) as { lang?: string; flavor_name?: string; card_faces?: Record<string, unknown>[] };
+		const faces = card.card_faces;
+		if (!faces || faces.length < 2) return line;
+		const kind = card.lang === "en" ? "en" : "foreign";
+		seen[kind]++;
+		if (seen[kind] % FACE_FLAVOR_EVERY[kind] !== 0) return line;
+		const k = seen[kind] / FACE_FLAVOR_EVERY[kind];
+		const label = `Harness ${kind === "en" ? "Face" : "Foreign Face"} ${k}`;
+		delete card.flavor_name;
+		(faces[0] as Record<string, unknown>).flavor_name = label;
+		if (k % 2 === 1) (faces[1] as Record<string, unknown>).flavor_name = `${label} Back`;
+		return JSON.stringify(card);
+	});
+}
+
 /** Turn memprobe's bulk + tag map into the five derived dumps. */
-function derive(bulk: string, tags: string): Derived {
-	const lines = bulk.split("\n").filter((l) => l.length > 0);
+function derive(rawBulk: string, tags: string): Derived {
+	const lines = withFaceFlavorNames(rawBulk.split("\n").filter((l) => l.length > 0));
+	const bulk = `${lines.join("\n")}\n`;
 	const canonicalIds: string[] = [];
 	const oracleRepresentative = new Map<string, string>();
 	for (const line of lines) {
@@ -186,7 +221,7 @@ export async function buildCorpus(printings: number, cacheRoot: string): Promise
 		renameSync(`${bulkPath}.tmp`, bulkPath);
 	}
 
-	const derivedPath = join(dir, "derived.json");
+	const derivedPath = join(dir, `derived-v${DERIVE_VERSION}.json`);
 	let derived: Derived;
 	if (existsSync(derivedPath)) {
 		derived = JSON.parse(readFileSync(derivedPath, "utf8")) as Derived;

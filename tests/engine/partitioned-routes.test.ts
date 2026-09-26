@@ -1506,6 +1506,39 @@ describe("exact names route through the filter (backlog n6)", () => {
 		expect(await tie.engine.scryfallExactName("brainstorm", "", "https://x")).toEqual({ name: "lower" });
 	});
 
+	// Backlog n13: a printing whose flavor names sit on its FACES is keyed by their join, and the
+	// builders emit that join as one more name key — so the needle routes like any other name. The
+	// keys are the literal lines `name_routing_keys_of` writes for sld/1079 and sld/1807
+	// (`a_face_flavor_name_is_one_joined_key` in engine/builder/src/transform.rs).
+	test("exact: a face-level flavor name is ONE probe, to the partition holding its printing", async () => {
+		const FACES = named([
+			{ key: "ns:blightsteelcolossusblightsteelcolossus", partition: 3 },
+			{ key: "ns:blightsteelcolossus", partition: 3 },
+			{ key: "ns:megatronmegatron", partition: 3 },
+			{ key: "ns:kardurdoomscourgekardurdoomscourge", partition: 1 },
+			{ key: "ns:kardurdoomscourge", partition: 1 },
+			{ key: "ns:chucky", partition: 1 },
+		]);
+		const megatron = build(
+			{ 3: { exact: { name: "Blightsteel Colossus // Blightsteel Colossus" } } },
+			undefined,
+			FACES,
+		);
+		expect(await megatron.engine.scryfallExactName("megatron // megatron", "", "https://x")).toEqual({
+			name: "Blightsteel Colossus // Blightsteel Colossus",
+		});
+		expect(megatron.calls).toEqual(["scryfallExactNameProbe:3"]);
+		const chucky = build({ 1: { exact: { name: "Kardur, Doomscourge // Kardur, Doomscourge" } } }, undefined, FACES);
+		expect(await chucky.engine.scryfallExactName("chucky", "", "https://x")).toEqual({
+			name: "Kardur, Doomscourge // Kardur, Doomscourge",
+		});
+		expect(chucky.calls).toEqual(["scryfallExactNameProbe:1"]);
+		// A set-restricted miss is settled there too: the partition holds the name (`present`).
+		const scoped = build({ 1: { exactRank: null, present: true } }, undefined, FACES);
+		expect(await scoped.engine.scryfallExactName("chucky", "lea", "https://x")).toBeNull();
+		expect(scoped.calls).toEqual(["scryfallExactNameProbe:1"]);
+	});
+
 	test("exact: an undecidable name, or a filter without name keys, probes every partition once", async () => {
 		const two = build({ 1: { exact: { name: "Fire // Ice" }, exactRank: [1, 1, 0.7] } }, undefined, TWO_SERVED);
 		expect(await two.engine.scryfallExactName("fire", "", "https://x")).toEqual({ name: "Fire // Ice" });

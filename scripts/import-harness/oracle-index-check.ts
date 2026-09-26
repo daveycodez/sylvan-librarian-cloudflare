@@ -9,7 +9,8 @@
 //      put — so the deploy seeder after a nightly (or the nightly after a deploy) writes nothing.
 //
 // (2) builds the native builder once (release profile, the same one memprobe already compiled the
-// library in) and runs it for a few seconds; `--no-native` skips it.
+// library in) and runs it for a few seconds, at the nightly's partition count so the routing-filter
+// check can compare the same build dir; `--no-native` skips it.
 
 import { existsSync, mkdirSync, rmSync } from "node:fs";
 import { join } from "node:path";
@@ -25,6 +26,8 @@ import {
 	oracleIndexEntries,
 	planOracleIndexPublish,
 } from "../../src/engine/oracle-index";
+import { MANIFEST_KEY } from "../../src/engine/store-kv";
+import type { StoreManifest } from "../../src/engine/types";
 import { readPairs } from "../seed-oracle-index";
 import type { Corpus } from "./corpus";
 import type { FakeKV } from "./storage";
@@ -130,7 +133,11 @@ export async function checkOracleIndex(
 	const out = join(workDir, "native-build");
 	rmSync(out, { recursive: true, force: true });
 	mkdirSync(out, { recursive: true });
-	const proc = Bun.spawn([join(repo, BUILDER), "--out", out, "--partitions", "2"], {
+	// At the NIGHTLY's partition count: the oracle index and the card-names blob do not depend on it,
+	// but the routing filter the same build dir is compared against (routing-filter-check.ts) does.
+	const nightly = (await kv.get(MANIFEST_KEY, "json")) as StoreManifest | null;
+	const partitions = String(nightly?.partition_count ?? 2);
+	const proc = Bun.spawn([join(repo, BUILDER), "--out", out, "--partitions", partitions], {
 		cwd: repo,
 		env: builderEnv(serverUrl),
 		stdout: "pipe",

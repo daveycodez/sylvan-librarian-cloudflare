@@ -308,6 +308,32 @@ describe("name keys (backlog n6)", () => {
 		expect(filter.lookupName("nm:token")).toBeNull();
 	});
 
+	// Backlog n13. WIRE FORMAT with `a_face_flavor_name_is_one_joined_key` in
+	// engine/builder/src/transform.rs: the builders key a face-level flavor name by the JOIN of its
+	// faces' names, and the route hands the router the needle folded — so `nameKey` of the folded
+	// join must be the key the builder wrote, and one face alone must not be.
+	test("a face-level flavor name's key is its folded join, collated — sole or served like any name", () => {
+		expect(nameKey("megatron // megatron")).toBe("nm:megatronmegatron");
+		expect(nameKey("chucky")).toBe("nm:chucky");
+		expect(nameKey("recyclops, eco-friendly // recyclops, nature’s vengeance")).toBe(
+			"nm:recyclopsecofriendlyrecyclopsnaturesvengeance",
+		);
+		const filter = named([
+			{ key: "ns:megatronmegatron", partition: 3 },
+			{ key: "ns:chucky", partition: 1 },
+			{ key: "ns:recyclopsecofriendlyrecyclopsnaturesvengeance", partition: 8 },
+			// The same join served in 5 and held as an extra in 2: `served`, as for any name.
+			{ key: "ns:harnessface", partition: 5 },
+			{ key: "nm:harnessface", partition: 2 },
+		]);
+		expect(filter.lookupName(nameKey("megatron // megatron") as string)).toEqual({ sole: 3 });
+		expect(filter.lookupName(nameKey("chucky") as string)).toEqual({ sole: 1 });
+		expect(filter.lookupName(nameKey("recyclops, eco-friendly // recyclops, nature's vengeance") as string)).toEqual({
+			sole: 8,
+		});
+		expect(filter.lookupName("nm:harnessface")).toEqual({ served: 5 });
+	});
+
 	test("id keys keep the lowest partition beside name keys", () => {
 		const filter = named([
 			{ key: scryfallIdKey("a"), partition: 5 },
