@@ -35,6 +35,15 @@ export interface EngineSearchOptions {
 	 * existing wire unchanged.
 	 */
 	includeMultilingual?: boolean;
+	/**
+	 * Backlog n15: the build (`built_at`) the ROUTER pinned this request to, set on a gathered search
+	 * only. The gather's coordinator asks its names index which partitions a NAME-ONLY filter's
+	 * matches live in and gathers from those alone — and only when this is the build it has loaded,
+	 * since partition numbers mean nothing across builds. Absent (a router before n15) or another
+	 * build: every partition is asked, as before. Carried opaquely by every transport; the engine's
+	 * own options object never reads it (Store.optsJson picks its keys).
+	 */
+	namesBuild?: string;
 }
 
 export interface EngineSearchResult {
@@ -452,6 +461,18 @@ export const FUZZY_SIMILARITY_LEAD = 0.002;
  * which is how the value crosses the boundary.
  */
 export const FUZZY_WEAK_BELOW = 0.71;
+
+/** Backlog n15: which partitions `/cards/named?fuzzy=` must ask — see store.ts `namesFuzzyPlan`. */
+export interface NamedFuzzyPlan {
+	/** The partitions to ask, ascending. */
+	partitions: number[];
+	/** Every partition must be asked (the containment stage may need foreign printed names). */
+	everywhere: boolean;
+	/** The stage that decided the set: "exact", "typo", "contained" or "miss" (logging only). */
+	stage: string;
+	/** The build the plan was made from — the router uses it only when it is its own. */
+	builtAt: string;
+}
 
 /** One cross-partition fuzzy candidate, decoded off the wasm `fuzzy_candidates` packet.
  * `oracleId` is the global card identity the race's "a card never competes with itself" rule

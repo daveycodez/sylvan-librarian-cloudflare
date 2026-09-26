@@ -11,6 +11,7 @@
 
 import { describe, expect, test } from "bun:test";
 import { bundleFromStages, type NamedFuzzyStages, resolveNamedFuzzyStaged } from "../../src/engine/named-fuzzy";
+import { gatherPartitionOf } from "../../src/engine/partition";
 import { mergeNamedFuzzyBundles, nameReplySettles, PartitionedEngine } from "../../src/engine/partitioned-engine";
 import type { RemoteEngine } from "../../src/engine/remote-engine";
 import {
@@ -496,5 +497,108 @@ describe("the merge's corner cases", () => {
 		expect(await e.bundled.scryfallNamedFuzzy?.("shok", ["shok"], "", "https://x")).toEqual(
 			await resolveNamedFuzzyStaged(e.staged, "shok", ["shok"], "", "https://x"),
 		);
+	});
+});
+
+// ── n15: ONE object's names index plans which partitions to ask ──────────────────────────────
+
+describe("a names-index plan asks only the partitions it names (n15)", () => {
+	type Plan = { partitions: number[]; everywhere: boolean; stage: string; builtAt: string };
+
+	/** The engines of `engines()`, over a manifest naming a names blob, whose plan object answers
+	 * `plan` (or throws it, when it is an Error). */
+	function planned(partitions: Stages[], plan: Plan | Error, routing: RoutingFilter | null = null) {
+		const n = partitions.length;
+		const manifest = { ...manifestOf(n), names_key: "store:card-names-v1-100.store:0", names_bytes: 10 };
+		const calls: string[] = [];
+		const engine = new PartitionedEngine(
+			(p) =>
+				Object.assign(fakePartition(p, partitions[p] ?? MISS, calls), {
+					scryfallNamedFuzzyPlan: async () => {
+						calls.push(`plan:${p}`);
+						if (plan instanceof Error) throw plan;
+						return plan;
+					},
+				}) as unknown as RemoteEngine,
+			manifest,
+			async () => manifest,
+			routing,
+		);
+		const staged = Object.assign(engines(partitions).staged, {}) as Engine;
+		return { engine, staged, calls };
+	}
+
+	/** The partitions whose stages answer anything — what a sound plan must name. */
+	const answering = (partitions: Stages[]) =>
+		partitions.flatMap((s, p) =>
+			s.rank !== null || s.present || s.candidates.length > 0 || s.contained.length > 0 ? [p] : [],
+		);
+
+	test("every recorded needle: the plan's partitions alone give the staged answer, in 1 + |plan| calls", async () => {
+		const cases = recorded.cases as unknown as { fuzzy: string; set: string; partitions: Stages[] }[];
+		let calls = 0;
+		for (const c of cases.filter((c) => c.set === "")) {
+			const plan = { partitions: answering(c.partitions), everywhere: false, stage: "typo", builtAt: "100" };
+			const e = planned(c.partitions, plan);
+			const got = await respond(e.engine, c.fuzzy, "");
+			expect(got).toEqual(await respond(e.staged, c.fuzzy, ""));
+			expect(e.calls.length).toBe(1 + plan.partitions.length);
+			calls += e.calls.length;
+		}
+		// The point: far fewer than N per needle.
+		expect(calls).toBeLessThan(cases.length * 5);
+	});
+
+	test("a miss the plan settles is ONE call — the plan object's", async () => {
+		const e = planned(at(10, {}), { partitions: [], everywhere: false, stage: "miss", builtAt: "100" });
+		const got = await respond(e.engine, "zzqx", "");
+		expect(got.status).toBe(404);
+		expect(e.calls).toEqual([`plan:${gatherPartitionOf("named:zzqx", 10)}`]);
+	});
+
+	test("a typo hit is TWO calls: the plan, then the winner's bundle", async () => {
+		const partitions = at(10, {
+			6: { candidates: [cand(0.9, "o-6", "shock")], fuzzy: { status: "hit", card: named("Shock") } },
+		});
+		const e = planned(partitions, { partitions: [6], everywhere: false, stage: "typo", builtAt: "100" });
+		const got = await respond(e.engine, "shok", "");
+		expect(JSON.parse(got.body).name).toBe("Shock");
+		expect(e.calls.filter((c) => c.startsWith("bundle:"))).toEqual(["bundle:6"]);
+		expect(e.calls.length).toBe(2);
+	});
+
+	test("no usable plan asks every partition: everywhere, another build, an object that cannot plan, a set", async () => {
+		const partitions = at(10, {
+			3: { candidates: [cand(0.9, "o-3", "shock")], fuzzy: { status: "hit", card: named("Shock") } },
+		});
+		for (const plan of [
+			{ partitions: [3], everywhere: true, stage: "contained", builtAt: "100" },
+			{ partitions: [3], everywhere: false, stage: "typo", builtAt: "99" },
+			{ partitions: [3, 10], everywhere: false, stage: "typo", builtAt: "100" },
+			new Error("no such method: scryfallNamedFuzzyPlan"),
+		]) {
+			const e = planned(partitions, plan);
+			expect(JSON.parse((await respond(e.engine, "shok", "")).body).name).toBe("Shock");
+			expect(e.calls.filter((c) => c.startsWith("bundle:")).length).toBe(10);
+		}
+		const scoped = planned(partitions, { partitions: [3], everywhere: false, stage: "typo", builtAt: "100" });
+		await respond(scoped.engine, "shok", "lea");
+		expect(scoped.calls.some((c) => c.startsWith("plan:"))).toBe(false);
+	});
+
+	test("a routed name that does not settle keeps its reply, and asks the plan's others", async () => {
+		const partitions = at(10, {
+			2: { candidates: [cand(0.8, "o-2", "shack")], fuzzy: { status: "hit", card: named("Shack") } },
+			5: { candidates: [cand(0.9, "o-5", "shock")], fuzzy: { status: "hit", card: named("Shock") } },
+		});
+		const folded = "shok";
+		const e = planned(
+			partitions,
+			{ partitions: [5], everywhere: false, stage: "typo", builtAt: "100" },
+			filterFor(folded, { sole: 2 }, 10),
+		);
+		const got = await respond(e.engine, folded, "");
+		expect(JSON.parse(got.body).name).toBe("Shock");
+		expect(e.calls.filter((c) => c.startsWith("bundle:"))).toEqual(["bundle:2", "bundle:5"]);
 	});
 });

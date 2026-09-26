@@ -858,12 +858,88 @@ export function names_autocomplete(prefix, limit) {
 }
 
 /**
+ * The loaded names blob's format: 1 (autocomplete only), 2 (the names index too), 0 when none is
+ * loaded.
+ * @returns {number}
+ */
+export function names_format() {
+    const ret = wasm.names_format();
+    return ret >>> 0;
+}
+
+/**
+ * Backlog n15: which partitions `/cards/named?fuzzy=` must ask for this needle
+ * (`names::fuzzy_plan`) — `{"partitions":[…],"everywhere":bool,"stage":"…"}`, or `null` when no
+ * format-2 names are loaded. `floor`, `lead` and `weak_below` are the thresholds the router hands
+ * every partition's bundle.
+ * @param {string} folded
+ * @param {string} words_json
+ * @param {number} floor
+ * @param {number} lead
+ * @param {number} weak_below
+ * @returns {string}
+ */
+export function names_fuzzy_plan(folded, words_json, floor, lead, weak_below) {
+    let deferred4_0;
+    let deferred4_1;
+    try {
+        const ptr0 = passStringToWasm0(folded, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ptr1 = passStringToWasm0(words_json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len1 = WASM_VECTOR_LEN;
+        const ret = wasm.names_fuzzy_plan(ptr0, len0, ptr1, len1, floor, lead, weak_below);
+        var ptr3 = ret[0];
+        var len3 = ret[1];
+        if (ret[3]) {
+            ptr3 = 0; len3 = 0;
+            throw takeFromExternrefTable0(ret[2]);
+        }
+        deferred4_0 = ptr3;
+        deferred4_1 = len3;
+        return getStringFromWasm0(ptr3, len3);
+    } finally {
+        wasm.__wbindgen_free(deferred4_0, deferred4_1, 1);
+    }
+}
+
+/**
  * Bytes the loaded names hold in linear memory (0 when none are loaded) — for the load log line.
  * @returns {number}
  */
 export function names_heap_bytes() {
     const ret = wasm.names_heap_bytes();
     return ret >>> 0;
+}
+
+/**
+ * Backlog n15: the partitions holding a card a NAME-ONLY search matches, for the WHOLE corpus, from
+ * the loaded names (`names::search_partitions`) — `{"partitions":[…]}`, ascending, possibly empty
+ * (the search's 404). `null` when this cannot say: no format-2 names loaded, a filter that reads
+ * anything but names (card_engine `NameQuery::of`), or a regex that exhausted the engine's budget
+ * over the corpus's names. The gather then asks every partition, as it always has.
+ * @param {string} filter_tree_json
+ * @param {boolean} multilingual
+ * @returns {string}
+ */
+export function names_search_partitions(filter_tree_json, multilingual) {
+    let deferred3_0;
+    let deferred3_1;
+    try {
+        const ptr0 = passStringToWasm0(filter_tree_json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ret = wasm.names_search_partitions(ptr0, len0, multilingual);
+        var ptr2 = ret[0];
+        var len2 = ret[1];
+        if (ret[3]) {
+            ptr2 = 0; len2 = 0;
+            throw takeFromExternrefTable0(ret[2]);
+        }
+        deferred3_0 = ptr2;
+        deferred3_1 = len2;
+        return getStringFromWasm0(ptr2, len2);
+    } finally {
+        wasm.__wbindgen_free(deferred3_0, deferred3_1, 1);
+    }
 }
 
 /**
@@ -1324,6 +1400,23 @@ export function store_loaded() {
  */
 export function store_lz4_frame(index) {
     const ret = wasm.store_lz4_frame(index);
+    if (ret[3]) {
+        throw takeFromExternrefTable0(ret[2]);
+    }
+    var v1 = getArrayU8FromWasm0(ret[0], ret[1]).slice();
+    wasm.__wbindgen_free(ret[0], ret[1] * 1, 1);
+    return v1;
+}
+
+/**
+ * The loaded STORE's own name records (backlog n15), as the blob lines its build publishes, WITHOUT
+ * the partition lead — read back from the archive through the archived twin
+ * (`BufferStore::name_records`). Verification only (the import harness, the real-corpus checks);
+ * nothing on a request path calls it.
+ * @returns {Uint8Array}
+ */
+export function store_name_records_tsv() {
+    const ret = wasm.store_name_records_tsv();
     if (ret[3]) {
         throw takeFromExternrefTable0(ret[2]);
     }

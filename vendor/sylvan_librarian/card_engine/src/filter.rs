@@ -4177,6 +4177,84 @@ pub(crate) fn exact_name_matches(stored: &str, needle: &str) -> bool {
     crate::collate_name(front) == needle || crate::collate_name(back) == needle
 }
 
+// ─── A filter of NAME predicates alone (LOCAL PATCH, Cloudflare port, backlog n15) ───────────
+//
+// `/cards/search` name probes (`bolt`, `lightning bolt`, `name:/^bolt/`) used to ask every
+// partition; the port now asks ONE object, which evaluates the predicate over the build's
+// corpus-wide names blob to learn which partitions hold a match (engine/wasm/src/names.rs). That
+// evaluation must be THIS module's, not a copy: the tree is compiled by `build_filter`, and every
+// leaf below answers through the same function the query arm of the same leaf calls.
+
+/// A compiled filter that reads card names and nothing else — an AND/OR tree over the three name
+/// leaves. Built by [`FilterExpr::into_name_predicate`] from what `build_filter` compiled, so the
+/// query language's own spelling rules (bare word, quoted literal, regex) decide which leaf a term
+/// is; anything else in the tree makes the whole filter not a name predicate.
+pub(crate) enum NamePredicate {
+    All(Vec<NamePredicate>),
+    Any(Vec<NamePredicate>),
+    /// `name:word` — `TextSearchField::NameCollated`: the collated name, OR the printing's flavor
+    /// name key (collated), which `bind_flavor_names` ORs into every such leaf.
+    Collated(String),
+    /// `name:"…"` — `TextSearchField::NameLower`: the lowercase name as written, no flavor arm.
+    Literal(String),
+    /// `name:/…/` — `TextRegex { NameLower }`: the lowercase name, no flavor arm.
+    Regex(CompiledRegex),
+}
+
+impl FilterExpr {
+    /// This filter as a [`NamePredicate`], or None when any part of it reads something other than
+    /// a card's name (or is an empty AND/OR, whose reading is not worth pinning).
+    pub(crate) fn into_name_predicate(self) -> Option<NamePredicate> {
+        let all = |children: Vec<FilterExpr>| children.into_iter().map(Self::into_name_predicate).collect::<Option<Vec<_>>>();
+        match self {
+            FilterExpr::And(children) if !children.is_empty() => all(children).map(NamePredicate::All),
+            FilterExpr::Or(children) if !children.is_empty() => all(children).map(NamePredicate::Any),
+            FilterExpr::TextContains { field: TextSearchField::NameCollated, word } => Some(NamePredicate::Collated(word)),
+            FilterExpr::TextContains { field: TextSearchField::NameLower, word } => Some(NamePredicate::Literal(word)),
+            // `~` is never expanded on the name column (`compile_search_regex`, not the
+            // self-referential twin), so a regex that somehow carries it is left to the query.
+            FilterExpr::TextRegex { field: TextField::NameLower, regex } if !regex.has_self_reference() => {
+                Some(NamePredicate::Regex(regex))
+            }
+            _ => None,
+        }
+    }
+}
+
+impl NamePredicate {
+    /// Whether ONE PRINTING of a card satisfies the predicate: the card's collated and lowercase
+    /// names (`collated_name`, `lower_name`) and that printing's flavor-name key, collated
+    /// (`flavor_names_collated` for a card-level flavor name, `FaceFlavorKey::collated` for its
+    /// faces' join; None when it carries neither).
+    ///
+    /// Each leaf is the query arm's own test: `contains_per_face` for both substring fields (the
+    /// `TextContains` arm), the `memmem` find `bind_flavor_names` runs over the flavor keys, and
+    /// `regex_matches_face_split` for the regex (the `TextRegex` arm, which reaches it for every
+    /// pattern without a self-reference). Every leaf is two-valued — names are never NULL — so
+    /// the tree is plain AND/OR, and MONOTONE in the flavor key: a key can only add matches.
+    pub(crate) fn holds(&self, collated: &str, lower: &str, flavor: Option<&str>) -> bool {
+        match self {
+            NamePredicate::All(children) => children.iter().all(|p| p.holds(collated, lower, flavor)),
+            NamePredicate::Any(children) => children.iter().any(|p| p.holds(collated, lower, flavor)),
+            NamePredicate::Collated(word) => {
+                contains_per_face(word, TextSearchField::NameCollated, collated)
+                    || flavor.is_some_and(|key| memmem::find(key.as_bytes(), word.as_bytes()).is_some())
+            }
+            NamePredicate::Literal(word) => contains_per_face(word, TextSearchField::NameLower, lower),
+            NamePredicate::Regex(regex) => regex_matches_face_split(regex, TextField::NameLower, lower),
+        }
+    }
+
+    /// Whether any leaf reads the flavor key — when none does, one evaluation per card suffices.
+    pub(crate) fn reads_flavor(&self) -> bool {
+        match self {
+            NamePredicate::All(children) | NamePredicate::Any(children) => children.iter().any(Self::reads_flavor),
+            NamePredicate::Collated(_) => true,
+            NamePredicate::Literal(_) | NamePredicate::Regex(_) => false,
+        }
+    }
+}
+
 fn rhs_value_str(rhs: &Value) -> &str {
     rhs["kwargs"]["value"].as_str().unwrap_or("")
 }

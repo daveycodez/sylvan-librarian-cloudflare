@@ -109,8 +109,11 @@ request ──▶ static asset? served from the CDN out of public/ — the Worke
               │   shape the route answers with, so the gather splices bytes and
               │   never parses a card); id lookups collapse to 1 RPC via
               │   the routing filter; autocomplete asks ONE object, which
-              │   answers from the build's card-names blob; catalog/named
-              │   fan out
+              │   answers from the build's card-names blob — and that blob's
+              │   names index (one record per card) lets a name-only search
+              │   gather from just the partitions holding a match (none: its
+              │   404 in one call) and /cards/named?fuzzy= ask one object
+              │   which partitions to ask; catalog fans out
               └─ autoscaling: fan-out to engine-<region>-1..N when the DO reports
                   sustained load AND the isolate sees sustained slowness, with
                   idle fold-back. That is the REPLICA axis and it multiplies with

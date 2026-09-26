@@ -56,6 +56,7 @@ import {
 	stringifyScryfall,
 } from "../routes/scryfall-compat/respond";
 import { concatBytes, encodeUtf8 } from "./bytes";
+import { mayBeNameOnly } from "./card-names";
 import { assembleColumnar, columnKeys, columnsGather } from "./columnar";
 import { parseEngineName, siblingStub } from "./engine-namespace";
 import {
@@ -82,6 +83,8 @@ import {
 	gatherOps,
 	getEngine,
 	type LoadContext,
+	namesFuzzyPlan,
+	namesSearchPartitions,
 	prefetchStore,
 	pruneToManifest,
 	refreshNow,
@@ -102,6 +105,7 @@ import type {
 	ExactNameProbe,
 	FuzzyCandidateWire,
 	NamedFuzzyBundle,
+	NamedFuzzyPlan,
 	ResultShape,
 	ScryfallFuzzyResult,
 	SearchPageEnvelope,
@@ -376,7 +380,7 @@ export class SearchEngine extends DurableObject<Env> {
 		if (body.call !== "cards" && body.call !== "cards2") {
 			return new Response(`unsupported engine call: ${String(body.call)}`, { status: 400 });
 		}
-		let result: EngineSerializedResult & SearchTelemetry;
+		let result: EngineSerializedResult & SearchTelemetry & { gathered?: number };
 		try {
 			result =
 				body.call === "cards2"
@@ -402,6 +406,9 @@ export class SearchEngine extends DurableObject<Env> {
 			"x-load": String(result.load),
 			"x-rate": String(result.rate),
 			"x-shards": String(result.shards),
+			// n15: how many partitions the gather asked (the names index can make it fewer than N, or
+			// none). For the route's log line; RemoteEngine strips it with the riders.
+			...(result.gathered === undefined ? {} : { "x-gathered": String(result.gathered) }),
 		};
 		const envelope = body.envelope;
 		if (envelope === undefined) {
@@ -647,6 +654,20 @@ export class SearchEngine extends DurableObject<Env> {
 		return this.instrumented(reportedShards, async (engine) => ({
 			names: await engine.scryfallAutocomplete(prefix, limit),
 		}));
+	}
+
+	/**
+	 * Backlog n15: which partitions `/cards/named?fuzzy=` must ask for this needle, planned for the
+	 * WHOLE corpus from the names index beside this object's store (store.ts `namesFuzzyPlan`). A new
+	 * method, so an object on the build before it fails the call and the router asks every partition.
+	 * Throws where there is no index to plan from, likewise.
+	 */
+	async scryfallNamedFuzzyPlan(
+		folded: string,
+		words: string[],
+		reportedShards?: number,
+	): Promise<NamedFuzzyPlan & SearchTelemetry> {
+		return this.instrumented(reportedShards, async () => namesFuzzyPlan(this.env, this.loadContext(), folded, words));
 	}
 
 	/**
@@ -900,7 +921,12 @@ export class SearchEngine extends DurableObject<Env> {
 	 * A gather that cannot find its width at all is refused loudly: answering from one partition
 	 * and reporting it as the whole corpus is the failure mode with no symptom.
 	 */
-	private async gatherRun(opts: EngineSearchOptions, shaping: GatherShaping): Promise<GatheredPage> {
+	private async gatherRun(
+		opts: EngineSearchOptions,
+		shaping: GatherShaping,
+	): Promise<GatheredPage & { gathered: number }> {
+		const named = await this.gatherNamed(opts, shaping);
+		if (named !== null) return named;
 		const width = await this.gatherWidth();
 		let page = await runTwoPhase(this.partitionClients(width), opts, shaping);
 		// Free when the fan-out included this partition, which it always does at a correct width.
@@ -922,8 +948,72 @@ export class SearchEngine extends DurableObject<Env> {
 			);
 			const again = await runTwoPhase(this.partitionClients(loadedWidth), opts, shaping);
 			page = { ...again, acquireMs: Math.max(page.acquireMs, again.acquireMs) };
+			return { ...page, gathered: loadedWidth };
 		}
-		return page;
+		return { ...page, gathered: width };
+	}
+
+	/**
+	 * Backlog n15: a NAME-ONLY search gathered from only the partitions its matches live in — or
+	 * answered with no partition at all when none holds one, which is its 404. Null when the names
+	 * index cannot say (see `namesSearchPartitions`: another build, no format-2 names, a filter that
+	 * reads more than names, a regex over budget); the caller then gathers from every partition.
+	 *
+	 * THE PAGE IS THE FULL GATHER'S, byte for byte. The index names exactly the partitions whose own
+	 * query returns a row (engine/wasm/src/names.rs's differential holds it to that), every other
+	 * partition would have contributed an empty key stream, and nothing in `runTwoPhase` reads a
+	 * partition it was not given: the merge, page cut, totals and splice see the same streams in the
+	 * same relative order. Only the inline-row budget grows (it is split over fewer partitions), which
+	 * moves rows from phase 2 into phase 1 and never changes a byte of them.
+	 *
+	 * ONE BUILD. The index is the build this object loaded, and it is used only when that is the build
+	 * the router pinned the request to (`opts.namesBuild`); if the partitions asked then answer from
+	 * another one (a publish mid-request), the page is thrown away and every partition is asked.
+	 *
+	 * This object's own store is acquired first — the index lives beside it — which a gather that
+	 * includes this partition would have loaded anyway.
+	 */
+	private async gatherNamed(
+		opts: EngineSearchOptions,
+		shaping: GatherShaping,
+	): Promise<(GatheredPage & { gathered: number }) | null> {
+		const builtAt = opts.namesBuild;
+		// Plainly not a name query: gather at once, never waiting on this object's own store first.
+		if (!builtAt || !mayBeNameOnly(opts.filterTreeJson)) return null;
+		const acquireStart = Date.now();
+		try {
+			await this.engine();
+		} catch {
+			return null;
+		}
+		const acquireMs = Date.now() - acquireStart;
+		const partitions = await namesSearchPartitions(this.env, this.loadContext(), opts, builtAt);
+		const loaded = currentManifest(this.label);
+		const width = loaded && isPartitionedManifest(loaded) ? (loaded.partition_count as number) : 0;
+		if (partitions === null || partitions.some((p) => !Number.isInteger(p) || p < 0 || p >= width)) return null;
+		if (partitions.length === 0) {
+			return {
+				total: 0,
+				slots: [],
+				acquireMs,
+				widened: opts.includeMultilingual === true,
+				builtAt,
+				gathered: 0,
+			};
+		}
+		const clients = this.partitionClients(width);
+		const page = await runTwoPhase(
+			partitions.map((p) => clients[p] as PartitionClient),
+			opts,
+			shaping,
+		);
+		if (page.builtAt !== builtAt) {
+			console.warn(
+				`[${this.label}] names-index gather answered from build ${page.builtAt}, not ${builtAt}; asking every partition`,
+			);
+			return null;
+		}
+		return { ...page, acquireMs: Math.max(acquireMs, page.acquireMs), gathered: partitions.length };
 	}
 
 	/**
@@ -965,7 +1055,7 @@ export class SearchEngine extends DurableObject<Env> {
 	private async gatherScryfallSearchLocal(
 		opts: EngineSearchOptions,
 		baseUrl: string,
-	): Promise<EngineSerializedResult & { acquireMs: number }> {
+	): Promise<EngineSerializedResult & { acquireMs: number; gathered: number }> {
 		const wide = { ...opts, fields: [...CARD_OBJECT_FIELDS] };
 		const page = await this.gatherRun(wide, {
 			shape: "cards",
@@ -981,6 +1071,7 @@ export class SearchEngine extends DurableObject<Env> {
 			rowCount: page.slots.length,
 			widened: page.widened,
 			acquireMs: page.acquireMs,
+			gathered: page.gathered,
 		};
 	}
 

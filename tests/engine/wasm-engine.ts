@@ -32,6 +32,10 @@ export interface EngineGlue {
 	load_names(gz: Uint8Array): number;
 	names_autocomplete(prefix: string, limit: number): string;
 	names_heap_bytes(): number;
+	names_format(): number;
+	names_search_partitions(filterTreeJson: string, multilingual: boolean): string;
+	names_fuzzy_plan(folded: string, wordsJson: string, floor: number, lead: number, weakBelow: number): string;
+	store_name_records_tsv(): Uint8Array;
 }
 
 // `WebAssembly.Module` is typed abstract by bun-types, so the constructor is reached through the

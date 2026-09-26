@@ -20,6 +20,7 @@ import type {
 	ExactNameProbe,
 	FuzzyCandidateWire,
 	NamedFuzzyBundle,
+	NamedFuzzyPlan,
 	ResultShape,
 	ScryfallFuzzyResult,
 	SearchPageEnvelope,
@@ -119,6 +120,7 @@ interface SearchEngineStub {
 		limit: number,
 		reportedShards?: number,
 	): Promise<{ names: string[] } & Telemetry>;
+	scryfallNamedFuzzyPlan(folded: string, words: string[], reportedShards?: number): Promise<NamedFuzzyPlan & Telemetry>;
 	scryfallExactName(
 		folded: string,
 		setCode: string,
@@ -618,9 +620,14 @@ export const ENGINE_TELEMETRY_HEADERS = [
 	"x-load",
 	"x-rate",
 	"x-shards",
+	"x-gathered",
 ] as const;
 
 export class RemoteEngine implements Engine {
+	/** n15: how many partitions this object's last gathered search page asked (its `x-gathered`
+	 * rider), or null when it did not say. Read by PartitionedEngine for the route's log line. */
+	gatheredPartitions: number | null = null;
+
 	/** get_catalog reads both catalogs; one RPC serves both calls. */
 	private catalogOnce: Promise<{
 		types: Record<string, number>;
@@ -815,6 +822,10 @@ export class RemoteEngine implements Engine {
 				shards: num("x-shards"),
 			});
 		}
+		// n15: how many partitions a gather asked (the names index can make it fewer than N) — kept for
+		// the route's log line, like the riders never sent on to the client.
+		const gathered = num("x-gathered");
+		this.gatheredPartitions = gathered === undefined || Number.isNaN(gathered) ? null : gathered;
 		// The riders are for THIS isolate, not the client: passed through verbatim they published the
 		// shard controller's load, rate and width signals on every /cards/search — and cached them
 		// at the edge. Body, status and every other header pass through untouched.
@@ -958,6 +969,16 @@ export class RemoteEngine implements Engine {
 			stub.scryfallAutocomplete(prefix, limit, shards),
 		);
 		return names;
+	}
+
+	/** n15: which partitions `/cards/named?fuzzy=` must ask, planned by this one object from its names
+	 * index (see the DO's scryfallNamedFuzzyPlan). Throws where the object cannot — the router then
+	 * asks every partition. */
+	async scryfallNamedFuzzyPlan(folded: string, words: string[]): Promise<NamedFuzzyPlan> {
+		const { partitions, everywhere, stage, builtAt } = await this.searchRpc("scryfallNamedFuzzyPlan", (stub, shards) =>
+			stub.scryfallNamedFuzzyPlan(folded, words, shards),
+		);
+		return { partitions, everywhere, stage, builtAt };
 	}
 
 	/** n8: the whole corpus's autocomplete from this one object's card-names blob (see the DO's

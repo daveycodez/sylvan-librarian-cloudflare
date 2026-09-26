@@ -72,7 +72,7 @@
 // its SQLite inputs — minutes of redone compute, never a wrong store.
 
 import { DurableObject } from "cloudflare:workers";
-import { encodeCardNames, writeCardNames } from "./engine/card-names";
+import { encodeCardNames, ledByPartition, writeCardNames } from "./engine/card-names";
 import { addressAnnouncedEngine, engineName, parseEngineName, replicaGroupOf } from "./engine/engine-namespace";
 import {
 	dropGroupWasm,
@@ -3682,7 +3682,13 @@ export class ImportCoordinator extends DurableObject<Env> {
 			// either per build would fork the key family on a mid-loop restart.
 			recordBuild(pp, built.store_bytes, built.card_count, built.printing_count);
 			this.savePp(pp);
-			if (names.lines) this.metaSet(cardNamesMetaKey(pp.partition), new TextDecoder().decode(names.lines));
+			// Led by the partition here (n15): the build that emitted them does not know which it built.
+			if (names.lines) {
+				this.metaSet(
+					cardNamesMetaKey(pp.partition),
+					ledByPartition(pp.partition, new TextDecoder().decode(names.lines)),
+				);
+			}
 			this.metaSet("phase", "publish");
 		});
 		if (!names.lines) {
@@ -3983,7 +3989,7 @@ export class ImportCoordinator extends DurableObject<Env> {
 	 * both are permanent for this run, and a missing blob only costs the fan-out. A KV put that fails
 	 * throws, and the step's retry puts the same key again.
 	 *
-	 * Memory: the staged text (~1.1MB today), the distinct lines as strings and the encoded blob, a
+	 * Memory: the staged text (~1.7MB since n15's records), the distinct lines as strings and the encoded blob, a
 	 * few MB for the length of this call, in a phase whose wasm is long dropped.
 	 */
 	private async publishCardNames(

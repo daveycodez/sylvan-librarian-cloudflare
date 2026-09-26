@@ -773,10 +773,16 @@ export async function cardsSearchHandler(
 		// PartitionedEngine ANSWERED from one pinned partition (an oracle id's owner or a `!"Name"`'s
 		// sole partition) rather than the gather; `calls` is its partition RPC count before
 		// RemoteEngine's transient retry — a gather is 1 from here (the coordinator fans out), a
-		// name pin that fell back to it 2. Grep "cards/search:".
-		const partitioned = engine as { partitionCalls?: number; pinnedAnswer?: boolean };
+		// name pin that fell back to it 2. `gathered` is how many partitions the gather's coordinator
+		// asked — fewer than N for a name-only filter its names index answered (n15), 0 for that
+		// filter's 404, `-` when there was no gather or the coordinator did not say. Grep "cards/search:".
+		const partitioned = engine as {
+			partitionCalls?: number;
+			pinnedAnswer?: boolean;
+			gatheredPartitions?: number | null;
+		};
 		console.log(
-			`cards/search: shape=${userShape} unique=${unique} order=${orderby} dir=${direction} page=${page} extras=${includeExtras ? 1 : 0} variations=${includeVariations ? 1 : 0} multilingual=${asBool(params.include_multilingual) ? 1 : 0} pin=${partitioned.pinnedAnswer ? 1 : 0} calls=${partitioned.partitionCalls ?? -1} status=${status}`,
+			`cards/search: shape=${userShape} unique=${unique} order=${orderby} dir=${direction} page=${page} extras=${includeExtras ? 1 : 0} variations=${includeVariations ? 1 : 0} multilingual=${asBool(params.include_multilingual) ? 1 : 0} pin=${partitioned.pinnedAnswer ? 1 : 0} calls=${partitioned.partitionCalls ?? -1} gathered=${partitioned.gatheredPartitions ?? "-"} status=${status}`,
 		);
 	}
 }
@@ -857,18 +863,29 @@ async function namedFuzzy(
 		return scryfallJson(badRequestError(NAMED_MISSING_PARAM_DETAILS), pretty, CARDS_CACHE);
 	}
 
+	let status = "error";
 	try {
 		// The partitioned engine resolves all three stages in one round of partition calls (backlog
-		// n7); any other engine is asked them one after another. The answer is the same either way.
+		// n7), asked of only the partitions its names index plans (n15); any other engine is asked
+		// them one after another. The answer is the same either way.
 		const answer: NamedFuzzyAnswer = engine.scryfallNamedFuzzy
 			? await engine.scryfallNamedFuzzy(needle, words, setCode, baseUrl)
 			: await resolveNamedFuzzyStaged(engine, needle, words, setCode, baseUrl);
+		status = answer.status;
 		if (answer.status === "ambiguous") return ambiguous(fuzzy, pretty);
 		if (answer.status === "card") {
 			return renderCard(answer.card, render.format, render.face, render.version, pretty, CARDS_CACHE);
 		}
 	} catch (err) {
 		return engineFailure(err, pretty);
+	} finally {
+		// One line per miss of the Workers Cache, values-free like `cards/search:`'s: which stage the
+		// names index planned (`-` when no plan was used — a set scope, no index) and what it cost.
+		// Grep "cards/named fuzzy:".
+		const partitioned = engine as { partitionCalls?: number; namedFuzzyPlanStage?: string | null };
+		console.log(
+			`cards/named fuzzy: plan=${partitioned.namedFuzzyPlanStage ?? "-"} set=${setCode ? 1 : 0} calls=${partitioned.partitionCalls ?? -1} status=${status}`,
+		);
 	}
 	return scryfallJson(notFoundError(`No cards found matching “${fuzzy}”`), pretty, CARDS_CACHE);
 }

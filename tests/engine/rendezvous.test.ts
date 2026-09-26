@@ -56,10 +56,23 @@ let gatherStore: {
 	ops: unknown;
 } | null = null;
 
+/** n15: what this object's names index answers a gathered search (null: it cannot say). */
+let namesIndexAnswer: number[] | null = null;
+/** n15: the builds namesSearchPartitions was asked for. */
+const namesIndexAsked: string[] = [];
+
 // The real store is wasm-backed; the rendezvous does not touch it.
 mock.module("../../src/engine/store", () => ({
+	namesSearchPartitions: async (_env: unknown, _ctx: unknown, _opts: unknown, builtAt: string) => {
+		namesIndexAsked.push(builtAt);
+		return namesIndexAnswer;
+	},
 	// n8: imported by search-engine-do for scryfallAutocompleteNames; nothing here routes to it.
 	autocompleteFromNames: async () => [],
+	// n15: the fuzzy plan's; nothing here routes to it.
+	namesFuzzyPlan: async () => {
+		throw new Error("no names index");
+	},
 	collectionPacketOf: () => new Uint8Array(),
 	getEngine: async () => {
 		const g = gatherStore;
@@ -567,5 +580,146 @@ describe("a gather awaiting its siblings is concurrency, not queue depth", () =>
 		} finally {
 			gatherStore = null;
 		}
+	});
+});
+
+describe("a name-only gather asks only the partitions its names index names (n15)", () => {
+	const WIDE = {
+		store_key: "card-store-v1-7.store",
+		store_bytes: 30,
+		built_at: "7",
+		card_count: 3,
+		partition_count: 3,
+		partitions: [0, 1, 2].map((k) => ({
+			store_key: `card-store-v1-7-p${k}.store`,
+			store_bytes: 10,
+			chunk_count: 1,
+			card_count: 1,
+		})),
+	};
+	const row = (p: number) => new TextEncoder().encode(`{"name":"p${p}"}`);
+	const packet = (p: number, inline: number) =>
+		encodeKeyPacket({
+			total: 1,
+			entries: [{ key: new Uint8Array([p + 1]), vpid: 0 }],
+			inlineRows: inline > 0 ? [row(p)] : [],
+		});
+	type GatherDo = {
+		gatherSearchAsJson(opts: unknown, shape: string): Promise<{ totalCards: number; cardsBytes: Uint8Array }>;
+	};
+
+	function gather(siblingBuild = "7") {
+		const asked: number[] = [];
+		gatherStore = {
+			ownLoad: Promise.resolve(),
+			loaded: true,
+			ownLoadMs: 0,
+			events: [],
+			manifest: WIDE,
+			ops: {
+				storeKey: "card-store-v1-7-p0.store",
+				sortKeyVersion: () => 1,
+				queryKeys: () => {
+					asked.push(0);
+					return packet(0, 0);
+				},
+				fetchRows: () => encodeRowPacket([row(0)]),
+			},
+		};
+		const sibling = (p: number) => ({
+			async searchKeys(_opts: unknown, inline: number) {
+				asked.push(p);
+				return {
+					packed: packet(p, inline),
+					storeKey: `card-store-v1-${siblingBuild}-p${p}.store`,
+					sortKeyVersion: 1,
+					shape: "rows",
+				};
+			},
+			async fetchRows() {
+				return { rowsBytes: encodeRowPacket([row(p)]), shape: "rows" };
+			},
+			async notifyPublish() {
+				return { swapped: false, shards: 1 };
+			},
+		});
+		const env = {
+			SEARCH_ENGINE: {
+				idFromName: (name: string) => name,
+				get: (name: string) => sibling(Number(name.slice(-1))),
+			},
+		};
+		const storage = { sql: { exec: () => ({ toArray: () => [] }) } };
+		const engine = new SearchEngine(
+			{ waitUntil: () => {}, storage, id: { name: "engine-wnam-p0" } } as never,
+			env as never,
+		) as unknown as GatherDo;
+		return { engine, asked };
+	}
+	const NAME_TREE = JSON.stringify({
+		node_type: "CardBinaryOperatorNode",
+		kwargs: {
+			op: ":",
+			lhs: { node_type: "CardAttributeNode", kwargs: { attribute_name: "card_name" } },
+			rhs: { node_type: "CollatedNameValueNode", kwargs: { value: "bolt" } },
+		},
+	});
+	const OPTS = { filterTreeJson: NAME_TREE, unique: "card", orderby: "name", limit: 5, offset: 0, fields: ["name"] };
+	const text = (b: Uint8Array) => new TextDecoder().decode(b);
+
+	afterEach(() => {
+		gatherStore = null;
+		namesIndexAnswer = null;
+		namesIndexAsked.length = 0;
+	});
+
+	test("the named partitions alone, and the page is the same as theirs in the full gather", async () => {
+		namesIndexAnswer = [2];
+		const { engine, asked } = gather();
+		const page = await engine.gatherSearchAsJson({ ...OPTS, namesBuild: "7" }, "rows");
+		expect(asked).toEqual([2]);
+		expect(namesIndexAsked).toEqual(["7"]);
+		expect(page.totalCards).toBe(1);
+		expect(text(page.cardsBytes)).toBe('[{"name":"p2"}]');
+	});
+
+	test("no partition holds a match: the empty page, with no partition asked", async () => {
+		namesIndexAnswer = [];
+		const { engine, asked } = gather();
+		const page = await engine.gatherSearchAsJson({ ...OPTS, namesBuild: "7" }, "rows");
+		expect(asked).toEqual([]);
+		expect(page.totalCards).toBe(0);
+		expect(text(page.cardsBytes)).toBe("[]");
+	});
+
+	test("an index that cannot say, no pinned build, or a partition number out of range: every partition", async () => {
+		for (const [answer, opts] of [
+			[null, { ...OPTS, namesBuild: "7" }],
+			[[1], OPTS],
+			[[3], { ...OPTS, namesBuild: "7" }],
+		] as const) {
+			namesIndexAnswer = answer as number[] | null;
+			const { engine, asked } = gather();
+			const page = await engine.gatherSearchAsJson(opts, "rows");
+			expect(asked.sort()).toEqual([0, 1, 2]);
+			expect(page.totalCards).toBe(3);
+		}
+	});
+
+	test("a filter that plainly reads more than names never asks the index (nor waits on this store for it)", async () => {
+		namesIndexAnswer = [2];
+		const { engine, asked } = gather();
+		await engine.gatherSearchAsJson({ ...OPTS, filterTreeJson: '{"node_type":"TrueNode"}', namesBuild: "7" }, "rows");
+		expect(namesIndexAsked).toEqual([]);
+		expect(asked.sort()).toEqual([0, 1, 2]);
+	});
+
+	test("partitions answering from another build than the index's: thrown away, every partition asked", async () => {
+		namesIndexAnswer = [1];
+		const { engine, asked } = gather("8");
+		await engine.gatherSearchAsJson({ ...OPTS, namesBuild: "7" }, "rows").catch(() => {});
+		// The pruned run asked partition 1 (and re-asked it as a straggler); the fallback asks all.
+		expect(asked.includes(0)).toBe(true);
+		expect(asked.includes(2)).toBe(true);
 	});
 });

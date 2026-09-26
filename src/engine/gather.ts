@@ -365,12 +365,14 @@ export interface GenerationReply {
  * the `built_at` embedded in the chunk-family key) and re-issues phase 1 to the
  * partitions that answered from an older one.
  */
+export function builtAtOfStoreKey(storeKey: string): string {
+	const m = /-v\d+-(\d+)(?:-p\d+)?\.store$/.exec(storeKey);
+	if (!m?.[1]) throw new Error(`phase-1 reply names an unparseable store key: ${storeKey}`);
+	return m[1];
+}
+
 export function pinGeneration(replies: GenerationReply[]): { pinnedBuiltAt: string; stragglers: number[] } {
-	const builtAtOf = (storeKey: string): string => {
-		const m = /-v\d+-(\d+)(?:-p\d+)?\.store$/.exec(storeKey);
-		if (!m?.[1]) throw new Error(`phase-1 reply names an unparseable store key: ${storeKey}`);
-		return m[1];
-	};
+	const builtAtOf = builtAtOfStoreKey;
 	// built_at is numeric (see generationsPresent, which sorts builds the same way);
 	// compare as numbers so a length change in the stamp cannot reorder builds.
 	let pinned = "";
@@ -570,6 +572,12 @@ export interface GatheredPage {
 	acquireMs: number;
 	/** Whether the query ran the widened (multilingual) driver — off the phase-1 packets, which all agree. */
 	widened: boolean;
+	/**
+	 * The build every phase-1 reply answered from (`built_at`, pinned — see pinGeneration), or "" when
+	 * no partition was asked. A gather over the partitions a names index named checks it against the
+	 * index's build (search-engine-do.ts `gatherRun`).
+	 */
+	builtAt: string;
 }
 
 /** Parse the slots a route needs as VALUES — the objects path, and columnar. */
@@ -687,7 +695,9 @@ export async function runTwoPhase(
 		acquireMs = probe.reduce((max, r) => Math.max(max, r.acquireMs ?? 0), 0);
 		const probed = probe.map((r) => decodeKeyPacket(r.packed));
 		const total = probed.reduce((sum, p) => sum + p.total, 0);
-		if (opts.offset >= total) return { total, slots: [], acquireMs, widened: probed[0]?.widened ?? false };
+		if (opts.offset >= total) {
+			return { total, slots: [], acquireMs, widened: probed[0]?.widened ?? false, builtAt: pinnedBuild(probe) };
+		}
 	}
 	// Clamped to u32 as a safety net: `QueryOptions` deserializes `limit` as a
 	// 32-bit usize on wasm32, and an offset that overflowed it was a 500 where
@@ -745,7 +755,8 @@ export async function runTwoPhase(
 	const merged = mergeKeyStreams(packets.map((p) => p.entries));
 	const carried = packets.map((p) => p.inlineRows.length);
 	const { page, byPartition } = selectPage(merged, opts.offset, opts.limit, carried);
-	if (page.length === 0) return { total, slots: [], acquireMs, widened };
+	const builtAt = pinnedBuild(replies);
+	if (page.length === 0) return { total, slots: [], acquireMs, widened, builtAt };
 
 	// The previous build's rows, reshaped: parse, rebuild, encode. Only ever runs
 	// for a legacy partition, and only over the rows the page kept.
@@ -798,5 +809,11 @@ export async function runTwoPhase(
 		cursors.set(ref.partition, at + 1);
 		return (fetched.get(ref.partition) as Uint8Array[])[at] as Uint8Array;
 	});
-	return { total, slots, acquireMs, widened };
+	return { total, slots, acquireMs, widened, builtAt };
+}
+
+/** The build pinned phase-1 replies answered from (askKeys has made them agree), or "" for none. */
+function pinnedBuild(replies: SearchKeysReply[]): string {
+	const first = replies[0];
+	return first === undefined ? "" : builtAtOfStoreKey(first.storeKey);
 }

@@ -7,7 +7,11 @@
 //
 //   search / listing (all shapes)      1 isolate RPC, to the GATHER partition
 //                                      (hash(query) % N); the gather object
-//                                      fans phases 1 and 2 to its siblings
+//                                      fans phases 1 and 2 to its siblings —
+//                                      for a NAME-ONLY filter, only to the ones
+//                                      its names index says hold a match (n15):
+//                                      a 404 is that 1 call, a hit 1 + the
+//                                      partitions holding it (usually 1-2)
 //   total_cards                        free — rides phase 1 of the gather
 //   catalog (types+keywords)           N, summed — ONCE per store generation per
 //                                      isolate (CATALOG_CACHE); every later call
@@ -50,7 +54,12 @@
 //   search pinned to !"Name"           1, when the filter names ONE partition
 //                                      holding the name and it finds rows;
 //                                      else the gather
-//   named fuzzy (scryfallNamedFuzzy)   ONE round of N bundles — exact probe,
+//   named fuzzy (scryfallNamedFuzzy)   1 plan from ONE object's names index (n15),
+//                                      then one round of bundles from only the
+//                                      partitions the plan names (the winner's,
+//                                      usually; none for a miss) — 2 calls where
+//                                      it was N. Without an index, or with set=:
+//                                      ONE round of N bundles — exact probe,
 //                                      typo candidates and local race, and
 //                                      containment from each partition at once,
 //                                      each skipped where it cannot matter
@@ -118,6 +127,7 @@ import {
 	type FuzzyCandidateWire,
 	type NamedFuzzyAnswer,
 	type NamedFuzzyBundle,
+	type NamedFuzzyPlan,
 	type NameIdentifier,
 	type ResultShape,
 	type ScryfallFuzzyResult,
@@ -750,6 +760,16 @@ export class PartitionedEngine implements Engine {
 	partitionCalls = 0;
 
 	/**
+	 * How many partitions this request's gathered search page asked (n15: the names index makes it
+	 * fewer than N for a name-only filter, 0 for its 404), or null when it was not a gathered page
+	 * or the coordinator did not say. Read by `/cards/search`'s per-miss log line.
+	 */
+	gatheredPartitions: number | null = null;
+
+	/** n15: the stage the names index's fuzzy plan settled on, or null when no plan was used. */
+	namedFuzzyPlanStage: string | null = null;
+
+	/**
 	 * Whether this request's search was ANSWERED by one pinned partition — an oracle id's owner or a
 	 * `!"Name"`'s sole partition — rather than by the gather. A pin that fell back (stale modulus, a
 	 * stuck owner, an empty name-pinned page) is false. Read by `/cards/search`'s per-miss log line.
@@ -845,7 +865,7 @@ export class PartitionedEngine implements Engine {
 	private async pinnedOrGathered<T>(
 		opts: EngineSearchOptions,
 		pinned: (owner: RemoteEngine, partitionCount: number) => Promise<T>,
-		gathered: (coordinator: RemoteEngine) => Promise<T>,
+		gathered: (coordinator: RemoteEngine, gatherOpts: EngineSearchOptions) => Promise<T>,
 		/** Whether a pinned answer found nothing — a NAME pin then gathers (see pinnedNamePartition). */
 		empty: (answer: T) => boolean,
 	): Promise<T> {
@@ -876,8 +896,13 @@ export class PartitionedEngine implements Engine {
 			}
 		}
 		const coordinator = gatherPartitionOf(opts.filterTreeJson, this.n);
+		// n15: the build this request is pinned to rides along, so the coordinator may answer a
+		// name-only filter from its names index — only when it has loaded this very build.
+		const gatherOpts: EngineSearchOptions = cardNamesOf(this.manifest)
+			? { ...opts, namesBuild: String(this.manifest.built_at ?? "") }
+			: opts;
 		try {
-			return await gathered(this.at(coordinator));
+			return await gathered(this.at(coordinator), gatherOpts);
 		} catch (err) {
 			// The coordinator is chosen from the query text, so every repeat of a query goes to the SAME
 			// object: one object that has stopped answering would take that query down until the next
@@ -885,7 +910,7 @@ export class PartitionedEngine implements Engine {
 			if (this.n < 2 || !isStuckEngine(err)) throw err;
 			const next = (coordinator + 1) % this.n;
 			console.warn(`gather coordinator partition ${coordinator} not answering (${err}); failing over to ${next}`);
-			return gathered(this.at(next));
+			return gathered(this.at(next), gatherOpts);
 		}
 	}
 
@@ -893,7 +918,7 @@ export class PartitionedEngine implements Engine {
 		return this.pinnedOrGathered(
 			opts,
 			(owner, n) => owner.searchCardsAsObjects(opts, n),
-			(c) => c.gatherSearchAsObjects(opts),
+			(c, o) => c.gatherSearchAsObjects(o),
 			(r) => r.totalCards === 0,
 		);
 	}
@@ -902,7 +927,7 @@ export class PartitionedEngine implements Engine {
 		return this.pinnedOrGathered(
 			opts,
 			(owner, n) => owner.searchCardsAsJson(opts, shape, n),
-			(c) => c.gatherSearchAsJson(opts, shape),
+			(c, o) => c.gatherSearchAsJson(o, shape),
 			(r) => r.totalCards === 0,
 		);
 	}
@@ -935,7 +960,7 @@ export class PartitionedEngine implements Engine {
 		return this.pinnedOrGathered(
 			opts,
 			(owner, n) => owner.scryfallSearch(opts, baseUrl, n),
-			(c) => c.gatherScryfallSearch(opts, baseUrl),
+			(c, o) => c.gatherScryfallSearch(o, baseUrl),
 			(r) => r.totalCards === 0,
 		);
 	}
@@ -949,7 +974,11 @@ export class PartitionedEngine implements Engine {
 		return this.pinnedOrGathered(
 			opts,
 			(owner, n) => owner.scryfallSearchPage(opts, baseUrl, envelope, cache, "cards", n),
-			(c) => c.scryfallSearchPage(opts, baseUrl, envelope, cache, "cards2"),
+			async (c, o) => {
+				const page = await c.scryfallSearchPage(o, baseUrl, envelope, cache, "cards2");
+				this.gatheredPartitions = c.gatheredPartitions;
+				return page;
+			},
 			// A no-match page is Scryfall's 404 (`emptyPageResponse`); a page past the end of real
 			// matches is a 422, which only a partition holding the name can say.
 			(r) => r.status === 404,
@@ -1472,8 +1501,7 @@ export class PartitionedEngine implements Engine {
 		const hint = this.nameHintOf(folded);
 		const bundle = (p: number) =>
 			this.at(p).scryfallNamedFuzzyBundle(folded, setCode, words, NAMED_CONTAINMENT_LIMIT, baseUrl);
-		const replies: NamedFuzzyBundle[] = new Array(this.n);
-		let asked = Array.from({ length: this.n }, (_, p) => p);
+		const replies: (NamedFuzzyBundle | undefined)[] = new Array(this.n);
 		// A routed MISS the hint settles is the exact stage's answer too (`scryfallExactName` returns
 		// it without asking further), so the other partitions' ranks are not consulted.
 		let exactSettledMiss = false;
@@ -1485,19 +1513,60 @@ export class PartitionedEngine implements Engine {
 				exactSettledMiss = reply.exact.rank === null;
 			}
 			replies[first] = reply;
-			asked = asked.filter((p) => p !== first);
 		}
+		// n15: ONE object's names index names the partitions whose bundles can change the answer; every
+		// other partition's bundle is read as answering nothing (EMPTY_NAMED_FUZZY_BUNDLE), which the
+		// plan proves it would. No plan (no index, a set scope, an object that cannot say): all of them.
+		const plan = setCode === "" ? await this.namedFuzzyPlan(folded, words) : null;
+		const wanted = plan === null || plan.everywhere ? Array.from({ length: this.n }, (_, p) => p) : plan.partitions;
 		await Promise.all(
-			asked.map(async (p) => {
-				replies[p] = await bundle(p);
-			}),
+			wanted
+				.filter((p) => replies[p] === undefined)
+				.map(async (p) => {
+					replies[p] = await bundle(p);
+				}),
 		);
-		const merged = mergeNamedFuzzyBundles(replies, words, NAMED_CONTAINMENT_LIMIT, exactSettledMiss);
+		// Array.from, not map: `replies` is sparse, and map skips its holes.
+		const filled = Array.from({ length: this.n }, (_, p) => replies[p] ?? EMPTY_NAMED_FUZZY_BUNDLE);
+		const merged = mergeNamedFuzzyBundles(filled, words, NAMED_CONTAINMENT_LIMIT, exactSettledMiss);
 		if (merged !== null) return merged;
 		console.warn("named fuzzy: the bundles do not combine; asking the three stages instead");
 		return resolveNamedFuzzyStaged(this, folded, words, setCode, baseUrl);
 	}
+
+	/**
+	 * n15: the fuzzy plan for a needle from ONE object's names index — which object, a function of the
+	 * needle, like the gather coordinator — or null to ask every partition: the manifest names no
+	 * names blob, the object cannot plan (a format-1 blob, the build before n15, a stuck object), or
+	 * it planned from another build than this request's (partition numbers mean nothing across builds).
+	 */
+	private async namedFuzzyPlan(folded: string, words: string[]): Promise<NamedFuzzyPlan | null> {
+		if (!cardNamesOf(this.manifest)) return null;
+		const p = gatherPartitionOf(`named:${folded}`, this.n);
+		try {
+			const plan = await this.at(p).scryfallNamedFuzzyPlan(folded, words);
+			if (plan.builtAt !== String(this.manifest.built_at ?? "")) return null;
+			if (plan.partitions.some((q) => !Number.isInteger(q) || q < 0 || q >= this.n)) return null;
+			this.namedFuzzyPlanStage = plan.stage;
+			return plan;
+		} catch (err) {
+			console.warn(`named fuzzy: no plan from partition ${p}'s names index (${err}); asking every partition`);
+			return null;
+		}
+	}
 }
+
+/**
+ * A partition's bundle when it holds nothing the needle could match: no exact rank, a typo miss with
+ * no candidates, no containment match — exactly what `named_fuzzy_bundle` answers from a partition
+ * holding no such card. Stands in for every partition a names-index plan leaves out (n15).
+ */
+export const EMPTY_NAMED_FUZZY_BUNDLE: NamedFuzzyBundle = Object.freeze({
+	exact: { rank: null, present: false, card: null },
+	fuzzy: { status: "miss", card: null },
+	candidates: [],
+	contained: [],
+}) as NamedFuzzyBundle;
 
 /**
  * The containment stage's cross-partition merge: one card per distinct name, in partition order —

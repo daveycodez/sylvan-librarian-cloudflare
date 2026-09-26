@@ -477,10 +477,11 @@ pub fn build_store_partitioned_spilled<W: Write>(
         std::fs::File::create(&oracle_path).map_err(|e| format!("create oracle-pairs.bin: {e}"))?,
     ));
     let mut oracle_count = 0u64;
-    // The autocomplete names blob's input (names::partition_names_tsv): each partition's served
-    // `(collated, printed)` pairs as the engine read them off the archive it just built — the SAME
-    // lines the nightly's build emits (EMIT_NAMES), so `scripts/seed-remote-kv.ts` encodes them with
-    // the coordinator's own encoder (src/engine/card-names.ts) and both publish identical bytes.
+    // The card-names blob's input (names::partition_names_tsv): each partition's name records
+    // (n15; the served autocomplete pairs before it) as the engine read them off the archive it just
+    // built — the SAME lines the nightly's build emits (EMIT_NAMES), led by the partition as its
+    // coordinator stages them, so `scripts/seed-remote-kv.ts` encodes them with the coordinator's own
+    // encoder (src/engine/card-names.ts) and both publish identical bytes.
     let names_path = out_dir.join(names::CARD_NAMES_FILE);
     let mut names_out = BufWriter::with_capacity(
         1 << 20,
@@ -545,9 +546,9 @@ pub fn build_store_partitioned_spilled<W: Write>(
         }
         counter.flush()?;
         names_out
-            .write_all(&names::partition_names_tsv(&stats.autocomplete_names).map_err(|e| format!("partition {k}: {e}"))?)
+            .write_all(&names::partition_names_tsv(k, &stats.name_records).map_err(|e| format!("partition {k}: {e}"))?)
             .map_err(|e| format!("write {}: {e}", names::CARD_NAMES_FILE))?;
-        names_count += stats.autocomplete_names.len();
+        names_count += stats.name_records.len();
         accum.record(k, store_key, counter.written, &stats);
         routing_count += routing_here.get();
         oracle_count += oracle_here.get();
@@ -559,7 +560,7 @@ pub fn build_store_partitioned_spilled<W: Write>(
     oracle_out.borrow_mut().flush().map_err(|e| format!("flush oracle-pairs.bin: {e}"))?;
     eprintln!("wrote {} ({oracle_count} oracle pairs)", oracle_path.display());
     names_out.flush().map_err(|e| format!("flush {}: {e}", names::CARD_NAMES_FILE))?;
-    eprintln!("wrote {} ({names_count} served names, per partition)", names_path.display());
+    eprintln!("wrote {} ({names_count} name records, per partition)", names_path.display());
     Ok(accum.finish())
 }
 

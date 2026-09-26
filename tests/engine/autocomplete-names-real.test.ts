@@ -11,8 +11,9 @@
 //   - the adversarial shapes: accents, punctuation that collates away, separators, digits, CJK,
 //     one-letter needles that look two long, and needles nothing contains.
 //
-// The blob here is assembled from each archive's own pairs (`store_autocomplete_names`, the archived
-// twin of what the builders publish; the Rust suite pins the two equal). The fixture-sized version
+// The blob here is assembled from each archive's own name records (`store_name_records_tsv`, the
+// archived twin of what the builders publish since n15's format 2; the Rust suites pin the two
+// equal), each led by its partition as the publishers lead them. The fixture-sized version
 // of this differential runs in CI (`cargo test`, engine/wasm/src/names.rs); this one is opt-in
 // because it loads every partition of the corpus:
 //
@@ -24,7 +25,7 @@ import { describe, expect, test } from "bun:test";
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { gzipSync } from "node:zlib";
-import { cardNamesCount, encodeCardNames } from "../../src/engine/card-names";
+import { cardNamesCount, encodeCardNames, ledByPartition } from "../../src/engine/card-names";
 import { mergeAutocomplete } from "../../src/engine/partitioned-engine";
 import { foldAccents } from "../../src/parser/pystr";
 import { newEngine } from "./wasm-engine";
@@ -128,7 +129,7 @@ describe.skipIf(!readable)(`autocomplete from the names blob vs the fan-out, on 
 			const alphabet = "abcdefghijklmnopqrstuvwxyz0123456789";
 			for (const a of alphabet) for (const b of alphabet) needles.push(a + b);
 
-			// Pass 1, one partition at a time: its pairs for the blob, and its answers for the merge.
+			// Pass 1, one partition at a time: its records for the blob, and its answers for the merge.
 			const perPartition: string[][][] = [];
 			let fanOutMs = 0;
 			const loadPartition = (k: number) => {
@@ -138,7 +139,8 @@ describe.skipIf(!readable)(`autocomplete from the names blob vs the fan-out, on 
 			for (let k = 0; k < parts.length; k++) {
 				loadPartition(k);
 				const pairs = JSON.parse(engine.use((g) => g.store_autocomplete_names())) as [string, string][];
-				lines.push(text.encode(pairs.map(([c, p]) => `${c}\t${p}\n`).join("")));
+				const records = new TextDecoder().decode(engine.use((g) => g.store_name_records_tsv()));
+				lines.push(text.encode(ledByPartition(k, records)));
 				for (const [c] of pairs) collated.push(c);
 			}
 			// The substrings come from the whole corpus's names, so they are drawn once all are in.
@@ -187,7 +189,7 @@ describe.skipIf(!readable)(`autocomplete from the names blob vs the fan-out, on 
 				if (merged.length > 0) answered++;
 			}
 			console.log(
-				`names blob: ${loaded} pairs, ${raw.byteLength} bytes raw, ${gz.byteLength} gzip (level 9); ` +
+				`names blob: ${loaded} records, ${raw.byteLength} bytes raw, ${gz.byteLength} gzip (level 9); ` +
 					`${(engine.use((g) => g.names_heap_bytes()) / 1048576).toFixed(2)}MB in wasm\n` +
 					`${folded.length} needles (${needles.length - ADVERSARIAL.length - 5000} two-character, 5000 substrings, ` +
 					`${ADVERSARIAL.length} adversarial): ${differing} differ, ${answered} answer something; ` +

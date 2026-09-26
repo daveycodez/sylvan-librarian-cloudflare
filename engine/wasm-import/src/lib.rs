@@ -113,7 +113,6 @@ use std::sync::Mutex;
 
 use card_engine::{fnv1a64_oracle_id, SpillingStoreBuilder};
 use serde_json::Value;
-use sylvan_store_builder::names::partition_names_tsv as names_tsv;
 use sylvan_store_builder::ranks::PrintingRanks;
 use sylvan_store_builder::tags::{TagAccumulator, TagData, TagKind};
 use sylvan_store_builder::transform::{
@@ -181,9 +180,9 @@ const EMIT_TAG_ALIASES: u32 = 10;
 const EMIT_ORACLE_PAIRS: u32 = 11;
 /// One chunk of the corpus-tables snapshot (`corpus_export`), at most SNAPSHOT_CHUNK bytes.
 const EMIT_CORPUS: u32 = 12;
-/// One partition build's autocomplete names (`names::partition_names_tsv` over
-/// `StoreStats::autocomplete_names`), the SAME lines the native builder appends to
-/// `card-names.tsv`, so one encoder (src/engine/card-names.ts) publishes both builders' blobs.
+/// One partition build's name records (`card_engine::name_records_tsv` over
+/// `StoreStats::name_records`, no partition lead), the SAME lines the native builder appends to
+/// `card-names.tsv` once the coordinator leads them with the partition, so one encoder (src/engine/card-names.ts) publishes both builders' blobs.
 const EMIT_NAMES: u32 = 13;
 
 /// The chunk every streamed snapshot export is cut into: the coordinator's STAGE_BLOB_BYTES, so
@@ -1440,9 +1439,11 @@ pub extern "C" fn build_store_stream() -> i64 {
                 return -1;
             }
             let _ = w.flush();
-            // The partition's autocomplete names (backlog n8): a few thousand short lines, read off
-            // the structures the archive was just serialized from — no second pass over the rows.
-            match names_tsv(&stats.autocomplete_names) {
+            // The partition's name records (backlog n8, format 2 since n15): a few thousand short
+            // lines, read off the structures the archive was just serialized from — no second pass
+            // over the rows. Unprefixed: this build does not know its partition, and the coordinator
+            // leads each line with it when it stages them (import-coordinator.ts).
+            match card_engine::name_records_tsv("", &stats.name_records) {
                 Ok(lines) => emit_bytes(EMIT_NAMES, &lines),
                 Err(e) => {
                     log(&format!("build_store_stream: {e}"));

@@ -1,5 +1,5 @@
-//! The card-names blob's INPUT against the REAL corpus (backlog n8): what a build publishes for each
-//! partition (`StoreStats::autocomplete_names`, read off the structures the archive is serialized
+//! The card-names blob's INPUT against the REAL corpus (backlog n8; n15's name records likewise):
+//! what a build publishes for each partition (`StoreStats::autocomplete_names`, read off the structures the archive is serialized
 //! from) must be exactly what that partition's archive can offer (`BufferStore::autocomplete_names`,
 //! read back through the accessors `autocomplete` uses).
 //!
@@ -55,7 +55,17 @@ fn build_time_names_equal_every_archives_names() {
             let only_held: Vec<_> = held.difference(&built).take(5).collect();
             panic!("p{k}: build-time names differ from the archive's: built-only {only_built:?}, archive-only {only_held:?}");
         }
-        eprintln!("p{k}: {} names, identical", archived.len());
+        // n15: the names index's records, the same way — build-time against the archived twin.
+        let records = store.name_records();
+        if stats.name_records != records {
+            let at = stats.name_records.iter().zip(&records).position(|(a, b)| a != b);
+            panic!(
+                "p{k}: build-time name records differ from the archive's at {at:?}: {:?} vs {:?}",
+                at.map(|i| &stats.name_records[i]),
+                at.map(|i| &records[i])
+            );
+        }
+        eprintln!("p{k}: {} names and {} name records, identical", archived.len(), records.len());
         total += archived.len();
     }
     eprintln!("{total} partition names (before the cross-partition dedupe) identical in {:.1?}", started.elapsed());

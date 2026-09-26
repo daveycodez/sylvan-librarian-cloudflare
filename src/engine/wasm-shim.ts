@@ -238,6 +238,14 @@ export interface EngineHandle {
 	/** n8: autocomplete over the loaded names — the whole corpus's answer. Throws when none are loaded. */
 	names_autocomplete(prefix: string, limit: number): string;
 	names_heap_bytes(): number;
+	/** n15: the loaded names blob's format (0 = none, 1 = autocomplete only, 2 = the names index). */
+	names_format(): number;
+	/** n15: the partitions a name-only search's matches live in, `{"partitions":[…]}`, or `null`. */
+	names_search_partitions(filterTreeJson: string, multilingual: boolean): string;
+	/** n15: the partitions a fuzzy needle's bundles must come from, or `null`. */
+	names_fuzzy_plan(folded: string, wordsJson: string, floor: number, lead: number, weakBelow: number): string;
+	/** n15: this store's name records as blob lines (verification only). */
+	store_name_records_tsv(): Uint8Array;
 	/** n8: the loaded store's own (collated, printed) pairs, JSON — verification only (the harness). */
 	store_autocomplete_names(): string;
 	exact_card_by_name(folded: string, setCode: string, fieldsJson: string): string;
@@ -323,6 +331,10 @@ export function engineFor(label: string): EngineHandle {
 		names_autocomplete: wrap("names_autocomplete"),
 		names_heap_bytes: wrap("names_heap_bytes"),
 		store_autocomplete_names: wrap("store_autocomplete_names"),
+		names_format: wrap("names_format"),
+		names_search_partitions: wrap("names_search_partitions"),
+		names_fuzzy_plan: wrap("names_fuzzy_plan"),
+		store_name_records_tsv: wrap("store_name_records_tsv"),
 		exact_card_by_name: wrap("exact_card_by_name"),
 		exact_name_rank: wrap("exact_name_rank"),
 		exact_name_probe: wrap("exact_name_probe"),

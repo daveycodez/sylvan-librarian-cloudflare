@@ -65,7 +65,7 @@ describe("GET /cards/search", () => {
 		);
 		expect(lines.length).toBe(1);
 		expect(lines[0]).toMatch(
-			/^cards\/search: shape=card_name:coll unique=artwork order=released dir=\w+ page=2 extras=[01] variations=[01] multilingual=0 pin=0 calls=-1 status=\d{3}$/,
+			/^cards\/search: shape=card_name:coll unique=artwork order=released dir=\w+ page=2 extras=[01] variations=[01] multilingual=0 pin=0 calls=-1 gathered=- status=\d{3}$/,
 		);
 		expect(lines[0]).not.toContain("elf");
 	});
@@ -73,7 +73,14 @@ describe("GET /cards/search", () => {
 	test("the line carries the engine's pin and partition-call count, and a failed search's status", async () => {
 		const engine = Object.assign(new FakeEngine(), { partitionCalls: 1, pinnedAnswer: true });
 		const pinned = await loggedLines("cards/search: ", () => testDispatch(makeCtx({ engine }), "/cards/search?q=bolt"));
-		expect(pinned[0]).toMatch(/ pin=1 calls=1 status=200$/);
+		expect(pinned[0]).toMatch(/ pin=1 calls=1 gathered=- status=200$/);
+
+		// n15: how many partitions the gather's coordinator asked.
+		const gathering = Object.assign(new FakeEngine(), { partitionCalls: 1, gatheredPartitions: 0 });
+		const pruned = await loggedLines("cards/search: ", () =>
+			testDispatch(makeCtx({ engine: gathering }), "/cards/search?q=bolt"),
+		);
+		expect(pruned[0]).toMatch(/ pin=0 calls=1 gathered=0 status=200$/);
 
 		const failing = new FakeEngine();
 		failing.searchError = new Error("boom");
@@ -81,7 +88,7 @@ describe("GET /cards/search", () => {
 			testDispatch(makeCtx({ engine: failing }), "/cards/search?q=bolt"),
 		);
 		expect(failed.length).toBe(1);
-		expect(failed[0]).toMatch(/ pin=0 calls=-1 status=5\d\d$/);
+		expect(failed[0]).toMatch(/ pin=0 calls=-1 gathered=- status=5\d\d$/);
 	});
 
 	test("answers a Scryfall List object with the cards spliced in", async () => {

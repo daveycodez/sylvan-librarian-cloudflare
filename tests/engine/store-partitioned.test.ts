@@ -33,6 +33,9 @@ interface FakeInstance {
 	generation: number;
 	/** n8: the card names load_names took, or null. */
 	names?: string[] | null;
+	/** n15: the loaded blob's format, and (format 2) each record's partition and collated name. */
+	namesFormat?: number;
+	records?: { partition: number; collated: string }[];
 }
 const instances = new Map<string, FakeInstance>();
 
@@ -132,14 +135,22 @@ function handleFor(label: string) {
 		linearMemoryBytes: () => inst.loaded?.length ?? 0,
 		instanceGeneration: () => inst.generation,
 		// n8: the names blob as the real crate reads it — gzip, the header, then name lines — and a
-		// toy ranking (printed names containing the prefix, in blob order).
+		// toy ranking (printed names containing the prefix, in blob order). n15: format 2's records,
+		// and a toy index — the partitions whose collated names contain a bare word's value.
 		load_names(gz: Uint8Array) {
 			const text = new TextDecoder().decode(gunzipSync(gz));
-			if (!text.startsWith("sylvan-card-names/1\n")) throw new Error("fake wasm: not a names blob");
-			inst.names = text
-				.split("\n")
-				.slice(1, -1)
-				.map((l) => l.slice(l.indexOf("\t") + 1));
+			const format = text.startsWith("sylvan-card-names/1\n") ? 1 : text.startsWith("sylvan-card-names/2\n") ? 2 : 0;
+			if (format === 0) throw new Error("fake wasm: not a names blob");
+			const lines = text.split("\n").slice(1, -1);
+			inst.namesFormat = format;
+			if (format === 1) {
+				inst.names = lines.map((l) => l.slice(l.indexOf("\t") + 1));
+				inst.records = [];
+			} else {
+				const fields = lines.map((l) => l.split("\t"));
+				inst.names = fields.map((f) => f[3] as string);
+				inst.records = fields.map((f) => ({ partition: Number(f[0]), collated: f[2] as string }));
+			}
 			return inst.names.length;
 		},
 		names_autocomplete(prefix: string, limit: number) {
@@ -147,6 +158,24 @@ function handleFor(label: string) {
 			return JSON.stringify(inst.names.filter((n) => n.toLowerCase().includes(prefix)).slice(0, limit));
 		},
 		names_heap_bytes: () => 0,
+		names_format: () => (inst.names ? (inst.namesFormat ?? 0) : 0),
+		names_search_partitions(treeJson: string) {
+			if (inst.namesFormat !== 2) return "null";
+			const tree = JSON.parse(treeJson) as { node_type: string; kwargs: { rhs?: { kwargs?: { value?: string } } } };
+			const word = tree.node_type === "CardBinaryOperatorNode" ? tree.kwargs.rhs?.kwargs?.value : undefined;
+			if (word === undefined) return "null";
+			const partitions = [
+				...new Set((inst.records ?? []).filter((r) => r.collated.includes(word)).map((r) => r.partition)),
+			];
+			return JSON.stringify({ partitions: partitions.sort((a, b) => a - b) });
+		},
+		names_fuzzy_plan(folded: string) {
+			if (inst.namesFormat !== 2) return "null";
+			const partitions = [
+				...new Set((inst.records ?? []).filter((r) => r.collated === folded).map((r) => r.partition)),
+			];
+			return JSON.stringify({ partitions, everywhere: false, stage: partitions.length ? "exact" : "miss" });
+		},
 	};
 }
 
@@ -1214,6 +1243,81 @@ describe("the card-names blob (n8)", () => {
 		const shortEnv = fakeEnv(short.entries).env;
 		await store.getEngine(shortEnv, shortCtx);
 		expect(store.autocompleteFromNames(shortEnv, shortCtx, "sho", 20)).rejects.toThrow(/the manifest says/);
+	});
+
+	/** n15: a format-2 blob — one record per card, led by its partition. */
+	async function publishIndexed(builtAt: string, cards: [number, string][]) {
+		const published = await publishV2(builtAt);
+		const lines = cards
+			.map(([p, n]) => `${p}\t1f0\t${n.toLowerCase().replace(/[^a-z0-9]/g, "")}\t${n}\t\t\t\n`)
+			.sort()
+			.join("");
+		const gz = await gzipBytes(new TextEncoder().encode(`sylvan-card-names/2\n${lines}`));
+		const key = `store:card-names-v1-${builtAt}.store:0`;
+		const manifest = { ...published.manifest, names_key: key, names_bytes: gz.byteLength };
+		published.entries.set(key, gz);
+		published.entries.set("store:manifest", JSON.stringify(manifest));
+		return { ...published, manifest, key };
+	}
+	const bare = (value: string) =>
+		JSON.stringify({
+			node_type: "CardBinaryOperatorNode",
+			kwargs: {
+				op: ":",
+				lhs: { node_type: "CardAttributeNode", kwargs: { attribute_name: "card_name" } },
+				rhs: { node_type: "CollatedNameValueNode", kwargs: { value } },
+			},
+		});
+	const searchOpts = (value: string) => ({
+		filterTreeJson: bare(value),
+		unique: "card",
+		prefer: "default",
+		orderby: "name",
+		direction: "auto",
+		limit: 175,
+		offset: 0,
+		fields: [],
+	});
+
+	test("n15: the names index answers a name search for its OWN build only, and autocomplete reads format 2", async () => {
+		const { entries, key } = await publishIndexed("160", [
+			[0, "Lightning Bolt"],
+			[2, "Lightning Helix"],
+			[1, "Shock"],
+		]);
+		const { env, reads } = fakeEnv(entries);
+		const ctx = ctxFor("engine-index-p1", 1, fakeStorage());
+		await store.getEngine(env, ctx);
+		expect(await store.namesSearchPartitions(env, ctx, searchOpts("lightning"), "160")).toEqual([0, 2]);
+		expect(await store.namesSearchPartitions(env, ctx, searchOpts("zzz"), "160")).toEqual([]);
+		// Another build's request: partition numbers mean nothing across builds.
+		expect(await store.namesSearchPartitions(env, ctx, searchOpts("lightning"), "159")).toBeNull();
+		// Not a question the index answers.
+		expect(await store.namesSearchPartitions(env, ctx, { ...searchOpts("x"), filterTreeJson: "{}" }, "160")).toBeNull();
+		expect(await store.autocompleteFromNames(env, ctx, "light", 20)).toEqual(["Lightning Bolt", "Lightning Helix"]);
+		expect(reads.filter((k) => k === key).length).toBe(1);
+		expect(await store.namesFuzzyPlan(env, ctx, "shock", ["shock"])).toEqual({
+			partitions: [1],
+			everywhere: false,
+			stage: "exact",
+			builtAt: "160",
+		});
+	});
+
+	test("n15: a format-1 blob, or none, is no index — the gather and the fuzzy route ask every partition", async () => {
+		const v1 = await publishNamed("161", ["Shock"]);
+		const env = fakeEnv(v1.entries).env;
+		const ctx = ctxFor("engine-index-v1-p0", 0, fakeStorage());
+		await store.getEngine(env, ctx);
+		expect(await store.namesSearchPartitions(env, ctx, searchOpts("shock"), "161")).toBeNull();
+		expect(store.namesFuzzyPlan(env, ctx, "shock", ["shock"])).rejects.toThrow(store.CardNamesUnavailableError);
+		expect(await store.autocompleteFromNames(env, ctx, "sho", 20)).toEqual(["Shock"]);
+
+		const none = await publishV2("162");
+		const noneEnv = fakeEnv(none.entries).env;
+		const noneCtx = ctxFor("engine-index-none-p0", 0, fakeStorage());
+		await store.getEngine(noneEnv, noneCtx);
+		expect(await store.namesSearchPartitions(noneEnv, noneCtx, searchOpts("shock"), "162")).toBeNull();
 	});
 
 	test("the names go with their build: a new build's fill drops the old names first (x1)", async () => {

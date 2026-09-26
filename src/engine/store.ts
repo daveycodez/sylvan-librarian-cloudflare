@@ -99,7 +99,13 @@ import type {
 	SearchPageEnvelope,
 	StoreManifest,
 } from "./types";
-import { EngineUnavailableError, FUZZY_SIMILARITY_LEAD, FUZZY_WEAK_BELOW, type FuzzyCandidateWire } from "./types";
+import {
+	EngineUnavailableError,
+	FUZZY_SIMILARITY_LEAD,
+	FUZZY_WEAK_BELOW,
+	type FuzzyCandidateWire,
+	type NamedFuzzyPlan,
+} from "./types";
 
 /**
  * The FLOOR of the typo-tolerant stage of `?fuzzy=`: a candidate scoring below this is not a
@@ -1731,6 +1737,83 @@ export async function autocompleteFromNames(
 	prefix: string,
 	limit: number,
 ): Promise<string[]> {
+	return withCardNames(env, ctx, (handle) => JSON.parse(handle.names_autocomplete(prefix, limit)) as string[]);
+}
+
+/**
+ * Backlog n15: the partitions a NAME-ONLY search's matches live in, for the WHOLE corpus, from the
+ * names index of the build this object has loaded (engine/wasm/src/names.rs `search_partitions`,
+ * whose predicates are the engine's own) — ascending, and EMPTY when nothing matches: the search's
+ * 404, known without asking a partition.
+ *
+ * Null whenever the index cannot say, and the gather then asks every partition as it always has:
+ * the request was pinned to another build than this object loaded (`builtAt`, the router's
+ * manifest — partition numbers mean nothing across builds), the build published no format-2 names
+ * (a format-1 blob answers autocomplete only), the filter reads anything but names, or a regex
+ * exhausted the engine's budget over the corpus's names. Never throws.
+ */
+export async function namesSearchPartitions(
+	env: Env,
+	ctx: LoadContext,
+	opts: EngineSearchOptions,
+	builtAt: string,
+): Promise<number[] | null> {
+	try {
+		return await withCardNames(env, ctx, (handle, manifest) => {
+			if (String(manifest.built_at ?? "") !== builtAt || handle.names_format() < 2) return null;
+			const answer = JSON.parse(
+				handle.names_search_partitions(opts.filterTreeJson, opts.includeMultilingual === true),
+			) as { partitions: number[] } | null;
+			return answer?.partitions ?? null;
+		});
+	} catch (err) {
+		if (!(err instanceof CardNamesUnavailableError)) {
+			console.warn(`${tag(ctx)}names index unavailable for a search (asking every partition): ${err}`);
+		}
+		return null;
+	}
+}
+
+/**
+ * Backlog n15: the fuzzy route's plan for one needle, from the names index of the build this object
+ * has loaded (engine/wasm/src/names.rs `fuzzy_plan`): the partitions whose bundles, merged with
+ * every other partition read as answering nothing, give exactly what every partition's bundles give.
+ * The thresholds are the ones every partition's bundle is handed (see `namedFuzzyBundle`). Throws
+ * CardNamesUnavailableError when there is no index to plan from; the router then asks every partition.
+ */
+export async function namesFuzzyPlan(
+	env: Env,
+	ctx: LoadContext,
+	folded: string,
+	words: string[],
+): Promise<NamedFuzzyPlan> {
+	return withCardNames(env, ctx, (handle, manifest) => {
+		const plan = JSON.parse(
+			handle.names_fuzzy_plan(
+				folded,
+				JSON.stringify(words),
+				FUZZY_SIMILARITY_FLOOR,
+				FUZZY_SIMILARITY_LEAD,
+				FUZZY_WEAK_BELOW,
+			),
+		) as Omit<NamedFuzzyPlan, "builtAt"> | null;
+		if (plan === null) {
+			throw new CardNamesUnavailableError(`the loaded build (${manifest.store_key}) publishes no names index`);
+		}
+		return { ...plan, builtAt: String(manifest.built_at ?? "") };
+	});
+}
+
+/**
+ * Run `use` against this object's loaded names — loading them first when the build it serves names a
+ * blob this wasm instance does not hold yet. See `autocompleteFromNames` for where the blob comes
+ * from and what throws.
+ */
+async function withCardNames<T>(
+	env: Env,
+	ctx: LoadContext,
+	use: (handle: wasm.EngineHandle, manifest: StoreManifest) => T,
+): Promise<T> {
 	const state = stateFor(ctx.label);
 	for (;;) {
 		const current = liveCurrent(state, ctx.label);
@@ -1739,9 +1822,7 @@ export async function autocompleteFromNames(
 		if (!names) {
 			throw new CardNamesUnavailableError(`the loaded build (${current.manifest.store_key}) publishes no card names`);
 		}
-		if (current.names === names.key) {
-			return JSON.parse(current.handle.names_autocomplete(prefix, limit)) as string[];
-		}
+		if (current.names === names.key) return use(current.handle, current.manifest);
 		if (!state.namesLoading) {
 			const loading = loadNames(env, ctx, current, names).finally(() => {
 				if (state.namesLoading === loading) state.namesLoading = null;
@@ -1752,7 +1833,7 @@ export async function autocompleteFromNames(
 		// Loaded into the store that was current when the load began. A swap in the meantime (a
 		// publish) means the NEW store asks again on the next pass; the same store answers now.
 		if (liveCurrent(state, ctx.label) === current && current.names === names.key) {
-			return JSON.parse(current.handle.names_autocomplete(prefix, limit)) as string[];
+			return use(current.handle, current.manifest);
 		}
 	}
 }
@@ -1809,7 +1890,8 @@ async function loadNames(
 	}
 	current.names = names.key;
 	console.log(
-		`${tag(ctx)}card names loaded from ${from}: ${names.key} (${count} names, ${names.bytes} bytes gzipped, ` +
+		`${tag(ctx)}card names loaded from ${from}: ${names.key} (${count} names, format ${current.handle.names_format()}, ` +
+			`${names.bytes} bytes gzipped, ` +
 			`${(current.handle.names_heap_bytes() / 1048576).toFixed(1)}MB in wasm; ` +
 			`linear memory ${(current.handle.linearMemoryBytes() / 1048576).toFixed(1)}MB)`,
 	);

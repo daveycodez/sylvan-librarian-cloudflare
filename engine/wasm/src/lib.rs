@@ -1227,6 +1227,64 @@ pub fn names_autocomplete(prefix: &str, limit: u32) -> Result<String, JsError> {
     })
 }
 
+/// The loaded names blob's format: 1 (autocomplete only), 2 (the names index too), 0 when none is
+/// loaded.
+#[wasm_bindgen]
+pub fn names_format() -> u32 {
+    NAMES.with(|n| n.try_borrow().ok().and_then(|g| g.as_ref().map(|l| u32::from(l.format()))).unwrap_or(0))
+}
+
+/// Backlog n15: the partitions holding a card a NAME-ONLY search matches, for the WHOLE corpus, from
+/// the loaded names (`names::search_partitions`) — `{"partitions":[…]}`, ascending, possibly empty
+/// (the search's 404). `null` when this cannot say: no format-2 names loaded, a filter that reads
+/// anything but names (card_engine `NameQuery::of`), or a regex that exhausted the engine's budget
+/// over the corpus's names. The gather then asks every partition, as it always has.
+#[wasm_bindgen]
+pub fn names_search_partitions(filter_tree_json: &str, multilingual: bool) -> Result<String, JsError> {
+    let Ok(tree) = serde_json::from_str::<serde_json::Value>(filter_tree_json) else { return Ok("null".into()) };
+    let Some(query) = card_engine::NameQuery::of(&tree) else { return Ok("null".into()) };
+    NAMES.with(|n| {
+        let guard = n.try_borrow().map_err(|_| JsError::new(&poisoned("names")))?;
+        let Some(list) = guard.as_ref() else { return Ok("null".into()) };
+        Ok(match names::search_partitions(list, &query, multilingual) {
+            Some(Ok(partitions)) => serde_json::json!({ "partitions": partitions }).to_string(),
+            Some(Err(_)) | None => "null".into(),
+        })
+    })
+}
+
+/// Backlog n15: which partitions `/cards/named?fuzzy=` must ask for this needle
+/// (`names::fuzzy_plan`) — `{"partitions":[…],"everywhere":bool,"stage":"…"}`, or `null` when no
+/// format-2 names are loaded. `floor`, `lead` and `weak_below` are the thresholds the router hands
+/// every partition's bundle.
+#[wasm_bindgen]
+pub fn names_fuzzy_plan(folded: &str, words_json: &str, floor: f32, lead: f64, weak_below: f32) -> Result<String, JsError> {
+    let words: Vec<String> =
+        serde_json::from_str(words_json).map_err(|e| JsError::new(&format!("bad words JSON: {e}")))?;
+    NAMES.with(|n| {
+        let guard = n.try_borrow().map_err(|_| JsError::new(&poisoned("names")))?;
+        let Some(list) = guard.as_ref() else { return Ok("null".into()) };
+        Ok(match names::fuzzy_plan(list, folded, &words, floor, lead, weak_below) {
+            Some(plan) => serde_json::json!({
+                "partitions": plan.partitions,
+                "everywhere": plan.everywhere,
+                "stage": plan.stage,
+            })
+            .to_string(),
+            None => "null".into(),
+        })
+    })
+}
+
+/// The loaded STORE's own name records (backlog n15), as the blob lines its build publishes, WITHOUT
+/// the partition lead — read back from the archive through the archived twin
+/// (`BufferStore::name_records`). Verification only (the import harness, the real-corpus checks);
+/// nothing on a request path calls it.
+#[wasm_bindgen]
+pub fn store_name_records_tsv() -> Result<Vec<u8>, JsError> {
+    with_store(|store| card_engine::name_records_tsv("", &store.name_records()).map_err(|e| JsError::new(&e)))
+}
+
 /// The loaded STORE's own `(collated, printed)` autocomplete pairs, as a JSON array of pairs —
 /// what its build published into the names blob, read back from the archive. Verification only
 /// (the real-corpus differential); nothing on a request path calls it.

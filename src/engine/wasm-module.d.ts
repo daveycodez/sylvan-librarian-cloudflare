@@ -80,6 +80,10 @@ declare module "sylvan-engine-wasm" {
 		names_autocomplete(prefix: string, limit: number): string;
 		names_heap_bytes(): number;
 		store_autocomplete_names(): string;
+		names_format(): number;
+		names_search_partitions(filterTreeJson: string, multilingual: boolean): string;
+		names_fuzzy_plan(folded: string, wordsJson: string, floor: number, lead: number, weakBelow: number): string;
+		store_name_records_tsv(): Uint8Array;
 		exact_card_by_name(folded: string, setCode: string, fieldsJson: string): string;
 		exact_name_rank(folded: string, setCode: string): string;
 		exact_name_probe(folded: string, setCode: string, fieldsJson: string): string;
@@ -140,6 +144,20 @@ declare module "sylvan-engine-wasm" {
 	export function names_heap_bytes(): number;
 	/** The loaded store's own (collated, printed) autocomplete pairs, JSON — verification only. */
 	export function store_autocomplete_names(): string;
+	/** n15: the loaded names blob's format — 1 (autocomplete only), 2 (the names index), 0 none. */
+	export function names_format(): number;
+	/** n15: `{"partitions":[…]}` for a name-only search over the whole corpus, or `null`. */
+	export function names_search_partitions(filterTreeJson: string, multilingual: boolean): string;
+	/** n15: `{"partitions":[…],"everywhere":bool,"stage":"…"}` for a fuzzy needle, or `null`. */
+	export function names_fuzzy_plan(
+		folded: string,
+		wordsJson: string,
+		floor: number,
+		lead: number,
+		weakBelow: number,
+	): string;
+	/** n15: the loaded store's name records as blob lines, no partition lead. Verification only. */
+	export function store_name_records_tsv(): Uint8Array;
 	/**
 	 * The best printing of a card whose FOLDED name matches exactly, or JSON `null`. `folded` is
 	 * already lowercased and accent-folded by the caller; `setCode` is "" for no restriction.

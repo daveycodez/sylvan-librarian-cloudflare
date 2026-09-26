@@ -812,10 +812,10 @@ export function poolShardCap(shape: {
 /**
  * What each partition's engine object caches for a build, per partition: its archive's stored gzip
  * bytes plus the build's card-names blob (n8, `names_bytes`), which EVERY partition object caches
- * once it answers an autocomplete — ~0.45MB beside a ~15MB partition today. The pool projections
- * take their per-object bytes from here, so the names are counted wherever the archives are. (The
- * LZ4 factor then multiplies the names too, which they never are: a slight over-count, the safe
- * direction for a gate.)
+ * once it answers an autocomplete or a name lookup — ~0.6MB beside a ~15MB partition since n15's
+ * name records (~0.45MB before). The pool projections take their per-object bytes from here, so the
+ * names are counted wherever the archives are. (The LZ4 factor then multiplies the names too, which
+ * they never are: a slight over-count, the safe direction for a gate.)
  */
 export function partitionCacheBytes(manifest: {
 	partitions?: readonly { store_gzip_bytes?: number }[];

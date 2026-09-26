@@ -1676,3 +1676,63 @@ describe("exact names route through the filter (backlog n6)", () => {
 		});
 	});
 });
+
+// n15: a gathered search carries the build it is pinned to, so its coordinator may answer a
+// name-only filter from its names index — and only when the manifest names a names blob at all.
+describe("a gathered search carries its build to the coordinator's names index (n15)", () => {
+	function recording(withNames: boolean) {
+		const seen: { method: string; opts: Record<string, unknown> }[] = [];
+		const manifest = withNames
+			? { ...manifestOf(N), names_key: "store:card-names-v1-100.store:0", names_bytes: 10 }
+			: manifestOf(N);
+		const record = (method: string, answer: unknown) => async (opts: Record<string, unknown>) => {
+			seen.push({ method, opts });
+			return answer;
+		};
+		const engine = new PartitionedEngine(
+			() =>
+				({
+					gatherSearchAsObjects: record("gatherSearchAsObjects", { totalCards: 0, cards: [] }),
+					gatherSearchAsJson: record("gatherSearchAsJson", {
+						totalCards: 0,
+						cardsBytes: new Uint8Array(),
+						rowCount: 0,
+					}),
+					gatherScryfallSearch: record("gatherScryfallSearch", {
+						totalCards: 0,
+						cardsBytes: new Uint8Array(),
+						rowCount: 0,
+					}),
+					scryfallSearchPage: record("scryfallSearchPage", new Response("{}", { status: 404 })),
+					gatheredPartitions: 0,
+				}) as unknown as RemoteEngine,
+			manifest,
+			async () => manifest,
+			null,
+		);
+		return { engine, seen };
+	}
+
+	test("every gather transport sends namesBuild = the pinned build, the caller's options otherwise unchanged", async () => {
+		const { engine, seen } = recording(true);
+		await engine.searchCardsAsObjects(OPTS);
+		await engine.searchCardsAsJson(OPTS, "rows");
+		await engine.scryfallSearch(OPTS, "https://x");
+		await engine.scryfallSearchPage(OPTS, "https://x", { pretty: false, pageOffset: 0, noMatchDetails: "" }, {});
+		expect(seen.map((s) => s.method)).toEqual([
+			"gatherSearchAsObjects",
+			"gatherSearchAsJson",
+			"gatherScryfallSearch",
+			"scryfallSearchPage",
+		]);
+		for (const { opts } of seen) expect(opts).toEqual({ ...OPTS, namesBuild: "100" });
+		// The coordinator's count of partitions asked reaches the route's log line.
+		expect(engine.gatheredPartitions).toBe(0);
+	});
+
+	test("a manifest that names no names blob sends the options untouched", async () => {
+		const { engine, seen } = recording(false);
+		await engine.searchCardsAsObjects(OPTS);
+		expect(seen[0]?.opts).toEqual(OPTS);
+	});
+});

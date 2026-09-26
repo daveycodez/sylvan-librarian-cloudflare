@@ -355,9 +355,32 @@ export function named_fuzzy_bundle(folded: string, set_code: string, floor: numb
 export function names_autocomplete(prefix: string, limit: number): string;
 
 /**
+ * The loaded names blob's format: 1 (autocomplete only), 2 (the names index too), 0 when none is
+ * loaded.
+ */
+export function names_format(): number;
+
+/**
+ * Backlog n15: which partitions `/cards/named?fuzzy=` must ask for this needle
+ * (`names::fuzzy_plan`) — `{"partitions":[…],"everywhere":bool,"stage":"…"}`, or `null` when no
+ * format-2 names are loaded. `floor`, `lead` and `weak_below` are the thresholds the router hands
+ * every partition's bundle.
+ */
+export function names_fuzzy_plan(folded: string, words_json: string, floor: number, lead: number, weak_below: number): string;
+
+/**
  * Bytes the loaded names hold in linear memory (0 when none are loaded) — for the load log line.
  */
 export function names_heap_bytes(): number;
+
+/**
+ * Backlog n15: the partitions holding a card a NAME-ONLY search matches, for the WHOLE corpus, from
+ * the loaded names (`names::search_partitions`) — `{"partitions":[…]}`, ascending, possibly empty
+ * (the search's 404). `null` when this cannot say: no format-2 names loaded, a filter that reads
+ * anything but names (card_engine `NameQuery::of`), or a regex that exhausted the engine's budget
+ * over the corpus's names. The gather then asks every partition, as it always has.
+ */
+export function names_search_partitions(filter_tree_json: string, multilingual: boolean): string;
 
 /**
  * Every printing of one oracle card, representative first. Empty array for an unknown id.
@@ -541,6 +564,14 @@ export function store_loaded(): boolean;
  * walk is synchronous, so nothing can swap the store out between two frames of one encoding.
  */
 export function store_lz4_frame(index: number): Uint8Array;
+
+/**
+ * The loaded STORE's own name records (backlog n15), as the blob lines its build publishes, WITHOUT
+ * the partition lead — read back from the archive through the archived twin
+ * (`BufferStore::name_records`). Verification only (the import harness, the real-corpus checks);
+ * nothing on a request path calls it.
+ */
+export function store_name_records_tsv(): Uint8Array;
 
 /**
  * The archive format version this build reads/writes. A store manifest's
