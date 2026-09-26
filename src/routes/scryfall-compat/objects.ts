@@ -353,6 +353,30 @@ const FACE_OWNED_KEYS = new Set([
  */
 const FACED_OWNED_KEYS = new Set(["watermark"]);
 
+/**
+ * Top-level keys a ONE-IMAGE faced card (split, flip, adventure, prepare) takes from its FRONT
+ * face, not from the engine's merged row — the Rust twin is `FRONT_FACE_KEYS` in card_object.rs.
+ *
+ * The row is the SEARCH row: the builder overlays every face on the card and folds the faces
+ * together (`merge_face_drafts`), so `flavor_text` is every face's text joined with "\n//\n" and
+ * the stats are the first face that has any. Neither is Scryfall's top-level value, which is face
+ * 0's and only face 0's — 900 of 900 one-image faced printings of the 2026-05-31 default_cards
+ * bulk for each of these keys, and 650 of 650 adventure printings with flavor text in every
+ * language on api.scryfall.com (2026-09-26, `is:adventure has:flavor lang:any`), where the
+ * adventure half never has flavor of its own. What the merge got wrong, measured on the same bulk:
+ *
+ *   flavor_text  130 adventures  the card-level text is on the overlay of BOTH faces, so the join
+ *                                doubled it: Bonecrusher Giant clb/781 was "Not every tale ends
+ *                                in glory.\n//\nNot every tale ends in glory."
+ *   flavor_text  1 split         Cut // Ribbons sld/367: only the Ribbons half has flavor, and
+ *                                Scryfall sends no top-level copy of it
+ *   power/tough. 1 flip          Curse of the Fire Penguin unh/73: only the flipped face is a
+ *                                creature, and Scryfall sends no top-level stats
+ *
+ * `loyalty` rides along on the same rule, though no one-image printing carries one today.
+ */
+const FRONT_FACE_KEYS = new Set(["power", "toughness", "loyalty", "flavor_text"]);
+
 // ─── reading an engine row ───────────────────────────────────────────────────
 // `null` is the wire form of "Scryfall omitted this", so every accessor collapses it to undefined
 // rather than letting it reach a response.
@@ -676,6 +700,8 @@ function faces(
 	row: EngineRow,
 	scryfallId: string,
 	twoImage: boolean,
+	// Whether each face gets its own `image_uris`: a two-image layout that Scryfall has a scan of.
+	faceImages: boolean,
 	// The card's `oracle_id` and `cmc`, written on EVERY face — passed only for a reversible
 	// printing, which is the one layout whose faces carry them (and whose top-level object omits
 	// them). Both faces of all 81 send the card's own values, never a second one. Scryfall puts the
@@ -694,7 +720,7 @@ function faces(
 		for (const [key, value] of Object.entries(face)) {
 			if (!FACE_KEY_ORDER.includes(key) && key !== "object" && faceKeyEmits(key, value, twoImage)) built[key] = value;
 		}
-		if (twoImage) {
+		if (faceImages) {
 			built.image_uris = imageUris(scryfallId, num(row, "image_updated_at"), index === 0 ? "front" : "back");
 		}
 		return built;
@@ -771,6 +797,13 @@ export function toScryfallCard(row: EngineRow, baseUrl = "https://api.scryfall.c
 	// ones — never gets a top-level copy.
 	const topLevel = (key: string): boolean =>
 		!(twoImage && FACE_OWNED_KEYS.has(key)) && !(hasFaces && FACED_OWNED_KEYS.has(key));
+	// The value a top-level key carries: the front face's for FRONT_FACE_KEYS on a one-image faced
+	// card, the row's otherwise.
+	const front = hasFaces && !twoImage ? list(row, "card_faces")[0] : undefined;
+	const cardValue = (key: string): string | undefined =>
+		FRONT_FACE_KEYS.has(key) && typeof front === "object" && front !== null
+			? str(front as EngineRow, key)
+			: str(row, key);
 	const card: Record<string, unknown> = { object: "card", id: scryfallId };
 	const set = (key: string, value: unknown): void => {
 		if (value !== undefined) card[key] = value;
@@ -827,7 +860,7 @@ export function toScryfallCard(row: EngineRow, baseUrl = "https://api.scryfall.c
 	// The creature and planeswalker stats. STRINGS, because "X" and "1+*" are real printed values —
 	// the `planeswalker_loyalty` column that answers `loy:` is the integer parse and cannot
 	// round-trip either.
-	for (const key of ["power", "toughness", "loyalty"]) if (topLevel(key)) set(key, str(row, key));
+	for (const key of ["power", "toughness", "loyalty"]) if (topLevel(key)) set(key, cardValue(key));
 	// Vanguard's two starting-total deltas: `oracle_text -> life_modifier -> hand_modifier ->
 	// colors` on the live `Akroma, Angel of Wrath Avatar` (61b07ae0). All 119 printings that carry
 	// them are `vanguard` and carry BOTH.
@@ -849,6 +882,12 @@ export function toScryfallCard(row: EngineRow, baseUrl = "https://api.scryfall.c
 			row,
 			scryfallId,
 			twoImage,
+			// A two-image printing Scryfall has no scan of carries NO face images: all 162
+			// `image_status: "missing"` two-image printings of the 2026-05-31 default_cards bulk (every
+			// one an art-series card, astx/66s, amh2/65s — both re-checked live 2026-09-26) omit
+			// `image_uris` on every face, and no other two-image printing omits them anywhere. The
+			// one-image and single-faced "missing" printings (22 there) still send a top-level set.
+			twoImage && str(row, "image_status") !== "missing",
 			reversible ? { oracle_id: oracleId, cmc: num(row, "cmc") ?? null } : undefined,
 		);
 	}
@@ -886,7 +925,7 @@ export function toScryfallCard(row: EngineRow, baseUrl = "https://api.scryfall.c
 	card.collector_number = number;
 	card.digital = bool(row, "digital");
 	card.rarity = str(row, "rarity") ?? null;
-	for (const key of ["watermark", "flavor_text"]) if (topLevel(key)) set(key, str(row, key));
+	for (const key of ["watermark", "flavor_text"]) if (topLevel(key)) set(key, cardValue(key));
 	set("attraction_lights", extra("attraction_lights"));
 	// No shared card back on a two-image layout, and no card-level illustration: both belong to a
 	// face there, and Scryfall omits the top-level keys entirely. Elsewhere the back is the
@@ -895,7 +934,10 @@ export function toScryfallCard(row: EngineRow, baseUrl = "https://api.scryfall.c
 	if (!twoImage) card.card_back_id = str(row, "card_back_id") ?? CARD_BACK_ID;
 	card.artist = strPresent(row, "artist") ?? null;
 	if (Array.isArray(row.artist_ids)) card.artist_ids = row.artist_ids;
-	if (!twoImage) card.illustration_id = str(row, "illustration_id") ?? null;
+	// OMITTED, never null, when the printing has none: 731 printings of the 2026-05-31
+	// default_cards bulk carry no `illustration_id` key at all (unscanned playtest and token cards,
+	// unk/CAa, punk/PLA025, split and adventure halves of unk/) and not one sends it as null.
+	if (!twoImage) set("illustration_id", str(row, "illustration_id"));
 	card.border_color = str(row, "border_color") ?? null;
 	set("frame", str(row, "frame"));
 	set("frame_effects", listOrAbsent(row, "frame_effects"));

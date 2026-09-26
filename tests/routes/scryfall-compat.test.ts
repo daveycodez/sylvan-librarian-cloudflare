@@ -2288,6 +2288,8 @@ describe("the card object", () => {
 		expect("penny_rank" in card).toBe(false);
 		expect("promo_types" in card).toBe(false);
 		expect("flavor_text" in card).toBe(false);
+		// Scryfall omits it on the 731 printings it has none for (unk/CAa); it never sends null.
+		expect("illustration_id" in card).toBe(false);
 		// A creature has no loyalty, and must not sprout one.
 		expect("loyalty" in card).toBe(false);
 	});

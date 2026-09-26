@@ -24,7 +24,7 @@ use serde_json::Value;
 use sylvan_store_builder::tags::TagData;
 use sylvan_store_builder::transform::{finalize, transform_row};
 
-const FIXTURES: [&str; 15] = [
+const FIXTURES: [&str; 22] = [
     "normal_bolt",
     "split_fire_ice",
     "transform_delver",
@@ -40,6 +40,18 @@ const FIXTURES: [&str; 15] = [
     "ph_glyph",
     "game_changer",
     "es_transform_mom_230",
+    // The one-image faced layouts' top-level values are FRONT-FACE values, not the merged search
+    // row's (2026-09-26): an adventure's flavor (doubled "…\n//\n…" before, en and ja), an
+    // adventure with none, a split whose flavor is on its back half only, a flip whose flipped
+    // face alone is a creature. Then two omissions: an unscanned art-series card sends no face
+    // `image_uris`, and a printing with no illustration sends no `illustration_id` (not null).
+    "adventure_bonecrusher",
+    "adventure_bonecrusher_ja",
+    "adventure_no_flavor",
+    "split_back_face_flavor",
+    "flip_back_face_creature",
+    "art_series_unscanned",
+    "no_illustration",
 ];
 
 /// The fields the port's `CARD_OBJECT_FIELDS` asks the engine for (src/routes/scryfall-compat/objects.ts).

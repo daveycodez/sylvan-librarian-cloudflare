@@ -636,6 +636,75 @@ const CASES: [string, Record<string, unknown>][] = [
 		"legalities with a format the order does not know",
 		{ ...FULL, legalities: { zzz_future_format: "legal", vintage: "legal", standard: "not_legal" } },
 	],
+
+	// ─── one-image faced cards: top-level values are the FRONT face's ─────────────
+	// What the builder stores (the merged SEARCH row) against what Scryfall sends. Each is the
+	// real row shape of a live printing; see FRONT_FACE_KEYS.
+	[
+		"adventure — flavor and stats from the front face, not the doubled search join (clb/781)",
+		{
+			...FULL,
+			layout: "adventure",
+			name: "Bonecrusher Giant // Stomp",
+			power: "4",
+			toughness: "3",
+			flavor_text: "Not every tale ends in glory.\n//\nNot every tale ends in glory.",
+			card_faces: [
+				{
+					name: "Bonecrusher Giant",
+					mana_cost: "{2}{R}",
+					power: "4",
+					toughness: "3",
+					flavor_text: "Not every tale ends in glory.",
+				},
+				{ name: "Stomp", mana_cost: "{1}{R}" },
+			],
+		},
+	],
+	[
+		"split — a back half's flavor gets no top-level copy (sld/367)",
+		{
+			...FULL,
+			layout: "split",
+			name: "Cut // Ribbons",
+			power: undefined,
+			toughness: undefined,
+			flavor_text: "Better To Reign In Hell Than Serve In Heaven",
+			card_faces: [
+				{ name: "Cut", mana_cost: "{1}{R}" },
+				{ name: "Ribbons", mana_cost: "{X}{B}{B}", flavor_text: "Better To Reign In Hell Than Serve In Heaven" },
+			],
+		},
+	],
+	[
+		"flip — the flipped face's stats get no top-level copy (unh/73)",
+		{
+			...FULL,
+			layout: "flip",
+			name: "Curse of the Fire Penguin // Curse of the Fire Penguin Creature",
+			power: "6",
+			toughness: "5",
+			card_faces: [
+				{ name: "Curse of the Fire Penguin", mana_cost: "{4}{R}{R}" },
+				{ name: "Curse of the Fire Penguin Creature", mana_cost: "", power: "6", toughness: "5" },
+			],
+		},
+	],
+	// An art-series card Scryfall has no scan of: no image_uris on any face (astx/66s).
+	[
+		"art series without a scan — no face images",
+		{
+			...FULL,
+			layout: "art_series",
+			name: "Memory Lapse // Memory Lapse",
+			image_status: "missing",
+			card_faces: [
+				{ name: "Memory Lapse", mana_cost: "", colors: [] },
+				{ name: "Memory Lapse", mana_cost: "", colors: [] },
+			],
+		},
+	],
+	["no illustration — the key is omitted, not null (unk/CAa)", { ...FULL, illustration_id: undefined }],
 ];
 
 describe("card objects: Rust engine vs the TypeScript reference", () => {
@@ -735,6 +804,65 @@ describe("card objects: Rust engine vs the TypeScript reference", () => {
 		const plain = asRow({ ...FULL, watermark: "set", card_faces: undefined });
 		expect((toScryfallCard(plain, BASE) as Record<string, unknown>).watermark).toBe("set");
 		expect(JSON.parse(scryfall_card_from_row(JSON.stringify(plain), BASE)).watermark).toBe("set");
+	});
+
+	// The same kind of assertion again: both builders read a one-image faced card's top-level
+	// `flavor_text` and stats off the merged SEARCH row, identically, so Bonecrusher Giant clb/781
+	// served its flavor twice joined with "\n//\n" and this file stayed green.
+	//
+	// SCRYFALL'S RULE: on split/flip/adventure/prepare the top-level value is face 0's and only face
+	// 0's — 900 of 900 such printings of the 2026-05-31 default_cards bulk for power, toughness and
+	// flavor_text, and 650 of 650 adventure printings with flavor in every language on
+	// api.scryfall.com (2026-09-26).
+	test("a one-image faced card's top-level flavor and stats are its front face's", () => {
+		type Top = { flavor_text: unknown; power: unknown; toughness: unknown };
+		const cases: [string, Record<string, unknown>, Top][] = [
+			[
+				"adventure",
+				{
+					...FULL,
+					layout: "adventure",
+					flavor_text: "Glory.\n//\nGlory.",
+					power: "4",
+					card_faces: [
+						{ name: "Bonecrusher Giant", power: "4", toughness: "3", flavor_text: "Glory." },
+						{ name: "Stomp" },
+					],
+				},
+				{ flavor_text: "Glory.", power: "4", toughness: "3" },
+			],
+			[
+				"split",
+				{
+					...FULL,
+					layout: "split",
+					flavor_text: "Hell.",
+					card_faces: [{ name: "Cut" }, { name: "Ribbons", flavor_text: "Hell." }],
+				},
+				{ flavor_text: undefined, power: undefined, toughness: undefined },
+			],
+			[
+				"flip",
+				{
+					...FULL,
+					layout: "flip",
+					power: "6",
+					toughness: "5",
+					card_faces: [{ name: "Curse" }, { name: "Penguin", power: "6", toughness: "5" }],
+				},
+				{ flavor_text: undefined, power: undefined, toughness: undefined },
+			],
+		];
+		for (const [label, row, want] of cases) {
+			const clean = asRow(row);
+			for (const [who, built] of [
+				["TypeScript", toScryfallCard(clean, BASE) as Record<string, unknown>],
+				["Rust", JSON.parse(scryfall_card_from_row(JSON.stringify(clean), BASE)) as Record<string, unknown>],
+			] as const) {
+				const top: Top = { flavor_text: built.flavor_text, power: built.power, toughness: built.toughness };
+				expect(top, `${who} ${label}`).toEqual(want);
+			}
+		}
 	});
 
 	/** Scryfall's `image_uris` key set, in Scryfall's order. Their shape, not ours. */
