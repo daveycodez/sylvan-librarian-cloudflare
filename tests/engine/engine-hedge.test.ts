@@ -19,7 +19,7 @@ import {
 	setEngineCallDeadlineForTests,
 	setEngineHedgeForTests,
 } from "../../src/engine/remote-engine";
-import { EngineQueryError } from "../../src/engine/types";
+import { EngineQueryError, StaleModulusError } from "../../src/engine/types";
 
 type Stub = ConstructorParameters<typeof RemoteEngine>[0];
 const HEDGE_MS = 25;
@@ -139,8 +139,57 @@ describe("the RPC transport", () => {
 		expect([first, fresh, seen.connects]).toEqual([1, 1, 0]);
 	});
 
-	test("a fast failure that is not transient fails at once, as it does today — no hedge", async () => {
-		const { hedge, seen } = neighbour({ scryfallSearch: async () => ({ totalCards: 0 }) });
+	test("a fast failure fails over to the neighbour at once — no waiting for the hedge delay", async () => {
+		// 2026-09-26 00:46 and 02:48 on DeckGen: a gather whose siblings' connections were lost failed in
+		// 1–2s as a plain Error, and answered 500 without the neighbour ever being asked.
+		setEngineHedgeForTests(60_000);
+		const started = Date.now();
+		const { hedge, seen } = neighbour({ scryfallSearch: async () => ({ totalCards: 7, load: 0, rate: 0 }) });
+		const engine = new RemoteEngine(
+			byId({
+				scryfallSearch: async () => {
+					throw new Error("Network connection lost.");
+				},
+			}),
+			"wnam",
+			"SJC",
+			undefined,
+			false,
+			hedge,
+		);
+		expect((await engine.scryfallSearch({ limit: 1 } as never, "https://x")).totalCards).toBe(7);
+		expect(seen.connects).toBe(1);
+		expect(Date.now() - started).toBeLessThan(200);
+	});
+
+	test("a transient failure is retried on a fresh stub FIRST, and only a second failure fails over", async () => {
+		setEngineHedgeForTests(60_000);
+		const calls: string[] = [];
+		const { hedge } = neighbour({
+			scryfallCardById: async () => {
+				calls.push("neighbour");
+				return card("neighbour");
+			},
+		});
+		const dying = (name: string) =>
+			byId({
+				scryfallCardById: async () => {
+					calls.push(name);
+					throw new Error("Connection closed: this Durable Object instance is no longer active.");
+				},
+			});
+		const engine = new RemoteEngine(dying("own"), "wnam", "SJC", () => dying("own-fresh"), false, hedge);
+		expect(await engine.scryfallCardById("x", "https://x")).toEqual({ name: "neighbour" });
+		expect(calls).toEqual(["own", "own-fresh", "neighbour"]);
+	});
+
+	test("the neighbour failing too surfaces the PRIMARY's error, after one neighbour call", async () => {
+		setEngineHedgeForTests(60_000);
+		const { hedge, seen } = neighbour({
+			scryfallSearch: async () => {
+				throw new Error("the neighbour's own failure");
+			},
+		});
 		const engine = new RemoteEngine(
 			byId({
 				scryfallSearch: async () => {
@@ -154,7 +203,64 @@ describe("the RPC transport", () => {
 			hedge,
 		);
 		await expect(engine.scryfallSearch({ limit: 1 } as never, "https://x")).rejects.toThrow("something broke");
+		expect(seen.connects).toBe(1);
+	});
+
+	test("a fast query error or stale-modulus refusal is the answer at once — never a failover", async () => {
+		setEngineHedgeForTests(60_000);
+		const { hedge, seen } = neighbour({ scryfallSearch: async () => ({ totalCards: 7 }) });
+		for (const err of [new EngineQueryError("build_filter: unclosed regex"), new StaleModulusError("cut at 12")]) {
+			const engine = new RemoteEngine(
+				byId({
+					scryfallSearch: async () => {
+						throw err;
+					},
+				}),
+				"wnam",
+				"SJC",
+				undefined,
+				false,
+				hedge,
+			);
+			// unwrap re-types a query error by its message, so the class is what survives, not the object.
+			await expect(engine.scryfallSearch({ limit: 1 } as never, "https://x")).rejects.toBeInstanceOf(
+				err.constructor as typeof Error,
+			);
+		}
 		expect(seen.connects).toBe(0);
+	});
+
+	test("the failover logs its own line, apart from the hedge's", async () => {
+		setEngineHedgeForTests(60_000);
+		const lines: string[] = [];
+		const warn = console.warn;
+		console.warn = (...args: unknown[]) => lines.push(args.join(" "));
+		try {
+			const { hedge } = neighbour({ scryfallCardById: async () => card("neighbour") });
+			const engine = new RemoteEngine(
+				byId({
+					scryfallCardById: async () => {
+						throw new Error("Network connection lost.");
+					},
+				}),
+				"wnam",
+				"SJC",
+				undefined,
+				false,
+				hedge,
+			);
+			await engine.scryfallCardById("x", "https://x");
+		} finally {
+			console.warn = warn;
+		}
+		expect(lines.some((l) => l.startsWith("[wnam] engine failover p3 scryfallCardById: wnam failed after"))).toBe(true);
+		expect(lines.some((l) => l.includes("Network connection lost.") && l.endsWith("asking enam"))).toBe(true);
+		expect(
+			lines.some((l) =>
+				/^\[wnam\] engine failover p3 scryfallCardById: failover won — enam answered at \d+ms$/.test(l),
+			),
+		).toBe(true);
+		expect(lines.some((l) => l.includes("engine hedge"))).toBe(false);
 	});
 
 	test("both hang: the call still ends at the engine-call deadline, as the primary's timeout", async () => {
@@ -369,6 +475,60 @@ describe("the page transport (the /cards/search and /search gathers)", () => {
 		expect(seen.connects).toBe(1);
 		await after(HEDGE_MS * 4, () => {});
 		expect(theirs.state.cancelled).toBe(true);
+	});
+
+	/** The coordinator's own 503 for a gather whose sibling calls failed twice (search-engine-do.ts fetch). */
+	const gatherFailed = (message: string) =>
+		new Response(message, { status: 503, headers: { "x-engine-error": "Error" } });
+
+	test("a gather whose partition failed twice (the coordinator's fast 503) is answered by the neighbour's gather", async () => {
+		setEngineHedgeForTests(60_000);
+		const bodies: string[] = [];
+		const theirs = trackedPage("neighbour");
+		const { hedge, seen } = neighbour({
+			fetch: async (req: Request) => {
+				bodies.push(await req.text());
+				return theirs.response();
+			},
+		});
+		let own = 0;
+		const engine = new RemoteEngine(
+			byId({
+				fetch: async () => {
+					own++;
+					return gatherFailed("Network connection lost.");
+				},
+			}),
+			"wnam",
+			"SJC",
+			undefined,
+			false,
+			hedge,
+		);
+		const res = await engine.scryfallSearchPage({ limit: 10 } as never, "https://x", envelope, {}, "cards2");
+		expect(await res.text()).toBe('{"from":"neighbour"}');
+		expect(res.headers.get("x-load")).toBeNull();
+		expect([own, seen.connects]).toEqual([1, 1]);
+		const sent = JSON.parse(bodies[0] ?? "{}");
+		expect(sent.call).toBe("cards2"); // the WHOLE gather, in one region
+		expect("shards" in sent).toBe(false);
+	});
+
+	test("a gather that fails in the neighbour too surfaces this region's error", async () => {
+		setEngineHedgeForTests(60_000);
+		const { hedge, seen } = neighbour({ fetch: async () => gatherFailed("enam's own failure") });
+		const engine = new RemoteEngine(
+			byId({ fetch: async () => gatherFailed("Network connection lost.") }),
+			"wnam",
+			"SJC",
+			undefined,
+			false,
+			hedge,
+		);
+		await expect(
+			engine.scryfallSearchPage({ limit: 10 } as never, "https://x", envelope, {}, "cards2"),
+		).rejects.toThrow("Network connection lost.");
+		expect(seen.connects).toBe(1);
 	});
 
 	test("a fast page answers with no hedge", async () => {

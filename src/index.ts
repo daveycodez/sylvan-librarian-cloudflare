@@ -150,7 +150,8 @@ async function resolveEngine(
 	}
 	// THE HEDGE (remote-engine.ts ENGINE_HEDGE_MS): a call that stays silent for 4s is also sent to
 	// the same partition's shard-0 object in a neighbouring served region — an evicted object's
-	// dying instance can hold a request 10–36s, and every region holds the same store. The stub is
+	// dying instance can hold a request 10–36s, and every region holds the same store. A call that
+	// FAILS sooner goes there at once (the failover, remote-engine.ts failsOverToNeighbour). The stub is
 	// built HERE, in the request isolate, through placeEngineStub with that region's own hint and
 	// generation, so the rule above holds for it too: were the neighbour's object ever created by a
 	// hedge, the hint places it in the neighbour's region. Only when the hedge fires. Never on the

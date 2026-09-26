@@ -314,18 +314,44 @@ export interface EngineHedge {
 type HedgeWinner = "primary" | "hedge";
 
 /**
- * Run `primary` (today's call, retry included); if it has not settled within ENGINE_HEDGE_MS, also
- * run `hedge` once, and take the first SUCCESSFUL answer.
+ * Whether a primary that FAILED (after its own retry, when it had one) is worth asking the
+ * neighbour for at once — the FAILOVER, where the hedge proper waits for silence.
  *
- * - Primary settles before the timer: exactly today's behaviour, and no hedge call is made — so a
+ * WHY: on DeckGen 2026-09-26, bursts of mtg-seeker traffic met a cold wnam (00:46:32, ~6,300 engine
+ * calls in the minute after ~2 a minute; 02:48:39, ~4,000) and the coordinators' calls to their
+ * siblings died with "Network connection lost." — 934 and 1,526 of them within 4–8s, the fresh-stub
+ * retry dying the same way. Each gather then failed FAST, 1–2s in, long before ENGINE_HEDGE_MS, so
+ * the neighbour was never asked and 81 and 98 /cards/search answered 500; the calls that merely hung
+ * past 4s were hedged to enam, which answered 103 of 103. The failure reaches this isolate as the
+ * gather's plain 503 text, which no retry rule recognizes — so this rule works by exclusion, not by
+ * message: whatever broke in this region (a lost connection, an overloaded or resetting object, a
+ * store not loaded) is some other isolate's business in the neighbour's copy of the partition.
+ *
+ * Never for an answer that is the same in every region — the filter's own query error — nor for the
+ * stale-modulus refusal PartitionedEngine already routes around by gathering. A failure that IS
+ * deterministic costs one extra Durable Object request on a request that was failing anyway.
+ */
+function failsOverToNeighbour(err: unknown): boolean {
+	return !(err instanceof EngineQueryError) && !(err instanceof StaleModulusError);
+}
+
+/**
+ * Run `primary` (today's call, retry included); if it has not settled within ENGINE_HEDGE_MS, also
+ * run `hedge` once, and take the first SUCCESSFUL answer. A primary that FAILS before then runs the
+ * hedge at once instead: the failover (failsOverToNeighbour).
+ *
+ * - Primary answers before the timer: exactly today's behaviour, and no hedge call is made — so a
  *   fast call costs nothing, and a fast transient failure still gets its one retry on a fresh stub
- *   (inside `primary`) and then fails.
+ *   (inside `primary`) before anything else happens.
+ * - Primary fails before the timer: the neighbour is asked now ("engine failover" in the log), and
+ *   its answer is the answer; the neighbour failing too surfaces the PRIMARY's error. A query error
+ *   or a stale-modulus refusal is surfaced at once, as before.
  * - After the timer, a failure from either side waits for the other; both failing surfaces the
  *   PRIMARY's error. A query error from the primary is the query's own answer, identical in every
  *   region, so it is surfaced at once rather than waiting on the hedge.
  * - The hedge is bounded by what is left of ENGINE_CALL_DEADLINE_MS, measured from the primary's
  *   start, so the pair never outlives the deadline a lone call has. It is ONE attempt: no retry,
- *   so a slow call costs at most one extra Durable Object request.
+ *   so a slow or failed call costs at most one extra Durable Object request.
  * - The loser's answer, when it arrives, goes to `dispose` (a stream Response's body is cancelled
  *   there) and is otherwise ignored. `abandoned` tells the primary's retry loop not to retry for an
  *   answer nobody is waiting for.
@@ -340,7 +366,7 @@ function hedgedCall<T>(
 		return primary(() => false).then((value) => ({ value, from: "primary" as const }));
 	}
 	const started = Date.now();
-	const where = `[${describe.region}] engine hedge p${describe.partition} ${describe.method}`;
+	const at = `p${describe.partition} ${describe.method}`;
 	return new Promise((resolve, reject) => {
 		let done = false;
 		let hedgeState: "idle" | "running" | "failed" = "idle";
@@ -363,32 +389,19 @@ function hedgedCall<T>(
 				// A loser that cannot be disposed of is garbage either way.
 			}
 		};
-		primary(() => done).then(
-			(value) => {
-				if (done) return lose(value);
-				if (hedgeState !== "idle") {
-					console.warn(`${where}: primary won after ${Date.now() - started}ms (hedge to ${describe.hedgeRegion})`);
-				}
-				win(value, "primary");
-			},
-			(err) => {
-				if (done) return;
-				// Before the hedge fired: today's behaviour. After: wait for the hedge, unless it already
-				// failed or the error is the query's own answer.
-				if (hedgeState === "running" && !(err instanceof EngineQueryError)) {
-					primaryFailure = { err };
-					return;
-				}
-				fail(err);
-			},
-		);
-		timer = setTimeout(() => {
+		/** The one call to the neighbour. `kind` says why, and heads its log lines: "hedge" after
+		 * ENGINE_HEDGE_MS of silence, "failover" after a failure — counted apart, as they measure
+		 * different things (a hanging object vs a failing one). */
+		const askNeighbour = (kind: "hedge" | "failover") => {
+			if (timer !== undefined) clearTimeout(timer);
 			timer = undefined;
-			if (done) return;
 			hedgeState = "running";
+			const where = `[${describe.region}] engine ${kind} ${at}`;
 			const remaining = Math.max(1, ENGINE_CALL_DEADLINE_MS - (Date.now() - started));
 			console.warn(
-				`${where}: no answer from ${describe.region} after ${Date.now() - started}ms; asking ${describe.hedgeRegion}`,
+				kind === "hedge"
+					? `${where}: no answer from ${describe.region} after ${Date.now() - started}ms; asking ${describe.hedgeRegion}`
+					: `${where}: ${describe.region} failed after ${Date.now() - started}ms (${primaryFailure?.err}); asking ${describe.hedgeRegion}`,
 			);
 			let attempt: Promise<T>;
 			try {
@@ -399,16 +412,49 @@ function hedgedCall<T>(
 			attempt.then(
 				(value) => {
 					if (done) return lose(value);
-					console.warn(`${where}: hedge won — ${describe.hedgeRegion} answered at ${Date.now() - started}ms`);
+					console.warn(`${where}: ${kind} won — ${describe.hedgeRegion} answered at ${Date.now() - started}ms`);
 					win(value, "hedge");
 				},
 				(err) => {
 					hedgeState = "failed";
 					if (done) return;
-					console.warn(`${where}: hedge to ${describe.hedgeRegion} failed after ${Date.now() - started}ms: ${err}`);
+					console.warn(`${where}: ${kind} to ${describe.hedgeRegion} failed after ${Date.now() - started}ms: ${err}`);
 					if (primaryFailure) fail(primaryFailure.err);
 				},
 			);
+		};
+		primary(() => done).then(
+			(value) => {
+				if (done) return lose(value);
+				if (hedgeState !== "idle") {
+					console.warn(
+						`[${describe.region}] engine hedge ${at}: primary won after ${Date.now() - started}ms (hedge to ${describe.hedgeRegion})`,
+					);
+				}
+				win(value, "primary");
+			},
+			(err) => {
+				if (done) return;
+				// The query's own answer is the same in every region: surfaced at once, hedge or not.
+				if (err instanceof EngineQueryError) return fail(err);
+				// The hedge is out: wait for it.
+				if (hedgeState === "running") {
+					primaryFailure = { err };
+					return;
+				}
+				// Not yet: the failover — the neighbour now, instead of a 500 now.
+				if (hedgeState === "idle" && failsOverToNeighbour(err)) {
+					primaryFailure = { err };
+					askNeighbour("failover");
+					return;
+				}
+				fail(err);
+			},
+		);
+		timer = setTimeout(() => {
+			timer = undefined;
+			if (done || hedgeState !== "idle") return;
+			askNeighbour("hedge");
 		}, ENGINE_HEDGE_MS);
 	});
 }
@@ -653,8 +699,9 @@ export class RemoteEngine implements Engine {
 		/** This request's own hint was aliased onto `region` (g1's placement block): its objects are
 		 * far from this colo on purpose, so the warm-RPC floor is not read as misplacement. */
 		private readonly aliased = false,
-		/** Where a call that stays silent for ENGINE_HEDGE_MS is ALSO sent (see hedgedCall): this
-		 * partition's object in a neighbouring served region. Absent means never hedge — the warm ping
+		/** Where a call that stays silent for ENGINE_HEDGE_MS is ALSO sent, and one that fails sooner is
+		 * sent instead (see hedgedCall): this partition's object in a neighbouring served region.
+		 * Absent means never hedge nor fail over — the warm ping
 		 * for a newly opened shard, whose whole point is waking THIS object, is built without one. */
 		private readonly hedge?: EngineHedge,
 	) {}
@@ -666,7 +713,7 @@ export class RemoteEngine implements Engine {
 
 	/**
 	 * One PURE-READ call through the stub: today's deadline and single retry, hedged to the
-	 * neighbouring region when this call stays silent (hedgedCall). `call` is handed the stub and
+	 * neighbouring region when this call stays silent or fails (hedgedCall). `call` is handed the stub and
 	 * the fan-out width to report — this region's own for the primary, NONE for the hedge: the width
 	 * rendezvous remembers the widest value any caller reports, and this region's width folded into
 	 * the neighbour's shard-0 object would open replicas there that its own traffic never asked for.
