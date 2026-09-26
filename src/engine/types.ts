@@ -461,6 +461,13 @@ export interface NamedFuzzyPlan {
 	stage: string;
 	/** The build the plan was made from — the router uses it only when it is its own. */
 	builtAt: string;
+	/**
+	 * x24: what the printed-names blob said, for the log line — "hit" (it named partitions for the
+	 * printed tier), "miss" (it named none), "absent" (the plan needed it and could not read it: no
+	 * blob in the manifest, or one KV or wasm refused; the plan stays `everywhere`). Absent from a
+	 * plan that never reached that tier, and from an object on the build before x24.
+	 */
+	printed?: "hit" | "miss" | "absent";
 }
 
 /**
@@ -739,6 +746,17 @@ export interface StoreManifest {
 	 */
 	names_key?: string;
 	names_bytes?: number;
+
+	/**
+	 * x24: this build's printed-names blob (src/engine/printed-names.ts) — every card's foreign
+	 * printed names, cut to what an ASCII query word can match — which lets the fuzzy plan settle
+	 * containment's printed tier from ONE object, so a `/cards/named?fuzzy=` needle no name carries
+	 * is a 404 in one call where it asked every partition. Per BUILD, never carried forward, and
+	 * read-tolerant (printedNamesOf): absent — a build published before x24, or a run that could not
+	 * build it — the plan asks every partition for that tier, as it always did.
+	 */
+	printed_key?: string;
+	printed_bytes?: number;
 
 	// ── Blocks the nightly decides and every later publish carries forward ─────
 	//

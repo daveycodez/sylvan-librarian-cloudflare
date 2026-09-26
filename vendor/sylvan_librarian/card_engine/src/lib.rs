@@ -118,7 +118,7 @@ pub use core_api::{
 pub use core_api::{
     BEST_ART_SERIES, BEST_NO_CONTAINMENT, CLASS_ANY, CLASS_BOTH_GATES, CLASS_CANONICAL, CLASS_EXTRA_GATE,
     CLASS_VARIATION_GATE, FuzzyProbe, FuzzySignature, KEY_SERVED, KEY_SERVED_OUTSIDE_CONTAINMENT, NameQuery, NameRecord, NameRecordView,
-    NamesProbe, name_records_tsv,
+    NamesProbe, PrintedRecord, name_records_tsv, printed_form, printed_records_tsv,
 };
 pub use partition::{fnv1a64_oracle_id, partition_of_oracle_id};
 pub use rkyv::util::AlignedVec;

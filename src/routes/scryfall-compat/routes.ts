@@ -884,17 +884,21 @@ async function namedFuzzy(
 		// `calls` is every partition RPC (the plan's, which carries the plan object's own bundle when
 		// its plan names it, included); after the status, x22's two: `wide=1` when the plan asked
 		// every partition because the answer may lie in a foreign printed name the index does not
-		// carry (`-` with no plan), and `bundles=` how many partitions' bundles were merged.
+		// carry (`-` with no plan), and `bundles=` how many partitions' bundles were merged. x24's
+		// `printed=`: what the build's printed-names blob said where the plan needed it — `hit` (it named
+		// partitions), `miss` (none: a miss answered by the plan's object alone), `absent` (no blob or an
+		// unreadable one: every partition asked) — and `-` where no plan reached that tier.
 		// Grep "cards/named fuzzy:".
 		const partitioned = engine as {
 			partitionCalls?: number;
 			namedFuzzyPlanStage?: string | null;
 			namedFuzzyWide?: boolean | null;
 			namedFuzzyBundles?: number | null;
+			namedFuzzyPrinted?: string | null;
 		};
 		const wide = partitioned.namedFuzzyWide == null ? "-" : partitioned.namedFuzzyWide ? 1 : 0;
 		console.log(
-			`cards/named fuzzy: plan=${partitioned.namedFuzzyPlanStage ?? "-"} set=${setCode ? 1 : 0} calls=${partitioned.partitionCalls ?? -1} status=${status} wide=${wide} bundles=${partitioned.namedFuzzyBundles ?? "-"}`,
+			`cards/named fuzzy: plan=${partitioned.namedFuzzyPlanStage ?? "-"} set=${setCode ? 1 : 0} calls=${partitioned.partitionCalls ?? -1} status=${status} wide=${wide} bundles=${partitioned.namedFuzzyBundles ?? "-"} printed=${partitioned.namedFuzzyPrinted ?? "-"}`,
 		);
 	}
 	return scryfallJson(notFoundError(`No cards found matching “${fuzzy}”`), pretty, CARDS_CACHE);

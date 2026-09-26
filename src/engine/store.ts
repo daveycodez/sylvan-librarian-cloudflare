@@ -48,6 +48,7 @@ import { decodeRowPacket, joinJsonArray, type RowShaping } from "./gather";
 import { type FeedCounts, feedBlocks } from "./load-blocks";
 import { decodeNamedFuzzyPacket } from "./named-fuzzy";
 import { probePlacement } from "./placement";
+import { printedNamesOf } from "./printed-names";
 import {
 	type ArchiveCacheStorage,
 	announcedFor,
@@ -131,9 +132,15 @@ interface LabelState {
 		generation: number;
 		/** n8: the names blob (manifest `names_key`) loaded into this instance, once one is. */
 		names?: string;
+		/** x24: the printed-names blob (manifest `printed_key`) loaded into this instance, once one is. */
+		printed?: string;
+		/** x24: a printed-names blob that could not be read for this store — not asked again for it. */
+		printedFailed?: string;
 	} | null;
 	/** n8: the one names load in flight (autocompleteFromNames), whoever asked first. */
 	namesLoading: Promise<void> | null;
+	/** x24: the one printed-names load in flight (printedPartitions), whoever asked first. */
+	printedLoading: Promise<void> | null;
 	/** The ONE load in flight for this label, whoever started it (getEngine or swapToStore). */
 	loading: Promise<Engine> | null;
 	/** The one refreshNow in flight: concurrent callers are all reacting to the same publish. */
@@ -268,6 +275,7 @@ function stateFor(label: string | undefined): LabelState {
 			prefetching: null,
 			lastLoadFailure: null,
 			namesLoading: null,
+			printedLoading: null,
 		};
 		states.set(key, s);
 	}
@@ -1783,7 +1791,7 @@ export async function namesFuzzyPlan(
 	folded: string,
 	words: string[],
 ): Promise<NamedFuzzyPlan> {
-	return withCardNames(env, ctx, (handle, manifest) => {
+	const plan = await withCardNames(env, ctx, (handle, manifest): NamedFuzzyPlan => {
 		const plan = JSON.parse(
 			handle.names_fuzzy_plan(
 				folded,
@@ -1798,6 +1806,100 @@ export async function namesFuzzyPlan(
 		}
 		return { ...plan, builtAt: String(manifest.built_at ?? "") };
 	});
+	if (!plan.everywhere) return plan;
+	// x24: `everywhere` means only containment's printed tier was left undecided. The build's
+	// printed-names blob decides it: the partitions holding a printed name that completes the words,
+	// beside the index's own — and none at all is the needle's 404, answered from this one object.
+	const printed = await printedPartitions(env, ctx, words, plan.builtAt);
+	if (printed === null) return { ...plan, printed: "absent" };
+	const partitions = [...new Set([...plan.partitions, ...printed])].sort((a, b) => a - b);
+	return {
+		...plan,
+		partitions,
+		everywhere: false,
+		stage: partitions.length === 0 ? "miss" : plan.stage,
+		printed: printed.length > 0 ? "hit" : "miss",
+	};
+}
+
+/** How long an isolate's colo may serve a cached printed-names blob: immutable per build. */
+const PRINTED_NAMES_CACHE_TTL = 604_800;
+
+/**
+ * Backlog x24: the partitions holding a card whose foreign printed name, pooled with its oracle name,
+ * completes `words` (engine/wasm/src/printed.rs `carriers`), from the printed-names blob of the build
+ * this object has loaded — ascending, possibly empty. Null whenever it cannot say — the manifest
+ * names no blob (a build before x24), the loaded build is not `builtAt`, KV or wasm refused the blob,
+ * or a word the blob's ASCII forms cannot answer — and the plan then asks every partition, as before.
+ * Never throws.
+ *
+ * WHERE THE BLOB COMES FROM: this wasm instance when it already holds the build's blob, else KV —
+ * never this object's SQLite. Every partition object can plan a needle (the router picks the plan
+ * object by the needle), so a local copy would be ~1.2MB more per object in the pool the gate
+ * budgets (import-budget.ts), the cost this blob is separate from the names blob to avoid. A KV read
+ * is paid on the first needle to reach the printed tier after an object loads its store, and a blob
+ * that fails to load is not asked for again by this store.
+ */
+async function printedPartitions(
+	env: Env,
+	ctx: LoadContext,
+	words: string[],
+	builtAt: string,
+): Promise<number[] | null> {
+	const state = stateFor(ctx.label);
+	try {
+		for (;;) {
+			const current = liveCurrent(state, ctx.label);
+			if (!current || String(current.manifest.built_at ?? "") !== builtAt) return null;
+			const printed = printedNamesOf(current.manifest);
+			if (!printed || current.printedFailed === printed.key) return null;
+			if (current.printed === printed.key) {
+				const answer = JSON.parse(current.handle.printed_names_partitions(JSON.stringify(words))) as {
+					partitions: number[];
+				} | null;
+				return answer?.partitions ?? null;
+			}
+			if (!state.printedLoading) {
+				const loading = loadPrintedNames(env, ctx, current, printed).finally(() => {
+					if (state.printedLoading === loading) state.printedLoading = null;
+				});
+				state.printedLoading = loading;
+			}
+			await state.printedLoading;
+			if (liveCurrent(state, ctx.label) === current && current.printed !== printed.key) return null;
+		}
+	} catch (err) {
+		console.warn(`${tag(ctx)}printed names unavailable for a fuzzy plan (asking every partition): ${err}`);
+		return null;
+	}
+}
+
+async function loadPrintedNames(
+	env: Env,
+	ctx: LoadContext,
+	current: NonNullable<LabelState["current"]>,
+	printed: { key: string; bytes: number },
+): Promise<void> {
+	const started = Date.now();
+	try {
+		const buf = await env.STORE_KV.get(printed.key, { type: "arrayBuffer", cacheTtl: PRINTED_NAMES_CACHE_TTL });
+		if (buf === null) throw new Error(`${printed.key} is not in KV`);
+		if (buf.byteLength !== printed.bytes) {
+			throw new Error(`${printed.key} is ${buf.byteLength} bytes, the manifest says ${printed.bytes}`);
+		}
+		const fetched = Date.now();
+		const count = current.handle.load_printed_names(new Uint8Array(buf));
+		current.printed = printed.key;
+		console.log(
+			`${tag(ctx)}printed names loaded from KV: ${printed.key} (${count} printed names, ${printed.bytes} bytes gzipped, ` +
+				`KV ${fetched - started}ms, decode ${Date.now() - fetched}ms, ` +
+				`${(current.handle.printed_names_heap_bytes() / 1048576).toFixed(1)}MB in wasm; ` +
+				`linear memory ${(current.handle.linearMemoryBytes() / 1048576).toFixed(1)}MB)`,
+		);
+	} catch (err) {
+		current.printedFailed = printed.key;
+		console.warn(`${tag(ctx)}printed names not loaded (${printed.key}); fuzzy plans ask every partition: ${err}`);
+	}
 }
 
 /**

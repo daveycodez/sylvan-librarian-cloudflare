@@ -488,6 +488,13 @@ pub fn build_store_partitioned_spilled<W: Write>(
         std::fs::File::create(&names_path).map_err(|e| format!("create {}: {e}", names::CARD_NAMES_FILE))?,
     );
     let mut names_count = 0usize;
+    // x24: the printed-names blob's input (names::partition_printed_tsv), the same way.
+    let printed_path = out_dir.join(names::PRINTED_NAMES_FILE);
+    let mut printed_out = BufWriter::with_capacity(
+        1 << 20,
+        std::fs::File::create(&printed_path).map_err(|e| format!("create {}: {e}", names::PRINTED_NAMES_FILE))?,
+    );
+    let mut printed_count = 0usize;
     let artist_entities = aggregates.artist_entities();
     let mut accum = PartitionAccum::new(built_at, n);
     for k in 0..n as usize {
@@ -549,6 +556,10 @@ pub fn build_store_partitioned_spilled<W: Write>(
             .write_all(&names::partition_names_tsv(k, &stats.name_records).map_err(|e| format!("partition {k}: {e}"))?)
             .map_err(|e| format!("write {}: {e}", names::CARD_NAMES_FILE))?;
         names_count += stats.name_records.len();
+        printed_out
+            .write_all(&names::partition_printed_tsv(k, &stats.printed_records).map_err(|e| format!("partition {k}: {e}"))?)
+            .map_err(|e| format!("write {}: {e}", names::PRINTED_NAMES_FILE))?;
+        printed_count += stats.printed_records.len();
         accum.record(k, store_key, counter.written, &stats);
         routing_count += routing_here.get();
         oracle_count += oracle_here.get();
@@ -561,6 +572,8 @@ pub fn build_store_partitioned_spilled<W: Write>(
     eprintln!("wrote {} ({oracle_count} oracle pairs)", oracle_path.display());
     names_out.flush().map_err(|e| format!("flush {}: {e}", names::CARD_NAMES_FILE))?;
     eprintln!("wrote {} ({names_count} name records, per partition)", names_path.display());
+    printed_out.flush().map_err(|e| format!("flush {}: {e}", names::PRINTED_NAMES_FILE))?;
+    eprintln!("wrote {} ({printed_count} cards' printed names, per partition)", printed_path.display());
     Ok(accum.finish())
 }
 

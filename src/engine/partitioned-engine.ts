@@ -808,6 +808,12 @@ export class PartitionedEngine implements Engine {
 	namedFuzzyBundles: number | null = null;
 
 	/**
+	 * x24: what the plan's printed-names blob said — "hit", "miss" or "absent" (see NamedFuzzyPlan) — or
+	 * null when no plan was used or it never reached the printed tier. Logged as `printed=`.
+	 */
+	namedFuzzyPrinted: string | null = null;
+
+	/**
 	 * Whether this request's search was ANSWERED by one pinned partition — an oracle id's owner or a
 	 * `!"Name"`'s sole partition — rather than by the gather. A pin that fell back (stale modulus, a
 	 * stuck owner, an empty name-pinned page) is false. Read by `/cards/search`'s per-miss log line.
@@ -1574,6 +1580,7 @@ export class PartitionedEngine implements Engine {
 		let exactSettledMiss = false;
 		this.namedFuzzyWide = null;
 		this.namedFuzzyBundles = null;
+		this.namedFuzzyPrinted = null;
 		if (hint !== null) {
 			const first = hintPartition(hint);
 			const reply = await bundle(first);
@@ -1636,6 +1643,7 @@ export class PartitionedEngine implements Engine {
 			if (plan.builtAt !== String(this.manifest.built_at ?? "")) return null;
 			if (plan.partitions.some((q) => !Number.isInteger(q) || q < 0 || q >= this.n)) return null;
 			this.namedFuzzyPlanStage = plan.stage;
+			this.namedFuzzyPrinted = plan.printed ?? null;
 			if (own !== undefined && plan.bundle !== undefined) replies[p] = plan.bundle;
 			return plan;
 		} catch (err) {

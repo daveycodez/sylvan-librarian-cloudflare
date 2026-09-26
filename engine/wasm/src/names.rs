@@ -647,7 +647,7 @@ mod tests {
 
     /// The importer's fold for the handful of accents the fixture uses.
     fn fold(lower: &str) -> String {
-        lower.replace('é', "e").replace('û', "u").replace('ö', "o").replace('á', "a").replace('æ', "ae")
+        lower.replace('é', "e").replace('û', "u").replace('ö', "o").replace(['á', 'à'], "a").replace('æ', "ae")
     }
 
     fn uuid(n: u32, tag: u8) -> String {
@@ -1385,5 +1385,119 @@ mod tests {
             }
         }
         assert!(skipped > 2 * scored, "at the production floor the prefilter must prune: {skipped} skipped, {scored} scored");
+    }
+
+    // ─── The printed-names blob (backlog x24) ──────────────────────────────────
+
+    /// The printed-names blob for a set of partitions, as `encodePrintedNames` writes it: every
+    /// partition's record lines led by its number, deduplicated, sorted, under the header.
+    fn encode_printed(parts: &[(BufferStore, StoreStats)]) -> Vec<u8> {
+        let mut lines: Vec<String> = Vec::new();
+        for (k, (_, stats)) in parts.iter().enumerate() {
+            let tsv = card_engine::printed_records_tsv(&format!("{k}\t"), &stats.printed_records).expect("spellable");
+            lines.extend(String::from_utf8(tsv).expect("utf-8").lines().map(|l| format!("{l}\n")));
+        }
+        lines.sort();
+        lines.dedup();
+        let mut out = crate::printed::PRINTED_BLOB_HEADER.as_bytes().to_vec();
+        for line in lines {
+            out.extend_from_slice(line.as_bytes());
+        }
+        out
+    }
+
+    /// Build-time printed records equal the archived twin's, record for record, on every partition.
+    #[test]
+    fn build_time_printed_records_equal_the_archived_records() {
+        let rows = index_corpus();
+        for k in [1u32, 3, 7] {
+            for (store, stats) in partitions(&rows, k) {
+                assert_eq!(stats.printed_records, store.printed_records(), "k={k}");
+            }
+        }
+        let (_, stats) = build(&rows);
+        let ego = stats.printed_records.iter().find(|r| r.oracle == "unmooredego").expect("ego");
+        assert_eq!(ego.printed, vec!["egoaderiva".to_owned()]);
+        let guile = stats.printed_records.iter().find(|r| r.oracle == "guile").expect("guile");
+        assert_eq!(guile.printed, vec!["inganno".to_owned()]);
+        assert!(
+            !stats.printed_records.iter().any(|r| r.oracle == "titanothrex"),
+            "a name with no ASCII letter is no printed form"
+        );
+    }
+
+    /// THE PRINTED TIER SETTLES WHAT THE PLAN LEFT `everywhere`: the plan's partitions plus the
+    /// printed carriers are every partition whose own containment stage answers anything — so a
+    /// partition outside them answers nothing, and an empty union is the needle's 404 without
+    /// asking a partition. The same needles as the plan's contract, and the printed tier's own.
+    #[test]
+    fn the_printed_names_settle_what_the_plan_left_everywhere() {
+        let rows = index_corpus();
+        let (floor, lead, weak) = (0.55f32, 0.0f64, 0.0f32);
+        let mut needles: Vec<String> = vec![
+            "red goad", "goad red", "ego a deriva", "ego deriva", "egoaderiva", "inganno", "red ego", "blitz nur", "nur blitz",
+            "blitz", "nur", "bolt nur", "blitz foreign", "zzzzqq", "blue creatures that combo infinitely", "lunch", "kaiju",
+            "godzilla primeval", "titanoth champion", "angelic", "shatter token", "lightning", "a", "e",
+        ]
+        .into_iter()
+        .map(str::to_owned)
+        .collect();
+        for r in &rows {
+            let name = fold(&r["card_name"].as_str().unwrap().to_lowercase());
+            if let Some(word) = name.split(' ').next_back() {
+                needles.push(word.to_owned());
+            }
+        }
+        needles.sort();
+        needles.dedup();
+        let (mut everywhere, mut settled, mut none) = (0usize, 0usize, 0usize);
+        for k in [3u32, 7] {
+            let parts = partitions(&rows, k);
+            let names = NameList::parse(encode_v2(&parts)).expect("blob");
+            let printed = crate::printed::PrintedList::parse(encode_printed(&parts)).expect("printed blob");
+            for folded in &needles {
+                let words: Vec<String> =
+                    folded.split(|c: char| !(c.is_alphanumeric() || c == '_' || c == '\'')).filter(|w| !w.is_empty()).map(str::to_owned).collect();
+                let plan = fuzzy_plan(&names, folded, &words, floor, lead, weak).expect("format 2");
+                if !plan.everywhere {
+                    continue;
+                }
+                everywhere += 1;
+                let carriers = printed.carriers(&words).expect("ASCII words");
+                let mut asked: Vec<u16> = plan.partitions.iter().chain(&carriers).copied().collect();
+                asked.sort_unstable();
+                asked.dedup();
+                settled += 1;
+                none += usize::from(asked.is_empty());
+                for p in (0..k as u16).filter(|p| !asked.contains(p)) {
+                    let store = &parts[p as usize].0;
+                    let answers = store.cards_containing_all_words(&words, None, 2, None).expect("contained");
+                    assert!(answers.is_empty(), "k={k} {folded:?}: left-out p{p} answers containment with {answers:?}");
+                    assert!(store.exact_name_rank(folded, None).is_none(), "k={k} {folded:?}: left-out p{p} ranks it");
+                    assert!(store.fuzzy_candidates(folded, floor, 8).is_empty(), "k={k} {folded:?}: left-out p{p} races");
+                }
+                // And the printed tier's own carriers are exactly where a printed answer can come from.
+                for p in 0..k as u16 {
+                    let store = &parts[p as usize].0;
+                    let fields = Some(vec!["name".to_owned(), "printed_name".to_owned(), "flavor_name".to_owned()]);
+                    let answers = store.cards_containing_all_words(&words, None, 2, fields).expect("contained");
+                    let printed_answer = answers.iter().any(|c| {
+                        let pool = [&c["name"], &c["flavor_name"]]
+                            .map(|v| fold(&v.as_str().unwrap_or("").to_lowercase()).chars().filter(|c| c.is_alphanumeric()).collect::<String>());
+                        !words.iter().all(|w| pool.iter().any(|n| n.contains(&w.chars().filter(|c| c.is_alphanumeric()).collect::<String>())))
+                    });
+                    assert!(!printed_answer || carriers.contains(&p), "k={k} {folded:?}: p{p} answers a printed name the blob misses");
+                }
+            }
+        }
+        eprintln!("printed tier: {everywhere} everywhere plans, {settled} settled, {none} with no partition at all");
+        assert!(everywhere > 20 && none > 5, "the fixture must exercise the tier: {everywhere} everywhere, {none} none");
+        // The headline needles, at k=7.
+        let parts = partitions(&rows, 7);
+        let printed = crate::printed::PrintedList::parse(encode_printed(&parts)).expect("printed blob");
+        let ego = card_engine::partition_of_oracle_id(&uuid(9, 0x0b), 7) as u16;
+        let words = |s: &str| s.split(' ').map(str::to_owned).collect::<Vec<_>>();
+        assert_eq!(printed.carriers(&words("red goad")), Some(vec![ego]));
+        assert_eq!(printed.carriers(&words("blue creatures that combo infinitely")), Some(vec![]));
     }
 }

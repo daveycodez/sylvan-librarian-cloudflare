@@ -45,6 +45,8 @@ interface FakeInstance {
 	/** n15: the loaded blob's format, and (format 2) each record's partition and collated name. */
 	namesFormat?: number;
 	records?: { partition: number; collated: string }[];
+	/** x24: the printed-names lines load_printed_names took (partition, oracle, forms), or null. */
+	printed?: { partition: number; oracle: string; forms: string[] }[] | null;
 }
 const instances = new Map<string, FakeInstance>();
 
@@ -183,7 +185,35 @@ function handleFor(label: string) {
 			const partitions = [
 				...new Set((inst.records ?? []).filter((r) => r.collated === folded).map((r) => r.partition)),
 			];
-			return JSON.stringify({ partitions, everywhere: false, stage: partitions.length ? "exact" : "miss" });
+			// A toy plan: an exact name, else only the printed tier is undecided (`everywhere`).
+			if (partitions.length === 0) return JSON.stringify({ partitions: [], everywhere: true, stage: "contained" });
+			return JSON.stringify({ partitions, everywhere: false, stage: "exact" });
+		},
+		// x24: the printed-names blob as the real crate reads it, and a toy of its carriers test.
+		load_printed_names(gz: Uint8Array) {
+			const text = new TextDecoder().decode(gunzipSync(gz));
+			if (!text.startsWith("sylvan-printed-names/1\n")) throw new Error("fake wasm: not a printed-names blob");
+			inst.printed = text
+				.split("\n")
+				.slice(1, -1)
+				.map((l) => {
+					const [partition, oracle, ...forms] = l.split("\t");
+					return { partition: Number(partition), oracle: oracle as string, forms };
+				});
+			return inst.printed.reduce((n, r) => n + r.forms.length, 0);
+		},
+		printed_names_heap_bytes: () => 0,
+		printed_names_partitions(wordsJson: string) {
+			if (!inst.printed) return "null";
+			const words = JSON.parse(wordsJson) as string[];
+			const partitions = inst.printed
+				.filter((r) =>
+					r.forms.some(
+						(f) => words.some((w) => f.includes(w)) && words.every((w) => f.includes(w) || r.oracle.includes(w)),
+					),
+				)
+				.map((r) => r.partition);
+			return JSON.stringify({ partitions: [...new Set(partitions)].sort((a, b) => a - b) });
 		},
 	};
 }
@@ -1325,6 +1355,107 @@ describe("the card-names blob (n8)", () => {
 			stage: "exact",
 			builtAt: "160",
 		});
+	});
+
+	/** x24: a printed-names blob beside a format-2 names blob. */
+	async function publishPrinted(builtAt: string, cards: [number, string][], printed: [number, string, string][]) {
+		const indexed = await publishIndexed(builtAt, cards);
+		const lines = printed
+			.map(([p, oracle, form]) => `${p}\t${oracle}\t${form}\n`)
+			.sort()
+			.join("");
+		const gz = await gzipBytes(new TextEncoder().encode(`sylvan-printed-names/1\n${lines}`));
+		const printedKey = `store:card-printed-v1-${builtAt}.store:0`;
+		const manifest = { ...indexed.manifest, printed_key: printedKey, printed_bytes: gz.byteLength };
+		indexed.entries.set(printedKey, gz);
+		indexed.entries.set(MANIFEST_READ, JSON.stringify(manifest));
+		return { ...indexed, manifest, printedKey };
+	}
+
+	test("x24: a plan left everywhere is settled by the printed names — a miss asks none, a printed hit its holders", async () => {
+		const { entries, printedKey } = await publishPrinted(
+			"170",
+			[
+				[1, "Shock"],
+				[3, "Unmoored Ego"],
+			],
+			[[3, "unmooredego", "egoaderiva"]],
+		);
+		const storage = fakeStorage();
+		const { env, reads } = fakeEnv(entries);
+		const ctx = ctxFor("engine-printed-p1", 1, storage);
+		await store.getEngine(env, ctx);
+		// An exact name never reaches the printed tier, and never reads the blob.
+		expect(await store.namesFuzzyPlan(env, ctx, "shock", ["shock"])).toEqual({
+			partitions: [1],
+			everywhere: false,
+			stage: "exact",
+			builtAt: "170",
+		});
+		expect(reads.filter((k) => k === printedKey).length).toBe(0);
+		// A sentence: nothing carries it — the 404, no partition asked.
+		expect(await store.namesFuzzyPlan(env, ctx, "blue creatures", ["blue", "creatures"])).toEqual({
+			partitions: [],
+			everywhere: false,
+			stage: "miss",
+			builtAt: "170",
+			printed: "miss",
+		});
+		// `red goad`: the Portuguese printed name in partition 3 carries `goad`, its oracle name `red`.
+		expect(await store.namesFuzzyPlan(env, ctx, "red goad", ["red", "goad"])).toEqual({
+			partitions: [3],
+			everywhere: false,
+			stage: "contained",
+			builtAt: "170",
+			printed: "hit",
+		});
+		// Read from KV once, and kept in the instance — never in the object's SQLite (the pool).
+		expect(reads.filter((k) => k === printedKey).length).toBe(1);
+		const cached = storage.sql.exec("SELECT archive_key FROM archive_cache_meta").toArray() as {
+			archive_key: string;
+		}[];
+		expect(cached.some((r) => r.archive_key.includes("printed"))).toBe(false);
+		// A wake loses the instance, and the next plan to need it reads KV again.
+		const inst = instanceFor("engine-printed-p1");
+		inst.generation += 1;
+		inst.loaded = null;
+		inst.names = null;
+		inst.printed = null;
+		await store.getEngine(env, ctx);
+		expect((await store.namesFuzzyPlan(env, ctx, "littlebones", ["littlebones"])).printed).toBe("miss");
+		expect(reads.filter((k) => k === printedKey).length).toBe(2);
+	});
+
+	test("x24: no printed blob, or one gone or the wrong size, leaves the plan everywhere, as before — and is not asked again", async () => {
+		const none = await publishIndexed("171", [[1, "Shock"]]);
+		const noneEnv = fakeEnv(none.entries).env;
+		const noneCtx = ctxFor("engine-printed-none-p0", 0, fakeStorage());
+		await store.getEngine(noneEnv, noneCtx);
+		expect(await store.namesFuzzyPlan(noneEnv, noneCtx, "blue creatures", ["blue", "creatures"])).toEqual({
+			partitions: [],
+			everywhere: true,
+			stage: "contained",
+			builtAt: "171",
+			printed: "absent",
+		});
+
+		const gone = await publishPrinted("172", [[1, "Shock"]], [[3, "unmooredego", "egoaderiva"]]);
+		gone.entries.delete(gone.printedKey);
+		const goneFake = fakeEnv(gone.entries);
+		const goneCtx = ctxFor("engine-printed-gone-p0", 0, fakeStorage());
+		await store.getEngine(goneFake.env, goneCtx);
+		for (let i = 0; i < 2; i++) {
+			expect((await store.namesFuzzyPlan(goneFake.env, goneCtx, "red goad", ["red", "goad"])).everywhere).toBe(true);
+		}
+		expect(goneFake.reads.filter((k) => k === gone.printedKey).length).toBe(1);
+
+		const short = await publishPrinted("173", [[1, "Shock"]], [[3, "unmooredego", "egoaderiva"]]);
+		short.entries.set(short.printedKey, (short.entries.get(short.printedKey) as Uint8Array).subarray(1));
+		const shortEnv = fakeEnv(short.entries).env;
+		const shortCtx = ctxFor("engine-printed-short-p0", 0, fakeStorage());
+		await store.getEngine(shortEnv, shortCtx);
+		const plan = await store.namesFuzzyPlan(shortEnv, shortCtx, "red goad", ["red", "goad"]);
+		expect([plan.everywhere, plan.printed]).toEqual([true, "absent"]);
 	});
 
 	test("n15: a format-1 blob, or none, is no index — the gather and the fuzzy route ask every partition", async () => {

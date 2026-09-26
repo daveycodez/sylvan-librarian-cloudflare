@@ -56,7 +56,7 @@ mod names_index;
 pub use names_index::{
     BEST_ART_SERIES, BEST_NO_CONTAINMENT, CLASS_ANY, CLASS_BOTH_GATES, CLASS_CANONICAL, CLASS_EXTRA_GATE,
     CLASS_VARIATION_GATE, FuzzyProbe, FuzzySignature, KEY_SERVED, KEY_SERVED_OUTSIDE_CONTAINMENT, NameQuery, NameRecord, NameRecordView,
-    NamesProbe, name_records_tsv,
+    NamesProbe, PrintedRecord, name_records_tsv, printed_form, printed_records_tsv,
 };
 
 // ─── Error type ──────────────────────────────────────────────────────────────
@@ -726,6 +726,7 @@ fn archive_section_stats(d: &CardData) -> StoreStats {
         annex_only_rows_dropped: 0,
         autocomplete_names: Vec::new(), // likewise: autocomplete_names_of, at the same two sites
         name_records: Vec::new(),       // and names_index::name_records_of (n15)
+        printed_records: Vec::new(),    // and names_index::printed_records_of (x24)
     }
 }
 
@@ -824,6 +825,10 @@ pub struct StoreStats {
     /// LOCAL PATCH (sylvan-librarian-cloudflare, backlog n15): every card of this store as the
     /// corpus-wide names index reads it — see `names_index::name_records_of`.
     pub name_records: Vec<NameRecord>,
+    /// LOCAL PATCH (sylvan-librarian-cloudflare, backlog x24): every card of this store with a
+    /// foreign printed name the fuzzy containment stage's printed tier could read — see
+    /// `names_index::printed_records_of`.
+    pub printed_records: Vec<PrintedRecord>,
 }
 
 /// Non-python twin of the pyo3 staged-reload surface: `new()` ≙ reload_begin
@@ -890,6 +895,7 @@ impl StoreBuilder {
         // allocated: the build's peak (the 128MB isolate's, in the nightly) is not raised by them.
         stats.autocomplete_names = autocomplete_names_of(&built.card_data);
         stats.name_records = names_index::name_records_of(&built.card_data);
+        stats.printed_records = names_index::printed_records_of(&built.card_data);
         Ok(stats)
     }
 }
@@ -1052,6 +1058,7 @@ impl SpillingStoreBuilder {
         // allocated: the build's peak (the 128MB isolate's, in the nightly) is not raised by them.
         stats.autocomplete_names = autocomplete_names_of(&built.card_data);
         stats.name_records = names_index::name_records_of(&built.card_data);
+        stats.printed_records = names_index::printed_records_of(&built.card_data);
         Ok(stats)
     }
 }

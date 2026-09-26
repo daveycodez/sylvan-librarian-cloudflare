@@ -317,6 +317,146 @@ impl BufferStore {
     }
 }
 
+// ─── The printed-name index (backlog x24) ─────────────────────────────────────
+// `/cards/named?fuzzy=`'s containment stage has a SECOND tier the names index above cannot decide: a
+// foreign printed name, each word landing in it or in its card's oracle name (`red goad` is Unmoored
+// Ego through the Portuguese "Ego à Deriva"). The records below carry exactly what that tier reads,
+// cut to what an ASCII query word can match, so one object can name the partitions it could answer
+// from — and a needle no name of any kind carries is the 404 without asking a partition.
+
+/// One card's foreign printed names as the printed tier of containment reads them.
+///
+/// SUPERSET, never fewer: a printed name is kept when ANY printing carrying it is inside the
+/// containment pool (the engine reads the best printing of each (name, language) record, which
+/// can only exclude more), and extras stay in, as that tier keeps them. What is dropped cannot
+/// complete a match an oracle name would not complete alone — which the names index already
+/// decides — so dropping it never loses a partition:
+///
+///   - a name with no ASCII alphanumeric: the router's query words are ASCII (`[^\w']` splits the
+///     folded query), so no word lands in it;
+///   - a name whose every ASCII run lies inside the card's own oracle name: any word it carries,
+///     the oracle name carries too.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub struct PrintedRecord {
+    /// The card's folded name without its separators (`strip_separators(folded_name)`): what a
+    /// printed name pools with — `contains_unseparated` over the folded name, as a plain substring.
+    pub oracle: String,
+    /// The card's distinct [`printed_form`]s, sorted.
+    pub printed: Vec<String>,
+}
+
+/// A folded printed name as an ASCII word can match it inside `contains_unseparated`: its
+/// alphanumerics in order, every run of non-ASCII ones replaced by ONE space (which no word holds,
+/// so no match can span it), leading and trailing runs dropped. The folded `"ego a deriva"` is
+/// `"egoaderiva"`; a Cyrillic name with a Latin word in it keeps the word alone.
+pub fn printed_form(folded: &str) -> String {
+    let mut out = String::with_capacity(folded.len());
+    let mut gap = false;
+    for c in folded.chars().filter(|c| c.is_alphanumeric()) {
+        if c.is_ascii() {
+            if gap && !out.is_empty() {
+                out.push(' ');
+            }
+            gap = false;
+            out.push(c);
+        } else {
+            gap = true;
+        }
+    }
+    out
+}
+
+/// A card's record from its folded oracle name and the printed names its pool-eligible printings
+/// carry, or None when none survives the cut (see [`PrintedRecord`]).
+fn printed_record<'a>(folded_oracle: &str, names: impl Iterator<Item = &'a str>) -> Option<PrintedRecord> {
+    let oracle = super::strip_separators(folded_oracle);
+    let mut printed: Vec<String> = names
+        .map(printed_form)
+        .filter(|form| !form.is_empty() && !form.split(' ').all(|run| oracle.contains(run)))
+        .collect();
+    printed.sort_unstable();
+    printed.dedup();
+    (!printed.is_empty()).then_some(PrintedRecord { oracle, printed })
+}
+
+/// Every card's [`PrintedRecord`] with anything left in it, in card order — read off the SAME
+/// unarchived structures `write_archive` has just serialized (the build-time twin of
+/// [`BufferStore::printed_records`], which a test pins equal), as `name_records_of` is.
+pub(crate) fn printed_records_of(d: &CardData) -> Vec<PrintedRecord> {
+    let in_pool = |p: &crate::Printing| {
+        p.card_layout_id == NONE_STR || !super::CONTAINMENT_EXCLUDED_LAYOUTS.contains(&d.strings[p.card_layout_id as usize].as_str())
+    };
+    let mut out = Vec::new();
+    for (cid, card) in d.cards.iter().enumerate() {
+        let canonical = &d.printings[d.offsets[cid] as usize..d.offsets[cid + 1] as usize];
+        let foreign = &d.foreign[d.foreign_offsets[cid] as usize..d.foreign_offsets[cid + 1] as usize];
+        let names = canonical
+            .iter()
+            .chain(foreign)
+            .filter(|p| p.printed_name_folded_id != NONE_STR && in_pool(p))
+            .map(|p| d.strings[p.printed_name_folded_id as usize].as_str());
+        if let Some(record) = printed_record(crate::folded_name_of(card, &d.strings), names) {
+            out.push(record);
+        }
+    }
+    out
+}
+
+/// The printed-names blob's line for each record (engine/wasm/src/printed.rs reads it,
+/// src/engine/printed-names.ts frames it), each led by `prefix` (the native builder's
+/// `<partition>\t`; the nightly's coordinator writes the same prefix per staged partition):
+///
+/// ```text
+/// <prefix><oracle>\t<printed form>\t<printed form>…\n
+/// ```
+///
+/// Every field is alphanumerics and spaces by construction; a tab or line break is REFUSED rather
+/// than escaped, as the names blob refuses one.
+pub fn printed_records_tsv(prefix: &str, records: &[PrintedRecord]) -> Result<Vec<u8>, String> {
+    let mut out = String::with_capacity(records.len() * 96);
+    for r in records {
+        for s in std::iter::once(&r.oracle).chain(&r.printed) {
+            if s.contains(['\t', '\n', '\r']) {
+                return Err(format!("printed-name field {s:?} carries a tab or a line break; the blob cannot spell it"));
+            }
+        }
+        out.push_str(prefix);
+        out.push_str(&r.oracle);
+        for form in &r.printed {
+            out.push('\t');
+            out.push_str(form);
+        }
+        out.push('\n');
+    }
+    Ok(out.into_bytes())
+}
+
+impl BufferStore {
+    /// The archived twin of [`printed_records_of`], read through the engine's own printed-name
+    /// index (`CardIndexes::printed_names`) and `outside_containment_pool`: every (name, language)
+    /// record's printings, each credited to its own card when it is inside the pool.
+    pub fn printed_records(&self) -> Vec<PrintedRecord> {
+        let data = self.data();
+        let idx = &data.indexes.printed_names;
+        let mut names: Vec<Vec<&str>> = vec![Vec::new(); data.cards.len()];
+        for rec in 0..idx.name_ids.len() {
+            let Some(name) = str_at(&data.strings, u32::from(idx.name_ids[rec])) else { continue };
+            let (from, to) = (u32::from(idx.offsets[rec]) as usize, u32::from(idx.offsets[rec + 1]) as usize);
+            for v in &idx.vpids[from..to] {
+                let vpid = u32::from(*v);
+                if !super::outside_containment_pool(data, vpid) {
+                    names[crate::card_of_vpid(data, vpid) as usize].push(name);
+                }
+            }
+        }
+        data.cards
+            .iter()
+            .enumerate()
+            .filter_map(|(cid, card)| printed_record(crate::folded_name(card, &data.strings), names[cid].iter().copied()))
+            .collect()
+    }
+}
+
 // ─── Search: a filter that reads names alone ──────────────────────────────────
 
 /// A `/cards/search` filter tree that reads card NAMES and nothing else, compiled by the engine —

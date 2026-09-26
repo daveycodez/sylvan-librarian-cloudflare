@@ -54,6 +54,7 @@ const EMIT = {
 	ORACLE_PAIRS: 11,
 	CORPUS: 12,
 	NAMES: 13,
+	PRINTED: 14,
 } as const;
 
 const env = {
@@ -90,8 +91,9 @@ const env = {
 			case EMIT.ORACLE_PAIRS:
 			case EMIT.CORPUS:
 			case EMIT.NAMES:
+			case EMIT.PRINTED:
 				// The coordinator's persistence and publish inputs (tag data, routing keys, the inflate
-				// checkpoint, alias maps, oracle pairs, the corpus snapshot, card names): this driver
+				// checkpoint, alias maps, oracle pairs, the corpus snapshot, card and printed names): this driver
 				// compares store rows only, so it has no consumer for them. n8's NAMES (13) reaching the
 				// default arm is what broke `bun run gate` from 66b63506 on.
 				break;

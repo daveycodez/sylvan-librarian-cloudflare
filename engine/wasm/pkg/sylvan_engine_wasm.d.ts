@@ -303,6 +303,12 @@ export function js_spelled_numbers(values: Float64Array): string;
 export function load_names(gz: Uint8Array): number;
 
 /**
+ * Replace this instance's printed names with a gzipped blob. Returns how many printed forms it
+ * holds. The previous list is dropped FIRST, so a reload reuses its memory instead of holding two.
+ */
+export function load_printed_names(gz: Uint8Array): number;
+
+/**
  * `/cards/named?fuzzy=` against THIS store in one call (LOCAL PATCH, Cloudflare port; backlog
  * n7): the exact stage, the typo stage and the containment stage together, so the partitioned
  * router asks each partition ONCE where it used to ask every partition three times over three
@@ -388,6 +394,19 @@ export function names_heap_bytes(): number;
  * over the corpus's names. The gather then asks every partition, as it always has.
  */
 export function names_search_partitions(filter_tree_json: string, multilingual: boolean): string;
+
+/**
+ * Bytes the loaded printed names hold in linear memory (0 when none are loaded).
+ */
+export function printed_names_heap_bytes(): number;
+
+/**
+ * Backlog x24: the partitions holding a card whose foreign printed name, pooled with its oracle
+ * name, completes `words` (`printed::PrintedList::carriers`) — `{"partitions":[…]}`, ascending,
+ * possibly empty. `null` when this cannot say: no printed names loaded, or a word the blob's ASCII
+ * forms cannot answer. The caller then asks every partition, as it did before the blob.
+ */
+export function printed_names_partitions(words_json: string): string;
 
 /**
  * Every printing of one oracle card, representative first. Empty array for an unknown id.
@@ -579,6 +598,14 @@ export function store_lz4_frame(index: number): Uint8Array;
  * nothing on a request path calls it.
  */
 export function store_name_records_tsv(): Uint8Array;
+
+/**
+ * The loaded STORE's own printed records (backlog x24), as the blob lines its build publishes,
+ * WITHOUT the partition lead — read back from the archive through the archived twin
+ * (`BufferStore::printed_records`). Verification only (the import harness, the real-corpus
+ * checks); nothing on a request path calls it.
+ */
+export function store_printed_records_tsv(): Uint8Array;
 
 /**
  * The archive format version this build reads/writes. A store manifest's

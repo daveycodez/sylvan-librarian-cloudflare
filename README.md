@@ -113,7 +113,10 @@ request ──▶ static asset? served from the CDN out of public/ — the Worke
               │   names index (one record per card) lets a name-only search
               │   gather from just the partitions holding a match (none: its
               │   404 in one call) and /cards/named?fuzzy= ask one object
-              │   which partitions to ask; catalog fans out
+              │   which partitions to ask — with the build's printed-names
+              │   blob, read only by an object whose plan needs it, for the
+              │   foreign printed names the index does not carry, so a fuzzy
+              │   miss is that one call too; catalog fans out
               └─ autoscaling: fan-out to engine-<region>-1..N when the DO reports
                   sustained load AND the isolate sees sustained slowness, with
                   idle fold-back. That is the REPLICA axis and it multiplies with

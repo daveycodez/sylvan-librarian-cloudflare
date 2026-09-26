@@ -59,6 +59,7 @@ import { buildCorpus, type Corpus } from "./corpus";
 import { serveDumps } from "./dump-server";
 import { measureEnginePool } from "./engine-pool";
 import { checkOracleIndex, type OracleIndexCheck } from "./oracle-index-check";
+import { checkPrintedNames } from "./printed-names-check";
 import { checkRoutingFilter } from "./routing-filter-check";
 import { FakeKV, MeteredStorage } from "./storage";
 
@@ -646,6 +647,16 @@ async function main(): Promise<number> {
 	for (const line of routing.lines) console.log(line);
 	if (!routing.ok) {
 		console.error("\nFAILED: the routing-filter check (above)");
+		return 1;
+	}
+
+	// x24: the printed-names blob — published, settling every plan the names index left everywhere,
+	// and the native builder's byte for byte. Before the card-names check, which removes the build.
+	const printed = await checkPrintedNames(kv, oracle.nativeDir ?? null);
+	console.log("");
+	for (const line of printed.lines) console.log(line);
+	if (!printed.ok) {
+		console.error("\nFAILED: the printed-names check (above)");
 		return 1;
 	}
 

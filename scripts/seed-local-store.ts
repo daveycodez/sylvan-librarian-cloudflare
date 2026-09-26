@@ -17,6 +17,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { gzipSync } from "node:zlib";
 import { cardNamesKey } from "../src/engine/card-names";
+import { printedNamesKey } from "../src/engine/printed-names";
 import {
 	chunkForKv,
 	chunkKey,
@@ -29,6 +30,7 @@ import {
 import { tagAliasesKey } from "../src/engine/tag-aliases";
 import type { StoreManifest, StoreManifestPartition } from "../src/engine/types";
 import { CARD_NAMES_FILE, cardNamesFromBuildDir } from "./card-names-build";
+import { PRINTED_NAMES_FILE, printedNamesFromBuildDir } from "./printed-names-build";
 import { ROUTING_KEYS_FILE, routingFilterFromBuildDir } from "./routing-filter-build";
 import { TAG_ALIASES_FILE, tagAliasesFileFromBuildDir } from "./tag-aliases-build";
 import { wranglerArgv } from "./wrangler-cmd";
@@ -168,6 +170,24 @@ if (cardNames) {
 	console.log(`Card names seeded: ${cardNames.count} names (/cards/autocomplete asks one partition).`);
 } else {
 	console.warn(`No ${CARD_NAMES_FILE} in ${dir}: /cards/autocomplete will fan out across every partition.`);
+}
+// x24: the printed-names blob, likewise.
+const printedNames = printedNamesFromBuildDir(dir);
+if (printedNames) {
+	const stored = gzipSync(printedNames.raw);
+	const printedKey = printedNamesKey(manifest.format_version, String(manifest.built_at));
+	const printedTmp = join(tmpdir(), "sylvan-local-printed-names.bin");
+	await writeFile(printedTmp, stored);
+	try {
+		await localKvPut(printedKey, printedTmp);
+	} finally {
+		await unlink(printedTmp).catch(() => {});
+	}
+	manifest.printed_key = printedKey;
+	manifest.printed_bytes = stored.byteLength;
+	console.log(`Printed names seeded: ${printedNames.count} cards (a fuzzy miss asks one partition).`);
+} else {
+	console.warn(`No ${PRINTED_NAMES_FILE} in ${dir}: a fuzzy miss will ask every partition.`);
 }
 // The manifest LAST, at the keys seed-remote-kv.ts publishes it to — this format's
 // `store:manifest:v<fmt>` and the legacy mirror (x19): dev reads through the

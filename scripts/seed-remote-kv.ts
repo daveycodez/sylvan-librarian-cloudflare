@@ -48,6 +48,7 @@ import { join } from "node:path";
 import { gzipSync } from "node:zlib";
 import { cardNamesKey } from "../src/engine/card-names";
 import { kvBytesMetadata, replacedManifest, withPreviousBuiltAt } from "../src/engine/kv-retention";
+import { printedNamesKey } from "../src/engine/printed-names";
 import {
 	ARCHIVE_FORMAT_VERSION,
 	CARRIED_MANIFEST_BLOCKS,
@@ -66,6 +67,7 @@ import { CARD_NAMES_FILE, cardNamesFromBuildDir } from "./card-names-build";
 import { beginDeployUpload, deployStillHoldsLease, finishDeployUpload, readPublishedManifests } from "./deploy-upload";
 import { wranglerDeployKv } from "./kv-prune";
 import { requireDeployEnvironment } from "./kv-target";
+import { PRINTED_NAMES_FILE, printedNamesFromBuildDir } from "./printed-names-build";
 import { kvName } from "./project-config";
 import { ROUTING_KEYS_FILE, routingFilterFromBuildDir } from "./routing-filter-build";
 import { TAG_ALIASES_FILE, tagAliasesFileFromBuildDir } from "./tag-aliases-build";
@@ -216,12 +218,15 @@ const aliasesPath = tagAliasesFileFromBuildDir(dir);
 const aliasesBytes = readFileSync(aliasesPath).byteLength;
 const cardNames = cardNamesFromBuildDir(dir);
 const cardNamesStored = cardNames ? gzip(cardNames.raw) : null;
+const printedNames = printedNamesFromBuildDir(dir);
+const printedNamesStored = printedNames ? gzip(printedNames.raw) : null;
 const builtAt = String(manifest.built_at);
 const incomingBytes =
 	chunksByPartition.reduce((n, pieces) => n + pieces.reduce((m, c) => m + c.length, 0), 0) +
 	(routing?.bytes.byteLength ?? 0) +
 	aliasesBytes +
-	(cardNamesStored?.byteLength ?? 0);
+	(cardNamesStored?.byteLength ?? 0) +
+	(printedNamesStored?.byteLength ?? 0);
 
 // Before the family's FIRST key: the fence, the lease, the sweep by role and the byte guard.
 const deployKv = wranglerDeployKv(true);
@@ -316,6 +321,28 @@ if (cardNamesStored) {
 	);
 } else {
 	console.warn(`No ${CARD_NAMES_FILE} in ${dir}: /cards/autocomplete will fan out across every partition.`);
+}
+
+// x24: the printed-names blob, the same way (printedNamesKey, store:card-printed-…). Optional: without
+// it the fuzzy plan asks every partition for containment's printed tier, as before x24.
+if (printedNamesStored) {
+	const printedKey = printedNamesKey(manifest.format_version, String(manifest.built_at));
+	const printedPath = join(tmpdir(), "sylvan-store-printed-names.bin");
+	await writeFile(printedPath, printedNamesStored);
+	try {
+		await kv(["key", "put", printedKey, "--path", printedPath, ...sized(printedNamesStored.byteLength), "--remote"]);
+	} finally {
+		await unlink(printedPath).catch(() => {});
+	}
+	manifest.printed_key = printedKey;
+	manifest.printed_bytes = printedNamesStored.byteLength;
+	console.log(
+		`  printed names uploaded: ${printedNames?.count} cards, ${((printedNames?.raw.byteLength ?? 0) / 1024).toFixed(0)}KB raw -> ` +
+			`${(printedNamesStored.byteLength / 1024).toFixed(0)}KB gzip (a fuzzy miss asks ONE partition instead of ` +
+			`${manifest.partition_count})`,
+	);
+} else {
+	console.warn(`No ${PRINTED_NAMES_FILE} in ${dir}: a fuzzy miss will ask every partition.`);
 }
 
 // The blocks the nightly decides — r3's cache codec, gated on the Durable Objects pool, and g1's

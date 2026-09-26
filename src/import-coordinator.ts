@@ -124,6 +124,7 @@ import {
 	unreachableEngine,
 } from "./engine/placement-policy";
 import { probeHints } from "./engine/placement-probe";
+import { encodePrintedNames, writePrintedNames } from "./engine/printed-names";
 import {
 	CATALOG_NAMES,
 	catalogKey,
@@ -384,6 +385,11 @@ const PURGE_PASSES = 1;
 /** n8: the meta row holding partition `k`'s card-name lines until the manifest step encodes them. */
 function cardNamesMetaKey(partition: number): string {
 	return `card_names_p${partition}`;
+}
+
+/** x24: the meta row holding partition `k`'s printed-name lines until the manifest step encodes them. */
+function printedNamesMetaKey(partition: number): string {
+	return `printed_names_p${partition}`;
 }
 
 /** Meta keys under this prefix are day-scoped and survive a run reset. */
@@ -3721,6 +3727,8 @@ export class ImportCoordinator extends DurableObject<Env> {
 		// n8: this partition's served name pairs (a few hundred KB of text), kept for the manifest
 		// step's card-names blob — one meta row per partition, written with the build's own record.
 		const names: { lines: Uint8Array | null } = { lines: null };
+		// x24: its printed records too (a few hundred KB), for the printed-names blob, the same way.
+		const printed: { lines: Uint8Array | null } = { lines: null };
 		wasm.setHandlers({
 			pullRow: lookup,
 			onChunk: (b) => {
@@ -3728,6 +3736,9 @@ export class ImportCoordinator extends DurableObject<Env> {
 			},
 			onNames: (b) => {
 				names.lines = b;
+			},
+			onPrinted: (b) => {
+				printed.lines = b;
 			},
 			onStats: (s) => {
 				built.card_count = s.card_count ?? 0;
@@ -3760,10 +3771,19 @@ export class ImportCoordinator extends DurableObject<Env> {
 					ledByPartition(pp.partition, new TextDecoder().decode(names.lines)),
 				);
 			}
+			if (printed.lines) {
+				this.metaSet(
+					printedNamesMetaKey(pp.partition),
+					ledByPartition(pp.partition, new TextDecoder().decode(printed.lines)),
+				);
+			}
 			this.metaSet("phase", "publish");
 		});
 		if (!names.lines) {
 			console.warn(`Build (partition ${pp.partition}): the wasm emitted no card names; this build publishes none`);
+		}
+		if (!printed.lines) {
+			console.warn(`Build (partition ${pp.partition}): the wasm emitted no printed names; this build publishes none`);
 		}
 		// Release the wasm group NOW rather than after this partition's publish
 		// slices (plan B3: dropGroupWasm after each build(p), §5.5
@@ -3976,6 +3996,13 @@ export class ImportCoordinator extends DurableObject<Env> {
 			manifest.names_key = names.key;
 			manifest.names_bytes = names.bytes;
 		}
+		// x24: the printed-names blob, likewise. Absent, the fuzzy plan asks every partition for the
+		// printed tier on this build, as every build before x24 did.
+		const printed = await this.publishPrintedNames(formatVersion, builtAt, pp.partitions.length);
+		if (printed) {
+			manifest.printed_key = printed.key;
+			manifest.printed_bytes = printed.bytes;
+		}
 		// The blocks the nightly decides and every publish carries (StoreManifest.cache, .placement):
 		// read the live manifest once, decide from it and tonight's measurements, write them in. The same read
 		// names the rollback role (previous_built_at) — the family this manifest replaces.
@@ -4088,6 +4115,43 @@ export class ImportCoordinator extends DurableObject<Env> {
 		const published = await writeCardNames(this.env.STORE_KV, formatVersion, builtAt, raw);
 		console.log(
 			`Card names published: ${published.key} (${published.count} names, ${published.raw} bytes raw -> ` +
+				`${published.bytes} gzipped)`,
+		);
+		return published;
+	}
+
+	/**
+	 * x24: encode every partition's staged printed-name lines into the build's printed-names blob
+	 * (printed-names.ts, the encoder scripts/seed-remote-kv.ts uses on the native builder's sidecar)
+	 * and put it — one KV write. Null — publish without one — when a partition staged none or the
+	 * lines do not encode, as publishCardNames. Memory: ~3MB of text, its distinct lines and the
+	 * gzip, for the length of this call, in a phase whose wasm is long dropped.
+	 */
+	private async publishPrintedNames(
+		formatVersion: number,
+		builtAt: string,
+		partitions: number,
+	): Promise<{ key: string; bytes: number } | null> {
+		const encoder = new TextEncoder();
+		const parts: Uint8Array[] = [];
+		for (let k = 0; k < partitions; k++) {
+			const lines = this.metaGet(printedNamesMetaKey(k));
+			if (lines === null) {
+				console.warn(`Printed names NOT published for build ${builtAt}: partition ${k}'s build staged none`);
+				return null;
+			}
+			parts.push(encoder.encode(lines));
+		}
+		let raw: Uint8Array;
+		try {
+			raw = encodePrintedNames(parts);
+		} catch (err) {
+			console.warn(`Printed names NOT published for build ${builtAt}: ${err}`);
+			return null;
+		}
+		const published = await writePrintedNames(this.env.STORE_KV, formatVersion, builtAt, raw);
+		console.log(
+			`Printed names published: ${published.key} (${published.count} cards, ${published.raw} bytes raw -> ` +
 				`${published.bytes} gzipped)`,
 		);
 		return published;

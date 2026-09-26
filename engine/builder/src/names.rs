@@ -23,6 +23,17 @@ pub fn partition_names_tsv(k: usize, records: &[card_engine::NameRecord]) -> Res
     card_engine::name_records_tsv(&format!("{k}\t"), records)
 }
 
+/// The native builder's printed-names sidecar (backlog x24): every partition's printed records
+/// (card_engine `names_index::printed_records_of`), partition after partition, each line led by
+/// `<partition>\t` — the lines the nightly emits per build (`EMIT_PRINTED`) and its coordinator
+/// leads the same way, handed to the one encoder both publish with (src/engine/printed-names.ts).
+pub const PRINTED_NAMES_FILE: &str = "printed-names.tsv";
+
+/// Partition `k`'s printed records as blob lines, each led by `k\t`.
+pub fn partition_printed_tsv(k: usize, records: &[card_engine::PrintedRecord]) -> Result<Vec<u8>, String> {
+    card_engine::printed_records_tsv(&format!("{k}\t"), records)
+}
+
 #[cfg(test)]
 mod tests {
     use super::partition_names_tsv;
@@ -55,6 +66,16 @@ mod tests {
              3\t1f0\ttitanothrex\tTitanoth Rex\t\t\tgodzillaprimevalchampion:10\n"
         );
         assert_eq!(partition_names_tsv(0, &[]).expect("empty"), Vec::<u8>::new());
+    }
+
+    #[test]
+    fn spells_one_printed_line_per_card_led_by_its_partition() {
+        let records = vec![
+            card_engine::PrintedRecord { oracle: "unmooredego".into(), printed: vec!["egoaderiva".into(), "egoalladeriva".into()] },
+            card_engine::PrintedRecord { oracle: "guile".into(), printed: vec!["inganno".into()] },
+        ];
+        let got = String::from_utf8(super::partition_printed_tsv(4, &records).expect("spellable")).expect("utf-8");
+        assert_eq!(got, "4\tunmooredego\tegoaderiva\tegoalladeriva\n4\tguile\tinganno\n");
     }
 
     #[test]

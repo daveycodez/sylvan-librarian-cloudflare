@@ -758,6 +758,22 @@ export function load_names(gz) {
 }
 
 /**
+ * Replace this instance's printed names with a gzipped blob. Returns how many printed forms it
+ * holds. The previous list is dropped FIRST, so a reload reuses its memory instead of holding two.
+ * @param {Uint8Array} gz
+ * @returns {number}
+ */
+export function load_printed_names(gz) {
+    const ptr0 = passArray8ToWasm0(gz, wasm.__wbindgen_malloc);
+    const len0 = WASM_VECTOR_LEN;
+    const ret = wasm.load_printed_names(ptr0, len0);
+    if (ret[2]) {
+        throw takeFromExternrefTable0(ret[1]);
+    }
+    return ret[0] >>> 0;
+}
+
+/**
  * `/cards/named?fuzzy=` against THIS store in one call (LOCAL PATCH, Cloudflare port; backlog
  * n7): the exact stage, the typo stage and the containment stage together, so the partitioned
  * router asks each partition ONCE where it used to ask every partition three times over three
@@ -935,6 +951,44 @@ export function names_search_partitions(filter_tree_json, multilingual) {
         const ptr0 = passStringToWasm0(filter_tree_json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
         const len0 = WASM_VECTOR_LEN;
         const ret = wasm.names_search_partitions(ptr0, len0, multilingual);
+        var ptr2 = ret[0];
+        var len2 = ret[1];
+        if (ret[3]) {
+            ptr2 = 0; len2 = 0;
+            throw takeFromExternrefTable0(ret[2]);
+        }
+        deferred3_0 = ptr2;
+        deferred3_1 = len2;
+        return getStringFromWasm0(ptr2, len2);
+    } finally {
+        wasm.__wbindgen_free(deferred3_0, deferred3_1, 1);
+    }
+}
+
+/**
+ * Bytes the loaded printed names hold in linear memory (0 when none are loaded).
+ * @returns {number}
+ */
+export function printed_names_heap_bytes() {
+    const ret = wasm.printed_names_heap_bytes();
+    return ret >>> 0;
+}
+
+/**
+ * Backlog x24: the partitions holding a card whose foreign printed name, pooled with its oracle
+ * name, completes `words` (`printed::PrintedList::carriers`) — `{"partitions":[…]}`, ascending,
+ * possibly empty. `null` when this cannot say: no printed names loaded, or a word the blob's ASCII
+ * forms cannot answer. The caller then asks every partition, as it did before the blob.
+ * @param {string} words_json
+ * @returns {string}
+ */
+export function printed_names_partitions(words_json) {
+    let deferred3_0;
+    let deferred3_1;
+    try {
+        const ptr0 = passStringToWasm0(words_json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ret = wasm.printed_names_partitions(ptr0, len0);
         var ptr2 = ret[0];
         var len2 = ret[1];
         if (ret[3]) {
@@ -1424,6 +1478,23 @@ export function store_lz4_frame(index) {
  */
 export function store_name_records_tsv() {
     const ret = wasm.store_name_records_tsv();
+    if (ret[3]) {
+        throw takeFromExternrefTable0(ret[2]);
+    }
+    var v1 = getArrayU8FromWasm0(ret[0], ret[1]).slice();
+    wasm.__wbindgen_free(ret[0], ret[1] * 1, 1);
+    return v1;
+}
+
+/**
+ * The loaded STORE's own printed records (backlog x24), as the blob lines its build publishes,
+ * WITHOUT the partition lead — read back from the archive through the archived twin
+ * (`BufferStore::printed_records`). Verification only (the import harness, the real-corpus
+ * checks); nothing on a request path calls it.
+ * @returns {Uint8Array}
+ */
+export function store_printed_records_tsv() {
+    const ret = wasm.store_printed_records_tsv();
     if (ret[3]) {
         throw takeFromExternrefTable0(ret[2]);
     }

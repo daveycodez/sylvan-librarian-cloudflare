@@ -184,6 +184,10 @@ const EMIT_CORPUS: u32 = 12;
 /// `StoreStats::name_records`, no partition lead), the SAME lines the native builder appends to
 /// `card-names.tsv` once the coordinator leads them with the partition, so one encoder (src/engine/card-names.ts) publishes both builders' blobs.
 const EMIT_NAMES: u32 = 13;
+/// One partition build's printed records (backlog x24; `card_engine::printed_records_tsv` over
+/// `StoreStats::printed_records`, no partition lead), the SAME lines the native builder appends to
+/// printed-names.tsv; the coordinator leads each with the partition when it stages them.
+const EMIT_PRINTED: u32 = 14;
 
 /// The chunk every streamed snapshot export is cut into: the coordinator's STAGE_BLOB_BYTES, so
 /// each emit is exactly one staged row — the same cut the host used to make itself by slicing one
@@ -1445,6 +1449,14 @@ pub extern "C" fn build_store_stream() -> i64 {
             // leads each line with it when it stages them (import-coordinator.ts).
             match card_engine::name_records_tsv("", &stats.name_records) {
                 Ok(lines) => emit_bytes(EMIT_NAMES, &lines),
+                Err(e) => {
+                    log(&format!("build_store_stream: {e}"));
+                    return -1;
+                }
+            }
+            // x24: the partition's printed records, the same way (a few hundred KB of text).
+            match card_engine::printed_records_tsv("", &stats.printed_records) {
+                Ok(lines) => emit_bytes(EMIT_PRINTED, &lines),
                 Err(e) => {
                     log(&format!("build_store_stream: {e}"));
                     return -1;

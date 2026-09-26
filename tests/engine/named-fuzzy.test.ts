@@ -771,10 +771,79 @@ describe("a names-index plan asks only the partitions it names (n15)", () => {
 			log.mockRestore();
 		}
 		expect(lines.filter((l) => l.startsWith("cards/named fuzzy:"))).toEqual([
-			"cards/named fuzzy: plan=contained set=0 calls=10 status=miss wide=1 bundles=10",
-			"cards/named fuzzy: plan=typo set=0 calls=1 status=card wide=0 bundles=1",
+			"cards/named fuzzy: plan=contained set=0 calls=10 status=miss wide=1 bundles=10 printed=-",
+			"cards/named fuzzy: plan=typo set=0 calls=1 status=card wide=0 bundles=1 printed=-",
 			// A set scope is never planned: every partition, as before.
-			"cards/named fuzzy: plan=- set=1 calls=10 status=miss wide=- bundles=10",
+			"cards/named fuzzy: plan=- set=1 calls=10 status=miss wide=- bundles=10 printed=-",
+		]);
+	});
+
+	// ── x24: the build's printed-names blob settles the printed tier the index left `everywhere` ─────
+
+	test("x24: a miss the printed names settle is ONE call — the plan object's — and Scryfall's 404 byte for byte", async () => {
+		// The object's plan reached containment's printed tier (no English name carries the words),
+		// and the printed-names blob named no partition either: the needle is a 404 before any bundle.
+		for (const fuzzy of [
+			"blue creatures that combo infinitely",
+			"cards that lower equip cost",
+			"littlebones",
+			"blitzschlagg",
+			"ego a derva",
+			"mighty kobold",
+		]) {
+			const settled = { partitions: [], everywhere: false, stage: "miss", builtAt: "100", printed: "miss" as const };
+			const e = planned(recordedCase(fuzzy), settled);
+			const got = await respond(e.engine, fuzzy, "");
+			expect(got).toEqual(await respond(e.staged, fuzzy, ""));
+			expect(got.body).toBe(scryfall404(fuzzy));
+			expect(e.calls).toEqual([`plan:${plannerOf(fuzzy)}`]);
+		}
+	});
+
+	test("x24: a printed-name answer asks only the partitions the printed names hold", async () => {
+		// `red goad` is Unmoored Ego through its Portuguese name, which partition 9 holds; `blitzschlag`
+		// is carried by printed names in partitions 0 and 4, and the whole-name rank picks Lightning Bolt.
+		for (const [fuzzy, holders, name] of [
+			["red goad", [9], "Unmoored Ego"],
+			["blitzschlag", [0, 4], "Lightning Bolt"],
+		] as const) {
+			const plan = {
+				partitions: [...holders],
+				everywhere: false,
+				stage: "contained",
+				builtAt: "100",
+				printed: "hit" as const,
+			};
+			const e = planned(recordedCase(fuzzy), plan);
+			const got = await respond(e.engine, fuzzy, "");
+			expect(got).toEqual(await respond(e.staged, fuzzy, ""));
+			expect(JSON.parse(got.body).name).toBe(name);
+			expect(delivered(e.calls)).toEqual([...holders]);
+			expect(e.calls.length).toBe(1 + holders.filter((p) => p !== plannerOf(fuzzy)).length);
+		}
+	});
+
+	test("x24: the log line says what the printed names decided", async () => {
+		const lines: string[] = [];
+		const log = spyOn(console, "log").mockImplementation((line: unknown) => {
+			lines.push(String(line));
+		});
+		try {
+			const miss = { partitions: [], everywhere: false, stage: "miss", builtAt: "100", printed: "miss" as const };
+			await respond(planned(recordedCase("littlebones"), miss).engine, "littlebones", "");
+			const hit = { partitions: [9], everywhere: false, stage: "contained", builtAt: "100", printed: "hit" as const };
+			await respond(planned(recordedCase("red goad"), hit).engine, "red goad", "");
+			// No blob on this build (before the first nightly that publishes one): every partition, as before.
+			const absent = { ...everywhere, printed: "absent" as const };
+			await respond(planned(recordedCase("littlebones"), absent).engine, "littlebones", "");
+		} finally {
+			log.mockRestore();
+		}
+		const redGoadCalls = plannerOf("red goad") === 9 ? 1 : 2;
+		expect(lines.filter((l) => l.startsWith("cards/named fuzzy:"))).toEqual([
+			"cards/named fuzzy: plan=miss set=0 calls=1 status=miss wide=0 bundles=0 printed=miss",
+			`cards/named fuzzy: plan=contained set=0 calls=${redGoadCalls} status=card wide=0 bundles=1 printed=hit`,
+			"cards/named fuzzy: plan=contained set=0 calls=10 status=miss wide=1 bundles=10 printed=absent",
 		]);
 	});
 });

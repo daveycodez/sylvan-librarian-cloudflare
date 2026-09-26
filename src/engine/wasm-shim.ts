@@ -246,6 +246,13 @@ export interface EngineHandle {
 	names_fuzzy_plan(folded: string, wordsJson: string, floor: number, lead: number, weakBelow: number): string;
 	/** n15: this store's name records as blob lines (verification only). */
 	store_name_records_tsv(): Uint8Array;
+	/** x24: the corpus-wide printed names (a gzipped blob), replacing any loaded before. Returns the form count. */
+	load_printed_names(gz: Uint8Array): number;
+	printed_names_heap_bytes(): number;
+	/** x24: the partitions holding a printed name completing the words, `{"partitions":[…]}`, or `null`. */
+	printed_names_partitions(wordsJson: string): string;
+	/** x24: this store's printed records as blob lines (verification only). */
+	store_printed_records_tsv(): Uint8Array;
 	/** n8: the loaded store's own (collated, printed) pairs, JSON — verification only (the harness). */
 	store_autocomplete_names(): string;
 	exact_card_by_name(folded: string, setCode: string, fieldsJson: string): string;
@@ -335,6 +342,10 @@ export function engineFor(label: string): EngineHandle {
 		names_search_partitions: wrap("names_search_partitions"),
 		names_fuzzy_plan: wrap("names_fuzzy_plan"),
 		store_name_records_tsv: wrap("store_name_records_tsv"),
+		load_printed_names: wrap("load_printed_names"),
+		printed_names_heap_bytes: wrap("printed_names_heap_bytes"),
+		printed_names_partitions: wrap("printed_names_partitions"),
+		store_printed_records_tsv: wrap("store_printed_records_tsv"),
 		exact_card_by_name: wrap("exact_card_by_name"),
 		exact_name_rank: wrap("exact_name_rank"),
 		exact_name_probe: wrap("exact_name_probe"),

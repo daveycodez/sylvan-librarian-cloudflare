@@ -31,6 +31,7 @@ use wasm_bindgen::prelude::*;
 use card_engine::{AlignedVec, BufferStore, EngineError, QueryOptions};
 
 pub mod names;
+pub mod printed;
 
 thread_local! {
     /// The active store. Worker isolates are single-threaded, so a
@@ -53,6 +54,9 @@ thread_local! {
     /// The corpus-wide card names `/cards/autocomplete` answers from (backlog n8, names.rs) —
     /// independent of the store: a different blob, loaded on this object's first autocomplete.
     static NAMES: RefCell<Option<names::NameList>> = const { RefCell::new(None) };
+    /// The corpus-wide foreign printed names the fuzzy plan's printed tier reads (backlog x24,
+    /// printed.rs) — another blob, loaded only when a plan first reaches that tier.
+    static PRINTED: RefCell<Option<printed::PrintedList>> = const { RefCell::new(None) };
 }
 
 /// Prefix of every error that means THIS INSTANCE can no longer be trusted. The wasm target is
@@ -1274,6 +1278,56 @@ pub fn names_fuzzy_plan(folded: &str, words_json: &str, floor: f32, lead: f64, w
             None => "null".into(),
         })
     })
+}
+
+// ─── The printed-names blob (backlog x24) ─────────────────────────────────────
+// The fuzzy plan (names_fuzzy_plan) cannot decide containment's printed tier, and asked every
+// partition for it. The JS side (src/engine/store.ts `namesFuzzyPlan`) loads this blob — its own
+// SQLite cache first, KV once per generation — only when a plan reaches that tier, and asks which
+// partitions hold a printed name completing the words.
+
+/// Replace this instance's printed names with a gzipped blob. Returns how many printed forms it
+/// holds. The previous list is dropped FIRST, so a reload reuses its memory instead of holding two.
+#[wasm_bindgen]
+pub fn load_printed_names(gz: &[u8]) -> Result<u32, JsError> {
+    with_mut(&PRINTED, "printed", |p| *p = None).map_err(|e| JsError::new(&e))?;
+    let list = printed::PrintedList::from_gzip(gz).map_err(|e| JsError::new(&e))?;
+    let count = list.len() as u32;
+    with_mut(&PRINTED, "printed", |p| *p = Some(list)).map_err(|e| JsError::new(&e))?;
+    Ok(count)
+}
+
+/// Bytes the loaded printed names hold in linear memory (0 when none are loaded).
+#[wasm_bindgen]
+pub fn printed_names_heap_bytes() -> u32 {
+    PRINTED.with(|p| p.try_borrow().ok().and_then(|g| g.as_ref().map(|l| l.heap_bytes() as u32)).unwrap_or(0))
+}
+
+/// Backlog x24: the partitions holding a card whose foreign printed name, pooled with its oracle
+/// name, completes `words` (`printed::PrintedList::carriers`) — `{"partitions":[…]}`, ascending,
+/// possibly empty. `null` when this cannot say: no printed names loaded, or a word the blob's ASCII
+/// forms cannot answer. The caller then asks every partition, as it did before the blob.
+#[wasm_bindgen]
+pub fn printed_names_partitions(words_json: &str) -> Result<String, JsError> {
+    let words: Vec<String> =
+        serde_json::from_str(words_json).map_err(|e| JsError::new(&format!("bad words JSON: {e}")))?;
+    PRINTED.with(|p| {
+        let guard = p.try_borrow().map_err(|_| JsError::new(&poisoned("printed")))?;
+        let Some(list) = guard.as_ref() else { return Ok("null".into()) };
+        Ok(match list.carriers(&words) {
+            Some(partitions) => serde_json::json!({ "partitions": partitions }).to_string(),
+            None => "null".into(),
+        })
+    })
+}
+
+/// The loaded STORE's own printed records (backlog x24), as the blob lines its build publishes,
+/// WITHOUT the partition lead — read back from the archive through the archived twin
+/// (`BufferStore::printed_records`). Verification only (the import harness, the real-corpus
+/// checks); nothing on a request path calls it.
+#[wasm_bindgen]
+pub fn store_printed_records_tsv() -> Result<Vec<u8>, JsError> {
+    with_store(|store| card_engine::printed_records_tsv("", &store.printed_records()).map_err(|e| JsError::new(&e)))
 }
 
 /// The loaded STORE's own name records (backlog n15), as the blob lines its build publishes, WITHOUT

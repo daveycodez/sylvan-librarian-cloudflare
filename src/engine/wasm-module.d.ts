@@ -84,6 +84,10 @@ declare module "sylvan-engine-wasm" {
 		names_search_partitions(filterTreeJson: string, multilingual: boolean): string;
 		names_fuzzy_plan(folded: string, wordsJson: string, floor: number, lead: number, weakBelow: number): string;
 		store_name_records_tsv(): Uint8Array;
+		load_printed_names(gz: Uint8Array): number;
+		printed_names_heap_bytes(): number;
+		printed_names_partitions(wordsJson: string): string;
+		store_printed_records_tsv(): Uint8Array;
 		exact_card_by_name(folded: string, setCode: string, fieldsJson: string): string;
 		exact_name_rank(folded: string, setCode: string): string;
 		exact_name_probe(folded: string, setCode: string, fieldsJson: string): string;
