@@ -168,15 +168,29 @@ export function unreachableEngine(
  * them, so every nightly notified them, and each logged "REFUSING a pushed manifest this object
  * cannot serve" at ERROR — five a night on DeckGen, noise that looked like a failure. Retiring
  * releases their old store and deletes the announcement, so it happens once.
+ *
+ * `beyond`: a partition object whose index the published build no longer has — N shrank. Since
+ * x28 N is re-chosen every build from the corpus's own layout (src/import-sizing.ts), and a corpus
+ * whose largest partition sits at the sizing ceiling can step 11 -> 12 one night and back the next
+ * (draft bytes move with prices). No route addresses p11 under an 11-partition manifest, and
+ * preparing it would ask it to load a partition the manifest holds no record for
+ * (archiveOfManifest refuses) — so it is released instead, and re-created by its first request if
+ * N grows back.
  */
 export function notifyRetireReason(
 	parsed: { region: string; generation?: number; partition?: number },
 	manifest: { placement?: PlacementBlock; partition_count?: number } | null | undefined,
-): "unreachable" | "unpartitioned" | null {
+): "unreachable" | "unpartitioned" | "beyond" | null {
 	if (unreachableEngine(parsed, manifest?.placement)) return "unreachable";
 	// Only against a partitioned manifest: were the published store ever unpartitioned, these would
 	// be the objects that serve it, not leftovers.
 	if (manifest?.partition_count !== undefined && parsed.partition === undefined) return "unpartitioned";
+	if (
+		manifest?.partition_count !== undefined &&
+		parsed.partition !== undefined &&
+		parsed.partition >= manifest.partition_count
+	)
+		return "beyond";
 	return null;
 }
 

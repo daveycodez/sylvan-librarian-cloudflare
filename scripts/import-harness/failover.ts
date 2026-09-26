@@ -41,7 +41,7 @@ import { FakeKV, MeteredStorage } from "./storage";
 type Coordinator = { fetch(request: Request): Promise<Response>; alarm(): Promise<void> };
 
 const PRINTINGS = 6000;
-const PARTITION_BYTES = 4_000_000;
+const PARTITION_CEILING_BYTES = 5_400_000;
 const STAGING_TABLES = [
 	"chunk_staging",
 	"ordered_rows",
@@ -80,7 +80,7 @@ class Instance {
 			STORE_KV: kv,
 			SCRYFALL_BULK_URL: `${server.url}/bulk-data`,
 			SCRYFALL_API_URL: server.url,
-			IMPORT_TARGET_PARTITION_BYTES: String(PARTITION_BYTES),
+			IMPORT_PARTITION_CEILING_BYTES: String(PARTITION_CEILING_BYTES),
 		};
 		const ctx = {
 			storage: this.storage,

@@ -199,6 +199,13 @@ describe("notifyRetireReason — what the publish fan-out retires instead of not
 		expect(notifyRetireReason({ region: "apac", partition: 9 }, partitioned)).toBeNull();
 	});
 
+	test("a partition the build no longer has is retired, not prepared — N shrank (x28)", () => {
+		// N is re-chosen every build; a corpus at the sizing ceiling can step down a night.
+		expect(notifyRetireReason({ region: "enam", partition: 10 }, partitioned)).toBe("beyond");
+		expect(notifyRetireReason({ region: "weur", generation: 0, partition: 47 }, partitioned)).toBe("beyond");
+		expect(notifyRetireReason({ region: "enam", partition: 10 }, { partition_count: 11 })).toBeNull();
+	});
+
 	test("against an unpartitioned manifest nothing is retired for lacking a partition", () => {
 		expect(notifyRetireReason({ region: "enam" }, {})).toBeNull();
 		expect(notifyRetireReason({ region: "enam" }, null)).toBeNull();

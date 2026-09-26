@@ -1798,9 +1798,9 @@ fn cmd_compare(a_path: &Path, b_path: &Path) {
 ///
 /// CARD-PARTITIONING §6 originally asked for "byte-identical envelopes, partitioned vs
 /// unpartitioned". That criterion is unachievable and was never met: there IS no unpartitioned
-/// build. `partition_count_for` clamps at `MIN_PARTITIONS = 2`, `writeManifest` refuses a manifest
+/// build. The partition sizing clamps at `MIN_PARTITIONS = 2`, `writeManifest` refuses a manifest
 /// without partitions, and a single archive over the multilingual corpus aborts under the 124MiB
-/// cap by design (the N=1 shape is superlinear — see `SPILLED_DRAFT_TO_STORE_RATIO`). The old
+/// cap by design (the N=1 shape is superlinear — see `choose_partition_count` in lib.rs). The old
 /// single-archive gate step was deleted rather than fixed, correctly, and that left the cut proven
 /// on a small fixture, the merge proven in isolation
 /// (`partitioned_key_streams_merge_to_the_unpartitioned_order`), and NOTHING joining the two.

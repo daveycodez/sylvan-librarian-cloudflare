@@ -175,6 +175,7 @@ import {
 	formatManifestKey,
 	formatOfManifestKey,
 	gzipBytes,
+	KV_CHUNK_BYTES,
 	KV_CHUNK_BYTES_SAFE,
 	KV_VALUE_CAP_BYTES,
 	MANIFEST_KEY,
@@ -242,21 +243,29 @@ import {
 	initialPpPublish,
 	type PpPublish,
 	parsePpPublish,
-	partitionCountFor,
 	publishChunkTotal,
 	recordBuild,
 	recordChunk,
 	restartAtSafeCut,
 	serializePpPublish,
-	TARGET_PARTITION_BYTES,
 } from "./import-publish";
 import { PURGE_TABLES, type PurgeScope, type PurgeTable, planPurgeSlice } from "./import-purge";
 import { InflateRecodeSource, MEMBER_RAW_BYTES, type ResumableInflate, skipBytes } from "./import-recode";
+import {
+	CardBytes,
+	choosePartitionCountFor,
+	DRAFT_FRAME_BYTES,
+	PARTITION_CEILING_BYTES,
+	PARTITION_PROJECTION_META,
+	projectedPartitionCount,
+	projectionDriftWarning,
+} from "./import-sizing";
 import {
 	blobBytes,
 	blobGroups,
 	bucketDrafts,
 	DRAFT_BATCH_BYTES,
+	DRAFT_LEN_BYTES,
 	exactBuffer,
 	feedSlices,
 	lengthPrefixed,
@@ -264,6 +273,7 @@ import {
 	type PackedDraftGroup,
 	packedDraftGroups,
 	packPartHashes,
+	packPartLens,
 	reorderSlice,
 	routingStagingRows,
 	STAGED_ROW_BYTES,
@@ -798,7 +808,11 @@ export class ImportCoordinator extends DurableObject<Env> {
 			-- is a parallel vector and a full hash rather than a per-draft INTEGER or
 			-- a partition index). stepBucket re-mods it by the partition_count the
 			-- build chose (bucketDrafts) and moves each draft into draft_parts.
-			CREATE TABLE IF NOT EXISTS draft_batches (seq INTEGER PRIMARY KEY, count INTEGER NOT NULL, bytes BLOB NOT NULL, part_hashes BLOB);
+			-- part_lens: count × 4 bytes, little-endian u32 — the i-th entry is that same
+			-- draft's JSON length. With part_hashes it is the whole input of the partition
+			-- count (src/import-sizing.ts): the tags phase reads these two columns alone,
+			-- never the drafts, and sizes N on its largest partition.
+			CREATE TABLE IF NOT EXISTS draft_batches (seq INTEGER PRIMARY KEY, count INTEGER NOT NULL, bytes BLOB NOT NULL, part_hashes BLOB, part_lens BLOB);
 			-- The same drafts, re-bucketed by partition once N is known (stepBucket):
 			-- partition k's drafts in emission order, in byte-capped length-prefixed
 			-- groups. The composite key is what makes a partition's agg and finalize
@@ -874,6 +888,15 @@ export class ImportCoordinator extends DurableObject<Env> {
 		);
 		if (rawLenCols.length === 0) {
 			this.sqlRun("ALTER TABLE draft_batches ADD COLUMN raw_len INTEGER");
+		}
+		// part_lens (x28): additive and nullable, like raw_len. A row staged before it reads NULL,
+		// which choosePartitionCount treats as "this run began before the sizing input existed" and
+		// sizes that one run on the mean projection instead.
+		const partLensCols = this.sqlAll<{ name: string }>(
+			"SELECT name FROM pragma_table_info('draft_batches') WHERE name = 'part_lens'",
+		);
+		if (partLensCols.length === 0) {
+			this.sqlRun("ALTER TABLE draft_batches ADD COLUMN part_lens BLOB");
 		}
 		// A live instance's routing_keys predates the oracle index's `pairs` column. Additive and
 		// nullable: a row staged without it reads NULL, which stepOracleIndex treats as "this run
@@ -2520,12 +2543,13 @@ export class ImportCoordinator extends DurableObject<Env> {
 			const tail = exhausted ? undefined : groups.pop();
 			for (const group of groups) {
 				this.sqlRun(
-					"INSERT INTO draft_batches (seq, count, bytes, part_hashes, raw_len) VALUES (?, ?, ?, ?, ?)",
+					"INSERT INTO draft_batches (seq, count, bytes, part_hashes, raw_len, part_lens) VALUES (?, ?, ?, ?, ?, ?)",
 					++seq,
 					group.end - group.start,
 					exactBuffer(group.packed),
 					exactBuffer(packPartHashes(allHashes.slice(group.start, group.end))),
 					group.raw,
+					exactBuffer(packPartLens(allDrafts.slice(group.start, group.end))),
 				);
 			}
 			this.storePendingDrafts(tail ? { ...tail, hashes: allHashes.slice(tail.start, tail.end) } : null);
@@ -2610,6 +2634,92 @@ export class ImportCoordinator extends DurableObject<Env> {
 
 	// ── phase: tags ────────────────────────────────────────────────────────────
 
+	/**
+	 * N for tonight's loop (src/import-sizing.ts): the smallest partition count whose LARGEST
+	 * partition projects under the ceiling, from every staged draft's partition hash and JSON
+	 * length — draft_batches' part_hashes and part_lens, read here and nowhere else, never the
+	 * drafts themselves. The deploy's native builder makes the same choice from the same pairs.
+	 *
+	 * A run that began before part_lens existed has rows that read NULL; that one run is sized on
+	 * the mean projection (`projectedPartitionCount`) and says so, rather than guessing lengths.
+	 *
+	 * The ceiling is overridable for ONE caller — the local end-to-end harness
+	 * (scripts/import-harness), whose corpus is small enough that the real ceiling would always
+	 * yield MIN_PARTITION_COUNT. Same posture as SCRYFALL_BULK_URL: never set in wrangler.jsonc,
+	 * so production reads the constant.
+	 */
+	private choosePartitionCount(): { n: number; projected: number[] | null } {
+		const ceiling =
+			Number((this.env as { IMPORT_PARTITION_CEILING_BYTES?: string }).IMPORT_PARTITION_CEILING_BYTES) ||
+			PARTITION_CEILING_BYTES;
+		const totals = this.sqlAll<{ drafts: number; raw: number; unsized: number }>(
+			"SELECT COALESCE(SUM(count), 0) AS drafts, COALESCE(SUM(COALESCE(raw_len, length(bytes))), 0) AS raw, " +
+				"COALESCE(SUM(part_lens IS NULL OR part_hashes IS NULL), 0) AS unsized FROM draft_batches WHERE seq >= 0",
+		)[0] ?? { drafts: 0, raw: 0, unsized: 0 };
+		const drafts = Number(totals.drafts);
+		if (Number(totals.unsized) > 0) {
+			// raw_len frames each draft with a 4-byte length; the sizing counts the 8-byte hash.
+			const framed = Number(totals.raw) + (DRAFT_FRAME_BYTES - 4) * drafts;
+			const n = projectedPartitionCount(framed, ceiling);
+			console.warn(
+				`Partition loop: ${framed} staged draft bytes project to ${n} partition(s) on the MEAN — ` +
+					`${totals.unsized} staged batch(es) predate part_lens (a run begun before x28), so this run ` +
+					"cannot be sized on its largest partition",
+			);
+			return { n, projected: null };
+		}
+		// Two passes, so no more than one 8-byte hash per draft is ever held (src/import-sizing.ts's
+		// CardBytes): the distinct cards first, then every draft's framed bytes onto its card.
+		const batches = (columns: string) =>
+			this.sqlIter<{ count: number; part_hashes: ArrayBuffer; part_lens: ArrayBuffer }>(
+				`SELECT count, ${columns} FROM draft_batches WHERE seq >= 0 ORDER BY seq`,
+			);
+		const hashes = new BigUint64Array(drafts);
+		let at = 0;
+		for (const row of batches("part_hashes")) {
+			const h = blobBytes(row.part_hashes);
+			const count = Number(row.count);
+			if (h.length !== count * 8 || at + count > drafts) {
+				throw new FatalImportError(`draft batch carries ${count} drafts but ${h.length}B of hashes`);
+			}
+			const hv = new DataView(h.buffer, h.byteOffset, h.byteLength);
+			for (let i = 0; i < count; i++) hashes[at++] = hv.getBigUint64(i * 8, true);
+		}
+		const corpus = CardBytes.distinct(hashes);
+		for (const row of batches("part_hashes, part_lens")) {
+			const h = blobBytes(row.part_hashes);
+			const l = blobBytes(row.part_lens);
+			const count = Number(row.count);
+			if (l.length !== count * DRAFT_LEN_BYTES) {
+				throw new FatalImportError(`draft batch carries ${count} drafts but ${l.length}B of lengths`);
+			}
+			const hv = new DataView(h.buffer, h.byteOffset, h.byteLength);
+			const lv = new DataView(l.buffer, l.byteOffset, l.byteLength);
+			for (let i = 0; i < count; i++) corpus.add(hv.getBigUint64(i * 8, true), lv.getUint32(i * DRAFT_LEN_BYTES, true));
+		}
+		if (corpus.drafts !== drafts) {
+			throw new FatalImportError(`sized ${corpus.drafts} drafts but draft_batches counts ${drafts}`);
+		}
+		const c = choosePartitionCountFor(corpus, ceiling);
+		console.log(
+			`Partition loop: ${c.framedBytes} staged draft bytes in ${c.drafts} drafts of ${c.cards} cards -> ` +
+				`${c.n} partition(s): largest p${c.largestAt} projects to ${c.largest} bytes (ceiling ${ceiling}, ` +
+				`cut ${KV_CHUNK_BYTES})${c.clamped ? " — CLAMPED at MAX_PARTITION_COUNT: no N in range fits the ceiling" : ""}`,
+		);
+		return { n: c.n, projected: c.projected };
+	}
+
+	/** Partition k's projected archive bytes, as the tags phase sized the loop — or null. */
+	private partitionProjection(k: number): number | null {
+		try {
+			const projected = JSON.parse(this.metaGet(PARTITION_PROJECTION_META) ?? "[]") as unknown;
+			const value = Array.isArray(projected) ? Number(projected[k]) : Number.NaN;
+			return Number.isFinite(value) && value > 0 ? value : null;
+		} catch {
+			return null;
+		}
+	}
+
 	private async stepTags(): Promise<void> {
 		// Tag dumps are small next to default_cards; both fit one slice. The
 		// TagData snapshot persists so later phases survive eviction.
@@ -2622,6 +2732,13 @@ export class ImportCoordinator extends DurableObject<Env> {
 		// its own group instance. Dropping any group left in this isolate (a run that died
 		// mid-loop) is the same move for the same reason.
 		dropGroupWasm();
+		// Size the partition loop HERE, while everything it needs is already durable — the drafts
+		// are fully staged (transform completed before this phase), each with its partition hash and
+		// JSON length — and FIRST, before this phase's wasm holds the tag corpus: the sizing's
+		// buffers (one 8-byte hash per draft, ~4MB today) are garbage before that heap exists. N is
+		// the smallest count whose LARGEST partition projects under the ceiling (src/import-sizing.ts),
+		// the choice the deploy's native builder makes from the same drafts.
+		const sizing = this.choosePartitionCount();
 		const wasm = transientWasm();
 		wasm.reset();
 		for (const [kind, code] of [
@@ -2672,34 +2789,10 @@ export class ImportCoordinator extends DurableObject<Env> {
 		wasm.setHandlers({});
 		if (!tagAliasesJson) throw new Error("tags: the wasm import emitted no alias map");
 
-		// Size the partition loop HERE, while everything it needs is already
-		// durable: the drafts are fully staged (transform completed before this
-		// phase), so the sum of their RAW sizes (raw_len; the rows themselves are
-		// compressed) is the whole corpus, and the projection
-		// (bytes × DRAFT_TO_STORE_RATIO / TARGET_PARTITION_BYTES, clamped) is a
-		// pure function of it. N and built_at are persisted in the SAME
-		// transaction that opens the loop, so a mid-loop restart can fork
-		// neither: the store keys, the chunk keys, and every draft's partition
+		// N and built_at are persisted in the SAME transaction that opens the loop, so a mid-loop
+		// restart can fork neither: the store keys, the chunk keys, and every draft's partition
 		// assignment all derive from these two values (plan B3 / Decision 3b).
-		const stagedDraftBytes = Number(
-			this.sqlAll<{ n: number }>(
-				"SELECT COALESCE(SUM(COALESCE(raw_len, length(bytes))), 0) AS n FROM draft_batches WHERE seq >= 0",
-			)[0]?.n ?? 0,
-		);
-		// The target is overridable for ONE caller — the local end-to-end
-		// harness (scripts/import-harness), whose corpus is small enough that
-		// the real target would always yield MIN_PARTITION_COUNT. Same posture
-		// as SCRYFALL_BULK_URL above: never set in wrangler.jsonc, so
-		// production reads the constant.
-		const targetBytes =
-			Number((this.env as { IMPORT_TARGET_PARTITION_BYTES?: string }).IMPORT_TARGET_PARTITION_BYTES) ||
-			TARGET_PARTITION_BYTES;
-		const partitionCount = partitionCountFor(stagedDraftBytes, targetBytes);
-		console.log(
-			`Partition loop: ${stagedDraftBytes} staged draft bytes project to ${partitionCount} partition(s) ` +
-				`of ~${(targetBytes / 1048576).toFixed(0)}MB`,
-		);
-
+		const partitionCount = sizing.n;
 		this.ctx.storage.transactionSync(() => {
 			// Overwrites the canonical phase's snapshot, deliberately: the canonical
 			// set was consumed when transform completed, and from here every restart
@@ -2721,6 +2814,9 @@ export class ImportCoordinator extends DurableObject<Env> {
 			// The loop's one durable cursor: partition 0, step agg, N zeroed
 			// records. Its length IS the persisted N — there is no second copy.
 			this.metaSet("pp_publish", serializePpPublish(initialPpPublish(partitionCount)));
+			// What each partition was projected to, for its build to be logged against (x28). An empty
+			// list when the run was sized on the mean and has no per-partition projection.
+			this.metaSet(PARTITION_PROJECTION_META, JSON.stringify(sizing.projected ?? []));
 			// Progressive staging purge: this phase is the only consumer of the
 			// tags dumps and the labels dump, and the TagData snapshot just
 			// written above is what every restart path restores from
@@ -3760,11 +3856,17 @@ export class ImportCoordinator extends DurableObject<Env> {
 		// The tail is unlikely to be a whole grid chunk.
 		for (const chunk of grid.end()) stage(chunk);
 		const heap = wasm.heap();
+		const projected = this.partitionProjection(pp.partition);
 		console.log(
 			`Store built (partition ${pp.partition}): ${totalBytes} bytes in ${chunkSeq + 1} chunks, ` +
 				`${Date.now() - buildStart}ms (wasm heap peak ${(heap.peak / 1048576).toFixed(1)}MB, ` +
-				`linear memory ${(heap.linear / 1048576).toFixed(1)}MB)`,
+				`linear memory ${(heap.linear / 1048576).toFixed(1)}MB)` +
+				(projected
+					? `; projected ${projected} (${(((Number(totalBytes) - projected) / projected) * 100).toFixed(2)}%)`
+					: ""),
 		);
+		const drift = projected ? projectionDriftWarning(pp.partition, Number(totalBytes), projected) : null;
+		if (drift) console.warn(drift);
 		this.ctx.storage.transactionSync(() => {
 			// The partition's build outputs and a zeroed publish cursor, one
 			// transition (see recordBuild). built_at and format_version are NOT
@@ -3797,7 +3899,7 @@ export class ImportCoordinator extends DurableObject<Env> {
 		// slices (plan B3: dropGroupWasm after each build(p), §5.5
 		// emit-one-release-one). Linear memory peaks at 90-106MB per partition and
 		// never shrinks, and publish's assembleChunk holds the WHOLE raw partition
-		// (up to ~46MB, one chunk since TARGET_PARTITION_BYTES) plus its gzip output
+		// (one chunk, under ~43.7MB since x28's sizing) plus its gzip output
 		// — up to ~60MB — which cannot share a 128MB isolate with it. Dropping it
 		// here only makes the memory COLLECTABLE; it is reclaimed at the next GC,
 		// which is why the gate's wasm fit step fails at 112MB, not at the 124MiB

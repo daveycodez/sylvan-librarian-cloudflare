@@ -8,7 +8,7 @@
 // record, not a share of a bigger one — streamed KV → wasm linear memory in 4MB
 // blocks (see load-blocks.ts). No full-archive JS buffer ever exists, keeping
 // peak isolate usage inside the 128MB limit. Partition size is chosen by the
-// builder (TARGET_PARTITION_BYTES, src/import-publish.ts) and read from the
+// builder (src/import-sizing.ts) and read from the
 // manifest, so there is no store-wide byte figure to quote here; dated for scale,
 // on 2026-08-16 the ten partitions averaged ~41MB raw. The block size is chosen
 // independently of however KV and DecompressionStream cut the bytes up, which is

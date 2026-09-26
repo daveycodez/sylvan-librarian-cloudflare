@@ -20,27 +20,10 @@
 import { chunkCountFor, KV_CHUNK_BYTES, KV_CHUNK_BYTES_SAFE } from "./engine/store-kv";
 
 // ─── partition count (plan Decision 3b) ──────────────────────────────────────
-
-/**
- * Target RAW archive bytes per partition, the knob N is derived from.
- *
- * MUST STAY <= KV_CHUNK_BYTES, and that is the binding reason for the value.
- * `kvArchiveStream` pulls a partition's chunks strictly in sequence (the
- * do-not-parallelize note in store-kv.ts), so a partition whose raw bytes cross
- * the chunk cut costs an extra sequential round trip on every cold load. At
- * 48_000_000 — above the 46_000_000 cut — the real corpus measured 42-46MB
- * partitions and five of eight took a second, nearly-empty chunk: 13 chunks
- * where the design says 8. 43MB sits under the cut with room for the
- * projection's own error, and lands today's corpus on nine ~40MB partitions,
- * one chunk each.
- *
- * It also keeps a partition's build inside the wasm import's memory class (the
- * single-archive build peaked at 120.9MiB against the 124MiB cap at 83.9MB of
- * archive — see the gate tripwire; measured per-partition builds run 35-46MB).
- * The router never sees this number — it reads partition_count from the
- * manifest.
- */
-export const TARGET_PARTITION_BYTES = 43_000_000;
+//
+// N itself is chosen in src/import-sizing.ts (backlog x28): the smallest count whose LARGEST
+// partition projects under the KV chunk cut less a 5% margin. What lives here are the bounds it
+// chooses within, which the loop state below and the routing filter also depend on.
 
 /**
  * The floor. Two, not one, so the partitioned pipeline is genuinely exercised
@@ -51,10 +34,11 @@ export const TARGET_PARTITION_BYTES = 43_000_000;
 export const MIN_PARTITION_COUNT = 2;
 
 /**
- * The ceiling, a safety rail rather than a plan: 48 partitions of the 43MB target is ~2.06GB of
- * projected store, 4.8x today's corpus (N=10 on ~427MB projected). Hitting it means the projection
- * input is garbage (and N should not amplify the garbage), or the corpus grew past every budget in
- * this deployment and needs a human anyway.
+ * The ceiling, a safety rail rather than a plan: 48 partitions each held under the sizing ceiling
+ * (src/import-sizing.ts, 43.3MB projected for the largest, ~39-41MB for the typical one) is ~1.9GB
+ * of store, ~4.4x today's corpus (N=11 on 430.6MB). Hitting it means the sizing input is garbage
+ * (and N should not amplify the garbage), or the corpus grew past every budget in this deployment
+ * and needs a human anyway.
  *
  * WHY A CEILING HERE IS A MEMORY QUESTION. Past the ceiling N stops growing and every partition
  * grows instead — and a partition's build is the nightly's memory peak. Measured with the import
@@ -64,8 +48,8 @@ export const MIN_PARTITION_COUNT = 2;
  * archive byte): N=10/20/30 build at 98.9 / 103.2 / 106.8MB at 1x / 2x / 3x. At 4x, 32 partitions
  * of ~50MB built at 106-122MB and the 18th TRAPPED (`build_store_stream` unreachable), so the run
  * failed; 40 partitions of ~41MB built at 101-103MB and published. The ceiling of 32 bound at
- * ~3.2x the real corpus (1.77GB staged x 3.24 x 0.24 / 43MB = 32). At 48 partitions stay at the
- * target through 4.8x. Since backlog x14 (the store build allocates its grouping vectors once, at
+ * ~3.2x the real corpus (1.77GB staged x 3.24 x 0.24 / 43MB = 32, under the mean rule x28 replaced).
+ * At 48 partitions stay under the sizing ceiling through ~4.4x. Since backlog x14 (the store build allocates its grouping vectors once, at
  * their final length, instead of doubling the annex past 32,768 rows) the same runs build at
  * 68.8 / 71.4 / 72.4MB at 1x / 2x / 3x and at 71.9MB at 4x (N=40): a ~41MB partition's build is
  * no longer near the cap, but a partition's size is still what its build costs.
@@ -86,65 +70,10 @@ export const MIN_PARTITION_COUNT = 2;
  *     (tests/engine/routing-filter.test.ts pins it at this ceiling);
  *   - the bucket phase holds one PackStream per partition, ~0.4MB each (6MB more at 48 than 32).
  *
- * The Rust builder's `MAX_PARTITIONS` (engine/builder/src/lib.rs) is the same number for the
+ * The Rust builder's `MAX_PARTITIONS` (engine/builder/src/sizing.rs) is the same number for the
  * deploy path's `--partitions auto` — keep the two in step.
  */
 export const MAX_PARTITION_COUNT = 48;
-
-/**
- * PARTITIONED archive bytes produced per byte of staged draft JSON — the
- * projection ratio.
- *
- * MEASURED AT G2 on the real all_cards corpus (2026-08-15, 517,746 drafts =
- * 1,480,683,467 staged bytes): the N=8 build totals 353.3MB of archives
- * (0.239 archive bytes per draft byte; N=32 measures 0.247). 0.24 projects
- * tonight's corpus to N=8; 0.25 would round to N=9, erring toward more
- * partitions, which costs alarms rather than the memory cap. The pre-G2
- * placeholder was 0.95, derived from the English-only gen-19 archive —
- * printed_text interning (426k names -> 247k uniques; text deduped by
- * (oracle, lang) across reprints) is why the multilingual ratio is 4x lower.
- *
- * NEVER project from a single-archive measurement: the N=1 shape is
- * SUPERLINEAR (same corpus builds 1,792.8MB unpartitioned vs 353.3MB at N=8 —
- * a ~1.4GB quadratic-class index appears only at full single-archive scale,
- * ratio 1.211), which is exactly the mistake that made the builder's auto arm
- * clamp to N=32. The Rust builder's auto projection uses this same constant
- * and derivation — keep the two comments twinned.
- */
-export const DRAFT_TO_STORE_RATIO = 0.24;
-
-/** Projected RAW archive bytes for a corpus staged as `stagedDraftBytes` of draft JSON. */
-export function projectedStoreBytes(stagedDraftBytes: number): number {
-	return Math.ceil(stagedDraftBytes * DRAFT_TO_STORE_RATIO);
-}
-
-/**
- * The partition count for tonight's corpus:
- * clamp(ceil(projected_store_bytes / TARGET_PARTITION_BYTES), MIN, MAX).
- *
- * Computed ONCE, when the loop starts (end of tags, drafts fully staged), and
- * persisted as pp_publish's partitions[].length — a mid-loop restart reads the
- * persisted state and can never re-derive a different N, which matters because
- * N is baked into every already-published chunk key and every draft's
- * partition assignment.
- *
- * `targetBytes` exists for ONE caller: the local end-to-end harness
- * (scripts/import-harness), which runs a corpus a fiftieth of the real one and
- * would otherwise always land on MIN_PARTITION_COUNT — a two-partition loop has
- * a first partition and a last one and no partition that is neither, which is
- * exactly the position (partition 2 of 10) the 2026-08-28 production run died
- * in. Production never passes it; the default IS TARGET_PARTITION_BYTES.
- */
-export function partitionCountFor(stagedDraftBytes: number, targetBytes = TARGET_PARTITION_BYTES): number {
-	if (!Number.isFinite(stagedDraftBytes) || stagedDraftBytes < 0) {
-		throw new Error(`cannot size partitions from ${stagedDraftBytes} staged draft bytes`);
-	}
-	if (!Number.isFinite(targetBytes) || targetBytes <= 0) {
-		throw new Error(`cannot size partitions against a ${targetBytes}-byte target`);
-	}
-	const wanted = Math.ceil(projectedStoreBytes(stagedDraftBytes) / targetBytes);
-	return Math.min(MAX_PARTITION_COUNT, Math.max(MIN_PARTITION_COUNT, wanted));
-}
 
 // ─── the pp_publish value ────────────────────────────────────────────────────
 

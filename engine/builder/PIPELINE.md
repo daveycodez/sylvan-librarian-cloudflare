@@ -107,11 +107,12 @@ of a stream is the parse-coverage integrity check — also fatal.
 
 `--partitions auto|N` (both `scripts/seed-local.sh` and
 `scripts/import-store.sh` pass it). `auto` is plan Decision 3b: N is projected
-from the build's own measured byte accounting rather than configured, as
-`clamp(ceil(projected_store_bytes / TARGET_PARTITION_BYTES), 2, 32)` with
-`TARGET_PARTITION_BYTES = 43_000_000`. `src/import-publish.ts`'s
-`partitionCountFor` is the line-for-line twin on the nightly side, and the two
-constants' doc comments are explicitly kept in step.
+from the build's own staged drafts rather than configured — since x28, the
+smallest N in [2, 48] whose LARGEST partition, projected from its cards and
+framed draft bytes (`src/sizing.rs`), fits `PARTITION_CEILING_BYTES`
+(43,267,326: the 46MB KV chunk cut less a 5% margin, less 1% projection error).
+`src/import-sizing.ts` is the line-for-line twin on the nightly side;
+`tests/engine/partition-sizing-vectors.json` holds the two equal.
 
 The hash is `PARTITION_HASH_ALGO = "fnv1a64/oracle_id/v1"`, and the builder
 asserts its own agreement with `tests/engine/partition-hash-vectors.json` at

@@ -21,7 +21,8 @@ import {
 	STREAMED_KINDS,
 	TRANSFORM_KIND,
 } from "../../src/import-phases";
-import { MIN_PARTITION_COUNT, partitionCountFor } from "../../src/import-publish";
+import { MIN_PARTITION_COUNT } from "../../src/import-publish";
+import { choosePartitionCount, projectedPartitionCount } from "../../src/import-sizing";
 
 /** Walk the chain from the first fetch to the canonical phase, exactly as
  * listing and advanceFetch drive it: fetch → fetch → … → canonical. */
@@ -81,11 +82,12 @@ describe("the build loop's width", () => {
 	test("the partition count is auto-scaled, never a constant, with a floor of 2", () => {
 		// The floor is what guarantees partition boundaries are exercised on every
 		// run — there is no N=1 shape any more for a run to collapse into.
-		expect(partitionCountFor(0)).toBe(MIN_PARTITION_COUNT);
+		expect(choosePartitionCount(new BigUint64Array(0), new Uint32Array(0)).n).toBe(MIN_PARTITION_COUNT);
 		expect(MIN_PARTITION_COUNT).toBe(2);
-		// The measured 2026-08-15 corpus: 1,480,683,467 draft bytes → N=9 at the
-		// 43MB target (one KV chunk per partition — see TARGET_PARTITION_BYTES).
-		expect(partitionCountFor(1_480_683_467)).toBe(9);
+		// Sized on the largest partition of the staged drafts' own layout (x28): the 2026-09-26 corpus
+		// (1,785MB of framed drafts) is 11 partitions where the mean rule said 10 — see
+		// partition-sizing.test.ts. The layout-free projection agrees in direction.
+		expect(projectedPartitionCount(0)).toBe(MIN_PARTITION_COUNT);
 	});
 });
 

@@ -363,7 +363,7 @@ describe("name keys (backlog n6)", () => {
 	test("at the build's partition ceiling every partition can answer `sole` AND `served`", () => {
 		// A name served in partition s is stored as N + s, one byte a cell with 255 reserved — so the
 		// last partition's served value, 2N - 1, fits only while N <= 127. Built AT the ceiling
-		// partitionCountFor can choose, so raising MAX_PARTITION_COUNT past the encoding fails here
+		// src/import-sizing.ts can choose, so raising MAX_PARTITION_COUNT past the encoding fails here
 		// rather than quietly turning the top partitions' served names into full fan-outs.
 		const n = MAX_PARTITION_COUNT;
 		expect(2 * n - 1).toBeLessThan(255);

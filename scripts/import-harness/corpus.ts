@@ -82,8 +82,11 @@ interface Derived {
 /**
  * The derived dumps' own version, in their cache file's name: a change to `derive` must not read a
  * cache written by the old one. v2 (backlog n13): face-level flavor names. v3: reversible printings.
+ * v4 (x28): the same dumps, cached as all_cards beside a JSON of the rest — one JSON string of the
+ * whole thing passed the engine's string limit at 18,000 printings (3x the default corpus), so the
+ * 3x run died in `JSON.stringify` before its first alarm.
  */
-const DERIVE_VERSION = 3;
+const DERIVE_VERSION = 4;
 
 /**
  * Face-level flavor names on a few faced printings (backlog n13). memprobe emits none, and the real
@@ -255,13 +258,21 @@ export async function buildCorpus(printings: number, cacheRoot: string): Promise
 		renameSync(`${bulkPath}.tmp`, bulkPath);
 	}
 
+	// Two files, the JSON renamed in LAST: a harness that finds it can conclude all_cards is complete.
 	const derivedPath = join(dir, `derived-v${DERIVE_VERSION}.json`);
+	const allCardsPath = join(dir, `derived-v${DERIVE_VERSION}.all_cards.jsonl`);
 	let derived: Derived;
-	if (existsSync(derivedPath)) {
-		derived = JSON.parse(readFileSync(derivedPath, "utf8")) as Derived;
+	if (existsSync(derivedPath) && existsSync(allCardsPath)) {
+		derived = {
+			...(JSON.parse(readFileSync(derivedPath, "utf8")) as Omit<Derived, "all_cards">),
+			all_cards: readFileSync(allCardsPath, "utf8"),
+		};
 	} else {
 		derived = derive(readFileSync(bulkPath, "utf8"), readFileSync(tagsPath, "utf8"));
-		writeFileSync(`${derivedPath}.tmp`, JSON.stringify(derived));
+		const { all_cards, ...rest } = derived;
+		writeFileSync(`${allCardsPath}.tmp`, all_cards);
+		renameSync(`${allCardsPath}.tmp`, allCardsPath);
+		writeFileSync(`${derivedPath}.tmp`, JSON.stringify(rest));
 		renameSync(`${derivedPath}.tmp`, derivedPath);
 	}
 

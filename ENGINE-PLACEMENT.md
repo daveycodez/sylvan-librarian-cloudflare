@@ -15,7 +15,7 @@ grammar is defined and parsed.
 
 The partition count is **not** a constant in this repo — the builder derives it from measured corpus
 bytes and writes it to the manifest, and every router reads it from there
-(`src/import-publish.ts` `partitionCountFor`, `src/engine/partitioned-engine.ts`). The manifest at
+(`src/import-sizing.ts` `choosePartitionCount`, `src/engine/partitioned-engine.ts`). The manifest at
 `store-build/manifest.json` on 2026-08-16 carried `partition_count: 10` at ~40MB of raw archive per
 partition, ~413MB across the ten. **Do not hardcode either number when reading this file later; read
 the live manifest.**

@@ -10,10 +10,12 @@
 //      put — so the deploy seeder after a nightly (or the nightly after a deploy) writes nothing.
 //
 // (2) builds the native builder once (release profile, the same one memprobe already compiled the
-// library in) and runs it for a few seconds, at the nightly's partition count so the routing-filter
-// check can compare the same build dir; `--no-native` skips it.
+// library in) and runs it for a few seconds with `--partitions auto` and the nightly's sizing
+// ceiling — so it also proves x28's claim that both builders choose the SAME N from the same drafts
+// (src/import-sizing.ts, engine/builder/src/sizing.rs), and the routing-filter check can compare the
+// same build dir; `--no-native` skips it.
 
-import { existsSync, mkdirSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { gunzipSync } from "node:zlib";
 import {
@@ -46,11 +48,12 @@ function isUuid(v: unknown): v is string {
 	return typeof v === "string" && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(v);
 }
 
-/** The builder's environment: this server's listing, and never a local dump dir. */
-function builderEnv(serverUrl: string): Record<string, string> {
+/** The builder's environment: this server's listing, the nightly's sizing ceiling, and never a local dump dir. */
+function builderEnv(serverUrl: string, ceilingBytes: number): Record<string, string> {
 	const env: Record<string, string> = {};
 	for (const [k, v] of Object.entries(process.env)) if (v !== undefined && k !== "SYLVAN_BULK_DIR") env[k] = v;
 	env.SCRYFALL_BULK_URL = `${serverUrl}/bulk-data`;
+	env.SYLVAN_PARTITION_CEILING_BYTES = String(ceilingBytes);
 	return env;
 }
 
@@ -60,6 +63,7 @@ export async function checkOracleIndex(
 	serverUrl: string,
 	workDir: string,
 	native: boolean,
+	ceilingBytes: number,
 ): Promise<OracleIndexCheck> {
 	const lines: string[] = [];
 	const fail = (why: string): OracleIndexCheck => ({ ok: false, lines: [...lines, `FAILED: ${why}`] });
@@ -141,18 +145,34 @@ export async function checkOracleIndex(
 	const out = join(workDir, "native-build");
 	rmSync(out, { recursive: true, force: true });
 	mkdirSync(out, { recursive: true });
-	// At the NIGHTLY's partition count: the oracle index and the card-names blob do not depend on it,
-	// but the routing filter the same build dir is compared against (routing-filter-check.ts) does.
+	// AUTO, at the nightly's ceiling: the deploy path sizes N itself, and it must land where the
+	// nightly did (x28) — the oracle index and the card-names blob do not depend on N, but the
+	// routing filter the same build dir is compared against (routing-filter-check.ts) does, and so
+	// does every archive.
 	const nightly = (await kv.get(formatManifestKey(), "json")) as StoreManifest | null;
-	const partitions = String(nightly?.partition_count ?? 2);
-	const proc = Bun.spawn([join(repo, BUILDER), "--out", out, "--partitions", partitions], {
+	const proc = Bun.spawn([join(repo, BUILDER), "--out", out, "--partitions", "auto"], {
 		cwd: repo,
-		env: builderEnv(serverUrl),
+		env: builderEnv(serverUrl, ceilingBytes),
 		stdout: "pipe",
 		stderr: "pipe",
 	});
 	const [stderr] = await Promise.all([new Response(proc.stderr).text(), new Response(proc.stdout).text()]);
 	if ((await proc.exited) !== 0) return fail(`the native builder failed:\n${stderr.split("\n").slice(-8).join("\n")}`);
+	const nativeManifest = JSON.parse(readFileSync(join(out, "manifest.json"), "utf8")) as StoreManifest;
+	const sizing =
+		stderr
+			.split("\n")
+			.find((l) => l.includes("sizing:"))
+			?.trim() ?? "(no sizing line)";
+	if (nativeManifest.partition_count !== nightly?.partition_count) {
+		return fail(
+			`the two builders chose different partition counts from the same drafts: nightly ` +
+				`${nightly?.partition_count}, native ${nativeManifest.partition_count} (${sizing})`,
+		);
+	}
+	lines.push(
+		`partition sizing: the native builder's --partitions auto chose ${nativeManifest.partition_count}, the nightly's N — ${sizing}`,
+	);
 	const { runs, source } = await readPairs(out);
 	if (!source.endsWith("oracle-pairs.bin"))
 		return fail(`the native builder wrote no oracle-pairs.bin (read ${source})`);

@@ -1,5 +1,5 @@
 // The partitioned build+publish loop's durable state (src/import-publish.ts):
-// N chosen once and pinned, one pp_publish value carrying every partition's
+// N (chosen in src/import-sizing.ts — see partition-sizing.test.ts) pinned once, one pp_publish value carrying every partition's
 // publish cursor, resume mid-partition and mid-chunk, and the SAFE-cut restart
 // scoped to a single partition's record.
 //
@@ -17,77 +17,18 @@ import {
 	advanceToNextPartition,
 	completePartitionPublish,
 	currentRecord,
-	DRAFT_TO_STORE_RATIO,
 	initialPpPublish,
-	MAX_PARTITION_COUNT,
-	MIN_PARTITION_COUNT,
 	type PpPublish,
 	parsePpPublish,
-	partitionCountFor,
 	publishChunkTotal,
 	recordBuild,
 	recordChunk,
 	restartAtSafeCut,
 	serializePpPublish,
-	TARGET_PARTITION_BYTES,
 } from "../../src/import-publish";
 
 /** The persistence boundary: what every alarm transition does to the state. */
 const roundTrip = (state: PpPublish): PpPublish => parsePpPublish(serializePpPublish(state)) as PpPublish;
-
-describe("partitionCountFor (Decision 3b)", () => {
-	test("derives N from the projection: staged bytes × ratio / target, rounded up", () => {
-		// The gen-19 production shape: ~88MB of staged drafts projects tiny under
-		// the measured multilingual ratio — the floor holds it at 2. (An
-		// English-only corpus never reaches this code in production; the floor is
-		// what makes that safe.)
-		expect(partitionCountFor(88_000_000)).toBe(2);
-		// THE G2-measured shape: the real all_cards corpus staged 1,480.8MB of
-		// drafts and built ~353MB of archives — at the 43MB target that is nine
-		// partitions, each a single KV chunk.
-		expect(partitionCountFor(1_480_683_467)).toBe(9);
-		// And the arithmetic itself, at a point where no clamp is near.
-		const staged = 2_500_000_000;
-		expect(partitionCountFor(staged)).toBe(
-			Math.ceil(Math.ceil(staged * DRAFT_TO_STORE_RATIO) / TARGET_PARTITION_BYTES),
-		);
-	});
-
-	test("the target stays inside one KV chunk", () => {
-		// A partition over the chunk cut takes a second chunk, and chunks load
-		// strictly in sequence — so crossing this line costs a sequential KV round
-		// trip on every cold load of that partition. The real corpus caught it:
-		// at a 48MB target, five of eight partitions took a nearly-empty second
-		// chunk (13 chunks where the design says one per partition).
-		expect(TARGET_PARTITION_BYTES).toBeLessThanOrEqual(KV_CHUNK_BYTES);
-	});
-
-	test("clamps to the floor — an N=1 store would be an unsplit archive in disguise", () => {
-		expect(partitionCountFor(0)).toBe(MIN_PARTITION_COUNT);
-		expect(partitionCountFor(1_000)).toBe(MIN_PARTITION_COUNT);
-	});
-
-	test("clamps to the ceiling — a runaway projection must not amplify itself", () => {
-		expect(partitionCountFor(100_000_000_000)).toBe(MAX_PARTITION_COUNT);
-	});
-
-	test("the ceiling never binds before 4.5x today's corpus, and today's N does not move", () => {
-		// Past the ceiling N stops growing and every partition grows instead, and a partition's
-		// build is the nightly's wasm memory peak: at 4x the corpus, 32 partitions of ~50MB trapped
-		// under the 124MiB cap (see MAX_PARTITION_COUNT). The real corpus staged ~1.77GB of
-		// drafts at N=10; the 10-year plan is 2x and the stress case 3x.
-		const today = 1_770_000_000;
-		expect(partitionCountFor(today)).toBe(10);
-		expect(partitionCountFor(today * 2)).toBe(20);
-		expect(partitionCountFor(today * 3)).toBe(30);
-		expect(partitionCountFor(today * 4.5)).toBeLessThan(MAX_PARTITION_COUNT);
-	});
-
-	test("garbage input is an error, not a partition count", () => {
-		expect(() => partitionCountFor(Number.NaN)).toThrow(/cannot size/);
-		expect(() => partitionCountFor(-1)).toThrow(/cannot size/);
-	});
-});
 
 describe("the pp_publish value", () => {
 	test("N and the loop position survive the persistence boundary exactly", () => {

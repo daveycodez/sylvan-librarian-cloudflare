@@ -176,7 +176,7 @@ fn run_import(out_dir: &std::path::Path, partitions: Option<PartitionsArg>) -> R
     // other memory ceiling in this program had decades. Where the peak goes now, sampled through
     // one run: 124MiB standing after the corpus stream (the aggregation state, ~250B per row),
     // +40MiB for the tag corpus, and the rest one partition's build — which does NOT grow with
-    // the corpus, because N auto-scales to keep a partition near TARGET_PARTITION_BYTES. Only the
+    // the corpus, because N auto-scales to keep every partition under the sizing ceiling. Only the
     // first term grows, linearly, so the ceiling is ~60x today's row count away.
     eprintln!("computing scores and finalizing rows...");
     let rows_path = out_dir.join("rows.jsonl");

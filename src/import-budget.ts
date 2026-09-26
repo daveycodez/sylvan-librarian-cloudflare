@@ -483,7 +483,7 @@ export interface RunShape {
 	rowsPerPartition: number;
 	/** spill_batches groups one partition produces. */
 	spillGroupsPerPartition: number;
-	/** N, as partitionCountFor chose it. */
+	/** N, as the partition sizing chose it (src/import-sizing.ts). */
 	partitions: number;
 	/** Alarms everything before the partition loop takes (listing through
 	 * routing) plus everything after it (manifest through purge). */

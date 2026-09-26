@@ -217,7 +217,7 @@ awk '
 # some night in production.
 #
 # It measures the PARTITIONED shape only, because that is the only shape that
-# exists: partitionCountFor clamps to MIN_PARTITION_COUNT=2 and writeManifest
+# exists: the partition sizing clamps to MIN_PARTITION_COUNT=2 and writeManifest
 # refuses a manifest without partitions, so no publisher can emit a single
 # archive. The old single-archive step was deleted rather than fixed — over the
 # multilingual corpus it aborted, correctly and uselessly, on a build nothing
@@ -226,7 +226,7 @@ awk '
 #
 # N comes from the manifest of the build that produced these rows, so the
 # tripwire measures the partition size production actually ships rather than a
-# hardcoded guess — at the 43MB target this corpus cuts nine ways, and a
+# hardcoded guess — the partition sizing cut this corpus nine ways (eleven since x28), and a
 # hardcoded N=4 measured 131k-row partitions that only the gate would ever build.
 if [[ -f store-build/rows.jsonl ]]; then
     scripts/with-rust.sh cargo rustc --release -p sylvan-wasm-builder-probe \
@@ -307,7 +307,7 @@ fi
 
 # ── the cut does not change the answer ────────────────────────────────────────
 # CARD-PARTITIONING §6 asked for "byte-identical envelopes, partitioned vs unpartitioned". No such
-# thing can be built: partitionCountFor floors at MIN_PARTITION_COUNT=2, writeManifest refuses a
+# thing can be built: the partition sizing floors at MIN_PARTITION_COUNT=2, writeManifest refuses a
 # manifest without partitions, and a single archive over the multilingual corpus aborts under the
 # cap by design. The old single-archive step was deleted rather than fixed, correctly — and that
 # left the CUT proven on a small fixture, the MERGE proven in isolation

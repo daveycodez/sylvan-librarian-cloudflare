@@ -253,9 +253,9 @@ fi
 #    error path). store-build/ still holds rows.jsonl (~1.7GB) as it always has.
 #
 #    `--partitions auto` makes the builder cut the store into N archives
-#    (N = clamp(ceil(staged_draft_bytes * 0.24 / 43MB), 2, 32), plan Decision 3b
-#    — the projection and both constants twinned with src/import-publish.ts, so
-#    the deploy build and the nightly pick the same N for the same corpus) and emit
+#    (N = the smallest count whose LARGEST partition projects 5% under the KV
+#    chunk cut, engine/builder/src/sizing.rs — twinned with src/import-sizing.ts,
+#    so the deploy build and the nightly pick the same N for the same corpus) and emit
 #    a v2 manifest skeleton with partition_count/partition_hash/partitions[] —
 #    which is the only store shape a generation-20 deployment can serve. The
 #    builder REJECTS argv it does not recognise (its parser matches exactly), so

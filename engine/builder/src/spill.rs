@@ -66,14 +66,6 @@ use crate::transform::{
     cubecobra_scores_from_pairs, finalize_row, illust_count_key, is_pinned, PinnedPrintings, RowDraft,
 };
 
-/// Bytes of framing the COORDINATOR counts around each staged draft
-/// ([8B partition hash][draft JSON]) — the denominator
-/// `SPILLED_DRAFT_TO_STORE_RATIO` is measured against, kept identical to
-/// src/import-publish.ts's so the two projections are the same number. This
-/// file's own 4-byte length prefix is deliberately NOT counted: it is this
-/// path's private framing (~2MB on today's corpus), and counting it would make
-/// the two constants describe different bases.
-const COORDINATOR_FRAME_BYTES: u64 = 8;
 
 /// Deletes the files it names when it drops — so a spill never survives the
 /// process, on the success path or on any `?` between here and the manifest.
@@ -321,6 +313,7 @@ pub struct DraftSpill<'a> {
     agg: CorpusAggregator<'a>,
     records: u64,
     framed_bytes: u64,
+    layout: Vec<(u64, u32)>,
     temp: TempFiles,
     scratch: Vec<u8>,
 }
@@ -343,6 +336,7 @@ impl<'a> DraftSpill<'a> {
             agg: CorpusAggregator::new(labels),
             records: 0,
             framed_bytes: 0,
+            layout: Vec::new(),
             scratch: Vec::with_capacity(4096),
         })
     }
@@ -360,7 +354,8 @@ impl<'a> DraftSpill<'a> {
             .map_err(|e| format!("write spill: {e}"))?;
         self.agg.observe(self.records, part_hash, draft);
         self.records += 1;
-        self.framed_bytes += COORDINATOR_FRAME_BYTES + u64::from(len);
+        self.framed_bytes += crate::sizing::DRAFT_FRAME_BYTES + u64::from(len);
+        self.layout.push((part_hash, len));
         Ok(())
     }
 
@@ -377,6 +372,7 @@ impl<'a> DraftSpill<'a> {
             path: self.path,
             records: self.records,
             framed_bytes: self.framed_bytes,
+            layout: self.layout,
             aggregates: self.agg.seal(),
             temp: self.temp,
         })
@@ -388,9 +384,12 @@ pub struct SpilledCorpus {
     path: PathBuf,
     /// Records written (pre-dedupe).
     pub records: u64,
-    /// Σ (8 + draft JSON bytes) — the coordinator's staging measure, which is
-    /// what `SPILLED_DRAFT_TO_STORE_RATIO` is calibrated against.
+    /// Σ (8 + draft JSON bytes) — the framed draft bytes crate::sizing projects from.
     pub framed_bytes: u64,
+    /// Every draft's (fnv1a64(oracle_id), JSON length), in staging order and pre-dedupe — the
+    /// input `--partitions auto` sizes N from (crate::sizing, backlog x28), the same pairs the
+    /// nightly stages as draft_batches' part_hashes + part_lens. 16 bytes a draft (~8.7MB today).
+    pub layout: Vec<(u64, u32)>,
     pub aggregates: Aggregates,
     temp: TempFiles,
 }

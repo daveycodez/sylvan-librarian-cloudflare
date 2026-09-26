@@ -49,7 +49,7 @@ import {
 	STAGING_PEAK_BYTES_2026_09_25,
 	TOLL_2026_08_28,
 } from "../../src/import-budget";
-import { partitionCountFor } from "../../src/import-publish";
+import { projectedPartitionCount } from "../../src/import-sizing";
 import { BLOB_GROUP_BYTES, DRAFT_BATCH_BYTES } from "../../src/import-spill";
 
 /**
@@ -137,9 +137,11 @@ const SLICES_2026_09_04: SliceSizes = { ...SLICES_1_5MB_ROWS, bucketBatches: 64,
 const SLICES_2026_09_24: SliceSizes = SLICES_1_5MB_ROWS;
 
 /**
- * The staged-draft bytes behind CORPUS_2026_08_28's N=10: partitionCountFor
- * picks 10 for anything in (1,612MB, 1,792MB] at TARGET_PARTITION_BYTES, and
- * 1,180 byte-capped batches of ~1.5MB is 1.77GB — the top of that band.
+ * The staged-draft bytes behind CORPUS_2026_08_28's N=10: the mean rule of the day picked 10 for
+ * anything in (1,612MB, 1,792MB], and 1,180 byte-capped batches of ~1.5MB is 1.77GB — the top of
+ * that band. Sized on its largest partition (x28) the same corpus is 11 (the 2026-09-26 dump,
+ * 1,785MB framed, measured) — `projectedPartitionCount`, the layout-free estimate this model grows
+ * the corpus with, says 12, erring wide the way a budget should.
  */
 const STAGED_DRAFT_BYTES_2026_08_28 = 1_770_000_000;
 
@@ -151,7 +153,7 @@ const STAGED_DRAFT_BYTES_2026_08_28 = 1_770_000_000;
  * scores 48 — both walk the corpus in fixed-size slices).
  */
 function corpusAt(multiple: number): RunShape {
-	const partitions = partitionCountFor(STAGED_DRAFT_BYTES_2026_08_28 * multiple);
+	const partitions = projectedPartitionCount(STAGED_DRAFT_BYTES_2026_08_28 * multiple);
 	const perPartition = (multiple * 10) / partitions;
 	return {
 		stagedBatches: Math.ceil(CORPUS_2026_09_04.stagedBatches * multiple),

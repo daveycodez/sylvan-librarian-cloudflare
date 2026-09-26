@@ -24,6 +24,10 @@ pub mod ranks;
 // wasm import stages its drafts in DO SQLite through the host, never in files.
 #[cfg(not(target_arch = "wasm32"))]
 pub mod spill;
+// sizing (the partition count from the corpus's own layout, backlog x28) is native-only: the
+// nightly's twin is TypeScript (src/import-sizing.ts), fed by the drafts the wasm import emits.
+#[cfg(not(target_arch = "wasm32"))]
+pub mod sizing;
 pub mod tags;
 pub mod transform;
 
@@ -249,68 +253,33 @@ pub fn build_store(
 #[cfg(not(target_arch = "wasm32"))]
 pub const PARTITION_HASH_ALGO: &str = "fnv1a64/oracle_id/v1";
 
-/// The auto-scale rule: enough partitions that each lands near this size. The clamp floor of 2
-/// keeps the partitioned code paths exercised even on a small corpus, and the ceiling of 48
-/// bounds fan-out width — high enough that partitions stay at this size through 4.8x today's
-/// corpus, because past the ceiling every partition grows instead and a partition's build is the
-/// nightly's wasm memory peak (src/import-publish.ts's `MAX_PARTITION_COUNT` has the measurements
-/// and every N-scaled cost that sets the number; keep the two in step).
+/// `--partitions auto`: the smallest N whose LARGEST partition projects under the ceiling —
+/// crate::sizing, the twin of the nightly's src/import-sizing.ts, fed the same (partition hash,
+/// draft JSON length) pairs the nightly stages, so a deploy-seeded store and a nightly-built store
+/// cut the same N (backlog x28; the harness checks it). The rule it replaced sized N on the MEAN
+/// partition (staged x 0.24 / 43MB) and let the hash's skew ride a fixed 7% allowance; on the
+/// 2026-09-26 corpus that left the largest partition 1.4% under the 46MB chunk cut.
 ///
-/// MUST STAY <= store-kv.ts's KV_CHUNK_BYTES, and that is the binding reason for the value —
-/// the same reason, in the same words, as its twin in src/import-publish.ts, which this number
-/// mirrors: `kvArchiveStream` pulls a partition's chunks strictly in sequence, so a partition
-/// whose raw bytes cross the 46_000_000 chunk cut costs an extra sequential round trip on every
-/// cold load. At 48MB the real corpus measured 42-46MB partitions and five of eight took a
-/// second, nearly-empty chunk — 13 chunks where the design says 8. 43MB sits under the cut with
-/// room for the projection's own error.
+/// Projection, never a measurement build: the one shape a cheap measurement pass could build (a
+/// single archive) is SUPERLINEAR — the same rows build 1,792.8MB unpartitioned against 353.3MB at
+/// N=8 — which is the mistake that once clamped this arm to N=32 when the honest answer was 8.
 #[cfg(not(target_arch = "wasm32"))]
-const TARGET_PARTITION_BYTES: u64 = 43_000_000;
-#[cfg(not(target_arch = "wasm32"))]
-const MIN_PARTITIONS: u32 = 2;
-#[cfg(not(target_arch = "wasm32"))]
-const MAX_PARTITIONS: u32 = 48;
-
-/// Projected PARTITIONED store bytes per SPILLED DRAFT byte — how the deploy path's
-/// `--partitions auto` sizes N, and the exact twin of src/import-publish.ts's
-/// `DRAFT_TO_STORE_RATIO`.
-///
-/// DENOMINATOR: the coordinator's staging measure, Σ(8 + RowDraft JSON) — the same framing the
-/// nightly stages drafts in ([8B partition hash][draft JSON]), which is why the two constants
-/// can be one number. Measured on the real multilingual corpus (517,746 drafts,
-/// 1,552,683,467 framed bytes = 1,480.8MB): 353.3MB of archives at N=8, 365.5MB at N=32 —
-/// 0.239 and 0.247. 0.24 projects today's corpus to nine ~40MB partitions.
-///
-/// NEVER project from a single-archive measurement build: the N=1 shape is SUPERLINEAR — the
-/// same rows build a 1,792.8MB single archive, ~1.4GB of quadratic-class index remainder that
-/// vanishes when the corpus is cut — so a one-bucket measurement projected N = 38, clamped to
-/// 32, when the honest target was 8. Hitting the clamp ceiling IS the "projection input is
-/// garbage" signal, and projecting from staged bytes is the fix.
-#[cfg(not(target_arch = "wasm32"))]
-const SPILLED_DRAFT_TO_STORE_RATIO: f64 = 0.24;
-
-/// The same projection over a different base: standalone ROW-JSON blobs, for the in-memory
-/// `build_store_partitioned` (the differential harness's arm — the deploy path spills).
-/// Measured in the same G2 run: 353.3MB / 365.5MB of archives from 1,785.7MB of row blobs,
-/// ratio 0.198–0.205; 0.21 errs a partition-count's breadth toward more. Same fact as
-/// `SPILLED_DRAFT_TO_STORE_RATIO`, different denominator — keep the two comments in step.
-#[cfg(not(target_arch = "wasm32"))]
-const PARTITION_ROW_TO_STORE_RATIO: f64 = 0.21;
-
-/// `clamp(ceil(projected_store_bytes / TARGET_PARTITION_BYTES), MIN, MAX)` — plan Decision 3b,
-/// and the line-for-line twin of import-publish.ts's `partitionCountFor`.
-#[cfg(not(target_arch = "wasm32"))]
-fn partition_count_for(staged_bytes: u64, ratio: f64, base: &str) -> u32 {
-    let projected = (staged_bytes as f64 * ratio) as u64;
-    let n = projected
-        .div_ceil(TARGET_PARTITION_BYTES)
-        .clamp(u64::from(MIN_PARTITIONS), u64::from(MAX_PARTITIONS)) as u32;
+fn choose_partition_count(corpus: &sizing::CardBytes, base: &str) -> u32 {
+    let c = sizing::choose_partition_count_for(corpus, sizing::partition_ceiling_bytes());
     eprintln!(
-        "  staged {:.1}MB of {base} x {ratio} -> projected {:.1}MB -> {n} partitions (target {}MB each)",
-        staged_bytes as f64 / 1_048_576.0,
-        projected as f64 / 1_048_576.0,
-        TARGET_PARTITION_BYTES / 1_000_000,
+        "  sizing: {} {base} ({} framed bytes, {} cards) -> {} partitions: largest p{} projects to {} bytes \
+         (ceiling {}, cut {}){}",
+        c.drafts,
+        c.framed_bytes,
+        c.cards,
+        c.n,
+        c.largest_at,
+        c.largest,
+        c.ceiling,
+        sizing::KV_CHUNK_BYTES,
+        if c.clamped { " — CLAMPED at MAX_PARTITIONS: no N in range fits the ceiling" } else { "" },
     );
-    n
+    c.n
 }
 
 /// `--partitions` as parsed: auto-scaled from the build's own byte accounting, or pinned.
@@ -354,8 +323,8 @@ fn verify_partition_hash_vectors() -> Result<(), String> {
 /// because the KV cut belongs to the publisher (seed-remote-kv computes it while chunking);
 /// everything a router needs to HASH — partition_count, partition_hash — is final.
 ///
-/// `Auto` projects N from the staged blob bytes (`PARTITION_ROW_TO_STORE_RATIO`); a fixed N
-/// skips the projection. Rows are cut through the same standalone-blob path the differential
+/// `Auto` sizes N with the deploy path's rule (crate::sizing) over the staged row blobs; a fixed
+/// N skips the projection. Rows are cut through the same standalone-blob path the differential
 /// test proves against the unpartitioned build, and each partition builds through its own fresh
 /// interners.
 ///
@@ -383,14 +352,13 @@ pub fn build_store_partitioned(
     let n = match partitions {
         PartitionsArg::Fixed(n) if n >= 1 => n,
         PartitionsArg::Fixed(n) => return Err(format!("--partitions {n} is not a partition count").into()),
-        // Projection, never a measurement build: see SPILLED_DRAFT_TO_STORE_RATIO for why the
-        // one shape a measurement pass could build (a single archive) is the one shape whose
-        // size must not be projected from.
-        PartitionsArg::Auto => partition_count_for(
-            staged.iter().map(|(_, b)| b.len() as u64).sum(),
-            PARTITION_ROW_TO_STORE_RATIO,
-            "row blobs",
-        ),
+        // Row blobs projected as if they were drafts: finalized rows run ~15% heavier than the
+        // drafts they came from, so this arm errs toward more partitions than the deploy path —
+        // harmless for the differential harness it serves, which pins N wherever N matters.
+        PartitionsArg::Auto => {
+            let layout: Vec<(u64, u32)> = staged.iter().map(|(h, b)| (*h, b.len() as u32)).collect();
+            choose_partition_count(&sizing::CardBytes::of(&layout), "row blobs")
+        }
     };
 
     let mut buckets: Vec<Vec<Vec<u8>>> = vec![Vec::new(); n as usize];
@@ -405,7 +373,7 @@ pub fn build_store_partitioned(
         let stats = card_engine::build_partition_from_standalone(blobs.into_iter(), artist_entities.clone(), &mut counter)
             .map_err(|e| format!("partition {k}: {e}"))?;
         counter.flush()?;
-        accum.record(k, store_key, counter.written, &stats);
+        accum.record(k, store_key, counter.written, &stats, None);
     }
     Ok(accum.finish())
 }
@@ -428,13 +396,16 @@ pub fn build_store_partitioned_spilled<W: Write>(
     rows_out: &mut W,
 ) -> Result<Value, Box<dyn std::error::Error>> {
     verify_partition_hash_vectors()?;
+    let cards = sizing::CardBytes::of(&corpus.layout);
     let n = match partitions {
         PartitionsArg::Fixed(n) if n >= 1 => n,
         PartitionsArg::Fixed(n) => return Err(format!("--partitions {n} is not a partition count").into()),
-        PartitionsArg::Auto => {
-            partition_count_for(corpus.framed_bytes, SPILLED_DRAFT_TO_STORE_RATIO, "staged drafts")
-        }
+        PartitionsArg::Auto => choose_partition_count(&cards, "staged drafts"),
     };
+    // What each partition was projected to at the N this build cuts, for the per-partition line
+    // below to set its actual size against (the projection's own drift check).
+    let projected = sizing::project_partitions(&cards, n);
+    drop(cards);
 
     std::fs::create_dir_all(out_dir)?;
     let (aggregates, mut parts) = corpus.demux(n, out_dir)?;
@@ -560,7 +531,7 @@ pub fn build_store_partitioned_spilled<W: Write>(
             .write_all(&names::partition_printed_tsv(k, &stats.printed_records).map_err(|e| format!("partition {k}: {e}"))?)
             .map_err(|e| format!("write {}: {e}", names::PRINTED_NAMES_FILE))?;
         printed_count += stats.printed_records.len();
-        accum.record(k, store_key, counter.written, &stats);
+        accum.record(k, store_key, counter.written, &stats, projected.get(k).copied());
         routing_count += routing_here.get();
         oracle_count += oracle_here.get();
         // This partition is published to disk; its drafts are dead weight from here.
@@ -647,14 +618,39 @@ impl PartitionAccum {
         Ok((CountingWriter { inner: BufWriter::with_capacity(1 << 20, file), written: 0 }, store_key))
     }
 
-    fn record(&mut self, k: usize, store_key: String, written: u64, stats: &card_engine::StoreStats) {
+    fn record(
+        &mut self,
+        k: usize,
+        store_key: String,
+        written: u64,
+        stats: &card_engine::StoreStats,
+        projected: Option<u64>,
+    ) {
+        // Against its projection, where the build had one: the sizing rule's coefficients are
+        // measured, and a format change that moves them shows up here first — as a partition
+        // landing further from its projection than the fit ever did (sizing::PROJECTION_ERROR).
+        let against = projected.map_or(String::new(), |p| {
+            let off = (written as f64 - p as f64) / p as f64;
+            let drift = if off > sizing::PROJECTION_ERROR {
+                " — ABOVE its projection by more than the sizing fit's error: re-measure crate::sizing"
+            } else {
+                ""
+            };
+            format!(" (projected {p}, {:+.2}%){drift}", off * 100.0)
+        });
         eprintln!(
-            "  p{k}: {:.1}MB, {} cards, {} canonical printings, {} annex rows",
+            "  p{k}: {:.1}MB = {written} bytes{against}, {} cards, {} canonical printings, {} annex rows",
             written as f64 / 1_048_576.0,
             stats.card_count,
             stats.printing_count,
             stats.foreign_printing_count
         );
+        if written > sizing::KV_CHUNK_BYTES * 95 / 100 {
+            eprintln!(
+                "  WARNING p{k}: {written} bytes is within 5% of the {}-byte KV chunk cut",
+                sizing::KV_CHUNK_BYTES
+            );
+        }
         self.total_bytes += written;
         self.total_cards += stats.card_count;
         self.total_printings += stats.printing_count;

@@ -10,8 +10,8 @@
 // KV removes the constraint that created all of it. What is published is one
 // complete rkyv archive per partition — no second card-object archive since
 // generation 19, which folded the residue into the printing record — sized so
-// that a partition is normally a SINGLE chunk (TARGET_PARTITION_BYTES in
-// src/import-publish.ts is held under KV_CHUNK_BYTES for exactly that reason).
+// that a partition is a SINGLE chunk (src/import-sizing.ts holds the LARGEST
+// partition 5% under KV_CHUNK_BYTES for exactly that reason).
 // So:
 //
 //   - a full publish writes every partition's chunks, one routing filter and
@@ -113,8 +113,8 @@ import { EngineUnavailableError } from "./types";
  * load went 337ms to 691ms.
  *
  * WHAT THIS CONSTANT NOW GOVERNS IS THE OTHER END. Partition sizing is what keeps
- * a partition to one chunk, and `TARGET_PARTITION_BYTES` (src/import-publish.ts)
- * is deliberately held BELOW this value for that reason — a target above the cut
+ * a partition to one chunk, and `PARTITION_CEILING_BYTES` (src/import-sizing.ts)
+ * holds the LARGEST partition 5% below this value for that reason — a target above the cut
  * puts a nearly-empty second chunk on some partitions and buys an extra
  * sequential round trip on their every cold load. Raise this and that headroom
  * grows; lower it below the target and every partition splits.
@@ -131,7 +131,7 @@ import { EngineUnavailableError } from "./types";
  * it breached. Partitions are cut well under a full-size chunk (2026-08-16, at
  * content generation 32: 10 partitions averaging ~41MB raw, one chunk each), so
  * the margin is wider still — and it stays wider, because
- * `TARGET_PARTITION_BYTES` is what decides a partition's size, not this cut.
+ * the partition sizing (src/import-sizing.ts) decides a partition's size, not this cut.
  *
  * THE FAILURE MODE IS LOUD AND NON-CORRUPTING, which is what makes the trade
  * acceptable. Every publisher compresses and then checks against
@@ -147,7 +147,7 @@ import { EngineUnavailableError } from "./types";
  *
  * CORPUS GROWTH IS NOT WHAT THIS CONSTANT ABSORBS ANY MORE — the builder answers
  * growth by choosing a larger `partition_count`, and each partition stays near
- * `TARGET_PARTITION_BYTES` whatever the corpus does. What to watch is still a
+ * the sizing ceiling whatever the corpus does. What to watch is still a
  * FORMAT CHANGE that adds poorly-compressing data in bulk, which is exactly what
  * generation 3 did: that raises bytes per partition without raising N, and it is
  * the one direction that can push a partition over the cut.
@@ -749,7 +749,7 @@ export async function gzipBytes(bytes: Uint8Array): Promise<Uint8Array> {
  *       imported (517,746 -> 526,865 staged rows, +1.76%) — the one clause of `passes_filters`
  *       that made an ordinary query disagree with Scryfall rather than mirroring its own
  *       query-time `include_extras` exclusion. The projected store grows 1.62% and
- *       `partitionCountFor` still returns 9; N=10 needs +8.9%.
+ *       the partition count (then `partitionCountFor`) still returns 9; N=10 needs +8.9%.
  *
  *       ...and so do the two SEARCH-SEMANTICS gaps, ARCHIVE_FORMAT_VERSION 2026081604 ->
  *       2026081605. Same reasoning again: 19 is live, the stack ships as one step.
@@ -2108,7 +2108,7 @@ export function chunkCountFor(storeBytes: number, cut: number = KV_CHUNK_BYTES):
  * 143,640 bytes, 0.19%, with Scryfall drift then ~19KB/day, so the trend alone
  * gave about a week and a single set release (~300 printings, ~280 new oracle
  * cards, roughly 500KB once their text and index entries land) crossed it in one
- * nightly import. A partition sized by `TARGET_PARTITION_BYTES` starts much
+ * nightly import. A partition sized by src/import-sizing.ts starts much
  * further from its boundary than that, which is the point of sizing it there —
  * the warning is what says so if a build ever lands close anyway.
  */

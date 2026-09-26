@@ -140,6 +140,17 @@ export function unpackPartHashes(bytes: Uint8Array): bigint[] {
 	return out;
 }
 
+/** Bytes per `part_lens` entry: one u32 le draft JSON length (x28, src/import-sizing.ts). */
+export const DRAFT_LEN_BYTES = 4;
+
+/** Pack per-draft JSON lengths into the `part_lens` column form (count × 4 bytes le). */
+export function packPartLens(drafts: readonly Uint8Array[]): Uint8Array {
+	const out = new Uint8Array(drafts.length * DRAFT_LEN_BYTES);
+	const dv = new DataView(out.buffer);
+	for (let i = 0; i < drafts.length; i++) dv.setUint32(i * DRAFT_LEN_BYTES, (drafts[i] as Uint8Array).length, true);
+	return out;
+}
+
 /**
  * The drafts belonging to partition `partition` of `partitionCount`, out of
  * draft_batches rows — re-modding the stored hash by the N the build chose.

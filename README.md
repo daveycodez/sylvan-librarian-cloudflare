@@ -207,10 +207,11 @@ never what the cold path was bound by. A load-carrying invocation measures wall
 p50 915ms against DO CPU p50 164ms, so ~750ms of it was waiting for the whole
 archive to arrive. The cut is on RAW bytes at `KV_CHUNK_BYTES` (46,000,000, with
 `KV_CHUNK_BYTES_SAFE` = 26,000,000 as a fallback cut) and each piece is gzipped
-as its own member. `TARGET_PARTITION_BYTES` (43,000,000) is deliberately set
-*under* the chunk cut, so a partition is normally exactly one chunk: a partition
-whose raw bytes cross the cut costs an extra **sequential** round trip on every
-cold load, because a partition's chunks are pulled in order.
+as its own member. The partition count is sized so the LARGEST partition
+projects under the chunk cut less a 5% margin (`src/import-sizing.ts`,
+`PARTITION_CEILING_BYTES` = 43,267,326), so every partition is exactly one
+chunk: a partition whose raw bytes cross the cut costs an extra **sequential**
+round trip on every cold load, because a partition's chunks are pulled in order.
 
 The memory win is bigger than the transfer one and comes from a different
 place. wasm-bindgen marshals a `&[u8]` by COPYING it into linear memory, so a

@@ -1,7 +1,7 @@
 // The nightly import, end to end, on this machine, with a cost meter on it.
 //
 //   bun run harness:import                  # default: 6k printings, 28k lines, N=7
-//   bun run harness:import -- --printings 12000 --partition-bytes 4000000
+//   bun run harness:import -- --printings 12000 --partition-ceiling-bytes 5400000
 //   bun run harness:import -- --statements  # also print the per-statement table
 //
 // ── WHY THIS EXISTS ──────────────────────────────────────────────────────────
@@ -65,7 +65,7 @@ import { FakeKV, MeteredStorage } from "./storage";
 
 interface Options {
 	printings: number;
-	partitionBytes: number;
+	partitionCeilingBytes: number;
 	alarmTimeoutMs: number;
 	maxAlarms: number;
 	statements: boolean;
@@ -93,14 +93,14 @@ function parseArgs(argv: string[]): Options {
 	};
 	return {
 		printings: num("printings", 6000),
-		// Small enough that the default corpus lands on N=7 rather than the
-		// MIN_PARTITION_COUNT floor of 2: a two-partition loop has a first
-		// partition and a last one and no partition that is NEITHER, which is
-		// exactly the position production died in (partition 2 of 10). At 7,
-		// partitions 1-5 are all middle partitions — the ones that must leave
-		// draft_batches alone for the readers behind them. See
-		// IMPORT_TARGET_PARTITION_BYTES in src/import-coordinator.ts.
-		partitionBytes: num("partition-bytes", 4_000_000),
+		// The sizing ceiling (src/import-sizing.ts) at harness scale: small enough that the default
+		// corpus lands on N=7 rather than the MIN_PARTITION_COUNT floor of 2: a two-partition loop
+		// has a first partition and a last one and no partition that is NEITHER, which is exactly
+		// the position production died in (partition 2 of 10). At 7, partitions 1-5 are all middle
+		// partitions — the ones that must leave draft_batches alone for the readers behind them.
+		// See IMPORT_PARTITION_CEILING_BYTES in src/import-coordinator.ts; the native builder is
+		// handed the same number (SYLVAN_PARTITION_CEILING_BYTES) and must choose the same N.
+		partitionCeilingBytes: num("partition-ceiling-bytes", 5_400_000),
 		// Nothing in a healthy slice takes 60s locally; the 2026-08-28 stalls
 		// were promises that never settled, and this is what turns that into a
 		// fast red instead of a wedged harness.
@@ -255,7 +255,7 @@ function makeEnv(kv: FakeKV, baseUrl: string) {
 		STORE_KV: kv,
 		SCRYFALL_BULK_URL: `${baseUrl}/bulk-data`,
 		SCRYFALL_API_URL: baseUrl,
-		IMPORT_TARGET_PARTITION_BYTES: "",
+		IMPORT_PARTITION_CEILING_BYTES: "",
 		PLACEMENT_PROBE: fakeProbes(),
 		SEARCH_ENGINE: fakeEngines(),
 	};
@@ -364,7 +364,7 @@ async function main(): Promise<number> {
 	const storage = new MeteredStorage();
 	const kv = new FakeKV();
 	const env = makeEnv(kv, server.url) as unknown as Record<string, unknown>;
-	env.IMPORT_TARGET_PARTITION_BYTES = String(opts.partitionBytes);
+	env.IMPORT_PARTITION_CEILING_BYTES = String(opts.partitionCeilingBytes);
 	for (const name of ANNOUNCED) await kv.put(`engine:live:${name}`, "1");
 
 	const ctx = {
@@ -446,7 +446,7 @@ async function main(): Promise<number> {
 	// Before the server stops: the parity half runs the native builder against it.
 	let oracle: OracleIndexCheck | null = null;
 	if (!failure && runState() === "done") {
-		oracle = await checkOracleIndex(kv, corpus, server.url, opts.corpusDir, opts.native);
+		oracle = await checkOracleIndex(kv, corpus, server.url, opts.corpusDir, opts.native, opts.partitionCeilingBytes);
 	}
 
 	server.stop();
@@ -579,6 +579,35 @@ async function main(): Promise<number> {
 				"mirror it to store:manifest while that holds the same format",
 		);
 		return 1;
+	}
+
+	// ── x28: the largest partition the nightly built stays the full margin under the (scaled) cut ──
+	// The sizing guarantees a largest partition PROJECTED at or under the ceiling, and a projection
+	// is allowed PARTITION_PROJECTION_ERROR_PCT of error — so the built one may reach ceiling x 1.01,
+	// which is the cut less PARTITION_SAFETY_MARGIN_PCT at the scale the ceiling stands for. Run at
+	// --printings 6000 / 12000 / 18000 (1x / 2x / 3x the harness corpus) this is the 1x/2x/3x check.
+	{
+		const { PARTITION_PROJECTION_ERROR_PCT, PARTITION_SAFETY_MARGIN_PCT } = await import("../../src/import-sizing");
+		const built = JSON.parse(String(ownManifest)) as {
+			partitions?: { store_bytes?: number }[];
+			partition_count?: number;
+		};
+		const sizes = (built.partitions ?? []).map((p) => Number(p.store_bytes ?? 0));
+		const largest = Math.max(...sizes);
+		const bound = Math.floor((opts.partitionCeilingBytes * (100 + PARTITION_PROJECTION_ERROR_PCT)) / 100);
+		const cut = Math.floor((bound * 100) / (100 - PARTITION_SAFETY_MARGIN_PCT));
+		console.log(
+			`partition sizing: N=${built.partition_count}, largest partition p${sizes.indexOf(largest)} = ${fmt(largest)} bytes, ` +
+				`${(((cut - largest) / cut) * 100).toFixed(1)}% under the ${fmt(cut)}-byte cut the ${fmt(opts.partitionCeilingBytes)}-byte ` +
+				`ceiling stands for (at most ${fmt(bound)} allowed; mean ${fmt(Math.round(sizes.reduce((a, b) => a + b, 0) / sizes.length))})`,
+		);
+		if (!(largest > 0) || largest > bound) {
+			console.error(
+				`\nFAILED: x28 — the largest partition built ${fmt(largest)} bytes, over the ${fmt(bound)} the sizing guarantees ` +
+					`(ceiling ${fmt(opts.partitionCeilingBytes)} + ${PARTITION_PROJECTION_ERROR_PCT}% projection error)`,
+			);
+			return 1;
+		}
 	}
 
 	// ── g1 and r3: the blocks the nightly decides, and what the fan-out did with them ──────────
