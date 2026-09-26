@@ -63,32 +63,10 @@
 			"note": "SAME CARD, DIFFERENT PRINTING — the prefer_score divergence the 2026-08-16 differential sweep recorded as N9, surfacing on a name-route hit. `fuzzy=sol rin` resolves Sol Ring on both sides; Scryfall answers msc/213 and the mirror answers msc/211. The paths here are PRINTING identity only, deliberately: name, oracle_id, type_line, oracle_text, cmc, colors, legalities and the rest are still byte-compared, so a wrong CARD fails this case. Scryfall's preference is not derivable from what is stored here — probed on six flavor names with several carriers, it picks the lowest collector number three times, the newest release once, and a promo digital printing over a paper non-promo one once (prm/80925 over iko/377) — so this stays a recorded divergence rather than a guess."
 		},
 		{
-			"name": "gatherer-pending-deploy",
-			"paths": ["**.related_uris.gatherer"],
-			"note": "DEPLOY LAG, not a parity definition. The serializers emit related_uris.gatherer (first multiverse id, &printed=true for non-en, false for en) and it byte-matches Scryfall — verified against the live values for en cmd/16, es mom/230, pt grn/212 and ja khm/1. PRODUCTION still serves no gatherer key until the next deploy, so against the deployed origin this fires as a missing-ours diff; against `--origin http://localhost:8787` it never fires and the field is byte-compared like any other. This was a scryfall_only_keys ledger entry, which STRIPPED the key from Scryfall's side and so could never have compared the value; as a deviation it compares wherever both sides have it. Delete this entry at the first post-deploy run."
-		},
-		{
 			"name": "rulings-same-date-order",
 			"paths": ["data.*.comment"],
 			"cases": ["rulings-via-es-id-mom-230"],
 			"note": "PRE-EXISTING, LANGUAGE-INDEPENDENT and already in the README's deviations list. RE-MEASURED 2026-08-16 and it does NOT close: the candidate fix was to preserve the rulings bulk file's row order within a date, on the theory that the dump is exported in internal-id order. Tested against api.scryfall.com over 25 cards that have both several dates and a date carrying 4+ rulings, the file's order matched 0 of 25 — as did that order reversed, whole-file order, date-ascending-then-file, and the comment rule this port ships. The reason is direct: the six shared 'kicker' rulings come back in a DIFFERENT order on different cards (Strength of Night, Goblin Barrage and Spell Contortion each get their own permutation of the same six comments), so Scryfall orders by a per-(card, ruling) row id rather than a per-ruling one, and the dump — one line per pair, grouped by card — cannot reproduce that within a card. So date desc + comment stays, and determinism is load-bearing beyond tidiness: identical bucket bytes are what let the publisher skip rewrites against the 1,000-writes/day budget. Both sides return the SAME 26 rulings for mom/230 in a different order; the array LENGTH is still compared (an array-length diff is not covered by this path), so a missing or extra ruling still fails. Nothing to do with the foreign id — /cards/<the English id>/rulings differs identically. rulings-en-jotun-grunt passes because that card has no crowded date."
-		},
-		{
-			"name": "artist-vocab-scramble",
-			"paths": ["**.artist"],
-			"note": "PRODUCTION BUG, not a parity definition: card_artist_vid is interned into artist_vocab lowercased (core_api.rs jv_card_row) but JSON_FIELD_TABLE's `artist` entry resolves it against coll_vocab (core_api.rs ~:1947), so every served artist is an unrelated vocabulary string ('fumes', 'blue-magic'). Remove this entry when the engine fix ships — the harness then enforces artist byte-parity."
-		},
-		{
-			"name": "slug-apostrophe",
-			"paths": ["**.scryfall_uri"],
-			"cases": ["cards-id-en-flip-erayo", "cards-id-en-modal-dfc-agadeem"],
-			"note": "PRODUCTION DIVERGENCE, same C3 slug-fix territory as slug-percent-encoding: Scryfall DELETES apostrophes in slugs (erayos-essence, agadeems-awakening); the mirror hyphenates them (erayo-s-essence). No normalize can hold across that, so this is scoped to the apostrophe-named cases; every other case still goes through slug-percent-encoding's percent-decode check. FIX IN-TREE (2026-08-16): slug() in objects.ts/card_object.rs/objects.py now deletes apostrophes per the live rule; PRODUCTION still serves the old bytes until the next deploy, so this entry stays. At the first post-deploy run it flips to a plain byte-compared case — delete this entry then."
-		},
-		{
-			"name": "slug-percent-encoding",
-			"paths": ["**.scryfall_uri"],
-			"normalize": "percent-decode",
-			"note": "Plan C3: the mirror does not UTF-8 percent-encode non-ASCII scryfall_uri slug bytes (joetun-grunt umlaut raw vs %C3%B6). Both sides must still agree percent-DECODED. FIX IN-TREE (2026-08-16): slug() in objects.ts/card_object.rs/objects.py now percent-encodes per the live rule; PRODUCTION still serves the old bytes until the next deploy, so this entry stays. At the first post-deploy run it flips to a plain byte-equal field — delete this entry then."
 		}
 	],
 	"cases": [
