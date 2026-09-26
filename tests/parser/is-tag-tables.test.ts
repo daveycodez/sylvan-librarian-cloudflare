@@ -181,7 +181,14 @@ describe("the stored vocabulary still matches the vendored Python it is ported f
 	 * rewrite. The list is here so that ADDING a divergence is a decision someone
 	 * makes on purpose, rather than a test quietly going green on a dropped tag.
 	 */
-	const DELIBERATE_DIVERGENCES = new Set(["phyrexian"]);
+	/**
+	 * `partner` is upstream's `keywords @> Partner` row, and not stored here since generation 55:
+	 * Scryfall's `is:partner` is "pairs as a commander" (Partner, Choose a background, Doctor's
+	 * companion and what they pair with, on a LEGENDARY card), 228 cards there where the keyword
+	 * row answers 134. rewrite.ts expands it to that set, so the stored row had been shadowed —
+	 * read by nothing — since 2026-09-22.
+	 */
+	const DELIBERATE_DIVERGENCES = new Set(["phyrexian", "partner"]);
 
 	test("every upstream tag is either stored here, computed here, or a named divergence", () => {
 		const ours = new Set([

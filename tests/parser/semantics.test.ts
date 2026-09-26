@@ -81,7 +81,12 @@ const EQUIVALENCES: Array<[string, string]> = [
 	// api.scryfall.com). It was `frame:2015` here, under-matching by 9,201 cards.
 	["is:new", "frame:2003 or frame:2015 or frame:future"],
 	["is:historic", "t:legendary or t:artifact or t:saga"],
-	["is:permanent", "t:creature or t:artifact or t:enchantment or t:land or t:planeswalker or t:battle"],
+	// `t:summon`/`t:eaturecray`: the pre-Sixth-Edition and pig-Latin creature spellings, which
+	// api.scryfall.com counts as permanents (Aswan Jaguar, Atinlay Igpay; 2026-09-26).
+	[
+		"is:permanent",
+		"t:creature or t:artifact or t:enchantment or t:land or t:planeswalker or t:battle or t:summon or t:eaturecray",
+	],
 	["is:party", "t:creature (t:cleric or t:rogue or t:warrior or t:wizard or kw:changeling)"],
 	["is:outlaw", "t:assassin or t:mercenary or t:pirate or t:rogue or t:warlock or kw:changeling"],
 	// NO `is:vanilla` row — it stops expanding here and becomes an engine leaf; see the loop over

@@ -172,9 +172,9 @@ const ARRAY_IS_TAGS: &[(&str, &str, &str)] = &[
     ("neonink", "promo_types", "neonink"),
     ("oilslick", "promo_types", "oilslick"),
     ("openhouse", "promo_types", "openhouse"),
-    // "Partner with <name>" cards carry a plain "Partner" keyword alongside it (verified
-    // against the corpus), so checking for "Partner" alone already covers both.
-    ("partner", "keywords", "Partner"),
+    // No `partner` row: `is:partner` is Scryfall's "pairs as a commander" set, which rewrite.ts
+    // expands (228 cards there and here); the `keywords ∋ Partner` row it replaced answered 134,
+    // and left the archive with generation 55.
     ("planeswalker_deck", "promo_types", "planeswalkerdeck"),
     ("player_rewards", "promo_types", "playerrewards"),
     ("playpromo", "promo_types", "playpromo"),

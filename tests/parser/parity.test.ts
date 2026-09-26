@@ -119,16 +119,21 @@ function applyTagAliases(tree: string): string {
  * must still DIFFER from it (the day the vendored Python stores the tag too, this entry is dead
  * and must go — the fixture takes over).
  *
- * FIVE MORE SINCE GENERATION 55 (2026-09-26), the same shape of divergence. `is:commander`,
+ * SIX MORE SINCE GENERATION 55 (2026-09-26), the same shape of divergence. `is:commander`,
  * `is:brawler`, `is:duelcommander`, `is:oathbreaker` and `is:spell` are stored tags here, decided
  * by the builder from the FRONT face and the printing's own legalities, where the vendored Python
  * still rewrites each to a type/toughness/text union over the merged row — which answered for
  * meld results, flip and transform backs, planeswalker back faces, Attractions and artifact lands
- * (the measurements are at the builder's `COMMANDER_IS_TAG` and `SPELL_IS_TAG`).
+ * (the measurements are at the builder's `COMMANDER_IS_TAG` and `SPELL_IS_TAG`). And the port's
+ * `is:permanent` counts the two creature spellings Scryfall does and upstream's rewrite does not,
+ * `t:summon` and `t:eaturecray`.
  */
 const isTagTree = (tag: string) =>
 	'{"kwargs":{"lhs":{"kwargs":{"attribute_name":"card_is_tags","original_attribute":"is"},' +
 	`"node_type":"CardAttributeNode"},"op":":","rhs":["${tag}"]},"node_type":"CardBinaryOperatorNode"}`;
+const typeTree = (attribute: string, value: string) =>
+	`{"kwargs":{"lhs":{"kwargs":{"attribute_name":"${attribute}","original_attribute":"t"},` +
+	`"node_type":"CardAttributeNode"},"op":":","rhs":["${value}"]},"node_type":"CardBinaryOperatorNode"}`;
 const PORT_ONLY_TREES: ReadonlyMap<string, string> = new Map([
 	["is:funny", isTagTree("funny")],
 	["is:commander", isTagTree("commander")],
@@ -136,6 +141,19 @@ const PORT_ONLY_TREES: ReadonlyMap<string, string> = new Map([
 	["is:duelcommander", isTagTree("duelcommander")],
 	["is:oathbreaker", isTagTree("oathbreaker")],
 	["is:spell", isTagTree("spell")],
+	[
+		"is:permanent",
+		`{"kwargs":{"operands":[${[
+			typeTree("card_types", "Creature"),
+			typeTree("card_types", "Artifact"),
+			typeTree("card_types", "Enchantment"),
+			typeTree("card_types", "Land"),
+			typeTree("card_types", "Planeswalker"),
+			typeTree("card_types", "Battle"),
+			typeTree("card_subtypes", "Summon"),
+			typeTree("card_subtypes", "Eaturecray"),
+		].join(",")}]},"node_type":"OrNode"}`,
+	],
 ]);
 
 interface FixtureCase {

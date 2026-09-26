@@ -58,7 +58,16 @@ const DERIVED_EXPANSIONS: ReadonlyMap<string, string> = new Map([
 	["is\u0000old", "frame:1993 or frame:1997"],
 	["is\u0000new", "frame:2003 or frame:2015 or frame:future"], // == frame:new, exact both ways
 	["is\u0000historic", "t:legendary or t:artifact or t:saga"],
-	["is\u0000permanent", "t:creature or t:artifact or t:enchantment or t:land or t:planeswalker or t:battle"],
+	// `Summon` is the creature spelling before Sixth Edition (Aswan Jaguar's "Summon Jaguar",
+	// Old Fogey's "Summon — Dinosaur") and `Eaturecray` is Unhinged's pig-Latin one (Atinlay Igpay).
+	// api.scryfall.com counts all twelve such cards as permanents (`is:permanent -t:creature
+	// -t:artifact -t:enchantment -t:land -t:planeswalker -t:battle` names exactly them and one token,
+	// 2026-09-26) while its `t:creature` finds none of them, so they are named as the TYPE WORDS
+	// they print rather than folded into `t:creature`.
+	[
+		"is\u0000permanent",
+		"t:creature or t:artifact or t:enchantment or t:land or t:planeswalker or t:battle or t:summon or t:eaturecray",
+	],
 	["is\u0000party", "t:creature (t:cleric or t:rogue or t:warrior or t:wizard or kw:changeling)"],
 	["is\u0000outlaw", "t:assassin or t:mercenary or t:pirate or t:rogue or t:warlock or kw:changeling"],
 	// NO `is:vanilla` HERE — it is an ENGINE predicate now; see ENGINE_IS_VALUES below and

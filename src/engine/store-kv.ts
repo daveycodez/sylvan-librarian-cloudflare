@@ -1739,12 +1739,14 @@ export async function gzipBytes(bytes: Uint8Array): Promise<Uint8Array> {
  *      against 24). And Arena's conjured duplicates (ydmu's Power Nine, hbg 902-928, j21 777-792,
  *      the y-sets' paper reprints after 30) join the extras class on the one field that separates
  *      them, a low-res render (`!"Black Lotus" is:digital&unique=prints` was vma, ydmu/35, prm).
+ *      And the `partner` row, shadowed by rewrite.ts's `is:partner` since 2026-09-22, leaves
+ *      ARRAY_IS_TAGS.
  *
  *      GENERATION-ONLY. Every change is a value in a column the archive already has — tag words in
  *      `card_is_tags`, a different `extra` verdict — so a generation-54 store still LOADS, and would
- *      answer `is:commander` from no row at all once the parser stops rewriting it. This constant is what makes store-age.ts
- *      rebuild; the format, and so the per-format manifest key, stays 2026092601 and the rebuild
- *      replaces the store in place.
+ *      answer `is:commander` from no row at all once the parser stops rewriting it. This constant
+ *      is what makes store-age.ts rebuild; the format, and so the per-format manifest key, stays
+ *      2026092601 and the rebuild replaces the store in place.
  */
 export const STORE_CONTENT_GENERATION = 55;
 
