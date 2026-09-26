@@ -598,7 +598,7 @@ fn list_restriction_keys_cover_every_bang_match() {
             face_flavor.as_deref(),
             row.is_canonical,
             row.card_is_tags.contains_key("extra"),
-            row.card_layout.as_deref() == Some("art_series"),
+            row.card_layout.as_deref(),
             &mut keys,
         );
         for key in &keys {
