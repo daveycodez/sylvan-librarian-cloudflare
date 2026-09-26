@@ -1,0 +1,159 @@
+{
+ "all_parts": [
+  {
+   "component": "token",
+   "id": "0281825d-9d38-4b56-b522-a8d3cf8c77c9",
+   "name": "Mechtitan",
+   "object": "related_card",
+   "type_line": "Token Legendary Artifact Creature — Construct",
+   "uri": "https://api.scryfall.com/cards/0281825d-9d38-4b56-b522-a8d3cf8c77c9"
+  },
+  {
+   "component": "combo_piece",
+   "id": "9e1416a3-bf20-4ed8-81d2-9bc4e1e384c7",
+   "name": "Mechtitan Core",
+   "object": "related_card",
+   "type_line": "Artifact — Vehicle",
+   "uri": "https://api.scryfall.com/cards/9e1416a3-bf20-4ed8-81d2-9bc4e1e384c7"
+  }
+ ],
+ "artist": "Victor Adame Minguez",
+ "artist_ids": [
+  "bd8f7368-5b10-4554-b6b8-d052c6aca89f"
+ ],
+ "booster": false,
+ "border_color": "black",
+ "card_back_id": "0aeebaf5-8c7d-4636-9e82-8c27447861f7",
+ "cmc": 0.0,
+ "collector_number": "14",
+ "color_identity": [
+  "B",
+  "G",
+  "R",
+  "U",
+  "W"
+ ],
+ "colors": [
+  "B",
+  "G",
+  "R",
+  "U",
+  "W"
+ ],
+ "digital": false,
+ "finishes": [
+  "nonfoil",
+  "foil"
+ ],
+ "foil": true,
+ "frame": "2015",
+ "frame_effects": [
+  "legendary"
+ ],
+ "full_art": false,
+ "game_changer": false,
+ "games": [
+  "paper"
+ ],
+ "highres_image": true,
+ "id": "0281825d-9d38-4b56-b522-a8d3cf8c77c9",
+ "illustration_id": "bdf054a8-79c0-4cb9-b8e9-c7b4e04db760",
+ "image_status": "highres_scan",
+ "image_updated_at": "2026-07-13T06:21:50Z",
+ "image_uris": {
+  "art": "https://cards.scryfall.io/art/front/0/2/0281825d-9d38-4b56-b522-a8d3cf8c77c9.webp?1783923710",
+  "art_crop": "https://cards.scryfall.io/art_crop/front/0/2/0281825d-9d38-4b56-b522-a8d3cf8c77c9.jpg?1783923710",
+  "border_crop": "https://cards.scryfall.io/border_crop/front/0/2/0281825d-9d38-4b56-b522-a8d3cf8c77c9.jpg?1783923710",
+  "crop": "https://cards.scryfall.io/crop/front/0/2/0281825d-9d38-4b56-b522-a8d3cf8c77c9.webp?1783923710",
+  "display": "https://cards.scryfall.io/display/front/0/2/0281825d-9d38-4b56-b522-a8d3cf8c77c9.webp?1783923710",
+  "grid": "https://cards.scryfall.io/grid/front/0/2/0281825d-9d38-4b56-b522-a8d3cf8c77c9.webp?1783923710",
+  "large": "https://cards.scryfall.io/large/front/0/2/0281825d-9d38-4b56-b522-a8d3cf8c77c9.jpg?1783923710",
+  "normal": "https://cards.scryfall.io/normal/front/0/2/0281825d-9d38-4b56-b522-a8d3cf8c77c9.jpg?1783923710",
+  "png": "https://cards.scryfall.io/png/front/0/2/0281825d-9d38-4b56-b522-a8d3cf8c77c9.png?1783923710",
+  "small": "https://cards.scryfall.io/small/front/0/2/0281825d-9d38-4b56-b522-a8d3cf8c77c9.jpg?1783923710",
+  "thumb": "https://cards.scryfall.io/thumb/front/0/2/0281825d-9d38-4b56-b522-a8d3cf8c77c9.webp?1783923710"
+ },
+ "keywords": [
+  "Flying",
+  "Lifelink",
+  "Vigilance",
+  "Haste",
+  "Trample"
+ ],
+ "lang": "en",
+ "layout": "token",
+ "legalities": {
+  "alchemy": "not_legal",
+  "brawl": "not_legal",
+  "commander": "not_legal",
+  "competitivebrawl": "not_legal",
+  "duel": "not_legal",
+  "future": "not_legal",
+  "gladiator": "not_legal",
+  "historic": "not_legal",
+  "legacy": "not_legal",
+  "modern": "not_legal",
+  "oathbreaker": "not_legal",
+  "oldschool": "not_legal",
+  "pauper": "not_legal",
+  "paupercommander": "not_legal",
+  "penny": "not_legal",
+  "pioneer": "not_legal",
+  "predh": "not_legal",
+  "premodern": "not_legal",
+  "standard": "not_legal",
+  "standardbrawl": "not_legal",
+  "timeless": "not_legal",
+  "tlr": "not_legal",
+  "vintage": "not_legal"
+ },
+ "mana_cost": "",
+ "multiverse_ids": [],
+ "name": "Mechtitan",
+ "nonfoil": true,
+ "object": "card",
+ "oracle_id": "a4fecf0a-a7b3-49e4-bbb2-9690dff5a8f4",
+ "oracle_text": "Mechtitan is all colors.\nFlying, vigilance, trample, lifelink, haste",
+ "oversized": false,
+ "power": "10",
+ "prices": {
+  "eur": null,
+  "eur_foil": null,
+  "tix": null,
+  "usd": "9.60",
+  "usd_etched": null,
+  "usd_foil": null
+ },
+ "prints_search_uri": "https://api.scryfall.com/cards/search?order=released&q=oracleid%3Aa4fecf0a-a7b3-49e4-bbb2-9690dff5a8f4&unique=prints",
+ "promo": false,
+ "purchase_uris": {
+  "cardhoarder": "https://www.cardhoarder.com/cards?affiliate_id=scryfall&data%5Bsearch%5D=Mechtitan&ref=card-profile&utm_campaign=affiliate&utm_medium=card&utm_source=scryfall",
+  "cardmarket": "https://www.cardmarket.com/en/Magic/Products/Search?referrer=scryfall&searchString=Mechtitan&utm_campaign=card_prices&utm_medium=text&utm_source=scryfall",
+  "tcgplayer": "https://partner.tcgplayer.com/c/4931599/1830156/21018?subId1=api&u=https%3A%2F%2Fwww.tcgplayer.com%2Fproduct%2F263330%3Fpage%3D1"
+ },
+ "rarity": "common",
+ "related_uris": {
+  "edhrec": "https://edhrec.com/route/?cc=Mechtitan",
+  "tcgplayer_infinite_articles": "https://partner.tcgplayer.com/c/4931599/1830156/21018?subId1=api&trafcat=tcgplayer.com%2Fsearch%2Farticles&u=https%3A%2F%2Fwww.tcgplayer.com%2Fsearch%2Farticles%3FproductLineName%3Dmagic%26q%3DMechtitan",
+  "tcgplayer_infinite_decks": "https://partner.tcgplayer.com/c/4931599/1830156/21018?subId1=api&trafcat=tcgplayer.com%2Fsearch%2Fdecks&u=https%3A%2F%2Fwww.tcgplayer.com%2Fsearch%2Fdecks%3FproductLineName%3Dmagic%26q%3DMechtitan"
+ },
+ "released_at": "2022-02-18",
+ "reprint": false,
+ "reserved": false,
+ "rulings_uri": "https://api.scryfall.com/cards/0281825d-9d38-4b56-b522-a8d3cf8c77c9/rulings",
+ "scryfall_set_uri": "https://scryfall.com/sets/tneo?utm_source=api",
+ "scryfall_uri": "https://scryfall.com/card/tneo/14/mechtitan?utm_source=api",
+ "set": "tneo",
+ "set_id": "8bb113fb-6138-4993-877b-5cd01f8d7529",
+ "set_name": "Kamigawa: Neon Dynasty Tokens",
+ "set_search_uri": "https://api.scryfall.com/cards/search?order=set&q=e%3Atneo&unique=prints",
+ "set_type": "token",
+ "set_uri": "https://api.scryfall.com/sets/8bb113fb-6138-4993-877b-5cd01f8d7529",
+ "story_spotlight": false,
+ "tcgplayer_id": 263330,
+ "textless": false,
+ "toughness": "10",
+ "type_line": "Token Legendary Artifact Creature — Construct",
+ "uri": "https://api.scryfall.com/cards/0281825d-9d38-4b56-b522-a8d3cf8c77c9",
+ "variation": false
+}

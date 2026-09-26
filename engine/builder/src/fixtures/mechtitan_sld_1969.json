@@ -1,0 +1,208 @@
+{
+ "all_parts": [
+  {
+   "component": "token",
+   "id": "5d02dee4-2071-448f-9fd3-58d63635d712",
+   "name": "Mechtitan // Mechtitan",
+   "object": "related_card",
+   "type_line": "Token Legendary Artifact Creature — Construct // Token Legendary Artifact Creature — Construct",
+   "uri": "https://api.scryfall.com/cards/5d02dee4-2071-448f-9fd3-58d63635d712"
+  },
+  {
+   "component": "combo_piece",
+   "id": "913f0aca-ac61-4377-b3b1-cd556b950df2",
+   "name": "Mechtitan Core // Mechtitan Core",
+   "object": "related_card",
+   "type_line": "Artifact — Vehicle // Artifact — Vehicle",
+   "uri": "https://api.scryfall.com/cards/913f0aca-ac61-4377-b3b1-cd556b950df2"
+  }
+ ],
+ "artist": "Ivan Shavrin & Rob Pavic",
+ "artist_ids": [
+  "48432182-db18-4106-81c8-7b83100316d6",
+  "dc002799-b1e7-4f09-844d-6e02d2e0b3e4"
+ ],
+ "booster": false,
+ "border_color": "borderless",
+ "card_faces": [
+  {
+   "artist": "Ivan Shavrin",
+   "artist_id": "48432182-db18-4106-81c8-7b83100316d6",
+   "cmc": 0.0,
+   "colors": [
+    "B",
+    "G",
+    "R",
+    "U",
+    "W"
+   ],
+   "illustration_id": "fd08aa25-e490-48d0-b10e-e5c464e9c4c1",
+   "image_uris": {
+    "art": "https://cards.scryfall.io/art/front/5/d/5d02dee4-2071-448f-9fd3-58d63635d712.webp?1783907927",
+    "art_crop": "https://cards.scryfall.io/art_crop/front/5/d/5d02dee4-2071-448f-9fd3-58d63635d712.jpg?1783907927",
+    "border_crop": "https://cards.scryfall.io/border_crop/front/5/d/5d02dee4-2071-448f-9fd3-58d63635d712.jpg?1783907927",
+    "crop": "https://cards.scryfall.io/crop/front/5/d/5d02dee4-2071-448f-9fd3-58d63635d712.webp?1783907927",
+    "display": "https://cards.scryfall.io/display/front/5/d/5d02dee4-2071-448f-9fd3-58d63635d712.webp?1783907927",
+    "grid": "https://cards.scryfall.io/grid/front/5/d/5d02dee4-2071-448f-9fd3-58d63635d712.webp?1783907927",
+    "large": "https://cards.scryfall.io/large/front/5/d/5d02dee4-2071-448f-9fd3-58d63635d712.jpg?1783907927",
+    "normal": "https://cards.scryfall.io/normal/front/5/d/5d02dee4-2071-448f-9fd3-58d63635d712.jpg?1783907927",
+    "png": "https://cards.scryfall.io/png/front/5/d/5d02dee4-2071-448f-9fd3-58d63635d712.png?1783907927",
+    "small": "https://cards.scryfall.io/small/front/5/d/5d02dee4-2071-448f-9fd3-58d63635d712.jpg?1783907927",
+    "thumb": "https://cards.scryfall.io/thumb/front/5/d/5d02dee4-2071-448f-9fd3-58d63635d712.webp?1783907927"
+   },
+   "layout": "token",
+   "mana_cost": "",
+   "name": "Mechtitan",
+   "object": "card_face",
+   "oracle_id": "a4fecf0a-a7b3-49e4-bbb2-9690dff5a8f4",
+   "oracle_text": "Mechtitan is all colors.\nFlying, vigilance, trample, lifelink, haste",
+   "power": "10",
+   "toughness": "10",
+   "type_line": "Token Legendary Artifact Creature — Construct"
+  },
+  {
+   "artist": "Rob Pavic",
+   "artist_id": "dc002799-b1e7-4f09-844d-6e02d2e0b3e4",
+   "cmc": 0.0,
+   "colors": [
+    "B",
+    "G",
+    "R",
+    "U",
+    "W"
+   ],
+   "illustration_id": "713dc5dd-cd25-4e24-9d83-d9d89ce0d6a5",
+   "image_uris": {
+    "art": "https://cards.scryfall.io/art/back/5/d/5d02dee4-2071-448f-9fd3-58d63635d712.webp?1783907927",
+    "art_crop": "https://cards.scryfall.io/art_crop/back/5/d/5d02dee4-2071-448f-9fd3-58d63635d712.jpg?1783907927",
+    "border_crop": "https://cards.scryfall.io/border_crop/back/5/d/5d02dee4-2071-448f-9fd3-58d63635d712.jpg?1783907927",
+    "crop": "https://cards.scryfall.io/crop/back/5/d/5d02dee4-2071-448f-9fd3-58d63635d712.webp?1783907927",
+    "display": "https://cards.scryfall.io/display/back/5/d/5d02dee4-2071-448f-9fd3-58d63635d712.webp?1783907927",
+    "grid": "https://cards.scryfall.io/grid/back/5/d/5d02dee4-2071-448f-9fd3-58d63635d712.webp?1783907927",
+    "large": "https://cards.scryfall.io/large/back/5/d/5d02dee4-2071-448f-9fd3-58d63635d712.jpg?1783907927",
+    "normal": "https://cards.scryfall.io/normal/back/5/d/5d02dee4-2071-448f-9fd3-58d63635d712.jpg?1783907927",
+    "png": "https://cards.scryfall.io/png/back/5/d/5d02dee4-2071-448f-9fd3-58d63635d712.png?1783907927",
+    "small": "https://cards.scryfall.io/small/back/5/d/5d02dee4-2071-448f-9fd3-58d63635d712.jpg?1783907927",
+    "thumb": "https://cards.scryfall.io/thumb/back/5/d/5d02dee4-2071-448f-9fd3-58d63635d712.webp?1783907927"
+   },
+   "layout": "token",
+   "mana_cost": "",
+   "name": "Mechtitan",
+   "object": "card_face",
+   "oracle_id": "a4fecf0a-a7b3-49e4-bbb2-9690dff5a8f4",
+   "oracle_text": "Mechtitan is all colors.\nFlying, vigilance, trample, lifelink, haste",
+   "power": "10",
+   "toughness": "10",
+   "type_line": "Token Legendary Artifact Creature — Construct"
+  }
+ ],
+ "cardmarket_id": 810759,
+ "collector_number": "1969",
+ "color_identity": [
+  "B",
+  "G",
+  "R",
+  "U",
+  "W"
+ ],
+ "digital": false,
+ "finishes": [
+  "nonfoil",
+  "foil"
+ ],
+ "foil": true,
+ "frame": "2015",
+ "frame_effects": [
+  "legendary"
+ ],
+ "full_art": true,
+ "game_changer": false,
+ "games": [
+  "paper"
+ ],
+ "highres_image": true,
+ "id": "5d02dee4-2071-448f-9fd3-58d63635d712",
+ "image_status": "highres_scan",
+ "image_updated_at": "2026-07-13T01:58:47Z",
+ "keywords": [
+  "Flying",
+  "Lifelink",
+  "Vigilance",
+  "Haste",
+  "Trample"
+ ],
+ "lang": "en",
+ "layout": "reversible_card",
+ "legalities": {
+  "alchemy": "not_legal",
+  "brawl": "not_legal",
+  "commander": "not_legal",
+  "competitivebrawl": "not_legal",
+  "duel": "not_legal",
+  "future": "not_legal",
+  "gladiator": "not_legal",
+  "historic": "not_legal",
+  "legacy": "not_legal",
+  "modern": "not_legal",
+  "oathbreaker": "not_legal",
+  "oldschool": "not_legal",
+  "pauper": "not_legal",
+  "paupercommander": "not_legal",
+  "penny": "not_legal",
+  "pioneer": "not_legal",
+  "predh": "not_legal",
+  "premodern": "not_legal",
+  "standard": "not_legal",
+  "standardbrawl": "not_legal",
+  "timeless": "not_legal",
+  "tlr": "not_legal",
+  "vintage": "not_legal"
+ },
+ "multiverse_ids": [],
+ "name": "Mechtitan // Mechtitan",
+ "nonfoil": true,
+ "object": "card",
+ "oversized": false,
+ "prices": {
+  "eur": "2.26",
+  "eur_foil": "2.68",
+  "tix": null,
+  "usd": "4.52",
+  "usd_etched": null,
+  "usd_foil": "4.34"
+ },
+ "prints_search_uri": "https://api.scryfall.com/cards/search?order=released&q=oracleid%3Aa4fecf0a-a7b3-49e4-bbb2-9690dff5a8f4&unique=prints",
+ "promo": false,
+ "promo_types": [
+  "poster"
+ ],
+ "purchase_uris": {
+  "cardhoarder": "https://www.cardhoarder.com/cards?affiliate_id=scryfall&data%5Bsearch%5D=Mechtitan+%2F%2F+Mechtitan&ref=card-profile&utm_campaign=affiliate&utm_medium=card&utm_source=scryfall",
+  "cardmarket": "https://www.cardmarket.com/en/Magic/Products?idProduct=810759&referrer=scryfall&utm_campaign=card_prices&utm_medium=text&utm_source=scryfall",
+  "tcgplayer": "https://partner.tcgplayer.com/c/4931599/1830156/21018?subId1=api&u=https%3A%2F%2Fwww.tcgplayer.com%2Fproduct%2F617843%3Fpage%3D1"
+ },
+ "rarity": "common",
+ "related_uris": {
+  "edhrec": "https://edhrec.com/route/?cc=Mechtitan+%2F%2F+Mechtitan",
+  "tcgplayer_infinite_articles": "https://partner.tcgplayer.com/c/4931599/1830156/21018?subId1=api&trafcat=tcgplayer.com%2Fsearch%2Farticles&u=https%3A%2F%2Fwww.tcgplayer.com%2Fsearch%2Farticles%3FproductLineName%3Dmagic%26q%3DMechtitan%2B%252F%252F%2BMechtitan",
+  "tcgplayer_infinite_decks": "https://partner.tcgplayer.com/c/4931599/1830156/21018?subId1=api&trafcat=tcgplayer.com%2Fsearch%2Fdecks&u=https%3A%2F%2Fwww.tcgplayer.com%2Fsearch%2Fdecks%3FproductLineName%3Dmagic%26q%3DMechtitan%2B%252F%252F%2BMechtitan"
+ },
+ "released_at": "2025-02-10",
+ "reprint": true,
+ "reserved": false,
+ "rulings_uri": "https://api.scryfall.com/cards/5d02dee4-2071-448f-9fd3-58d63635d712/rulings",
+ "scryfall_set_uri": "https://scryfall.com/sets/sld?utm_source=api",
+ "scryfall_uri": "https://scryfall.com/card/sld/1969/mechtitan-mechtitan?utm_source=api",
+ "security_stamp": "oval",
+ "set": "sld",
+ "set_id": "4d92a8a7-ccb0-437d-abdc-9d70fc5ed672",
+ "set_name": "Secret Lair Drop",
+ "set_search_uri": "https://api.scryfall.com/cards/search?order=set&q=e%3Asld&unique=prints",
+ "set_type": "box",
+ "set_uri": "https://api.scryfall.com/sets/4d92a8a7-ccb0-437d-abdc-9d70fc5ed672",
+ "story_spotlight": false,
+ "tcgplayer_id": 617843,
+ "textless": false,
+ "uri": "https://api.scryfall.com/cards/5d02dee4-2071-448f-9fd3-58d63635d712",
+ "variation": false
+}

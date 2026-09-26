@@ -1,0 +1,129 @@
+{
+ "artist": "Jon J Muth",
+ "artist_ids": [
+  "32e6b862-3f86-4408-a351-fe4edef5e7b2"
+ ],
+ "booster": true,
+ "border_color": "black",
+ "card_back_id": "0aeebaf5-8c7d-4636-9e82-8c27447861f7",
+ "cardmarket_id": 8524,
+ "cmc": 1.0,
+ "collector_number": "23",
+ "color_identity": [
+  "W"
+ ],
+ "colors": [
+  "W"
+ ],
+ "digital": false,
+ "edhrec_rank": 8907,
+ "finishes": [
+  "nonfoil"
+ ],
+ "foil": false,
+ "frame": "1997",
+ "full_art": false,
+ "game_changer": false,
+ "games": [
+  "paper",
+  "mtgo"
+ ],
+ "highres_image": true,
+ "id": "aae08938-e563-4322-b2eb-db81913ea730",
+ "illustration_id": "cdb9f0cf-c397-4e26-8178-d4098580df44",
+ "image_status": "highres_scan",
+ "image_updated_at": "2026-07-13T12:50:03Z",
+ "image_uris": {
+  "art": "https://cards.scryfall.io/art/front/a/a/aae08938-e563-4322-b2eb-db81913ea730.webp?1783947003",
+  "art_crop": "https://cards.scryfall.io/art_crop/front/a/a/aae08938-e563-4322-b2eb-db81913ea730.jpg?1783947003",
+  "border_crop": "https://cards.scryfall.io/border_crop/front/a/a/aae08938-e563-4322-b2eb-db81913ea730.jpg?1783947003",
+  "crop": "https://cards.scryfall.io/crop/front/a/a/aae08938-e563-4322-b2eb-db81913ea730.webp?1783947003",
+  "display": "https://cards.scryfall.io/display/front/a/a/aae08938-e563-4322-b2eb-db81913ea730.webp?1783947003",
+  "grid": "https://cards.scryfall.io/grid/front/a/a/aae08938-e563-4322-b2eb-db81913ea730.webp?1783947003",
+  "large": "https://cards.scryfall.io/large/front/a/a/aae08938-e563-4322-b2eb-db81913ea730.jpg?1783947003",
+  "normal": "https://cards.scryfall.io/normal/front/a/a/aae08938-e563-4322-b2eb-db81913ea730.jpg?1783947003",
+  "png": "https://cards.scryfall.io/png/front/a/a/aae08938-e563-4322-b2eb-db81913ea730.png?1783947003",
+  "small": "https://cards.scryfall.io/small/front/a/a/aae08938-e563-4322-b2eb-db81913ea730.jpg?1783947003",
+  "thumb": "https://cards.scryfall.io/thumb/front/a/a/aae08938-e563-4322-b2eb-db81913ea730.webp?1783947003"
+ },
+ "keywords": [],
+ "lang": "en",
+ "layout": "normal",
+ "legalities": {
+  "alchemy": "not_legal",
+  "brawl": "not_legal",
+  "commander": "legal",
+  "competitivebrawl": "not_legal",
+  "duel": "legal",
+  "future": "not_legal",
+  "gladiator": "not_legal",
+  "historic": "not_legal",
+  "legacy": "legal",
+  "modern": "not_legal",
+  "oathbreaker": "legal",
+  "oldschool": "not_legal",
+  "pauper": "not_legal",
+  "paupercommander": "not_legal",
+  "penny": "not_legal",
+  "pioneer": "not_legal",
+  "predh": "legal",
+  "premodern": "legal",
+  "standard": "not_legal",
+  "standardbrawl": "not_legal",
+  "timeless": "not_legal",
+  "tlr": "legal",
+  "vintage": "legal"
+ },
+ "mana_cost": "{W}",
+ "mtgo_foil_id": 7764,
+ "mtgo_id": 7763,
+ "multiverse_ids": [
+  3730
+ ],
+ "name": "Tithe",
+ "nonfoil": true,
+ "object": "card",
+ "oracle_id": "318304f5-0929-4cd3-97e6-08ac1ac48aa6",
+ "oracle_text": "Search your library for a Plains card. If target opponent controls more lands than you, you may search your library for an additional Plains card. Reveal those cards, put them into your hand, then shuffle.",
+ "oversized": false,
+ "prices": {
+  "eur": "26.21",
+  "eur_foil": null,
+  "tix": "2.97",
+  "usd": "36.62",
+  "usd_etched": null,
+  "usd_foil": null
+ },
+ "prints_search_uri": "https://api.scryfall.com/cards/search?order=released&q=oracleid%3A318304f5-0929-4cd3-97e6-08ac1ac48aa6&unique=prints",
+ "promo": false,
+ "purchase_uris": {
+  "cardhoarder": "https://www.cardhoarder.com/cards/7763?affiliate_id=scryfall&ref=card-profile&utm_campaign=affiliate&utm_medium=card&utm_source=scryfall",
+  "cardmarket": "https://www.cardmarket.com/en/Magic/Products?idProduct=8524&referrer=scryfall&utm_campaign=card_prices&utm_medium=text&utm_source=scryfall",
+  "tcgplayer": "https://partner.tcgplayer.com/c/4931599/1830156/21018?subId1=api&u=https%3A%2F%2Fwww.tcgplayer.com%2Fproduct%2F5947%3Fpage%3D1"
+ },
+ "rarity": "rare",
+ "related_uris": {
+  "edhrec": "https://edhrec.com/route/?cc=Tithe",
+  "gatherer": "https://gatherer.wizards.com/Pages/Card/Details.aspx?multiverseid=3730&printed=false",
+  "tcgplayer_infinite_articles": "https://partner.tcgplayer.com/c/4931599/1830156/21018?subId1=api&trafcat=tcgplayer.com%2Fsearch%2Farticles&u=https%3A%2F%2Fwww.tcgplayer.com%2Fsearch%2Farticles%3FproductLineName%3Dmagic%26q%3DTithe",
+  "tcgplayer_infinite_decks": "https://partner.tcgplayer.com/c/4931599/1830156/21018?subId1=api&trafcat=tcgplayer.com%2Fsearch%2Fdecks&u=https%3A%2F%2Fwww.tcgplayer.com%2Fsearch%2Fdecks%3FproductLineName%3Dmagic%26q%3DTithe"
+ },
+ "released_at": "1997-02-03",
+ "reprint": false,
+ "reserved": true,
+ "rulings_uri": "https://api.scryfall.com/cards/aae08938-e563-4322-b2eb-db81913ea730/rulings",
+ "scryfall_set_uri": "https://scryfall.com/sets/vis?utm_source=api",
+ "scryfall_uri": "https://scryfall.com/card/vis/23/tithe?utm_source=api",
+ "set": "vis",
+ "set_id": "2c32f1a9-7921-4826-bea0-80bbac70532c",
+ "set_name": "Visions",
+ "set_search_uri": "https://api.scryfall.com/cards/search?order=set&q=e%3Avis&unique=prints",
+ "set_type": "expansion",
+ "set_uri": "https://api.scryfall.com/sets/2c32f1a9-7921-4826-bea0-80bbac70532c",
+ "story_spotlight": false,
+ "tcgplayer_id": 5947,
+ "textless": false,
+ "type_line": "Instant",
+ "uri": "https://api.scryfall.com/cards/aae08938-e563-4322-b2eb-db81913ea730",
+ "variation": false
+}

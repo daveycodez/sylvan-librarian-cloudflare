@@ -19,6 +19,7 @@
 import type { Engine } from "../engine/types";
 import type { ExpandedDerivedTerm, LoweredRegexTerm } from "../parser";
 import { EXTRA_IS_TAG, FUNNY_IS_TAG } from "../parser/db-info";
+import { UUID_V4_RE } from "./scryfall-compat/query-terms";
 
 /** What a query's parse tree says about Scryfall's `include_extras` auto-enable. */
 interface ExtrasTriggers {
@@ -247,15 +248,15 @@ function mentionsIsTag(node: unknown, tag: string): boolean {
  * `NEGATION_SUPPRESSED_IS_TAGS`. And it is a FORCE, not a default: `include_extras=false` sent
  * explicitly is overridden, in the echo and in the rows.
  *
- * Unconditional triggers: `a:`, `wm:`, `layout:`, `name:/…/`, six `t:` values (`token` and five
- * hidden card classes — see `EXTRAS_TYPE_TRIGGERS`), and four `is:` values
+ * Unconditional triggers: `a:`, `wm:`, `layout:`, `name:/…/`, `oracleid:<v4 uuid>`, six `t:` values
+ * (`token` and five hidden card classes — see `EXTRAS_TYPE_TRIGGERS`), and four `is:` values
  * (`b:` belongs here too — this parser has no block operator, so the term cannot reach us). Each
  * fires on the TERM: `a:"Wesley Burt"` triggers although `a:"Wesley Burt" is:extra` is 0,
- * `name:/zzzqq/` matches nothing and still triggers, `layout:normal` triggers. Deliberately NOT
- * triggers, each probed: `t:` at any other value, `o:`, `o:/…/`, `t:/…/`, `cn:`, `st:`,
- * `year:`/`date:`, `border:` at every OTHER value, `frame:` at every value, `name:"literal"`, a
- * bare `name:` word, `!"Exact"`, and the other 28 `is:` values — see
- * `UNCONDITIONAL_EXTRAS_IS_TAGS`.
+ * `name:/zzzqq/` matches nothing and still triggers, `layout:normal` triggers, and so does an
+ * `oracleid:` naming a well-formed id no card has. Deliberately NOT triggers, each probed: `t:` at
+ * any other value, `o:`, `o:/…/`, `t:/…/`, `cn:`, `game:`, `st:`, `year:`/`date:`, `border:` at
+ * every OTHER value, `frame:` at every value, `name:"literal"`, a bare `name:` word, `!"Exact"`,
+ * and the other 28 `is:` values — see `UNCONDITIONAL_EXTRAS_IS_TAGS`.
  *
  * `border:silver` WAS in that negative list and is a trigger; it surfaced as a lone outlier in a
  * scope calibration (`border:silver` matching the extras-INCLUDED count where every other scope
@@ -429,6 +430,36 @@ function walkExtrasTriggers(
 			for (const value of values) {
 				if (value === "silver" && !lowered(attr, value) && !derived(attr, value)) out.forced = true;
 			}
+		}
+		// `oracleid:` — "every printing of this card", and on api.scryfall.com that means EVERY one:
+		// the term forces `include_extras`, so the answer carries a card's tokens, 30th Anniversary,
+		// Collectors' Edition, World Championship and art-series printings. Measured 2026-09-25 with
+		// `<term> or cmc=3` (bare 8,089, echo false; extras-on 8,297):
+		//
+		//   FIRES (8,297/8,298, echo true): `oracleid:` and `oracleid=` at Mechtitan (whose printings
+		//     are ALL extras), Doubling Cube and Fury Sliver (NONE of whose printings are), the same
+		//     id upper-cased, quoted, or spelled `oracle_id:`; `-oracleid:<id> cmc=3`, so it is
+		//     polarity-blind; and `oracleid:11111111-1111-4111-8111-111111111111`, a well-formed id
+		//     no card has — so it is the TERM, not the rows, the rule of every other trigger here.
+		//   DOES NOT FIRE (8,089, echo false): every value that is not a v4 UUID — `abc`, a prefix,
+		//     the nil UUID, a version-1 shape, a bad variant nibble, no hyphens — each "ignored" with
+		//     `You must provide a valid v4 UUID.`; the regex spelling, ignored as an "Unknown regular
+		//     expression keyword"; and `oracleid!=<id>`.
+		//
+		// The unique mode does not enter into it (`unique=prints` and `unique=cards` both echo true,
+		// and `oracleid:<Mechtitan>` is tneo/14 under the second), and nothing else that names one
+		// card does it: `!"Mechtitan"` is 404 under either mode, `cn:14 or cmc=3` and
+		// `game:arena or cmc=3` echo false. The card object's own `prints_search_uri` carries no
+		// `include_extras` — it needs none. Before this, mtgseeker's Prints strip (that exact URL)
+		// answered 102 of 720 re-measured ids and 14 of the 71 reversible-card ids without their
+		// extras printings — Mechtitan (tneo/14, sld/1969) as a 404 — and after it all 791 match
+		// api.scryfall.com's set of printings.
+		//
+		// The v4 check matters only to `/search`: `/cards/search` drops a malformed id before the tree
+		// exists (`scryfallTermPolicy`), as Scryfall does, while `/search` keeps it as a term that
+		// matches nothing — and Scryfall's `oracleid:abc or cmc=3` echoes false, so it must not fire.
+		if (attr === "oracle_id" && !fromExpansion && (n.kwargs?.op === ":" || n.kwargs?.op === "=")) {
+			if (values.some((v) => UUID_V4_RE.test(v) && !lowered(attr, v))) out.forced = true;
 		}
 		if (attr === "card_set_code" && !fromExpansion) {
 			for (const value of values) out.sets.push(value);

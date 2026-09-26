@@ -14,6 +14,8 @@
 // a test built on one would pass against a gate that never fired.
 
 import { beforeEach, describe, expect, test } from "bun:test";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import { setParserForTests } from "../../src/routes/parser-bridge";
 import { FakeEngine, makeCtx, testDispatch } from "./harness";
 
@@ -168,6 +170,96 @@ describe("/search applies the extras gate", () => {
 		// a group. (`-(is:funny)` itself folds to `-is:funny` before the tree exists — the recorded
 		// residual at `NEGATION_SUPPRESSED_IS_TAGS`.)
 		expect(gatesClosed(await treeFor(engine, "-(t:token or t:plane) t:land"))).toMatchObject({ extra: false });
+	});
+
+	test("oracleid: admits extras — the whole card, as api.scryfall.com answers it", async () => {
+		// THE BUG THIS PINS: `oracleid:<id>` forces `include_extras` on api.scryfall.com (the
+		// `<term> or cmc=3` echo, 2026-09-25, table at the walk), and the gate closed anyway — so
+		// Mechtitan (tneo/14, sld/1969, both extras) answered 404 and 102 of 720 re-measured ids
+		// came back without their 30a/cei/ced/World Championship/oversized/token printings. The card
+		// page's printings strip sends this shape here (card-embed.ts `printingsUrl`), mtgseeker's
+		// Prints strip sends it to `/cards/search`.
+		const engine = new FakeEngine();
+		const MECHTITAN = "a4fecf0a-a7b3-49e4-bbb2-9690dff5a8f4";
+		for (const q of [
+			`oracleid:${MECHTITAN}`,
+			`oracleid=${MECHTITAN}`,
+			`oracle_id:${MECHTITAN}`,
+			`oracleid:${MECHTITAN.toUpperCase()}`,
+			`oracleid:"${MECHTITAN}"`,
+			// Polarity-blind, like every family but three: `-oracleid:<id> cmc=3` echoes true.
+			`-oracleid:${MECHTITAN} cmc=3`,
+			`oracleid:${MECHTITAN} or t:goblin`,
+			// The TERM, not the rows: a well-formed id no card has still fires there.
+			"oracleid:11111111-1111-4111-8111-111111111111 or cmc=3",
+		]) {
+			expect(gatesClosed(await treeFor(engine, q)), q).toMatchObject({ extra: false, variation: true });
+		}
+		// Scryfall IGNORES every id that is not a v4 UUID ("You must provide a valid v4 UUID."), so
+		// none of them can fire; nor can the regex spelling it ignores, nor `!=`. And nothing else
+		// that names one card does it: `!"Mechtitan"` is 404 there, `cn:` and `game:` echo false.
+		for (const q of [
+			"oracleid:abc or cmc=3",
+			"oracleid:00000000-0000-0000-0000-000000000000 or cmc=3",
+			"oracleid:11111111-1111-1111-8111-111111111111 or cmc=3",
+			"oracleid:11111111-1111-4111-1111-111111111111 or cmc=3",
+			`oracleid:/${MECHTITAN}/ or cmc=3`,
+			`oracleid!=${MECHTITAN} or cmc=3`,
+			'!"Mechtitan"',
+			"cn:14 or cmc=3",
+			"game:arena or cmc=3",
+		]) {
+			expect(gatesClosed(await treeFor(engine, q)), q).toMatchObject({ extra: true });
+		}
+	});
+
+	test("the oracleid: tree is the one engine/builder/tests/oracle_id_extras.rs answers from real JSON", async () => {
+		// That native test builds a store from Mechtitan's and Tithe's real card objects and pins
+		// what THIS tree answers (every printing) against the old one (no extras). The fixtures carry
+		// the ids asserted here.
+		const fixture = (name: string) =>
+			JSON.parse(readFileSync(join(import.meta.dir, `../../engine/builder/src/fixtures/${name}.json`), "utf8")) as {
+				oracle_id?: string;
+				card_faces?: { oracle_id?: string }[];
+			};
+		const MECHTITAN = fixture("mechtitan_tneo_14").oracle_id as string;
+		expect(fixture("mechtitan_sld_1969").card_faces?.map((f) => f.oracle_id)).toEqual([MECHTITAN, MECHTITAN]);
+		expect(fixture("tithe_vis_23").oracle_id).toBe(fixture("tithe_wc98_bh23a").oracle_id);
+		const engine = new FakeEngine();
+		expect(JSON.parse(await treeFor(engine, `oracleid:${MECHTITAN}`))).toEqual({
+			node_type: "AndNode",
+			kwargs: {
+				operands: [
+					{
+						node_type: "CardBinaryOperatorNode",
+						kwargs: {
+							lhs: {
+								node_type: "CardAttributeNode",
+								kwargs: { attribute_name: "oracle_id", original_attribute: "oracleid" },
+							},
+							op: ":",
+							rhs: { node_type: "StringValueNode", kwargs: { value: MECHTITAN } },
+						},
+					},
+					{
+						node_type: "NotNode",
+						kwargs: {
+							operand: {
+								node_type: "CardBinaryOperatorNode",
+								kwargs: {
+									lhs: {
+										node_type: "CardAttributeNode",
+										kwargs: { attribute_name: "card_is_tags", original_attribute: "is" },
+									},
+									op: ":",
+									rhs: ["variation"],
+								},
+							},
+						},
+					},
+				],
+			},
+		});
 	});
 
 	test("a set term admits extras only when that set holds one", async () => {

@@ -465,7 +465,13 @@ const SCRYFALL_RARITIES: ReadonlySet<string> = new Set([
 	"b",
 ]);
 
-const UUID_V4_RE = /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-4[0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$/;
+/**
+ * What Scryfall accepts as an `oracleid:` value — a strict v4 UUID, case-insensitive. The nil UUID,
+ * a version-1 shape, a bad variant nibble and the unhyphenated form are each "ignored" with the
+ * warning below (measured 2026-09-25). Shared with the extras gate, where the same check decides
+ * whether the term reached Scryfall's tree at all and so whether it can force `include_extras`.
+ */
+export const UUID_V4_RE = /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-4[0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$/;
 
 /**
  * The colour VALUES Scryfall reads as a name rather than as a set of letters.

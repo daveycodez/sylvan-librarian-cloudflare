@@ -623,6 +623,26 @@ describe("GET /cards/search", () => {
 		expect(new URL(body.next_page ?? "http://x/").searchParams.get("include_extras")).toBe("true");
 	});
 
+	test("oracleid: forces include_extras, in the tree and the echo — mtgseeker's Prints strip shape", async () => {
+		// `oracleid:<Mechtitan>&unique=prints&include_extras=false` is tneo/14 and sld/1969 on
+		// api.scryfall.com, both extras, and its `or cmc=3` form echoes `include_extras=true`
+		// (2026-09-25). This route answered 404: the gate closed on a trigger it did not know.
+		const engine = new FakeEngine();
+		engine.totalCards = 1000;
+		const id = "a4fecf0a-a7b3-49e4-bbb2-9690dff5a8f4";
+		const res = await testDispatch(
+			makeCtx({ engine }),
+			`/cards/search?q=oracleid%3A${id}&unique=prints&order=released&include_extras=false`,
+		);
+		const body = (await res.json()) as { next_page?: string };
+		expect(new URL(body.next_page ?? "http://x/").searchParams.get("include_extras")).toBe("true");
+		expect(engine.lastSearch?.filterTreeJson).not.toContain('"extra"');
+		// A malformed id is DROPPED with Scryfall's warning before the gate sees the tree, so it
+		// cannot open it: `oracleid:abc or cmc=3` echoes false there.
+		await testDispatch(makeCtx({ engine }), "/cards/search?q=oracleid%3Anotauuid+e%3Akhm");
+		expect(engine.lastSearch?.filterTreeJson).toContain('"extra"');
+	});
+
 	test("is:extra is a SUPPORTED value — it filters rather than warning", async () => {
 		const engine = new FakeEngine();
 		const res = await testDispatch(makeCtx({ engine }), "/cards/search?q=is%3Aextra&include_extras=true");

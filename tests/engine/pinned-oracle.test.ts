@@ -29,7 +29,8 @@ describe("a query pins one partition when", () => {
 		expect(pinnedOracleId(await wire(`oracleid:${ID}`, false))).toBe(ID);
 	});
 
-	test("the extras gate has wrapped it in NOT is:extra / is:variation conjuncts", async () => {
+	test("the extras gate has wrapped it in its NOT is:variation conjunct", async () => {
+		// `oracleid:` itself forces extras on (extras-gate.ts), so the variations gate is the one left.
 		expect(pinnedOracleId(await wire(`oracleid:${ID} unique:prints`))).toBe(ID);
 	});
 
