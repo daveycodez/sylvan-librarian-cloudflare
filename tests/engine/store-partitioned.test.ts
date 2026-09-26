@@ -907,6 +907,12 @@ describe("a pushed record NEWER than KV's colo-cached manifest", () => {
 		await store.getEngine(env, ctxFor("engine-other-format-p0", 0, storage));
 		expect(instanceFor("engine-other-format-p0").loaded).toEqual(live.raw[0] as Uint8Array);
 		expect(chunkReads().every((k) => k.includes("-134-"))).toBe(true);
+		// ...and the record is corrected to KV's, so the NEXT wake does not refuse it again. Before
+		// this, every wake after 2026-09-26's gen-54 deploy re-read the old-format record, warned,
+		// and read KV's manifest — ≈8 a minute on DeckGen for the rest of the day.
+		const recorded = cache.readLiveManifest(storage) as StoreManifest;
+		expect(recorded.format_version).toBe(ARCHIVE_FORMAT_VERSION);
+		expect(recorded.built_at).toBe(live.manifest.built_at);
 	});
 });
 

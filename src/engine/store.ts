@@ -1282,15 +1282,23 @@ async function loadStore(env: Env, ctx?: LoadContext, known?: StoreManifest, fen
 					manifest = pushed;
 				}
 			} else {
-				// A warning, not an error: during a format-bump deploy (x19) the old build's publish
-				// notify can still reach objects already on the new code, and refusing that push is
-				// the guard doing its job — the manifest is read from KV instead.
+				// The record names a store this code cannot serve — after a format bump (x19), every
+				// object that last loaded under the old format wakes to an old-format record. Read KV's
+				// instead and, when it IS servable, overwrite the record: without that the refusal
+				// repeated on every wake (≈8 a minute on DeckGen for the whole day after 2026-09-26's
+				// gen-54 deploy), each one a warning and a KV manifest read. A warning, not an error:
+				// refusing it is the guard doing its job.
 				console.warn(
-					`${tag(ctx)}ignoring a pushed manifest this object cannot serve ` +
+					`${tag(ctx)}ignoring the recorded manifest, which this object cannot serve ` +
 						`(${pushed.store_key}, format ${pushed.format_version} vs this engine's ${ARCHIVE_FORMAT_VERSION}, ` +
 						`partition_count ${pushed.partition_count ?? "none"} vs own partition ` +
-						`${ctx.partition ?? "none"}); reading the manifest from KV instead`,
+						`${ctx.partition ?? "none"}); reading the manifest from KV and correcting the record`,
 				);
+				const truth = await readManifest(env);
+				if (truth?.format_version === ARCHIVE_FORMAT_VERSION && tryArchiveOfManifest(truth, ctx.partition)) {
+					recordLiveManifest(ctx.storage, truth);
+					manifest = truth;
+				}
 			}
 		}
 	}
