@@ -494,9 +494,10 @@ pub struct FuzzyPlan {
 ///      is not an art series, a rank is certain, the exact merge over these partitions is the
 ///      answer, and nothing else is asked.
 ///   2. TYPO. Every partition holding a CONTENDER: a typo-pool card (not an art series) whose
-///      `FuzzyProbe` score is within `lead` of the best score anywhere — the one test the merge's
-///      race makes (`best - runner < lead`). The winner is among them, and no card outside can
-///      tie it or make it ambiguous.
+///      `FuzzyProbe` score is within `lead` of the best score anywhere, the best included — the
+///      one test the merge's race makes (`best - runner < lead`), and with the port's lead of 0
+///      exactly the cards TYING the best, among which the race's tiebreaks choose (backlog x25).
+///      The winner is among them, and no card outside can beat it, tie it or make it ambiguous.
 ///   3. CONTAINMENT, when the best score is weak or there is none. Every partition holding a card
 ///      whose names carry every word (the oracle name, or pooled with its flavor keys), and every
 ///      partition holding a card of the same name (the merge dedupes by name). Sound only when an
@@ -554,7 +555,7 @@ pub fn fuzzy_plan(
     let best = scored.iter().map(|(s, _)| *s).fold(None, |m: Option<f32>, s| Some(m.map_or(s, |m| m.max(s))));
     if let Some(best) = best {
         for &(score, p) in &scored {
-            if f64::from(best) - f64::from(score) < lead {
+            if f64::from(best) - f64::from(score) <= lead {
                 asked.insert(p);
             }
         }
@@ -1268,7 +1269,8 @@ mod tests {
     #[test]
     fn the_fuzzy_plan_asks_every_partition_that_could_change_the_answer() {
         let rows = index_corpus();
-        let (floor, lead, weak) = (0.625f32, 0.002f64, 0.71f32);
+        // The port's FUZZY_SIMILARITY_FLOOR, FUZZY_SIMILARITY_LEAD and FUZZY_WEAK_BELOW.
+        let (floor, lead, weak) = (0.55f32, 0.0f64, 0.0f32);
         let mut needles: Vec<String> = vec![
             "lightning bolt", "lightnin bolt", "bolt", "godzilla primeval", "godzilla, primeval champion", "lunch",
             "ego a deriva", "red goad", "inganno", "blitz nur", "blitz", "liliana emblem", "lili emblem", "serra",
@@ -1315,7 +1317,7 @@ mod tests {
                     .collect();
                 let best = cands.iter().map(|c| c.1).fold(None, |m: Option<f32>, s| Some(m.map_or(s, |m| m.max(s))));
                 for &(p, s) in &cands {
-                    let contender = f64::from(best.unwrap()) - f64::from(s) < lead;
+                    let contender = f64::from(best.unwrap()) - f64::from(s) <= lead;
                     assert!(!(contender && left_out(p)), "k={k} {folded:?}: p{p} holds a contender ({s}) but is left out");
                 }
                 if best.is_some_and(|b| b >= weak) {
@@ -1367,16 +1369,16 @@ mod tests {
         let mut needles: Vec<String> = needles(&rows);
         needles.extend(names.iter().map(|n| n.replace('a', "e")));
         let (mut skipped, mut scored) = (0usize, 0usize);
-        for floor in [0.0f32, 0.3, 0.5, 0.625, 0.8] {
+        for floor in [0.0f32, 0.3, 0.5, 0.55, 0.8] {
             for needle in &needles {
                 let Some(mut probe) = FuzzyProbe::new(needle) else { continue };
                 for name in &names {
                     let could = probe.could_clear(FuzzyProbe::signature(name), floor);
                     let cleared = probe.score(name, floor).is_some();
                     assert!(could || !cleared, "{needle:?} vs {name:?} at {floor}: skipped a clearing name");
-                    if floor == 0.625 && could {
+                    if floor == 0.55 && could {
                         scored += 1;
-                    } else if floor == 0.625 {
+                    } else if floor == 0.55 {
                         skipped += 1;
                     }
                 }

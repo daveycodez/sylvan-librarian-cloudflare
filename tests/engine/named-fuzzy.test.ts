@@ -242,16 +242,51 @@ describe("the merge's corner cases", () => {
 		expect(got.oldCalls.length).toBe(2 * N + 1);
 	});
 
-	test("typo: near-tied distinct cards in different partitions are ambiguous, though each is a local hit", async () => {
-		const got = await both(
+	test("typo: near-tied distinct cards in different partitions — the higher answers, and a tie is no ambiguity either", async () => {
+		// x25: Scryfall's typo stage has no lead. The best candidate answers however close the next.
+		const near = await both(
 			at(N, {
 				1: { candidates: [cand(0.9, "o-1", "shock")], fuzzy: { status: "hit", card: named("Shock") } },
 				3: { candidates: [cand(0.8995, "o-3", "sock")], fuzzy: { status: "hit", card: named("Sock") } },
 			}),
 			"shok",
 		);
-		expect(got.status).toBe(404);
-		expect(got.json.type).toBe("ambiguous");
+		expect(near.json.name).toBe("Shock");
+		// An exact tie goes to the card first printed most recently (`sculptor` is Storm Sculptor,
+		// 2017, over Soul Sculptor, 1998), whatever partition holds it and whatever its name...
+		const dated = (score: number, oracleId: string, name: string, firstReleased: number) => ({
+			...cand(score, oracleId, name),
+			firstReleased,
+		});
+		const tie = await both(
+			at(N, {
+				0: {
+					candidates: [dated(0.5714, "o-storm", "storm sculptor", 20170929)],
+					fuzzy: { status: "hit", card: named("Storm Sculptor") },
+				},
+				2: {
+					candidates: [dated(0.5714, "o-soul", "soul sculptor", 19981012)],
+					fuzzy: { status: "hit", card: named("Soul Sculptor") },
+				},
+			}),
+			"sculptor",
+		);
+		expect(tie.json.name).toBe("Storm Sculptor");
+		// ...and on the same first day to the name that sorts last (`parallax` is Parallax Wave).
+		const sameDay = await both(
+			at(N, {
+				1: {
+					candidates: [dated(0.5714, "o-tide", "parallax tide", 20000214)],
+					fuzzy: { status: "hit", card: named("Parallax Tide") },
+				},
+				2: {
+					candidates: [dated(0.5714, "o-wave", "parallax wave", 20000214)],
+					fuzzy: { status: "hit", card: named("Parallax Wave") },
+				},
+			}),
+			"parallax",
+		);
+		expect(sameDay.json.name).toBe("Parallax Wave");
 	});
 
 	test("typo: the winner's own race being ambiguous is the answer, as its materialize call said", async () => {
@@ -262,14 +297,16 @@ describe("the merge's corner cases", () => {
 		expect(got.json.type).toBe("ambiguous");
 	});
 
-	// THE WEAK LINE (backlog n14), measured on api.scryfall.com 2026-09-25 either side of it: a typo
-	// winner at 0.714 answers over the one card containing every word, one at 0.703 loses to it. The
+	// TYPO BEFORE CONTAINMENT, measured on api.scryfall.com 2026-09-25: any typo winner answers over
+	// the one card containing every word, and a needle with no candidate at the floor goes on to
+	// containment. (Backlog n14 drew a WEAK line at 0.71 on the metric before x25; on the collated
+	// metric every needle it moved has no candidate at all, and the port passes the line as 0.) The
 	// winner and the containing card sit in different partitions, as they do in the real store.
-	test("typo: a winner at or above the weak line beats the one containing card (inquisitor serr, 0.714)", async () => {
+	test("typo: a typo winner beats the one containing card (inquisitor serr, 0.611)", async () => {
 		const got = await both(
 			at(N, {
 				0: {
-					candidates: [cand(0.7143, "o-ox", "inquisitor's ox")],
+					candidates: [cand(0.6111, "o-ox", "inquisitor's ox")],
 					fuzzy: { status: "hit", card: named("Inquisitor's Ox") },
 				},
 				2: { contained: [named("Serra Inquisitors")] },
@@ -280,30 +317,20 @@ describe("the merge's corner cases", () => {
 		expect(got.calls.length).toBe(N);
 	});
 
-	test("typo: a WEAK winner loses to the one containing card (hyd disintegrat, 0.703)", async () => {
-		const got = await both(
-			at(N, {
-				1: {
-					candidates: [cand(0.7033, "o-dis", "disintegrate")],
-					fuzzy: { status: "weak", card: named("Disintegrate") },
-					contained: [],
-				},
-				3: { contained: [named("HYDRA Disintegrator")] },
-			}),
-			"hyd disintegrat",
-		);
+	test("typo: no candidate at the floor, and the one containing card answers (hyd disintegrat: Disintegrate 0.474)", async () => {
+		const got = await both(at(N, { 3: { contained: [named("HYDRA Disintegrator")] } }), "hyd disintegrat");
 		expect(got.json.name).toBe("HYDRA Disintegrator");
 		// Still one round of N; the staged path asks containment after the race.
 		expect(got.calls.length).toBe(N);
-		expect(got.oldCalls.length).toBe(3 * N + 1);
+		expect(got.oldCalls.length).toBe(3 * N);
 	});
 
-	test("typo: a weak winner still answers over several containing names, and over none", async () => {
-		// api.scryfall.com 2026-09-25: `fuzzy=bolt lightning` is Blightning (0.676), though Lightning
+	test("typo: a typo winner answers over several containing names, and over none", async () => {
+		// api.scryfall.com 2026-08-16: `fuzzy=bolt lightning` is Blightning (0.5625), though Lightning
 		// Bolt and "Emeritus of Conflict // Lightning Bolt" both carry the words.
 		const blightning = {
-			candidates: [cand(0.6763, "o-bl", "blightning")],
-			fuzzy: { status: "weak" as const, card: named("Blightning") },
+			candidates: [cand(0.5625, "o-bl", "blightning")],
+			fuzzy: { status: "hit" as const, card: named("Blightning") },
 		};
 		const several = await both(
 			at(N, {
@@ -318,7 +345,7 @@ describe("the merge's corner cases", () => {
 		expect(none.json.name).toBe("Blightning");
 	});
 
-	test("the merge reads the line on the winner, wherever the containing card is", () => {
+	test("the merge reads a weak line on the winner, wherever the containing card is (an engine given one)", () => {
 		const reply = (p: Partial<Stages>) => {
 			const s = { ...MISS, ...p };
 			return {
@@ -339,22 +366,23 @@ describe("the merge's corner cases", () => {
 		expect(merged(winner("weak", 0.7033))).toBeNull();
 	});
 
-	test("the bundle skips containment only beside a candidate at or above the weak line", async () => {
+	test("the bundle skips containment beside any candidate, and computes it with none", async () => {
 		const asked: string[] = [];
-		const stages = (score: number): NamedFuzzyStages => ({
-			...stagesOf({ ...MISS, candidates: [cand(score, "o", "x"), cand(0.63, "o2", "y")] }),
+		const stages = (scores: number[]): NamedFuzzyStages => ({
+			...stagesOf({ ...MISS, candidates: scores.map((s, i) => cand(s, `o${i}`, `n${i}`)) }),
 			scryfallNamesContaining: async () => {
-				asked.push(String(score));
+				asked.push(scores.join(","));
 				return [named("Containing")];
 			},
 		});
-		const run = (score: number) => bundleFromStages(stages(score), "x", "", ["x"], 2, "https://x");
-		// Exactly at the line (as the engine sees it, in f32) is strong.
-		expect((await run(Math.fround(FUZZY_WEAK_BELOW))).contained).toBeNull();
-		expect((await run(0.7143)).contained).toBeNull();
+		const run = (scores: number[]) => bundleFromStages(stages(scores), "x", "", ["x"], 2, "https://x");
+		expect(FUZZY_WEAK_BELOW).toBe(0);
+		// A candidate at the floor is a typo winner somewhere: the global race answers, never containment.
+		expect((await run([0.55])).contained).toBeNull();
+		expect((await run([0.9, 0.6])).contained).toBeNull();
 		expect(asked).toEqual([]);
-		expect((await run(0.7033)).contained).toEqual([named("Containing")]);
-		expect(asked).toEqual(["0.7033"]);
+		expect((await run([])).contained).toEqual([named("Containing")]);
+		expect(asked).toEqual([""]);
 	});
 
 	test("containment: two distinct names are ambiguous; one is the card", async () => {

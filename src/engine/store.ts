@@ -102,23 +102,12 @@ import type {
 } from "./types";
 import {
 	EngineUnavailableError,
+	FUZZY_SIMILARITY_FLOOR,
 	FUZZY_SIMILARITY_LEAD,
 	FUZZY_WEAK_BELOW,
 	type FuzzyCandidateWire,
 	type NamedFuzzyPlan,
 } from "./types";
-
-/**
- * The FLOOR of the typo-tolerant stage of `?fuzzy=`: a candidate scoring below this is not a
- * candidate at all. Its twin, the LEAD, lives in types.ts because the partitioned gather applies
- * it too.
- *
- * FITTED, NOT CHOSEN. 0.625 is the middle of the 0.60–0.65 plateau over which Scryfall's answers
- * to 86 probed needles are reproduced identically — see card_engine's `Fuzzy name matching`
- * module comment for the metric it is a floor ON, which is no longer pg_trgm's similarity and no
- * longer comparable to pg_trgm's 0.3 default.
- */
-const FUZZY_SIMILARITY_FLOOR = 0.625;
 
 /**
  * Loaded-store state, PER DURABLE OBJECT LABEL rather than module-global.

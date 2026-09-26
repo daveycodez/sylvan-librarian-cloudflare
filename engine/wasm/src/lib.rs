@@ -1975,13 +1975,20 @@ pub fn sort_key_version() -> u8 {
 ///   served: u8 (1 = a printing a default search shows, 0 = the card is extras-only; the
 ///           race's tiebreak on a score tie, so the served card of a shared name leads)
 ///   namelen: u16 LE, then namelen bytes of the folded name (UTF-8)
+/// then, AFTER the n candidates, n of (backlog x25):
+///   first_released: u32 LE (the day the card was first printed, yyyymmdd; 0 = unknown), in the
+///                   candidates' order — the race's tiebreak after `served`
 /// ```
 ///
+/// The trailer rides after the records, so a reader that knows only the records (a router on the
+/// build before x25) reads them unchanged and ignores it.
+///
 /// The gather races the UNION of every partition's candidates with the engine's own rule:
-/// global best by score; runner-up = best candidate differing from it in BOTH folded name and
-/// oracle_id (a card never competes with itself, two cards sharing a name are one answer);
-/// `hit` iff best − runner ≥ LEAD, then re-ask the winning partition's fuzzy_card_by_name —
-/// whose local race the global winner provably also wins — to materialize the card.
+/// global best by (score, served, first printed, name), all descending; runner-up = best candidate
+/// differing from it in BOTH folded name and oracle_id (a card never competes with itself, two
+/// cards sharing a name are one answer); `hit` iff best − runner ≥ LEAD (the port's LEAD is 0, so
+/// always), then the winning partition's own fuzzy_card_by_name — whose local race the global
+/// winner provably also wins — materializes the card.
 ///
 /// `set_code` ("" for none) is `fuzzy_card_by_name`'s: the same set-scoped pool, so the global race
 /// and the winner's local one stay one race.
@@ -2013,6 +2020,9 @@ pub fn fuzzy_candidates(name: &str, set_code: &str, floor: f32, k: u32) -> Resul
             let len = u16::try_from(c.folded_name.len()).map_err(|_| JsError::new("name exceeds u16 length"))?;
             buf.extend_from_slice(&len.to_le_bytes());
             buf.extend_from_slice(c.folded_name.as_bytes());
+        }
+        for c in &out {
+            buf.extend_from_slice(&c.first_released.to_le_bytes());
         }
         Ok(buf)
     })
@@ -2124,10 +2134,12 @@ fn best_candidate_score(packet: &[u8]) -> f32 {
 mod named_fuzzy_bundle_tests {
     use super::*;
 
-    const FLOOR: f32 = 0.625;
-    const LEAD: f32 = 0.002;
-    /// The port's FUZZY_WEAK_BELOW (src/engine/types.ts).
-    const WEAK: f32 = 0.71;
+    /// The port's FUZZY_SIMILARITY_FLOOR and FUZZY_SIMILARITY_LEAD (src/engine/types.ts).
+    const FLOOR: f32 = 0.55;
+    const LEAD: f32 = 0.0;
+    /// A POSITIVE weak line, so every skip rule of the bundle is exercised: the port passes 0
+    /// since backlog x25 (FUZZY_WEAK_BELOW), which is the "no line" case below.
+    const WEAK: f32 = 0.7;
     const K: u32 = 8;
     const LIMIT: u32 = 2;
     const FIELDS: &str = r#"["name", "scryfall_id", "oracle_id", "set_code", "collector_number"]"#;
@@ -2209,11 +2221,11 @@ mod named_fuzzy_bundle_tests {
             ("lightning bolt", ""),     // a whole name: exact only
             ("lightning bolt", "lea"),  // ... within its set
             ("lightning bolt", "m19"),  // a set it is not in: no rank, and no candidate IN m19
-            ("lihgtning bolt", ""),     // a WEAK typo (0.656): containment too
+            ("lihgtning bolt", ""),     // a WEAK typo (0.556): containment too
             ("lihgtning bolt", "lea"),  // a typo within a set the card is in
             ("lihgtning bolt", "rav"),  // ... and one it is not: Lightning Helix is, but too far
             ("shokc", "m19"),           // a set-scoped typo race between two near names
-            ("counterspel", ""),        // a strong typo (0.908)
+            ("counterspel", ""),        // a strong typo (0.786)
             ("shock", "m19"),           // exact, beside a near name
             ("shokc", ""),              // a typo between two near names
             ("lightning", ""),          // no typo candidate: containment, two names
@@ -2289,7 +2301,7 @@ mod named_fuzzy_bundle_tests {
         assert_eq!(section("lihgtning bolt", best), ("hit".to_owned(), false));
         // No line (0.0) is the n7 bundle: any candidate skips containment.
         assert_eq!(section("lihgtning bolt", 0.0), ("hit".to_owned(), false));
-        // A strong typo skips it under the port's line.
+        // A strong typo skips it under a line.
         assert!(best_score("counterspel", "").expect("a candidate") >= WEAK);
         assert_eq!(section("counterspel", WEAK), ("hit".to_owned(), false));
         unload_store().expect("unload");

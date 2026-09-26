@@ -25,9 +25,9 @@ export const NAMED_CONTAINMENT_LIMIT = 2;
  * (`Engine.scryfallNamedFuzzy`), and what the partitioned engine falls back to on a combination
  * of bundles it cannot read.
  *
- * A WEAK typo winner (under FUZZY_WEAK_BELOW) asks containment before it answers: the one card
- * that carries every query word outranks it, and it answers only when no single card does
- * (`weakWinnerOrContained`).
+ * A WEAK typo winner (under a positive FUZZY_WEAK_BELOW) asks containment before it answers: the
+ * one card that carries every query word outranks it, and it answers only when no single card does
+ * (`weakWinnerOrContained`). The port's line is 0 since backlog x25, so no winner is weak.
  */
 export async function resolveNamedFuzzyStaged(
 	engine: Engine,
@@ -52,10 +52,10 @@ export async function resolveNamedFuzzyStaged(
 
 /**
  * A weak typo winner against the containment stage's answer (backlog n14): the containing card
- * when there is exactly ONE, else the winner. api.scryfall.com 2026-09-25: `fuzzy=hyd disintegrat`
- * is HYDRA Disintegrator (the typo winner, Disintegrate, scores 0.703) and `fuzzy=tuk returned`
- * Tuktuk the Returned (Returned, 0.697), while `fuzzy=bolt lightning` is Blightning (0.676) though
- * two names contain both words. See FUZZY_WEAK_BELOW for the line.
+ * when there is exactly ONE, else the winner. Measured on the metric before backlog x25, where
+ * `fuzzy=hyd disintegrat`'s typo winner (Disintegrate) scored 0.703 and Scryfall answers HYDRA
+ * Disintegrator; on the collated metric Disintegrate scores 0.474, under the floor, and the port's
+ * line is 0 (FUZZY_WEAK_BELOW) — so this runs only for an engine handed a positive line.
  */
 export function weakWinnerOrContained(
 	winner: Record<string, unknown>,
@@ -81,8 +81,9 @@ export interface NamedFuzzyStages {
 /**
  * One store's bundle built from its separate stage calls, under the skip rules engine/wasm's
  * `named_fuzzy_bundle` applies (and its Rust test pins byte-for-byte against those same calls):
- * an exact rank skips everything else; a STRONG typo candidate (at or above FUZZY_WEAK_BELOW)
- * skips containment, while only weak ones keep it (backlog n14); no candidate means a local typo
+ * an exact rank skips everything else; a STRONG typo candidate (at or above FUZZY_WEAK_BELOW —
+ * every candidate, under the port's line of 0) skips containment, while only weak ones keep it
+ * (backlog n14); no candidate means a local typo
  * miss without asking.
  *
  * Production never calls it: every store answers the bundle itself. It is the TypeScript

@@ -610,29 +610,29 @@ The complete list of intentional differences:
   (23 needles, no exception). With `set=` the typo race runs over that set's
   cards alone: `lightning bolt&set=war` is a 404, `lightning blow&set=m11` is
   M11's Lightning Bolt, and `mind scul&set=wwk` falls through to containment
-  in the set. A WEAK typo winner — under 0.71 on this port's metric,
-  `FUZZY_WEAK_BELOW` — loses to the one card that contains every word, as on
-  Scryfall: `hyd disintegrat` is HYDRA Disintegrator (Disintegrate scores
-  0.703) and `tuk returned` Tuktuk the Returned, while `inquisitor serr` (0.714)
-  stays Inquisitor's Ox over Serra Inquisitors and `bolt lightning` (0.676)
-  Blightning over its two containing names. That took the 206 cached `fuzzy=`
-  answers from 182 identical to 193 and changed nothing else; it is still one
-  round of N partition calls, the bundle computing containment wherever no
-  local candidate clears the line. What is left: the two probes the line gets
-  wrong, `ugin spirit` (Inspirit, 0.775; pinned as a KNOWN_DEVIATION with the
-  evidence) and `mindstat` (Mindstab, 0.795), both Scryfall's containing card;
-  the metric's own resolution, pinned as `lightning blast&set=m11` (0.6595
-  here, a 404 there); and a weak winner against SEVERAL containing cards, which
-  Scryfall answers either way — `jace sculpt` and `assaultron` are ambiguous
-  there, `ancestral` and `paralyzing` the typo winner, as here, and `sculptor`
-  Storm Sculptor (Soul Sculptor here). Upstream #928's second line (0.67, a
-  faint winner loses to an ambiguous containment) is a wash on these answers
-  and is not adopted.
+  in the set. The typo stage scores the way Scryfall does: pg_trgm's
+  similarity of the COLLATED name (lowercased, accents folded, every
+  non-alphanumeric removed, padded as one word), floor 0.55, and no lead — the
+  best candidate answers, and a tie goes to the card first printed most
+  recently, then to the name that sorts last. Derived from every cached answer
+  and five probes chosen to test it (2026-09-26): `illusionary`, `parallax` and
+  `thoughts` are ties Scryfall answers (Illusionary Wall, Parallax Wave, Thought
+  Scour), `haunting` is Haunting Hymn and `deadeall` (6/11 against Deadfall) a
+  404, while 5/9 answers (`lightning blow&set=m11`). Under the floor a needle
+  goes on to containment, which is what answers `ugin spirit` (Inspirit scores
+  0.538) with Ugin, the Spirit Dragon, `hyd disintegrat` with HYDRA
+  Disintegrator and `assaultron` and `jace sculpt` with `ambiguous`;
+  `mindstat` is Mindstatic (0.667 over Mindstab's 0.636), `sculptor` Storm
+  Sculptor, `lightning blast&set=m11` a 404, and `bolt lightning` still
+  Blightning, since collated windows keep the word order that word-split
+  pg_trgm loses. Over the 217 cached `fuzzy=` answers that is 211 identical and
+  6 the right card in another printing, where 199 and 7 were, with 11 wrong; it
+  retired the port's earlier `(J + L) / 2` metric and the weak line
+  (`FUZZY_WEAK_BELOW`, now 0) fitted on it.
 - **A flavor name is a name on `/cards/named`, keyed the way Scryfall keys
-  it.** Measured on api.scryfall.com 2026-09-25 (about 100 probes; 99 of the
-  101 cached answers now match on the local ten-partition store; the other two
-  are `assaultron`, a weak typo winner against several containing cards above,
-  and `walking ballista assaultron`, the right card in another printing). The
+  it.** Measured on api.scryfall.com 2026-09-25 (about 100 probes; all 101
+  cached answers match on the local ten-partition store since the typo metric
+  above). The
   key is a printing's top-level `flavor_name`, or, when the flavor names sit
   on its faces, those names joined " // " over the faces that carry one:
   `exact=Megatron // Megatron` is

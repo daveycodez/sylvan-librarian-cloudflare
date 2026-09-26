@@ -1192,6 +1192,39 @@ describe("name-route combination rules", () => {
 		).toBe("hit");
 	});
 
+	test("fuzzy (x25): with no lead a tie answers — the card first printed most recently, then the name that sorts last", () => {
+		// `fuzzy=sculptor`: Storm and Soul Sculptor score 8/14 alike; api.scryfall.com answers Storm
+		// Sculptor (first printed 2017, Soul 1998). Soul sorts first on oracle id AND partition, so
+		// only the date can name Storm's partition.
+		const dated = (score: number, oracleId: string, name: string, firstReleased: number) => ({
+			...cand(score, oracleId, name),
+			firstReleased,
+		});
+		expect(
+			raceFuzzyCandidates(
+				[[dated(0.5714, "o-1", "soul sculptor", 19981012)], [dated(0.5714, "o-2", "storm sculptor", 20170929)]],
+				0,
+			),
+		).toEqual({ status: "hit", winner: 1 });
+		// `fuzzy=parallax`: the Wave and the Tide were first printed the same day; the Wave answers.
+		expect(
+			raceFuzzyCandidates(
+				[[dated(0.5714, "o-1", "parallax wave", 20000214)], [dated(0.5714, "o-0", "parallax tide", 20000214)]],
+				0,
+			),
+		).toEqual({ status: "hit", winner: 0 });
+		// Served still comes first: an extras-only card first printed later does not take the tie.
+		expect(
+			raceFuzzyCandidates(
+				[
+					[{ ...dated(0.9, "o-1", "earth rumble", 20251121), served: false }],
+					[dated(0.9, "o-2", "earth rumble", 20251114)],
+				],
+				0,
+			),
+		).toEqual({ status: "hit", winner: 1 });
+	});
+
 	test("exact: every partition probed ONCE — rank and card together, no materialize round", async () => {
 		const { engine, of } = build({ 3: { exact: { name: "Opt" } } });
 		expect(await engine.scryfallExactName("opt", "", "https://x")).toEqual({ name: "Opt" });

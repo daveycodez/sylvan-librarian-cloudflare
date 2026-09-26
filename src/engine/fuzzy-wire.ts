@@ -7,8 +7,10 @@ import type { FuzzyCandidateWire } from "./types";
 const NIL_UUID = "00000000-0000-0000-0000-000000000000";
 
 /** Decode `fuzzy_candidates`' packed reply: `n: u32, then n of (score: f32, oracle_id: 16B,
- * vpid: u32, served: u8, namelen: u16, name)`, all LITTLE-ENDIAN except the oracle's raw uuid
- * bytes. */
+ * vpid: u32, served: u8, namelen: u16, name)`, then — since backlog x25 — `n` of
+ * `first_released: u32`, all LITTLE-ENDIAN except the oracle's raw uuid bytes. A packet from an
+ * object on the build before x25 ends after the records, and its candidates carry no
+ * `firstReleased`. */
 export function decodeFuzzyCandidates(packed: Uint8Array): FuzzyCandidateWire[] {
 	const view = new DataView(packed.buffer, packed.byteOffset, packed.byteLength);
 	const n = view.getUint32(0, true);
@@ -30,6 +32,12 @@ export function decodeFuzzyCandidates(packed: Uint8Array): FuzzyCandidateWire[] 
 		const foldedName = decodeUtf8(packed.subarray(at, at + len));
 		at += len;
 		out.push({ score, served, oracleId, vpid, foldedName });
+	}
+	if (packed.byteLength >= at + 4 * n) {
+		for (const c of out) {
+			c.firstReleased = view.getUint32(at, true);
+			at += 4;
+		}
 	}
 	return out;
 }

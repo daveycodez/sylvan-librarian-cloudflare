@@ -243,13 +243,20 @@ export function finish_store_load_lz4(): void;
  *   served: u8 (1 = a printing a default search shows, 0 = the card is extras-only; the
  *           race's tiebreak on a score tie, so the served card of a shared name leads)
  *   namelen: u16 LE, then namelen bytes of the folded name (UTF-8)
+ * then, AFTER the n candidates, n of (backlog x25):
+ *   first_released: u32 LE (the day the card was first printed, yyyymmdd; 0 = unknown), in the
+ *                   candidates' order — the race's tiebreak after `served`
  * ```
  *
+ * The trailer rides after the records, so a reader that knows only the records (a router on the
+ * build before x25) reads them unchanged and ignores it.
+ *
  * The gather races the UNION of every partition's candidates with the engine's own rule:
- * global best by score; runner-up = best candidate differing from it in BOTH folded name and
- * oracle_id (a card never competes with itself, two cards sharing a name are one answer);
- * `hit` iff best − runner ≥ LEAD, then re-ask the winning partition's fuzzy_card_by_name —
- * whose local race the global winner provably also wins — to materialize the card.
+ * global best by (score, served, first printed, name), all descending; runner-up = best candidate
+ * differing from it in BOTH folded name and oracle_id (a card never competes with itself, two
+ * cards sharing a name are one answer); `hit` iff best − runner ≥ LEAD (the port's LEAD is 0, so
+ * always), then the winning partition's own fuzzy_card_by_name — whose local race the global
+ * winner provably also wins — materializes the card.
  *
  * `set_code` ("" for none) is `fuzzy_card_by_name`'s: the same set-scoped pool, so the global race
  * and the winner's local one stay one race.

@@ -90,6 +90,26 @@ describe("decodeFuzzyCandidates", () => {
 		expect(decodeFuzzyCandidates(pack([]))).toEqual([]);
 	});
 
+	test("x25: the first-printed trailer after the records is each candidate's firstReleased, in order", () => {
+		const bolt = "e3285e6b-3e79-4d7c-bf96-d920f973b80a";
+		const records = pack([
+			{ score: 0.5714, oracle: uuidBytes(bolt), vpid: 1, served: true, name: "storm sculptor" },
+			{ score: 0.5714, oracle: new Uint8Array(16), vpid: 2, served: true, name: "soul sculptor" },
+		]);
+		const packed = new Uint8Array(records.length + 8);
+		packed.set(records, 0);
+		const view = new DataView(packed.buffer);
+		view.setUint32(records.length, 20170929, true);
+		view.setUint32(records.length + 4, 19981012, true);
+		const got = decodeFuzzyCandidates(packed);
+		expect(got.map((c) => [c.foldedName, c.firstReleased])).toEqual([
+			["storm sculptor", 20170929],
+			["soul sculptor", 19981012],
+		]);
+		// An object on the build before x25 writes the records alone: no firstReleased at all.
+		expect(decodeFuzzyCandidates(records).every((c) => c.firstReleased === undefined)).toBe(true);
+	});
+
 	test("the shared decoder is safe to reuse across calls", () => {
 		const a = new TextEncoder().encode("Æther Vial");
 		expect(decodeUtf8(a)).toBe("Æther Vial");

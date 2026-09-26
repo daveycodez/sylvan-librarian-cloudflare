@@ -509,14 +509,18 @@ export function raceFuzzyCandidates(
 	lead: number,
 ): { status: "hit" | "ambiguous" | "miss"; winner?: number } {
 	const all = perPartition.flatMap((list, partition) => list.map((c) => ({ ...c, partition })));
-	// Score-descending, a SERVED candidate before an extras-only one on a score tie (the
-	// engine's FuzzyRace tiebreak — two cards sharing a name score identically, and the one a
-	// default search shows must lead), then deterministic tiebreaks, mirroring the Rust
-	// reference race.
+	// The engine's FuzzyRace order (`RaceEntry::rank`), all descending: the score; a SERVED
+	// candidate before an extras-only one (two cards sharing a name score identically, and the one
+	// a default search shows must lead); the card FIRST PRINTED most recently, then the name that
+	// sorts last (backlog x25: Scryfall answers a tie between two names, `sculptor` is Storm
+	// Sculptor over Soul Sculptor) — then deterministic tiebreaks. Names compare by code unit, which
+	// is the engine's UTF-8 byte order for every name outside the astral planes.
 	all.sort(
 		(a, b) =>
 			b.score - a.score ||
 			Number(b.served) - Number(a.served) ||
+			(b.firstReleased ?? 0) - (a.firstReleased ?? 0) ||
+			(a.foldedName < b.foldedName ? 1 : a.foldedName > b.foldedName ? -1 : 0) ||
 			(a.oracleId < b.oracleId ? -1 : a.oracleId > b.oracleId ? 1 : 0) ||
 			a.vpid - b.vpid,
 	);
@@ -1718,7 +1722,8 @@ export function mergeContained(
  *      a hit is the WINNING partition's own local race, which is what the stage's materialize call
  *      to that partition returned — its local race is a sub-race the global winner also leads.
  *      A WEAK hit (the winner scores under FUZZY_WEAK_BELOW, which its partition's race reports)
- *      answers only when containment has no single card instead (`weakWinnerOrContained`, n14).
+ *      answers only when containment has no single card instead (`weakWinnerOrContained`, n14);
+ *      the port's line is 0 since backlog x25, so a hit is never weak.
  *   3. CONTAINMENT: `mergeContained`, where two distinct names are ambiguous.
  *
  * Each stage is reached only where the previous one fell through, so the skip rules guarantee its

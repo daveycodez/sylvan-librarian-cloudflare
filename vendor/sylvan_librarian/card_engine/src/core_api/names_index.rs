@@ -12,8 +12,8 @@
 //! ONE IMPLEMENTATION OF EACH TEST. Nothing here re-spells a predicate:
 //!   - a search filter is compiled by `build_filter` and evaluated leaf by leaf through the query
 //!     arms' own functions ([`crate::NamePredicate`], filter.rs);
-//!   - the typo stage's score is `fuzzy_score_cleared` over `fuzzy_needle`, the scan's own two
-//!     steps ([`FuzzyProbe`]);
+//!   - the typo stage's score is `fuzzy_score_cleared` over `collated_windows_into`, the scan's
+//!     own two steps ([`FuzzyProbe`]);
 //!   - containment is `strip_separators` + `contains_unseparated`, and `exact=`'s key test is
 //!     `name_key_tier` ([`NamesProbe`]).
 //!
@@ -443,57 +443,49 @@ pub struct NameRecordView<'a> {
 // ─── /cards/named?fuzzy=: the three stages' own tests ─────────────────────────
 
 /// The typo stage's score for one name — `fuzzy_name_match`'s loop body, bit for bit: the same
-/// separator fold and trigram run of the name, the same prefilters and `(J + L) / 2` in f32.
+/// collated pg_trgm windows of the name, the same size-ratio skip and Jaccard in f32.
 pub struct FuzzyProbe {
-    needle_bytes: Vec<u8>,
-    needle_tg: Vec<[u8; 3]>,
-    name_bytes: Vec<u8>,
-    name_tg: Vec<[u8; 3]>,
-    dp: Vec<u32>,
+    needle_tg: Vec<[char; 3]>,
+    name_tg: Vec<[char; 3]>,
 }
 
 impl FuzzyProbe {
     /// The probe for a needle, or None when nothing alphanumeric survives it (the scan's Miss).
     pub fn new(needle: &str) -> Option<FuzzyProbe> {
-        let (needle_bytes, needle_tg) = crate::fuzzy_needle(needle)?;
-        Some(FuzzyProbe { needle_bytes, needle_tg, name_bytes: Vec::with_capacity(64), name_tg: Vec::with_capacity(64), dp: Vec::with_capacity(64) })
+        let needle_tg = crate::fuzzy_needle(needle)?;
+        Some(FuzzyProbe { needle_tg, name_tg: Vec::with_capacity(64) })
     }
 
     /// The score of a card's `folded_name` against the needle, or None under `floor`.
     pub fn score(&mut self, folded: &str, floor: f32) -> Option<f32> {
-        crate::fold_separators_into(folded, &mut self.name_bytes);
-        crate::name_trigrams_into(&self.name_bytes, &mut self.name_tg);
-        crate::fuzzy_score_cleared(&self.name_tg, &self.needle_tg, &self.name_bytes, &self.needle_bytes, floor, &mut self.dp)
+        crate::collated_windows_into(folded, &mut self.name_tg);
+        crate::fuzzy_score_cleared(&self.name_tg, &self.needle_tg, floor)
     }
 
-    /// A name's [`FuzzySignature`]: the count of its distinct trigrams, as `score` forms them, and a
+    /// A name's [`FuzzySignature`]: the count of its distinct windows, as `score` forms them, and a
     /// 64-bit set of their hashes. Computed once per name, when a names index loads.
     pub fn signature(folded: &str) -> FuzzySignature {
-        let (mut bytes, mut tg) = (Vec::new(), Vec::new());
-        crate::fold_separators_into(folded, &mut bytes);
-        crate::name_trigrams_into(&bytes, &mut tg);
+        let mut tg = Vec::new();
+        crate::collated_windows_into(folded, &mut tg);
         FuzzySignature { trigrams: u16::try_from(tg.len()).unwrap_or(u16::MAX), bits: tg.iter().fold(0, |b, t| b | signature_bit(t)) }
     }
 
     /// Whether a name with this signature CAN clear `floor` — false only where `score` would answer
-    /// None: its first two exits read the trigram counts and the Jaccard of the two runs, and this
-    /// reads the same counts and an UPPER bound on the Jaccard (a needle trigram whose hash bit the
-    /// name lacks is certainly not shared; one whose bit it has may be). So a scan may skip `score`
-    /// for a false here and never change what it finds. `u16::MAX` trigrams (a name past the count)
-    /// is always scored.
+    /// None: its size-ratio exit reads the window counts, and the Jaccard it computes is bounded
+    /// above here (a needle window whose hash bit the name lacks is certainly not shared; one whose
+    /// bit it has may be). So a scan may skip `score` for a false here and never change what it
+    /// finds. `u16::MAX` windows (a name past the count) is always scored.
     pub fn could_clear(&self, name: FuzzySignature, floor: f32) -> bool {
         if name.trigrams == u16::MAX {
             return true;
         }
         let (la, lb) = (usize::from(name.trigrams), self.needle_tg.len());
-        let jaccard_floor = (2.0 * floor - 1.0).max(0.0);
-        if la == 0 || lb == 0 || (la.min(lb) as f32) < jaccard_floor * la.max(lb) as f32 {
+        if la == 0 || lb == 0 || (la.min(lb) as f32) < floor * la.max(lb) as f32 {
             return false;
         }
         let shared = self.needle_tg.iter().filter(|t| name.bits & signature_bit(t) != 0).count().min(la);
-        let union = la + lb - shared;
-        let jaccard = if union == 0 { 0.0 } else { shared as f32 / union as f32 };
-        jaccard >= jaccard_floor
+        let jaccard = shared as f32 / (la + lb - shared) as f32;
+        jaccard >= floor
     }
 }
 
@@ -504,7 +496,7 @@ pub struct FuzzySignature {
     pub bits: u64,
 }
 
-fn signature_bit(t: &[u8; 3]) -> u64 {
+fn signature_bit(t: &[char; 3]) -> u64 {
     let h = (u32::from(t[0]).wrapping_mul(0x9E37_79B1) ^ u32::from(t[1]).wrapping_mul(0x85EB_CA77) ^ u32::from(t[2]).wrapping_mul(0xC2B2_AE3D))
         .rotate_left(13);
     1u64 << (h % 64)

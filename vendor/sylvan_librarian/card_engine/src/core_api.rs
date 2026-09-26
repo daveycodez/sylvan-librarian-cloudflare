@@ -2169,6 +2169,7 @@ impl BufferStore {
             .map(|c| FuzzyCandidate {
                 score: c.score,
                 served: c.served,
+                first_released: c.first_released,
                 oracle_id: uuid_from_u128(c.oracle_id).map(|u| u.to_string()).unwrap_or_default(),
                 vpid: c.vpid,
                 folded_name: c.name,
@@ -3233,6 +3234,9 @@ pub struct FuzzyCandidate {
     /// Whether `vpid` is a printing a default search shows; the race's tiebreak on a score tie
     /// (see `FuzzyRace`), crossing the wire so the partitioned merge breaks the tie the same way.
     pub served: bool,
+    /// The day the card was first printed, yyyymmdd (0 unknown): the race's next tiebreak after
+    /// `served` (backlog x25; see `FuzzyRace`), crossing the wire for the same reason.
+    pub first_released: u32,
     pub oracle_id: String,
     pub vpid: u32,
     pub folded_name: String,
@@ -5376,7 +5380,9 @@ mod tests {
     #[test]
     fn fuzzy_ambiguity_counts_cards_not_strings() {
         let floor = crate::FUZZY_SCORE_FLOOR;
-        let lead = crate::FUZZY_SCORE_LEAD;
+        // A positive lead, so a tie CAN read ambiguous: the port passes 0 since backlog x25 (a tie
+        // answers on Scryfall), and the counting rule this pins is the lead mechanism's.
+        let lead = 0.002;
         // ONE card with two printings: two rows, one name, one answer.
         let a1 = annex_row("Fire Dragon", "oracle-c", "row-c-1", "en", 200.0);
         let a2 = annex_row("Fire Dragon", "oracle-c", "row-c-2", "en", 100.0);
@@ -5391,6 +5397,10 @@ mod tests {
         let (_b, store) = build_store(&[a1, other]);
         let (status, _) = store.fuzzy_card_by_name("fire dragen", floor, lead, None).expect("fuzzy");
         assert_eq!(status, "ambiguous", "two cards' near-tied names still read ambiguous");
+        // Under the port's lead the tie answers: the name that sorts last (neither card is dated).
+        let (status, card) =
+            store.fuzzy_card_by_name("fire dragen", floor, crate::FUZZY_SCORE_LEAD, Some(vec!["name".to_owned()])).expect("fuzzy");
+        assert_eq!((status, card.expect("hit")["name"].clone()), ("hit", json!("Fire Dragon")));
     }
 
     /// The two name surfaces over one scan: a collection identifier's `name` reads a card's FACE

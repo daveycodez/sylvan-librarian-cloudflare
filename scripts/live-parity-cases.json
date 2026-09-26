@@ -83,82 +83,6 @@
 			"note": "SAME CARD, DIFFERENT PRINTING — the prefer_score divergence the 2026-08-16 differential sweep recorded as N9, surfacing on a name-route hit. `fuzzy=sol rin` resolves Sol Ring on both sides; Scryfall answers msc/213 and the mirror answers msc/211. The paths here are PRINTING identity only, deliberately: name, oracle_id, type_line, oracle_text, cmc, colors, legalities and the rest are still byte-compared, so a wrong CARD fails this case. Scryfall's preference is not derivable from what is stored here — probed on six flavor names with several carriers, it picks the lowest collector number three times, the newest release once, and a promo digital printing over a paper non-promo one once (prm/80925 over iko/377) — so this stays a recorded divergence rather than a guess."
 		},
 		{
-			"name": "same-name-different-card-on-a-name-hit",
-			"paths": [
-				"id",
-				"oracle_id",
-				"multiverse_ids",
-				"name",
-				"set",
-				"collector_number",
-				"released_at",
-				"object",
-				"lang",
-				"layout",
-				"type_line",
-				"oracle_text",
-				"mana_cost",
-				"cmc",
-				"colors",
-				"color_identity",
-				"keywords",
-				"legalities",
-				"rarity",
-				"artist",
-				"set_name",
-				"set_type",
-				"prices",
-				"purchase_uris",
-				"related_uris",
-				"scryfall_uri",
-				"uri",
-				"rulings_uri",
-				"prints_search_uri",
-				"image_uris",
-				"card_back_id",
-				"border_color",
-				"frame",
-				"games",
-				"finishes",
-				"digital",
-				"booster",
-				"promo",
-				"reprint",
-				"variation",
-				"full_art",
-				"textless",
-				"story_spotlight",
-				"oversized",
-				"highres_image",
-				"image_status",
-				"set_id",
-				"illustration_id",
-				"artist_ids",
-				"edhrec_rank",
-				"penny_rank",
-				"security_stamp",
-				"produced_mana",
-				"flavor_text",
-				"watermark",
-				"frame_effects",
-				"promo_types",
-				"tcgplayer_id",
-				"mtgo_id",
-				"cardmarket_id",
-				"arena_id",
-				"color_indicator",
-				"all_parts",
-				"card_faces",
-				"set_uri",
-				"set_search_uri",
-				"scryfall_set_uri",
-				"tcgplayer_etched_id",
-				"mtgo_foil_id"
-			],
-			"cases": ["named-fuzzy-countersp"],
-			"note": "TWO CARDS SHARE ONE NAME, and the lanes pick different ones. `fuzzy=countersp` answers `Counters` on both sides — fmsc/9 (oracle 48f0cd77) on Scryfall, ftla/6 (oracle 14994561) here — two distinct oracle cards printed under the same name on two front-card sets. The fuzzy rule both sides implement is that names, not cards, compete, so neither answer is ambiguous and neither is wrong; which one wins is the same printing-preference question the sweep recorded as N9, one level up. THE CORPUS GAP THIS ENTRY USED TO RECORD IS CLOSED: those printings are imported now and carry `is:extra`, so `/cards/named?fuzzy=counters` answers `Counters`, `fuzzy=lightning` answers `Lightning` (fjmp/21) and `fuzzy=welcome australia` answers `Welcome to Australia` (unk) — all three were 404s or wrong cards before."
-		},
-		{
 			"name": "gatherer-pending-deploy",
 			"paths": ["**.related_uris.gatherer"],
 			"note": "DEPLOY LAG, not a parity definition. The serializers emit related_uris.gatherer (first multiverse id, &printed=true for non-en, false for en) and it byte-matches Scryfall — verified against the live values for en cmd/16, es mom/230, pt grn/212 and ja khm/1. PRODUCTION still serves no gatherer key until the next deploy, so against the deployed origin this fires as a missing-ours diff; against `--origin http://localhost:8787` it never fires and the field is byte-compared like any other. This was a scryfall_only_keys ledger entry, which STRIPPED the key from Scryfall's side and so could never have compared the value; as a deviation it compares wherever both sides have it. Delete this entry at the first post-deploy run."
@@ -677,6 +601,41 @@
 			"path": "/cards/named?fuzzy=tuk+returned"
 		},
 		{
+			"name": "named-fuzzy-collated-metric-mindstat",
+			"method": "GET",
+			"path": "/cards/named?fuzzy=mindstat"
+		},
+		{
+			"name": "named-fuzzy-collated-metric-haunting",
+			"method": "GET",
+			"path": "/cards/named?fuzzy=haunting"
+		},
+		{
+			"name": "named-fuzzy-tie-newest-first-print-sculptor",
+			"method": "GET",
+			"path": "/cards/named?fuzzy=sculptor"
+		},
+		{
+			"name": "named-fuzzy-tie-newest-first-print-thoughts",
+			"method": "GET",
+			"path": "/cards/named?fuzzy=thoughts"
+		},
+		{
+			"name": "named-fuzzy-under-floor-ambiguous-assaultron",
+			"method": "GET",
+			"path": "/cards/named?fuzzy=assaultron"
+		},
+		{
+			"name": "named-fuzzy-under-floor-ambiguous-jace-sculpt",
+			"method": "GET",
+			"path": "/cards/named?fuzzy=jace+sculpt"
+		},
+		{
+			"name": "named-fuzzy-under-floor-miss-deadeall",
+			"method": "GET",
+			"path": "/cards/named?fuzzy=deadeall"
+		},
+		{
 			"name": "cards-prm-80925-flavor-name",
 			"method": "GET",
 			"path": "/cards/prm/80925"
@@ -872,49 +831,14 @@
 			"path": "/cards/named?fuzzy=mind+scul&set=WWK"
 		},
 		{
-			"name": "named-fuzzy-weak-typo-over-unique-containment-ugin-spirit",
+			"name": "named-fuzzy-under-floor-containment-ugin-spirit",
 			"method": "GET",
-			"path": "/cards/named?fuzzy=ugin+spirit",
-			"known_deviation": {
-				"reason": "THE STAGE ORDER, where the typo stage's lead is weak. The mirror runs typo before containment (the primeval-titanoth rule), and here the typo race has a clear winner: `uginspirit` scores 0.775 against Inspirit. api.scryfall.com answers Ugin, the Spirit Dragon, the one card whose names carry both words. Measured 2026-09-25 over 33 needles where exactly one card contains every word and the typo race picks a different card: Scryfall answered the TYPO winner for all 20 scoring 0.714 or more on this port's metric (soulcatchers 0.908, reminiscen, suspende, channeli, invigorato, fungusa, shriekmas, snorti, stranglero, righteousnes surg, archaeomancer spa, plagu engineere, weaknes she, trailblazer boo, fir concentrate, rebirt hym, necro plag, griselbran mas, inquisitor serr 0.714, countersp) and the CONTAINED card for all 11 scoring 0.703 or less (hyd disintegrat 0.703, tuk returned, lightnin weave, soil shake, moderator, oppressor, talaria, sunbringer, setes train, shadowfa, prophesi 0.625). The two exceptions sit above the line: this needle (0.775) and `mindstat` (0.795 for Mindstab; Scryfall answers Mindstatic). So the evidence reads as a threshold near 0.71, below which a unique containment answer beats the typo winner. That rule is reproduced now (backlog n14, FUZZY_WEAK_BELOW in src/engine/types.ts; the bundle computes containment wherever no local candidate clears the line): over the 206 cached answers, run through the ten-partition path, it fixes those 11 (each pinned as a named-fuzzy-weak-* case) and changes nothing else. THIS needle stays wrong: at 0.775 it sits above the line, and so does `mindstat`.",
-				"scryfall": {
-					"status": 200,
-					"expect": {
-						"object": "card",
-						"name": "Ugin, the Spirit Dragon"
-					}
-				},
-				"ours": {
-					"status": 200,
-					"expect": {
-						"object": "card",
-						"name": "Inspirit"
-					}
-				}
-			}
+			"path": "/cards/named?fuzzy=ugin+spirit"
 		},
 		{
-			"name": "named-fuzzy-set-typo-metric-lightning-blast-m11",
+			"name": "named-fuzzy-set-under-floor-lightning-blast-m11",
 			"method": "GET",
-			"path": "/cards/named?fuzzy=lightning+blast&set=m11",
-			"known_deviation": {
-				"reason": "THE TYPO METRIC'S RESOLUTION, seen through a set. Scryfall scopes the typo race to the set (`fuzzy=lightning blow&set=m11` answers M11's Lightning Bolt although Lightning Blow is the closer name and is not in M11; `fuzzy=lightning bolt&set=war` is a 404), and so does the mirror. Inside M11 `lightning blast` scores 0.6595 against Lightning Bolt on this port's (J + L) / 2, which clears the 0.625 floor; api.scryfall.com answers 404, so its own score for the pair falls under its floor while `lightning blow` (0.709 here) clears it. No floor separates the two on this metric without losing needles the fit already holds: `counterspellxxxxxxxxxx` resolves on Scryfall at 0.657 and `ancestral` at 0.664. Measured 2026-09-25.",
-				"scryfall": {
-					"status": 404,
-					"expect": {
-						"object": "error",
-						"code": "not_found"
-					}
-				},
-				"ours": {
-					"status": 200,
-					"expect": {
-						"object": "card",
-						"name": "Lightning Bolt",
-						"set": "m11"
-					}
-				}
-			}
+			"path": "/cards/named?fuzzy=lightning+blast&set=m11"
 		},
 		{
 			"name": "search-order-edhrec-desc-unranked-first",

@@ -413,54 +413,43 @@ export interface CollectionScope {
 }
 
 /**
- * The fuzzy LEAD threshold: the best candidate must lead the best competing (different name,
- * different card) candidate by this much or the answer is `ambiguous`. Lives here, on the seam,
- * because BOTH sides apply it — the engine's own race and the partitioned gather's global race —
- * and the two must never drift.
+ * The FLOOR of the typo-tolerant stage of `?fuzzy=`: a candidate scoring below this is not a
+ * candidate at all, and the needle goes on to containment. Its metric is pg_trgm's similarity of
+ * the COLLATED name (backlog x25; card_engine's `Fuzzy name matching` section has the derivation).
  *
- * FITTED against 86 probed Scryfall needles alongside the floor in store.ts. It is small because
- * on the derived metric the typo stage almost never has to declare ambiguity: every needle
- * Scryfall calls ambiguous (`bolt`, `jac bel`, `aust com`, `ring sol`, …) falls THROUGH the typo
- * stage's floor and is called ambiguous by the containment stage behind it.
- *
- * It got SMALLER when the extras classes started being imported: `Lightning Bolt // Lightning
- * Bolt` (astx/76, art series) trails Blightning by 0.0032 for `fuzzy=bolt lightning`, and 0.01
- * called that ambiguous. See card_engine's FUZZY_SCORE_LEAD for the refit.
+ * BRACKETED BY PROBES, 2026-09-26: `fuzzy=deadeall` scores 6/11 = 0.545 against Deadfall and is a
+ * 404 on api.scryfall.com; `fuzzy=lightning blow&set=m11` and `lihgtning bolt` score 5/9 = 0.556
+ * against Lightning Bolt and answer it. Every cached answer (217 `fuzzy=` needles) reads the same
+ * with any floor in between.
  */
-export const FUZZY_SIMILARITY_LEAD = 0.002;
+export const FUZZY_SIMILARITY_FLOOR = 0.55;
 
 /**
- * The score below which a typo winner no longer outranks the containment stage (backlog n14):
- * a "weak" winner loses to the ONE card whose names carry every query word, and is the answer
- * only when no single card does. api.scryfall.com runs the typo stage first, but not
- * unconditionally.
+ * The fuzzy LEAD: the best candidate must lead the best competing (different name, different
+ * card) candidate by this much or the answer is `ambiguous`. ZERO since backlog x25 — Scryfall's
+ * typo stage never calls a tie ambiguous: `fuzzy=illusionary`, `parallax` and `thoughts`, whose
+ * two best cards score the same, answer Illusionary Wall, Parallax Wave and Thought Scour
+ * (probed 2026-09-26), and `sculptor` Storm Sculptor over Soul Sculptor. The tie goes to the card
+ * first printed most recently, then to the name that sorts last (card_engine's `FuzzyRace`,
+ * `raceFuzzyCandidates`). Every needle Scryfall calls ambiguous falls through the floor and is
+ * called ambiguous by the containment stage behind it.
  *
- * MEASURED on api.scryfall.com 2026-09-25, on the engine's own metric (card_engine's
- * `fuzzy_name_match`), over the needles where exactly one card contains every word and the typo
- * race picks another: the typo winner answered 20 of the 22 scoring 0.714 or more
- * (`inquisitor serr`, Inquisitor's Ox over Serra Inquisitors, is the lowest) and the containing
- * card all 11 scoring 0.703 or less (`hyd disintegrat`, HYDRA Disintegrator over Disintegrate,
- * the highest; `prophesi`, 0.625, the lowest). 0.71 sits between. Over the port's 206 cached
- * `fuzzy=` answers run through the ten-partition path it takes 182 identical answers to 193 and
- * changes nothing else; every line from 0.705 to 0.712 scores the same.
- *
- * Two needles sit on the wrong side and stay there: `ugin spirit` (Inspirit, 0.775) and
- * `mindstat` (Mindstab, 0.795) answer the containing card on Scryfall, and no line takes them
- * without giving up `stranglero` (0.775), `snorti` (0.792), `primeval titanoth` (0.799) and more.
- *
- * NOT ADOPTED: upstream PR #928's second line, under which a winner also yields to SEVERAL
- * containing cards and reads `ambiguous` (`FUZZY_FAINT_BELOW`, 0.67). On the port's answers it is
- * a wash, 193 either way: it puts `assaultron` (0.667) and `jace sculpt` (0.628) right and
- * `ancestral` (0.664) and `paralyzing` (0.641) wrong. The scores interleave, so no line separates
- * the two outcomes, and `sculptor` (0.633) is neither: Scryfall answers Storm Sculptor, one of
- * its several containing cards.
- *
- * Lives here, on the seam, because both sides apply it: the engine reads a hit under it as "weak"
- * and its bundle skips containment only at or above it (engine/wasm `named_fuzzy_bundle`), and the
- * partitioned merge answers the containing card over a weak winner. The engine compares in f32,
- * which is how the value crosses the boundary.
+ * Lives here, on the seam, because BOTH sides apply it — the engine's own race and the
+ * partitioned gather's global race — and the two must never drift.
  */
-export const FUZZY_WEAK_BELOW = 0.71;
+export const FUZZY_SIMILARITY_LEAD = 0;
+
+/**
+ * The score below which a typo winner no longer outranks the containment stage (backlog n14) — 0
+ * since backlog x25, which reads every hit as "hit". The line was 0.71 on the metric before x25,
+ * fitted to eleven needles where the one card carrying every query word beat a typo winner scoring
+ * 0.703 or less; on the collated metric every one of those winners scores under the floor
+ * (`hyd disintegrat` 0.474 for Disintegrate, `moderator` 0.500 for Moderation), so containment
+ * answers them with no line, and the two the line could not reach (`ugin spirit`, `mindstat`) are
+ * right too. The mechanism stays (the engine reports "weak" under a positive line and its bundle
+ * skips containment only at or above it), unused.
+ */
+export const FUZZY_WEAK_BELOW = 0;
 
 /** Backlog n15: which partitions `/cards/named?fuzzy=` must ask — see store.ts `namesFuzzyPlan`. */
 export interface NamedFuzzyPlan {
@@ -501,6 +490,9 @@ export interface FuzzyCandidateWire {
 	 * must lead the extras-only one (the jtla memorabilia front card) whatever partition each
 	 * hashed to. See the engine's `FuzzyRace`. */
 	served: boolean;
+	/** The day the card was first printed, yyyymmdd (0 unknown): the race's next tiebreak after
+	 * `served` (backlog x25). Absent from an object on the build before x25. */
+	firstReleased?: number;
 	oracleId: string;
 	vpid: number;
 	foldedName: string;
