@@ -43,7 +43,11 @@ fn store() -> BufferStore {
     ];
     let drafts = cards.iter().map(|n| transform_row(&fixture(n), true).unwrap().unwrap()).collect();
     let rows: Vec<Value> = finalize(drafts, &TagData::default()).collect();
-    let out_dir = std::env::temp_dir().join(format!("sylvan-print-order-ties-{}", std::process::id()));
+    // One directory per CALL, not per process: the two tests below run on parallel threads of one
+    // process, and a shared directory let one test delete the store file the other was reading.
+    static BUILDS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+    let build = BUILDS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let out_dir = std::env::temp_dir().join(format!("sylvan-print-order-ties-{}-{build}", std::process::id()));
     let manifest = sylvan_store_builder::build_store(rows.into_iter(), &out_dir, "1754000000").expect("build");
     let bytes = std::fs::read(out_dir.join(&manifest.store_key)).unwrap();
     std::fs::remove_dir_all(&out_dir).ok();
