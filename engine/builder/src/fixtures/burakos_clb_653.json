@@ -1,0 +1,155 @@
+{
+ "all_parts": [
+  {
+   "component": "token",
+   "id": "770b988d-4f31-4746-8c23-4ed8d9a6b393",
+   "name": "Treasure",
+   "object": "related_card",
+   "type_line": "Token Artifact — Treasure",
+   "uri": "https://api.scryfall.com/cards/770b988d-4f31-4746-8c23-4ed8d9a6b393"
+  },
+  {
+   "component": "combo_piece",
+   "id": "899e278d-5d4e-461a-9878-2b85de16b38d",
+   "name": "Burakos, Party Leader",
+   "object": "related_card",
+   "type_line": "Legendary Creature — Orc",
+   "uri": "https://api.scryfall.com/cards/899e278d-5d4e-461a-9878-2b85de16b38d"
+  }
+ ],
+ "artist": "Caroline Gariba",
+ "artist_ids": [
+  "61a4c572-3d1b-4b71-aeb0-1a5a6b82c524"
+ ],
+ "booster": false,
+ "border_color": "black",
+ "card_back_id": "0aeebaf5-8c7d-4636-9e82-8c27447861f7",
+ "cardmarket_id": 661369,
+ "cmc": 4.0,
+ "collector_number": "653",
+ "color_identity": [
+  "B"
+ ],
+ "colors": [
+  "B"
+ ],
+ "digital": false,
+ "edhrec_rank": 6584,
+ "finishes": [
+  "foil"
+ ],
+ "foil": true,
+ "frame": "2015",
+ "frame_effects": [
+  "legendary"
+ ],
+ "full_art": false,
+ "game_changer": false,
+ "games": [
+  "paper",
+  "mtgo"
+ ],
+ "highres_image": true,
+ "id": "899e278d-5d4e-461a-9878-2b85de16b38d",
+ "illustration_id": "a508f94c-cf52-4b3c-be6b-26f3633db14c",
+ "image_status": "highres_scan",
+ "image_updated_at": "2026-07-13T06:01:57Z",
+ "image_uris": {
+  "art": "https://cards.scryfall.io/art/front/8/9/899e278d-5d4e-461a-9878-2b85de16b38d.webp?1783922517",
+  "art_crop": "https://cards.scryfall.io/art_crop/front/8/9/899e278d-5d4e-461a-9878-2b85de16b38d.jpg?1783922517",
+  "border_crop": "https://cards.scryfall.io/border_crop/front/8/9/899e278d-5d4e-461a-9878-2b85de16b38d.jpg?1783922517",
+  "crop": "https://cards.scryfall.io/crop/front/8/9/899e278d-5d4e-461a-9878-2b85de16b38d.webp?1783922517",
+  "display": "https://cards.scryfall.io/display/front/8/9/899e278d-5d4e-461a-9878-2b85de16b38d.webp?1783922517",
+  "grid": "https://cards.scryfall.io/grid/front/8/9/899e278d-5d4e-461a-9878-2b85de16b38d.webp?1783922517",
+  "large": "https://cards.scryfall.io/large/front/8/9/899e278d-5d4e-461a-9878-2b85de16b38d.jpg?1783922517",
+  "normal": "https://cards.scryfall.io/normal/front/8/9/899e278d-5d4e-461a-9878-2b85de16b38d.jpg?1783922517",
+  "png": "https://cards.scryfall.io/png/front/8/9/899e278d-5d4e-461a-9878-2b85de16b38d.png?1783922517",
+  "small": "https://cards.scryfall.io/small/front/8/9/899e278d-5d4e-461a-9878-2b85de16b38d.jpg?1783922517",
+  "thumb": "https://cards.scryfall.io/thumb/front/8/9/899e278d-5d4e-461a-9878-2b85de16b38d.webp?1783922517"
+ },
+ "keywords": [
+  "Choose a background",
+  "Treasure"
+ ],
+ "lang": "en",
+ "layout": "normal",
+ "legalities": {
+  "alchemy": "not_legal",
+  "brawl": "not_legal",
+  "commander": "legal",
+  "competitivebrawl": "not_legal",
+  "duel": "legal",
+  "future": "not_legal",
+  "gladiator": "not_legal",
+  "historic": "not_legal",
+  "legacy": "legal",
+  "modern": "not_legal",
+  "oathbreaker": "legal",
+  "oldschool": "not_legal",
+  "pauper": "not_legal",
+  "paupercommander": "not_legal",
+  "penny": "not_legal",
+  "pioneer": "not_legal",
+  "predh": "not_legal",
+  "premodern": "not_legal",
+  "standard": "not_legal",
+  "standardbrawl": "not_legal",
+  "timeless": "not_legal",
+  "tlr": "not_legal",
+  "vintage": "legal"
+ },
+ "mana_cost": "{3}{B}",
+ "mtgo_id": 101476,
+ "multiverse_ids": [
+  567146
+ ],
+ "name": "Burakos, Party Leader",
+ "nonfoil": false,
+ "object": "card",
+ "oracle_id": "883ad210-917b-40e6-8682-31d6eb3ed12a",
+ "oracle_text": "Burakos is also a Cleric, Rogue, Warrior, and Wizard.\nWhenever Burakos attacks, defending player loses X life and you create X Treasure tokens, where X is the number of creatures in your party.\nChoose a Background (You can have a Background as a second commander.)",
+ "oversized": false,
+ "power": "2",
+ "prices": {
+  "eur": null,
+  "eur_foil": "0.87",
+  "tix": "0.78",
+  "usd": null,
+  "usd_etched": null,
+  "usd_foil": "1.18"
+ },
+ "prints_search_uri": "https://api.scryfall.com/cards/search?order=released&q=oracleid%3A883ad210-917b-40e6-8682-31d6eb3ed12a&unique=prints",
+ "promo": false,
+ "purchase_uris": {
+  "cardhoarder": "https://www.cardhoarder.com/cards/101476?affiliate_id=scryfall&ref=card-profile&utm_campaign=affiliate&utm_medium=card&utm_source=scryfall",
+  "cardmarket": "https://www.cardmarket.com/en/Magic/Products?idProduct=661369&referrer=scryfall&utm_campaign=card_prices&utm_medium=text&utm_source=scryfall",
+  "tcgplayer": "https://partner.tcgplayer.com/c/4931599/1830156/21018?subId1=api&u=https%3A%2F%2Fwww.tcgplayer.com%2Fproduct%2F273643%3Fpage%3D1"
+ },
+ "rarity": "mythic",
+ "related_uris": {
+  "edhrec": "https://edhrec.com/route/?cc=Burakos%2C+Party+Leader",
+  "gatherer": "https://gatherer.wizards.com/Pages/Card/Details.aspx?multiverseid=567146&printed=false",
+  "tcgplayer_infinite_articles": "https://partner.tcgplayer.com/c/4931599/1830156/21018?subId1=api&trafcat=tcgplayer.com%2Fsearch%2Farticles&u=https%3A%2F%2Fwww.tcgplayer.com%2Fsearch%2Farticles%3FproductLineName%3Dmagic%26q%3DBurakos%252C%2BParty%2BLeader",
+  "tcgplayer_infinite_decks": "https://partner.tcgplayer.com/c/4931599/1830156/21018?subId1=api&trafcat=tcgplayer.com%2Fsearch%2Fdecks&u=https%3A%2F%2Fwww.tcgplayer.com%2Fsearch%2Fdecks%3FproductLineName%3Dmagic%26q%3DBurakos%252C%2BParty%2BLeader"
+ },
+ "released_at": "2022-06-10",
+ "reprint": false,
+ "reserved": false,
+ "rulings_uri": "https://api.scryfall.com/cards/899e278d-5d4e-461a-9878-2b85de16b38d/rulings",
+ "scryfall_set_uri": "https://scryfall.com/sets/clb?utm_source=api",
+ "scryfall_uri": "https://scryfall.com/card/clb/653/burakos-party-leader?utm_source=api",
+ "security_stamp": "oval",
+ "set": "clb",
+ "set_id": "5e4c3fe8-fd57-4b20-ad56-c03790a16cea",
+ "set_name": "Commander Legends: Battle for Baldur's Gate",
+ "set_search_uri": "https://api.scryfall.com/cards/search?order=set&q=e%3Aclb&unique=prints",
+ "set_type": "draft_innovation",
+ "set_uri": "https://api.scryfall.com/sets/5e4c3fe8-fd57-4b20-ad56-c03790a16cea",
+ "story_spotlight": false,
+ "tcgplayer_id": 273643,
+ "textless": false,
+ "toughness": "4",
+ "type_line": "Legendary Creature — Orc",
+ "uri": "https://api.scryfall.com/cards/899e278d-5d4e-461a-9878-2b85de16b38d",
+ "variation": false
+}

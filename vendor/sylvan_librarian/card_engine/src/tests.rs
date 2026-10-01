@@ -16122,7 +16122,42 @@ fn a_type_value_matches_the_type_line_as_a_substring() {
     };
     // The compiled needle, checked the way `bind_type_lines` checks it: lowercase substring, or a
     // type-word-anchored match when the needle names a type.
-    let matcher = |v: serde_json::Value| match super::build_filter(&v).unwrap() {
+    // LOCAL PATCH (Cloudflare port): a party class compiles to `printed line OR granted by rules
+    // text` (see `PARTY_CLASS_GRANT`); this test is about the printed-line half, so take it.
+    let printed_line = |v: &serde_json::Value| match super::build_filter(v).unwrap() {
+        FilterExpr::Or(mut halves) => {
+            assert!(
+                matches!(
+                    &halves[..],
+                    [
+                        FilterExpr::TypeLineContains { whole_word: true, .. },
+                        FilterExpr::TextContains { field: TextSearchField::OracleTextLower, word },
+                    ] if word == "is also a cleric, rogue, warrior, and wizard"
+                ),
+                "a party class is the type word or the grant sentence, in that order"
+            );
+            halves.swap_remove(0)
+        }
+        other => other,
+    };
+    // The grant rides on the four class words alone, under `:` and `=` — not a prefix, not a
+    // phrase, not another type, and not `>=` (which answers nothing on Scryfall).
+    for class in ["Cleric", "Rogue", "Warrior", "Wizard"] {
+        for op in [":", "="] {
+            assert!(matches!(super::build_filter(&type_leaf("card_subtypes", op, class)).unwrap(), FilterExpr::Or(_)));
+        }
+        assert!(matches!(
+            super::build_filter(&type_leaf("card_subtypes", ">=", class)).unwrap(),
+            FilterExpr::TypeLineContains { .. }
+        ));
+    }
+    for other in ["Cler", "Elf Cleric", "Cleric Rogue", "Ally", "Shapeshifter"] {
+        assert!(matches!(
+            super::build_filter(&type_leaf("card_subtypes", ":", other)).unwrap(),
+            FilterExpr::TypeLineContains { .. }
+        ));
+    }
+    let matcher = |v: serde_json::Value| match printed_line(&v) {
         FilterExpr::TypeLineContains { needle, whole_word } => {
             move |line: &str| super::filter::type_line_hit(&line.to_lowercase(), &needle, whole_word)
         }

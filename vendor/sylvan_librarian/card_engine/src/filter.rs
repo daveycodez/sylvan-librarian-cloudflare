@@ -4030,7 +4030,19 @@ fn build_binary(kw: &Value) -> Result<FilterExpr, String> {
             // no other (`t:œ`, `t:ø`, `t:ß`, `t:þ`, `t:đ` and `t:ł` are each 404 there).
             let needle = crate::fold_ae(&needle.to_lowercase());
             let whole_word = is_canonical_type_name(&needle);
-            return Ok(FilterExpr::TypeLineContains { needle, whole_word });
+            // LOCAL PATCH (Cloudflare port): the four party classes are also GRANTED by rules
+            // text — see `PARTY_CLASS_GRANT`. `>=` is left alone: `t>=cleric` answers nothing on
+            // Scryfall for any card.
+            let granted = op != ">=" && PARTY_CLASS_TYPES.contains(&needle.as_str());
+            let type_line = FilterExpr::TypeLineContains { needle, whole_word };
+            if granted {
+                let grant = FilterExpr::TextContains {
+                    field: TextSearchField::OracleTextLower,
+                    word: PARTY_CLASS_GRANT.to_owned(),
+                };
+                return Ok(FilterExpr::Or(vec![type_line, grant]));
+            }
+            return Ok(type_line);
         }
     }
 
@@ -4332,17 +4344,46 @@ pub(crate) fn type_line_hit(lower: &str, needle: &str, whole_word: bool) -> bool
 /// and Scryfall does NOT anchor on them. A corpus-derived vocabulary would have anchored `t:ir`
 /// and answered 0 where Scryfall answers 1,906.
 ///
-/// WHAT IT STILL CANNOT DO. Scryfall matches the type ARRAY, which holds subtypes it never prints:
-/// `t:warrior` is 1,298 there against the printed line's 1,294, because `Burakos, Party Leader`
-/// answers to all four party classes while its `type_line` reads `Legendary Creature — Orc` on
-/// both sides. That residual is not derivable from any published field and is one card per party
-/// class.
+/// WHAT THE PRINTED LINE ALONE CANNOT DO is answered by [`PARTY_CLASS_GRANT`]: Scryfall matches a
+/// type ARRAY that holds four subtypes it never prints, on the four cards whose rules text grants
+/// them (`Burakos, Party Leader` reads `Legendary Creature — Orc` on both sides and answers
+/// `t:warrior` there).
 ///
 /// A catalog is a SNAPSHOT: a creature type printed after the date above matches as a substring
 /// until this list is refreshed, which is the safe direction — the pre-fix behaviour, not a miss.
 fn is_canonical_type_name(needle: &str) -> bool {
     CANONICAL_TYPE_NAMES.binary_search(&needle).is_ok()
 }
+
+/// LOCAL PATCH (Cloudflare port). THE PARTY CLASSES A CARD'S RULES TEXT GRANTS. Four cards print
+/// `<name> is also a Cleric, Rogue, Warrior, and Wizard.` — Burakos, Party Leader (`Legendary
+/// Creature — Orc`), Stonework Packbeast (`Artifact Creature — Beast`), Tajuru Paragon (`Creature
+/// — Elf`) and Veteran Adventurer (`Creature — Human`) — and Scryfall answers `t:cleric`,
+/// `t:rogue`, `t:warrior` and `t:wizard` with all four although no type line carries the word.
+///
+/// MEASURED on api.scryfall.com 2026-10-01 (unique=cards, include_extras), each class against the
+/// printed-line answer here, and the set difference is these four names and nothing else, every
+/// time, with nothing the other way:
+///
+///   t:cleric 737 / 733   t:rogue 655 / 651   t:warrior 1,370 / 1,366   t:wizard 1,334 / 1,330
+///
+/// THE RULE IS THIS SENTENCE AND NOT A CLASS OF SENTENCES. `fo:"is also a"` finds no other card
+/// that names a creature type (the rest are Living metal's reminder text and Icing Manipulator's
+/// Food counters), and the neighbouring shapes were probed and are NOT honored there: Mistform
+/// Ultimus ("is every creature type") and the changelings answer no `t:cleric`, and Tajuru Paragon
+/// answers no `t:ally`. So it is not "types the text mentions".
+///
+/// WHAT MATCHES IS THE TYPE WORD ALONE, exactly the canonical-name arm's needle: over the four
+/// cards `t:"cleric"`, `type:warrior` and `t=cleric` answer 4, while `t:cler`, `t:wiz`,
+/// `t:clerics`, `t:"elf cleric"`, `t:"human cleric"`, `t:"cleric rogue"` and `t:/cleric/` answer
+/// 0 — the granted types are not IN the line, so no phrase or pattern over it can see them. Two
+/// terms still compose (`t:cleric t:elf` is Tajuru Paragon), and negation is the complement
+/// (`-t:cleric` drops all four).
+///
+/// The sentence is matched in the stripped oracle text, lowercased; it is rules text on all four,
+/// not reminder text. `is:party` and `is:outlaw` expand to these `t:` terms and inherit it.
+const PARTY_CLASS_TYPES: [&str; 4] = ["cleric", "rogue", "warrior", "wizard"];
+const PARTY_CLASS_GRANT: &str = "is also a cleric, rogue, warrior, and wizard";
 
 /// The catalog itself, for the test that asserts its shape.
 #[cfg(test)]
