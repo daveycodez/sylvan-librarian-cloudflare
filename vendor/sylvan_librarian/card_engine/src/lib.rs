@@ -9829,6 +9829,12 @@ pub(crate) struct PreferClassIds {
     /// `CompatFields.frame_effects` member `extendedart`, on its own: `prefer:borderless`'s
     /// second tier, directly under borderless and above every other variant, full art included.
     extendedart: u16,
+    /// `CompatFields.promo_types` member `serialized` — a numbered collector insert of a few
+    /// hundred copies. `prefer:borderless` ranks it LAST among candidates, below every tier,
+    /// language and crossover: Urabrask, the Great Work's mom/341 is the serialized
+    /// double-rainbow foil, and it escaped every frame test because its treatment is a foil
+    /// process rather than a frame.
+    serialized: u16,
     /// `CompatFields.promo_types` member `sldbonus` — the card in a Secret Lair drop's BONUS slot,
     /// not one of the cards the drop is sold for. Among the borderless, ranked under a printing
     /// that is not one: Wayfarer's Bauble and Rogue's Passage both answered their bonus card from
@@ -9855,6 +9861,7 @@ impl PreferClassIds {
         extendedart: VOCAB_NONE,
         poster: VOCAB_NONE,
         sldbonus: VOCAB_NONE,
+        serialized: VOCAB_NONE,
     };
 
     pub(crate) fn bind(coll_vocab: &AStrings) -> Self {
@@ -9875,6 +9882,7 @@ impl PreferClassIds {
             extendedart: id("extendedart"),
             poster: id("poster"),
             sldbonus: id("sldbonus"),
+            serialized: id("serialized"),
         }
     }
 }
@@ -9917,6 +9925,12 @@ fn printing_is_borderless(p: &APrinting, strings: &AStrings) -> bool {
 /// under its black showcase siblings in the variant tier, exactly as intended.
 fn printing_is_white_bordered(p: &APrinting, strings: &AStrings) -> bool {
     str_at(strings, u32::from(p.card_border_id)) == Some("white")
+}
+
+/// A SERIALIZED printing — a numbered collector insert, a few hundred copies of the card. Last
+/// among `prefer:borderless`'s candidates; see `PreferClassIds::serialized`.
+fn printing_is_serialized(p: &APrinting, ids: &PreferClassIds) -> bool {
+    ids.serialized != VOCAB_NONE && p.compat.promo_types.iter().any(|v| u16::from(*v) == ids.serialized)
 }
 
 /// A Secret Lair drop's BONUS-slot card — the extra printing bundled with a drop rather than one
@@ -10265,7 +10279,10 @@ fn printing_is_universes_beyond(p: &APrinting, ids: &PreferClassIds) -> bool {
 /// in-universe one whatever its tier — eight steps, clear of the tiers and keys — so Farewell
 /// answers Kamigawa's extended-art neo/436 over Fallout's borderless pip/353. Not an exclusion: a
 /// card printed only in Universes Beyond sets takes the offset uniformly and its tiers decide as
-/// usual, so Iron Man, Titan of Innovation and Nick Fury still answer a borderless printing.
+/// usual, so Iron Man, Titan of Innovation and Nick Fury still answer a borderless printing. A
+/// SERIALIZED printing — a numbered insert of a few hundred copies — is preferred LAST of all,
+/// below every tier, key, language and crossover: Urabrask, the Great Work answers the ordinary
+/// showcase mom/299 over the serialized double-rainbow mom/341.
 /// Najeela answers her etched cmr/514, Thrasios his Special Guests spg/16. A card's
 /// original printing never carries a flavor name, so a candidate always exists. A DIGITAL-ONLY
 /// printing never answers while a paper one exists; a card that exists only digitally (an
@@ -10491,6 +10508,13 @@ fn prefer_score(card: &AOracleCard, p: &APrinting, prefer: Prefer, strings: &ASt
             // has a uniform offset and its tiers decide as usual, which is how Iron Man, Titan of
             // Innovation and Nick Fury still answer a borderless printing of their own.
             let universe_offset = if printing_is_universes_beyond(p, &ids) { -8.0 } else { 0.0 };
+            // A SERIALIZED printing is preferred LAST — twenty-four steps, below every tier, every
+            // key, every language and every crossover, so any other candidate answers before a
+            // numbered insert does. Urabrask, the Great Work's serialized double-rainbow mom/341
+            // is borderless with no showcase frame, so the plain-frame key had it beating the
+            // ordinary showcase mom/299. Still not an exclusion: a card printed only in serialized
+            // form takes the offset uniformly and its tiers decide.
+            let serialized_offset = if printing_is_serialized(p, &ids) { -24.0 } else { 0.0 };
             // A DIGITAL-ONLY printing is never this prefer's answer while any paper printing
             // exists — below every tier, every language and every crossover. Tropical Island's
             // three retro-frame printings were all Magic Online (prm/43620, me3, me4) and it
@@ -10508,7 +10532,7 @@ fn prefer_score(card: &AOracleCard, p: &APrinting, prefer: Prefer, strings: &ASt
             // ee8e14b's absolute bonus did: the group's base is its best member's default score,
             // so Relic Seeker's pori pair still ranks by that pair's best and cmr/382's pin wins.
             let base = same_set_group_base(p, siblings, frame_tier, &ids, strings).unwrap_or_else(default_score);
-            (frame_tier + text_box + set_key + plain_frame + scan + finish + featured + language_offset + universe_offset + digital_offset) * CLASS_BONUS + base
+            (frame_tier + text_box + set_key + plain_frame + scan + finish + featured + language_offset + universe_offset + serialized_offset + digital_offset) * CLASS_BONUS + base
         }
     }
 }

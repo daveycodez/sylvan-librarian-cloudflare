@@ -49,7 +49,8 @@ class PreferOrder(enum.StrEnum):
     # printing never answers while a paper one exists; the retro tier reads 1993 as well as 1997; English above every other language;
     # a flavor-named (crossover) printing, or an English one printed under another name, a
     # reversible card, or a white-bordered one, is never a candidate, and a Universes Beyond
-    # printing ranks below every in-universe one whatever its tier. See the engine's `Prefer`.
+    # printing ranks below every in-universe one whatever its tier, and a serialized printing is
+    # preferred last of all. See the engine's `Prefer`.
     BORDERLESS = enum.auto()
 
 

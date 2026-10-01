@@ -1,0 +1,3 @@
+{
+	"query": "(((otag:lifegain OR fo:/\\bcreate [^\\n]*tokens? with lifelink/ OR fo:/(your|each player.s) life total becomes/) (otag:draw OR fo:/\\bcreate [^.]*blood tokens?\\b/)) OR fo:/(whenever you gain life|if you would gain life)[^\\n]*draw/ OR (fo:/if you would gain life/ fo:/if you would draw/) OR fo:/if you(.ve)? gained [^\\n]*life this turn[^\\n]*draw/ OR (fo:/whenever you gain life, put [^.]*counter/ fo:/(whenever [^\\n]*counters?|remove [^\\n]*counters?|planeswalker token)[^\\n]*draw/) OR (fo:/if you(.ve)? gained [^\\n]*life this turn, return (this card|~) from your graveyard/ fo:/sacrifice (this creature|~): draw/)) sort:edhrec"
+}

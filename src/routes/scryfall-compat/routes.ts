@@ -76,8 +76,15 @@ import {
 	type ScryfallError,
 	toScryfallCard,
 } from "./objects";
+import { truncateScryfallQuery } from "./query-input";
 import { queryShape } from "./query-shape";
-import { scryfallTermPolicy } from "./query-terms";
+import {
+	exceedsScryfallRegexBudget,
+	hasNestedScryfallDisplayOption,
+	NESTED_DISPLAY_OPTIONS_DETAILS,
+	scryfallTermPolicy,
+	TOO_MANY_REGEX_DETAILS,
+} from "./query-terms";
 import { asBool, scryfallCollectionJson, scryfallJson, scryfallListJson } from "./respond";
 import { setAndCollectorNumber, TRUE_TREE } from "./trees";
 
@@ -535,7 +542,7 @@ export async function cardsSearchHandler(
 	params: Record<string, string>,
 ): Promise<Response> {
 	const pretty = asBool(params.pretty);
-	const q = params.q;
+	const q = truncateScryfallQuery(params.q);
 	if (!q?.trim()) return scryfallJson(badRequestError(EMPTY_QUERY_DETAILS, null), pretty, CARDS_CACHE);
 
 	const page = scryfallPage(params.page);
@@ -546,6 +553,12 @@ export async function cardsSearchHandler(
 	const policy = scryfallTermPolicy(q);
 	if (policy.unclosedParens) {
 		return scryfallJson(badRequestError(UNCLOSED_PARENS_DETAILS, null), pretty, CARDS_CACHE);
+	}
+	if (hasNestedScryfallDisplayOption(q)) {
+		return scryfallJson(badRequestError(NESTED_DISPLAY_OPTIONS_DETAILS, null), pretty, CARDS_CACHE);
+	}
+	if (exceedsScryfallRegexBudget(q)) {
+		return scryfallJson(badRequestError(TOO_MANY_REGEX_DETAILS, null), pretty, CARDS_CACHE);
 	}
 	if (policy.allIgnored) {
 		return scryfallJson(badRequestError(ALL_IGNORED_DETAILS, policy.warnings), pretty, CARDS_CACHE);
@@ -967,7 +980,7 @@ export async function cardsRandomHandler(
 	const format = (params.format ?? "json").toLowerCase();
 	const engine = await ctx.getEngine();
 	const baseUrl = apiBaseUrl(ctx);
-	const q = params.q;
+	const q = truncateScryfallQuery(params.q);
 
 	let filterTreeJson = TRUE_TREE;
 	if (q?.trim()) {
@@ -979,6 +992,12 @@ export async function cardsRandomHandler(
 		const policy = scryfallTermPolicy(q);
 		if (policy.unclosedParens) {
 			return scryfallJson(badRequestError(UNCLOSED_PARENS_DETAILS, null), pretty, RANDOM_CACHE);
+		}
+		if (hasNestedScryfallDisplayOption(q)) {
+			return scryfallJson(badRequestError(NESTED_DISPLAY_OPTIONS_DETAILS, null), pretty, RANDOM_CACHE);
+		}
+		if (exceedsScryfallRegexBudget(q)) {
+			return scryfallJson(badRequestError(TOO_MANY_REGEX_DETAILS, null), pretty, RANDOM_CACHE);
 		}
 		if (policy.allIgnored) {
 			return scryfallJson(badRequestError(ALL_IGNORED_DETAILS, policy.warnings), pretty, RANDOM_CACHE);

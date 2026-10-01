@@ -1,0 +1,83 @@
+import { describe, expect, test } from "bun:test";
+import { truncateScryfallQuery } from "../../src/routes/scryfall-compat/query-input";
+import regression from "../fixtures/scryfall-truncated-query.json";
+import { json, makeCtx, testDispatch } from "./harness";
+
+describe("Scryfall query input limit", () => {
+	test("preserves exactly 1,024 Unicode code points rather than UTF-16 units or bytes", () => {
+		const query = `o:"😀" OR t:creature${" ".repeat(995)}sort:edhrec`;
+		const prefix = [...query].slice(0, 1024).join("");
+		expect(truncateScryfallQuery(query)).toBe(prefix);
+		expect(prefix.length).toBe(1025);
+		expect(new TextEncoder().encode(prefix).length).toBe(1027);
+		expect(truncateScryfallQuery("😀".repeat(1025))).toBe("😀".repeat(1024));
+	});
+
+	test("preserves short and missing inputs", () => {
+		expect(truncateScryfallQuery(undefined)).toBeUndefined();
+		expect(truncateScryfallQuery("t:elf")).toBe("t:elf");
+		expect(truncateScryfallQuery("x".repeat(1024))).toHaveLength(1024);
+	});
+
+	test.each(["/cards/search", "/cards/random"])("%s validates the truncated prefix", async (route) => {
+		const response = await testDispatch(makeCtx(), `${route}?q=${encodeURIComponent(regression.query)}`);
+		expect(regression.query).toHaveLength(1062);
+		expect(response.status).toBe(400);
+		expect(await json(response)).toMatchObject({
+			object: "error",
+			code: "bad_request",
+			status: 400,
+			warnings: null,
+			details: "Your search contains unclosed parentheses.",
+		});
+	});
+
+	test("a directive truncated mid-value gets the surviving value's warning", async () => {
+		const query = `t:creature${" ".repeat(1004)}sort:edhrec`;
+		expect(query).toHaveLength(1025);
+		const response = await testDispatch(makeCtx(), `/cards/search?q=${encodeURIComponent(query)}`);
+		expect(response.status).toBe(200);
+		expect((await json(response)).warnings).toEqual([expect.stringContaining("edhre")]);
+	});
+
+	test("regex operators after the prefix do not spend the budget", async () => {
+		const query = `${"fo:/draw/ ".repeat(6).padEnd(1024, " ")}fo:/draw/`;
+		const response = await testDispatch(makeCtx(), `/cards/search?q=${encodeURIComponent(query)}`);
+		expect(response.status).toBe(200);
+	});
+
+	test("leading whitespace counts toward the prefix before trimming", async () => {
+		const query = ` t:creature${" ".repeat(1003)}sort:edhrec`;
+		expect(query).toHaveLength(1025);
+		const response = await testDispatch(makeCtx(), `/cards/search?q=${encodeURIComponent(query)}`);
+		expect(response.status).toBe(200);
+		expect((await json(response)).warnings).toEqual([expect.stringContaining("edhre")]);
+	});
+
+	test("grouped display options beyond the prefix are ignored", async () => {
+		const query = `${"t:creature".padEnd(1024, " ")}(sort:edhrec)`;
+		const response = await testDispatch(makeCtx(), `/cards/search?q=${encodeURIComponent(query)}`);
+		expect(response.status).toBe(200);
+	});
+
+	test.each(["/cards/search", "/cards/random"])(
+		"%s truncates before dispatch's raw-input byte limit",
+		async (route) => {
+			const query = `t:creature OR name:${"a".repeat(3500)}`;
+			const response = await testDispatch(makeCtx(), `${route}?q=${encodeURIComponent(query)}`);
+			expect(response.status).toBe(200);
+		},
+	);
+
+	test("other routes retain their raw-input byte limit", async () => {
+		const query = `t:creature OR name:${"a".repeat(3500)}`;
+		const response = await testDispatch(makeCtx(), `/search?q=${encodeURIComponent(query)}`);
+		expect(response.status).toBe(400);
+	});
+
+	test("native search does not inherit compatibility truncation", async () => {
+		const query = `${"t:elf".padEnd(1024, " ")}(`;
+		const response = await testDispatch(makeCtx(), `/search?q=${encodeURIComponent(query)}`);
+		expect(response.status).toBe(400);
+	});
+});

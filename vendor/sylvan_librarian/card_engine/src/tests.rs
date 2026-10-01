@@ -18187,6 +18187,47 @@ fn prefer_borderless_ranks_universes_beyond_below_every_in_universe_printing() {
     assert_eq!(representative(&data, "borderless", "name", "asc"), 2, "an English crossover over a foreign in-universe printing");
 }
 
+/// A SERIALIZED printing is preferred LAST — Urabrask, the Great Work's shape, whose serialized
+/// double-rainbow mom/341 is borderless with no showcase frame and so beat the ordinary showcase
+/// mom/299 on the plain-frame key. Below every tier, language and crossover, and not an exclusion:
+/// where every printing is serialized the offset is uniform and the tiers decide.
+#[test]
+fn prefer_borderless_prefers_a_serialized_printing_last() {
+    let mut data = class_prefer_store();
+    let legendary = data.printings[0].compat.frame_effects[0];
+    let serialized = data.coll_vocab.len() as u16;
+    data.coll_vocab.push("serialized".to_owned());
+    let ub = data.coll_vocab.iter().position(|s| s.as_str() == "universesbeyond").expect("ub") as u16;
+    let (black, borderless) = (data.printings[0].card_border_id, data.printings[2].card_border_id);
+    for (i, p) in data.printings.iter_mut().enumerate() {
+        p.compat.promo_types = vec![];
+        p.compat.finishes = FINISH_NONFOIL | FINISH_FOIL;
+        p.card_is_tags = vec![];
+        p.compat.frame_effects = vec![legendary];
+        p.card_border_id = black;
+        p.card_set_code = InlineStr::from_str(["aaa", "bbb", "ccc", "ddd"][i]);
+    }
+    // id 2 a serialized borderless, id 3 a plain printing: the plain one answers.
+    data.printings[1].card_border_id = borderless;
+    data.printings[1].compat.promo_types = vec![serialized];
+    assert_eq!(representative(&data, "borderless", "name", "asc"), 1, "a plain printing over a serialized borderless");
+    // Below a CROSSOVER too: tag every NON-serialized printing Universes Beyond, so the only
+    // choice left is a crossover plain printing against the in-universe serialized borderless —
+    // and the crossover answers.
+    for i in [0usize, 2, 3] {
+        data.printings[i].card_is_tags = vec![ub];
+    }
+    assert_eq!(representative(&data, "borderless", "name", "asc"), 1, "a crossover printing over a serialized one");
+    for i in [0usize, 2, 3] {
+        data.printings[i].card_is_tags = vec![];
+    }
+    // Serialize every printing and the tiers decide again — the borderless id 2.
+    for p in &mut data.printings {
+        p.compat.promo_types = vec![serialized];
+    }
+    assert_eq!(representative(&data, "borderless", "name", "asc"), 2, "all serialized: the tiers decide");
+}
+
 /// The eur and tix `*_high` prefers pick the dearest printing by the same search-price chain the
 /// orderings read, an unpriced printing losing to any priced one; `*_low` were already reachable
 /// under a price ordering and are now spellable.

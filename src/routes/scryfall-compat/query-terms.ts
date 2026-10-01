@@ -52,10 +52,102 @@ import {
 	GAME_IS_TAGS,
 	ParserClass,
 } from "../../parser/db-info";
+import { LexError } from "../../parser/errors";
 import { toJsValidationPattern } from "../../parser/regex-budget";
 import { isKnownSetCode } from "../../parser/set-dates.gen";
-import { isWordCont } from "../../parser/tokenizer";
+import { isWordCont, type Token, TT, tokenize } from "../../parser/tokenizer";
 import { DIRECTIVE_TABLES } from "../enums";
+
+/** Scryfall's syntax budget, independent of the engine's post-rewrite safety budget. */
+export const TOO_MANY_REGEX_DETAILS = "Too many regular expression operators used";
+const MAX_SCRYFALL_REGEX_OPERATORS = 6;
+
+// Only Scryfall regex fields count. Color slash values are ordinary colors; unsupported
+// regex fields are ignored. The engine intentionally supports additional string columns.
+const SCRYFALL_REGEX_KEYWORDS: ReadonlySet<string> = new Set([
+	"name",
+	"type",
+	"t",
+	"oracle",
+	"o",
+	"fo",
+	"fulloracle",
+	"flavor",
+	"ft",
+	"mana",
+	"m",
+]);
+
+/**
+ * Measured against api.scryfall.com on 2026-09-27: six regex operators succeed and
+ * seven return 400 with TOO_MANY_REGEX_DETAILS on search and random. Repeated literal
+ * patterns still count; a malformed pattern on a known field counts before validation.
+ * Therefore inspect raw tokens before ignore-and-continue, literal lowering or dedupe.
+ * Quotes and escaped regex delimiters are handled by the existing lexer.
+ */
+export function exceedsScryfallRegexBudget(query: string): boolean {
+	let tokens: Token[];
+	try {
+		tokens = tokenize(foldTypographicQuotes(query));
+	} catch (error) {
+		// Keep the existing syntax/term-policy error for queries that cannot be tokenized.
+		if (error instanceof LexError) return false;
+		throw error;
+	}
+	let count = 0;
+	for (let i = 2; i < tokens.length; i++) {
+		const token = tokens[i];
+		const operator = tokens[i - 1];
+		const keyword = tokens[i - 2];
+		if (
+			token?.type === TT.REGEX &&
+			operator?.type === TT.OP &&
+			keyword?.type === TT.WORD &&
+			SCRYFALL_REGEX_KEYWORDS.has(String(keyword.value).toLowerCase())
+		) {
+			count++;
+			if (count > MAX_SCRYFALL_REGEX_OPERATORS) return true;
+		}
+	}
+	return false;
+}
+
+export const NESTED_DISPLAY_OPTIONS_DETAILS = "Display options may not be specified inside parentheses.";
+
+/**
+ * Scryfall rejects display directives inside groups before validating their values.
+ * Measured 2026-09-27 for every alias in DIRECTIVE_TABLES, including a negated sort
+ * and an unknown value. A dangling `sort:` and `sort=value` are not directives.
+ * Inspect tokens so parentheses and directive-looking text in literals remain opaque.
+ */
+export function hasNestedScryfallDisplayOption(query: string): boolean {
+	let tokens: Token[];
+	try {
+		tokens = tokenize(foldTypographicQuotes(query));
+	} catch (error) {
+		if (error instanceof LexError) return false;
+		throw error;
+	}
+	let depth = 0;
+	for (let i = 0; i < tokens.length; i++) {
+		const token = tokens[i];
+		if (token?.type === TT.LPAREN) depth++;
+		else if (token?.type === TT.RPAREN) depth--;
+		else if (depth > 0 && token?.type === TT.WORD && DIRECTIVE_TABLES.has(String(token.value).toLowerCase())) {
+			const operator = tokens[i + 1];
+			const value = tokens[i + 2];
+			// A field value that happens to read `sort` is not a directive keyword.
+			if (tokens[i - 1]?.type === TT.OP) continue;
+			if (
+				operator?.type === TT.OP &&
+				operator.value === ":" &&
+				(value?.type === TT.WORD || value?.type === TT.QUOTED || value?.type === TT.NUMBER)
+			)
+				return true;
+		}
+	}
+	return false;
+}
 
 /**
  * The four characters Scryfall folds before lexing now live in the PARSER, next to the lexer they

@@ -29,6 +29,7 @@ import { httpError, optionsResponse, securityHeaders } from "../../src/routes/ht
 import { setParserForTests } from "../../src/routes/parser-bridge";
 import type { RouteContext } from "../../src/routes/registry";
 import { toScryfallCard } from "../../src/routes/scryfall-compat/objects";
+import { prepareScryfallQueryParams } from "../../src/routes/scryfall-compat/query-input";
 import {
 	emptyPageResponse,
 	scryfallCsvResponse,
@@ -585,8 +586,9 @@ export async function testDispatch(ctx: RouteContext, url: string, method = "GET
 		return securityHeaders(httpError(405, "Method Not Allowed", `Allowed methods: ${allow}`, { Allow: allow }));
 	}
 
+	const searchParams = prepareScryfallQueryParams(resolved.key, parsed.searchParams);
 	const params: Record<string, string> = {};
-	for (const [k, v] of parsed.searchParams) {
+	for (const [k, v] of searchParams) {
 		if (!DISALLOWED_QUERY_ARGS.has(k)) {
 			params[k] = v;
 		}
@@ -595,7 +597,7 @@ export async function testDispatch(ctx: RouteContext, url: string, method = "GET
 	// Mirrors dispatch: the query byte budget is refused before any handler runs (upstream's
 	// SearchBudgetMiddleware). Both `q` and `query`, independently.
 	try {
-		checkSearchParamLengths(parsed.searchParams);
+		checkSearchParamLengths(searchParams);
 	} catch (err) {
 		if (!(err instanceof QueryBudgetExceeded)) throw err;
 		return securityHeaders(

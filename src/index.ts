@@ -31,6 +31,7 @@ import { adminUnauthorized, isAdminPath } from "./routes/admin";
 import { httpError, optionsResponse, securityHeaders } from "./routes/http";
 import { resolveProxyOrigin } from "./routes/proxy-origin";
 import { enforceRateLimit, isRateLimitedRoute, isTrustedRequest, RateLimiter } from "./routes/rate-limit";
+import { prepareScryfallQueryParams } from "./routes/scryfall-compat/query-input";
 import { scryfallHttpError } from "./routes/scryfall-compat/respond";
 import { NOT_FOUND_DETAILS } from "./routes/scryfall-compat/routes";
 
@@ -254,8 +255,9 @@ async function handle(request: Request, env: Env, ctx: ExecutionContext): Promis
 		return securityHeaders(httpError(405, "Method Not Allowed", `Allowed methods: ${allow}`, { Allow: allow }));
 	}
 
+	const searchParams = prepareScryfallQueryParams(resolved.key, url.searchParams);
 	const params: Record<string, string> = {};
-	for (const [k, v] of url.searchParams) {
+	for (const [k, v] of searchParams) {
 		if (!DISALLOWED_QUERY_ARGS.has(k)) params[k] = v;
 	}
 
@@ -272,7 +274,7 @@ async function handle(request: Request, env: Env, ctx: ExecutionContext): Promis
 	// into a cache key either. Every route that reads a query reads it under one of those two names,
 	// so this needs no per-route table — a request carrying neither is untouched.
 	try {
-		checkSearchParamLengths(url.searchParams);
+		checkSearchParamLengths(searchParams);
 	} catch (err) {
 		if (!(err instanceof QueryBudgetExceeded)) throw err;
 		// The message is a fixed constant that names no bound and echoes no input: a rejection is

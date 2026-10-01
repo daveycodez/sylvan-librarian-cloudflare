@@ -422,11 +422,53 @@ matches, it is newer than every Scryfall dump, and it answers queries
 confidently with the old semantics. This is the port's counterpart to the data
 migrations upstream ships beside such commits.
 
+## Known Scryfall regex-complexity gap
+
+Scryfall's pattern-complexity decisions are not fully reproduced by this port.
+On 2026-09-27, factoring the lifegain payoff from
+`([0-9x]+ life|that much life|life equal)` to
+`(([0-9x]+|that much) life|life equal)` inside the larger Soul Warden role
+query returned HTTP 200 with 76 cards from the mirror. Scryfall also returned
+HTTP 200, but only 52 cards, with a warning that the regex term was ignored:
+`Regular expression too complex.` This is a difference in term validation and
+result membership, not merely error wording. No speculative complexity rule
+has been added. The accepted production supplement avoids that factoring and
+was separately verified at 76 cards on both services; full parser parity is
+not claimed by those query-specific checks.
+
 ## Deviations from upstream
 
 Everything user-visible mirrors upstream byte-for-byte (the parser is gated on
 100% tree agreement with the Python parser across upstream's own test corpus).
 The complete list of intentional differences:
+
+- **Scryfall search and random queries use only the first 1,024 Unicode code
+  points of `q`.** Measured 2026-09-27: spaces count before trimming, and the
+  boundary counts neither UTF-16 units nor UTF-8 bytes. Truncation happens before
+  syntax, display-option and regex-count validation, and before the raw-input
+  byte guard. Native `/search` and other routes keep their existing limits.
+  This explains the formerly unresolved balanced 1,062-character fixture query:
+  its truncated prefix loses closing parentheses and returns HTTP 400
+  `bad_request`, `warnings: null`, and
+  `details: "Your search contains unclosed parentheses."`, matching Scryfall.
+  The actual 604-character production query remains valid with the same 382-card
+  pool on both APIs. The exact regression is stored in
+  `tests/fixtures/scryfall-truncated-query.json`.
+
+- **Display options must remain outside parentheses on the Scryfall surface.**
+  Nested `sort:`, `order:`, `unique:`, `direction:`, `dir:` and `prefer:` return
+  HTTP 400 `bad_request`, with `warnings: null` and
+  `details: "Display options may not be specified inside parentheses."`.
+  Quoted strings and regex contents remain literal, and native `/search` keeps
+  its existing behavior. Search spellings were measured on 2026-09-27.
+- **Scryfall search and random queries allow at most six regex operators.**
+  Measured against `api.scryfall.com` on 2026-09-27: seven return HTTP 400
+  `bad_request`, with `details: "Too many regular expression operators used"`.
+  The compatibility routes count supported regex-field operators before literal
+  lowering, duplicate removal and pattern validation. Ignored unknown fields do
+  not count. This is separate from the native `/search` engine safety budgets,
+  which remain unchanged. The eleven-operator lifegain/draw regression query is
+  pinned in `tests/fixtures/scryfall-regex-budget-query.json`.
 
 - **No SQL fallback.** Upstream quietly falls back to Postgres when the engine
   declines a query; the wasm engine is the only path here, so an engine
