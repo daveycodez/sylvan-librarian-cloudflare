@@ -172,3 +172,31 @@ export async function writeCardNames(
 	await kv.put(key, stored, { metadata: kvBytesMetadata(stored.byteLength) });
 	return { key, bytes: stored.byteLength, raw: raw.byteLength, count: cardNamesCount(raw) };
 }
+
+/**
+ * A typo floor no score can reach (a Jaccard similarity is at most 1): handed to the fuzzy plan, its
+ * typo stage scores nothing.
+ */
+const NO_TYPO_FLOOR = 2;
+
+/**
+ * x47: the partitions holding a card `folded` could resolve to as a NAME, from a wasm instance with a
+ * build's names index loaded — or null when it holds none (or a format-1 blob).
+ *
+ * The fuzzy plan's EXACT stage and nothing else (engine/wasm/src/names.rs `fuzzy_plan`, stage 1): asked
+ * with no words (containment never runs) and a floor nothing clears (the typo stage scores nothing),
+ * the plan's partitions are exactly the ones holding a card whose name keys `exact=`'s scan matches —
+ * the whole name, either half of a two-part name, the joined name — or a flavor key that IS the
+ * needle. An existing export asked a narrower question, so the engine blobs are untouched; the stage
+ * is pinned against every partition's own answers by the plan's differentials, and against the
+ * collection lookup's by tests/engine/routed-miss-real.test.ts.
+ */
+export function nameHoldersFromIndex(
+	index: {
+		names_fuzzy_plan(folded: string, wordsJson: string, floor: number, lead: number, weakBelow: number): string;
+	},
+	folded: string,
+): number[] | null {
+	const plan = JSON.parse(index.names_fuzzy_plan(folded, "[]", NO_TYPO_FLOOR, 0, 0)) as { partitions: number[] } | null;
+	return plan === null ? null : plan.partitions;
+}

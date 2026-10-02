@@ -1,5 +1,6 @@
 import type { PreferOrder } from "../routes/enums";
 import type { PlacementBlock } from "./placement-policy";
+import type { NameHint } from "./routing-filter";
 // Seam between the HTTP routes (src/routes/) and the wasm engine (src/engine/).
 // Routes depend only on this interface; tests may inject a fake.
 
@@ -371,6 +372,44 @@ export interface CollectionBatch {
 	 * on a build before it ignores the flag.
 	 */
 	presence?: boolean;
+	/**
+	 * x47: the names this store is the ROUTE of — positions into `names`, each with the routing
+	 * filter's hint that sent it here. For each one its reply does not settle (`nameReplySettles`:
+	 * a name it does not hold, a served answer another partition's extras may outrank) the store
+	 * answers which partitions DO hold the name, from the names index beside it
+	 * (`CollectionBatchAnswer.nameHolders`) — so the router's repair round asks those partitions
+	 * instead of every other one, and asks nobody for a name no card carries. A store on a build
+	 * before it ignores the field, and so does one with no names index.
+	 */
+	locate?: CollectionLocate[];
+}
+
+/** One routed name of a batch: its position in `names` and the hint that routed it — see `CollectionBatch.locate`. */
+export interface CollectionLocate {
+	at: number;
+	hint: NameHint;
+}
+
+/**
+ * x47: where the names a routed store could not settle live — see `CollectionBatch.locate`.
+ * `holders[i]` is, for name i of the batch, the partitions holding a card the name could resolve to
+ * (ascending; EMPTY for a name no card carries), or null where the store did not look (the name
+ * settled, or was not this store's to locate). A superset: it reads `exact=`'s keys, which a
+ * collection identifier's are among, with no set and no scope. `builtAt` is the build the index
+ * was made from — partition numbers mean nothing across builds, so the router reads it only when
+ * it is its own.
+ */
+export interface CollectionNameHolders {
+	builtAt: string;
+	holders: (number[] | null)[];
+}
+
+/** `CollectionNameHolders` as a store's RPC reply carries it: only the names it looked up, by
+ * position (`names`), and their partitions in the same order. */
+export interface CollectionLocated {
+	builtAt: string;
+	names: number[];
+	holders: number[][];
 }
 
 /** Per slot of a CollectionBatch, the card as Scryfall JSON bytes, or null for none. */
@@ -385,6 +424,8 @@ export interface CollectionBatchAnswer {
 	 * rule — when the batch asked for `presence` and the store understood; absent otherwise.
 	 */
 	namePresent?: boolean[];
+	/** x47: where the routed names this store did not settle live, when it was asked and could say. */
+	nameHolders?: CollectionNameHolders;
 }
 
 /**

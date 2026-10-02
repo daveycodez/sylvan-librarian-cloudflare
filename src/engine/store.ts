@@ -40,7 +40,7 @@ import {
 } from "../routes/scryfall-compat/objects";
 import { emptyPageResponse, scryfallCsvResponse, scryfallListJson } from "../routes/scryfall-compat/respond";
 import { decodeUtf8, NEWLINE } from "./bytes";
-import { cardNamesOf } from "./card-names";
+import { cardNamesOf, nameHoldersFromIndex } from "./card-names";
 import { collectionBatchRequest, decodeCollectionPacket } from "./collection-batch";
 import { assembleColumnar, columnKeys, decodeShapedPage } from "./columnar";
 import { decodeFuzzyCandidates } from "./fuzzy-wire";
@@ -1872,6 +1872,44 @@ export async function namesFuzzyPlan(
 		stage: partitions.length === 0 ? "miss" : plan.stage,
 		printed: printed.length > 0 ? "hit" : "miss",
 	};
+}
+
+/**
+ * x47: for each folded name, the partitions holding a card it could resolve to as a NAME — `exact=`'s
+ * keys (whole name, either half of a two-part name, the joined name) or a flavor key that is the
+ * needle — from the names index of the build this object has loaded (card-names.ts
+ * `nameHoldersFromIndex`). Ascending; EMPTY for a name no card carries.
+ *
+ * A collection `{name}` identifier reads a subset of those keys (card_engine `NameScope::Collection`)
+ * through the same `name_key_tier`, over the same stored names the index's records are written from,
+ * so a partition outside the list ranks the name nowhere — with or without a set or a scope, which
+ * only ever remove printings. Null when the index cannot say (no names blob for this build, a
+ * format-1 blob, a blob KV or wasm refused); the router then asks every partition, as before.
+ * Never throws.
+ */
+export async function namesExactHolders(
+	env: Env,
+	ctx: LoadContext,
+	foldeds: string[],
+): Promise<{ builtAt: string; holders: number[][] } | null> {
+	try {
+		return await withCardNames(env, ctx, (handle, manifest) => {
+			const holders: number[][] = [];
+			for (const folded of foldeds) {
+				const held = nameHoldersFromIndex(handle, folded);
+				if (held === null) return null;
+				holders.push(held);
+			}
+			return { builtAt: String(manifest.built_at ?? ""), holders };
+		});
+	} catch (err) {
+		if (!(err instanceof CardNamesUnavailableError)) {
+			console.warn(
+				`${tag(ctx)}names index unavailable for a collection batch (the router asks every partition): ${err}`,
+			);
+		}
+		return null;
+	}
 }
 
 /** How long an isolate's colo may serve a cached printed-names blob: immutable per build. */

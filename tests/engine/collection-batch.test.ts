@@ -3,7 +3,11 @@
 // objects-then-stringify path wrote, byte for byte.
 
 import { describe, expect, test } from "bun:test";
-import { collectionBatchRequest, decodeCollectionPacket } from "../../src/engine/collection-batch";
+import {
+	collectionBatchRequest,
+	collectionPacketRanks,
+	decodeCollectionPacket,
+} from "../../src/engine/collection-batch";
 import { RemoteEngine } from "../../src/engine/remote-engine";
 import type { CollectionBatch } from "../../src/engine/types";
 import { collectionList } from "../../src/routes/scryfall-compat/objects";
@@ -101,6 +105,36 @@ describe("RemoteEngine's batch has no per-kind fallback", () => {
 				message,
 			);
 		}
+	});
+});
+
+describe("RemoteEngine's batch carries where unsettled routed names live (x47)", () => {
+	const names = ["lightning bolt", "lightnig bolt", "chaos"].map((folded) => ({ folded, setCode: "" }));
+	const batch: CollectionBatch = { keys: [], trees: [], names };
+	const packet = packetOf([null, null, null], [null, null, null]);
+
+	test("the header alone reads the ranks and the presence", () => {
+		expect(collectionPacketRanks(packet)).toEqual({ ranks: [null, null, null] });
+		const widened = packetOf({ ranks: [null], present: [true] } as never, [null]);
+		expect(collectionPacketRanks(widened)).toEqual({ ranks: [null], present: [true] });
+	});
+
+	test("the holders are spread back over the batch's names, null where the store did not look", async () => {
+		const located = { builtAt: "1790419993", names: [1, 2], holders: [[], [1, 3]] };
+		const stub = { scryfallCollectionBatch: async () => ({ packet, located }) };
+		const got = await new RemoteEngine(stub as never, "wnam").scryfallCollectionBatch(batch, "https://x");
+		expect(got.nameHolders).toEqual({ builtAt: "1790419993", holders: [null, [], [1, 3]] });
+		expect(got.nameRanks).toEqual([null, null, null]);
+	});
+
+	test("a store on the build before it sends none; a position outside the batch is dropped", async () => {
+		const plain = { scryfallCollectionBatch: async () => ({ packet }) };
+		const bare = await new RemoteEngine(plain as never, "wnam").scryfallCollectionBatch(batch, "https://x");
+		expect("nameHolders" in bare).toBe(false);
+		const odd = { builtAt: "1", names: [7, -1, 1.5, 0], holders: [[1], [2], [3], [4]] };
+		const stub = { scryfallCollectionBatch: async () => ({ packet, located: odd }) };
+		const got = await new RemoteEngine(stub as never, "wnam").scryfallCollectionBatch(batch, "https://x");
+		expect(got.nameHolders).toEqual({ builtAt: "1", holders: [[4], null, null] });
 	});
 });
 

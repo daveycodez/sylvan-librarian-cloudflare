@@ -57,6 +57,7 @@ import {
 } from "../routes/scryfall-compat/respond";
 import { concatBytes, encodeUtf8 } from "./bytes";
 import { mayBeNameOnly } from "./card-names";
+import { collectionPacketRanks } from "./collection-batch";
 import { assembleColumnar, columnKeys, columnsGather } from "./columnar";
 import { parseEngineName, siblingStub } from "./engine-namespace";
 import {
@@ -74,6 +75,7 @@ import {
 	type SearchKeysReply,
 } from "./gather";
 import { gatherHealthOf, type SiblingCallTiming, SLOW_GATHER_LOG_MS, slowGatherLine, stallOf } from "./gather-health";
+import { nameReplySettles } from "./name-settle";
 import { probePlacement } from "./placement";
 import { ENGINE_SHED_ERROR, siblingCall } from "./remote-engine";
 import { foldWidthAnnouncement } from "./shard-controller";
@@ -85,6 +87,7 @@ import {
 	gatherOps,
 	getEngine,
 	type LoadContext,
+	namesExactHolders,
 	namesFuzzyPlan,
 	namesSearchPartitions,
 	prefetchStore,
@@ -99,6 +102,7 @@ import { readLiveManifest, recordLiveManifest } from "./store-cache";
 import { isPartitionedManifest, manifestServableBy, readManifest } from "./store-kv";
 import type {
 	CollectionBatch,
+	CollectionLocated,
 	CollectionScope,
 	Engine,
 	EngineSearchOptions,
@@ -837,16 +841,50 @@ export class SearchEngine extends DurableObject<Env> {
 		}));
 	}
 
-	/** A whole collection batch against this partition — see Engine.scryfallCollectionBatch. */
+	/**
+	 * A whole collection batch against this partition — see Engine.scryfallCollectionBatch.
+	 *
+	 * x47: `located`, beside the packet, when the batch names routed names (`batch.locate`) and this
+	 * store's reply does not settle some of them: for those, the partitions that hold the name, from
+	 * the names index beside this store (store.ts `namesExactHolders`). `names` are positions into the
+	 * batch's names, `holders` their partitions in the same order. A batch whose routed names all
+	 * settle — every deck list of real names — reads the packet's header and nothing else: the index
+	 * is not loaded for it. No index, no `located`; the router then asks every partition, as before.
+	 */
 	async scryfallCollectionBatch(
 		batch: CollectionBatch,
 		baseUrl: string,
 		scope: CollectionScope | null,
 		reportedShards?: number,
-	): Promise<{ packet: Uint8Array } & SearchTelemetry> {
-		return this.instrumented(reportedShards, async (engine) => ({
-			packet: collectionPacketOf(engine, batch, baseUrl, scope),
-		}));
+	): Promise<{ packet: Uint8Array; located?: CollectionLocated } & SearchTelemetry> {
+		return this.instrumented(reportedShards, async (engine) => {
+			const packet = collectionPacketOf(engine, batch, baseUrl, scope);
+			// The packet is the answer; where a name lives is a hint for the router's next round, and
+			// must never cost the batch its reply.
+			let located: CollectionLocated | null = null;
+			try {
+				located = await this.locateUnsettled(batch, packet);
+			} catch (err) {
+				console.warn(`[${this.label}] routed names not located (the router asks every partition): ${err}`);
+			}
+			return located === null ? { packet } : { packet, located };
+		});
+	}
+
+	private async locateUnsettled(batch: CollectionBatch, packet: Uint8Array): Promise<CollectionLocated | null> {
+		if (!batch.locate || batch.locate.length === 0) return null;
+		const { ranks, present } = collectionPacketRanks(packet);
+		const names = batch.locate
+			.filter(({ at, hint }) => !nameReplySettles(hint, ranks[at] ?? null, present?.[at] ?? false))
+			.map(({ at }) => at)
+			.filter((at) => batch.names[at] !== undefined);
+		if (names.length === 0) return null;
+		const found = await namesExactHolders(
+			this.env,
+			this.loadContext(),
+			names.map((at) => (batch.names[at] as { folded: string }).folded),
+		);
+		return found === null ? null : { builtAt: found.builtAt, names, holders: found.holders };
 	}
 
 	// ── The two-phase gather (plan B5, CARD-PARTITIONING §6) ──────────────────────

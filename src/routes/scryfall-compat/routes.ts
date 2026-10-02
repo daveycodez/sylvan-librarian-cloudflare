@@ -1225,13 +1225,25 @@ export async function cardsCollectionHandler(
 		// partition RPCs each one cost. `calls` is PartitionedEngine's count before RemoteEngine's
 		// transient retry and its hedge (together 12 sends per 8,374 batches on DeckGen, 09-25), and
 		// `rounds` how many sequential waits they took: 1 is the design, 2 a repair round (a routed
-		// name its partition did not settle, a routed key that missed). Grep "collection batch:".
-		const { partitionCalls: calls = -1, collectionRounds: rounds = -1 } = engine as {
+		// name its partition did not settle, a routed key that missed). x47's two, after `found`:
+		// `repair=` WHY a round followed the first — `name:K`, `key:K`, `pair:K`, `oracle:K`, `+`-joined,
+		// K identifiers of that kind asked again (`-` for one round) — and `located=` how many routed
+		// names their partition did not settle but the names index beside it located, so the repair
+		// asked their holders only: nobody, for a name no card carries (PartitionedEngine
+		// .collectionRepair, .collectionLocated). Grep "collection batch:".
+		const {
+			partitionCalls: calls = -1,
+			collectionRounds: rounds = -1,
+			collectionRepair: repair = null,
+			collectionLocated: located = null,
+		} = engine as {
 			partitionCalls?: number;
 			collectionRounds?: number;
+			collectionRepair?: string | null;
+			collectionLocated?: number | null;
 		};
 		console.log(
-			`collection batch: n=${identifiers.length} id=${kinds.id} key=${kinds.key} pair=${kinds.pair} name=${kinds.name} name+set=${kinds.nameSet} q=${scope ? 1 : 0} calls=${calls} rounds=${rounds} found=${found.length}`,
+			`collection batch: n=${identifiers.length} id=${kinds.id} key=${kinds.key} pair=${kinds.pair} name=${kinds.name} name+set=${kinds.nameSet} q=${scope ? 1 : 0} calls=${calls} rounds=${rounds} found=${found.length} repair=${repair ?? "-"} located=${located ?? "-"}`,
 		);
 		return scryfallCollectionJson(found, notFound, warnings, pretty, COLLECTION_CACHE);
 	} catch (err) {

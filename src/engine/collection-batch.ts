@@ -43,6 +43,16 @@ export function collectionBatchRequest(batch: CollectionBatch, scope: Collection
 	});
 }
 
+/** A packet's HEADER alone — every name's rank and, when the batch asked, its presence — without
+ * walking the cards: what a store reads to see which routed names it did not settle (x47). */
+export function collectionPacketRanks(packet: Uint8Array): { ranks: (NameRank | null)[]; present?: boolean[] } {
+	const view = new DataView(packet.buffer, packet.byteOffset, packet.byteLength);
+	const header = JSON.parse(decoder.decode(packet.subarray(4, 4 + view.getUint32(0, true)))) as
+		| (NameRank | null)[]
+		| { ranks: (NameRank | null)[]; present: boolean[] };
+	return Array.isArray(header) ? { ranks: header } : header;
+}
+
 /** A `collection_batch` packet, split into per-slot views in `batch`'s order. */
 export function decodeCollectionPacket(packet: Uint8Array, batch: CollectionBatch): CollectionBatchAnswer {
 	const view = new DataView(packet.buffer, packet.byteOffset, packet.byteLength);

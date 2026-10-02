@@ -210,6 +210,19 @@ function fakeRemote(partition: number, calls: string[], answers: Record<string, 
 			const byName = val<Record<string, NameRank | null> | null>("rankByName", null);
 			const present = val<string[]>("presentNames", []);
 			const nameRanks = batch.names.map((n, i) => (byName ? (byName[n.folded] ?? null) : (ranks[i] ?? null)));
+			const namePresent = batch.names.map((n, i) => nameRanks[i] !== null || present.includes(n.folded));
+			// x47: `holders` is the names index beside this object — folded name → the partitions holding
+			// it, a name it does not list held nowhere; absent, the object has no index (or is on the
+			// build before x47) and says nothing. As the DO does, it locates only the routed names its
+			// reply does not settle.
+			const holders = val<Record<string, number[]> | null>("holders", null);
+			const unsettled = (holders === null ? [] : (batch.locate ?? []))
+				.filter(
+					({ at, hint }) =>
+						!nameReplySettles(hint, nameRanks[at] ?? null, batch.presence ? namePresent[at] === true : false),
+				)
+				.map(({ at }) => at);
+			if (unsettled.length > 0) count(`located[${unsettled.map((at) => batch.names[at]?.folded).join(",")}]`);
 			return {
 				keys: batch.keys.map((k) => cardBytes(held[String(k.id)] ?? null)),
 				trees: batch.trees.map((t) => cardBytes(byTree ? (byTree[t] ?? null) : tree)),
@@ -217,8 +230,14 @@ function fakeRemote(partition: number, calls: string[], answers: Record<string, 
 					rank === null ? null : cardBytes(byName ? { p: partition, name: batch.names[i]?.folded } : card),
 				),
 				nameRanks,
-				...(batch.presence
-					? { namePresent: batch.names.map((n, i) => nameRanks[i] !== null || present.includes(n.folded)) }
+				...(batch.presence ? { namePresent } : {}),
+				...(unsettled.length > 0 && holders !== null
+					? {
+							nameHolders: {
+								builtAt: val<string>("holdersBuiltAt", "100"),
+								holders: batch.names.map((n, at) => (unsettled.includes(at) ? (holders[n.folded] ?? []) : null)),
+							},
+						}
 					: {}),
 			};
 		},
@@ -229,11 +248,12 @@ function build(
 	perPartition: Record<number, Record<string, unknown>> = {},
 	reread?: () => Promise<StoreManifest | null>,
 	routing?: RoutingFilter | null,
+	manifest: StoreManifest = manifestOf(N),
 ) {
 	const calls: string[] = [];
 	const engine = new PartitionedEngine(
 		(p) => fakeRemote(p, calls, perPartition[p] ?? {}),
-		manifestOf(N),
+		manifest,
 		reread ?? (async () => manifestOf(N)),
 		routing ?? null,
 	);
@@ -2048,6 +2068,212 @@ describe("exact names route through the filter (backlog n6)", () => {
 			);
 			expect(plain.calls.sort()).toEqual(["scryfallCollectionBatch[|t0|n1]:0", "scryfallCollectionBatch[|t0|n1]:2"]);
 			expect(plain.engine.collectionRounds).toBe(1);
+		});
+
+		// ── x47: the route says where a name it did not settle lives ───────────────────────────────
+		//
+		// The filter reads a hint for most names no card carries, so one misspelt name in a deck list
+		// went to the partition named by accident and then, in a second round, to every other one:
+		// 299 of DeckGen's 14,526 batches on 2026-09-30 (`n=60 ... calls=21 rounds=2 found=59`).
+
+		/** A build that publishes a names index: the router then tells each partition its routes. */
+		const indexed = () => ({ ...manifestOf(N), names_key: "store:card-names-v1-100.store:0", names_bytes: 10 });
+		const batches = (calls: string[]) => calls.filter((c) => c.startsWith("scryfallCollectionBatch"));
+		/** Every partition's fake with the same names index beside it. */
+		const withIndex = (perPartition: Record<number, Record<string, unknown>>, holders: Record<string, number[]>) =>
+			Object.fromEntries(Array.from({ length: N }, (_, p) => [p, { ...(perPartition[p] ?? {}), holders }]));
+
+		test("x47: a name no card carries ends in round one, behind whatever hint the filter read", async () => {
+			for (const hint of [{ sole: 1 }, { served: 1, rival: 0 }, { served: 1, rival: 3 }]) {
+				const keys =
+					"sole" in hint
+						? [{ key: "ns:lightnigbolt", partition: 1 }]
+						: [
+								{ key: "ns:lightnigbolt", partition: 1 },
+								{ key: `${hint.rival === 0 ? "na" : "nw"}:lightnigbolt`, partition: 2 },
+							];
+				const garbage = tiered(keys);
+				expect(garbage.lookupName("nm:lightnigbolt")).toEqual(hint);
+				const batch = { keys: [], trees: [], names: names("lightnig bolt") };
+				const { engine, calls } = build(withIndex({}, {}), undefined, garbage, indexed());
+				const got = await engine.scryfallCollectionBatch(batch, "https://x");
+				expect(names0(got)).toEqual([null]);
+				expect(got.nameRanks).toEqual([null]);
+				expect(batches(calls)).toEqual(["scryfallCollectionBatch[|t0|n1]:1"]);
+				expect(engine.collectionRounds).toBe(1);
+				expect(engine.collectionRepair).toBeNull();
+				expect(engine.collectionLocated).toBe(1);
+
+				// The build before x47 (its objects say nothing): the same answer, in two rounds of N calls.
+				const before = build({}, undefined, garbage, indexed());
+				const old = await before.engine.scryfallCollectionBatch(batch, "https://x");
+				expect(names0(old)).toEqual(names0(got));
+				expect(old.nameRanks).toEqual(got.nameRanks);
+				expect(before.calls.length).toBe(N);
+				expect(before.engine.collectionRounds).toBe(2);
+				expect(before.engine.collectionRepair).toBe("name:1");
+				expect(before.engine.collectionLocated).toBe(0);
+			}
+		});
+
+		test("x47: production's shape — a deck list with misspelt names is one round, and the fan-out's answer", async () => {
+			// 60 names over the four partitions; six of them misspelt, each behind a hint to some
+			// partition. Before: every partition in round 1, every partition again in round 2.
+			const deck = Array.from({ length: 60 }, (_, i) => (i % 10 === 3 ? `typo ${i}` : `card ${i}`));
+			const owner = (i: number) => (i * 7) % N;
+			const routing = named(deck.map((name, i) => ({ key: `ns:${name.replace(" ", "")}`, partition: owner(i) })));
+			const perPartition: Record<number, { rankByName: Record<string, NameRank> }> = {};
+			for (let p = 0; p < N; p++) perPartition[p] = { rankByName: {} };
+			const holders: Record<string, number[]> = {};
+			for (const [i, name] of deck.entries()) {
+				if (name.startsWith("typo")) continue;
+				(perPartition[owner(i)] as { rankByName: Record<string, NameRank> }).rankByName[name] = [3, "", 1, 0];
+				holders[name] = [owner(i)];
+			}
+			const batch = { keys: [], trees: [], names: names(...deck) };
+			const now = build(withIndex(perPartition, holders), undefined, routing, indexed());
+			const got = await now.engine.scryfallCollectionBatch(batch, "https://x");
+			expect(batches(now.calls).length).toBe(N);
+			expect(now.engine.collectionRounds).toBe(1);
+			expect(now.engine.collectionLocated).toBe(6);
+			expect(names0(got).filter((c) => c === null).length).toBe(6);
+
+			const before = build(perPartition, undefined, routing, indexed());
+			const old = await before.engine.scryfallCollectionBatch(batch, "https://x");
+			expect(before.calls.length).toBe(2 * N);
+			expect(before.engine.collectionRounds).toBe(2);
+			expect(before.engine.collectionRepair).toBe("name:6");
+			const fanOut = build(perPartition, undefined, null);
+			const everywhere = await fanOut.engine.scryfallCollectionBatch(batch, "https://x");
+			for (const answer of [old, everywhere]) {
+				expect(names0(got)).toEqual(names0(answer));
+				expect(got.nameRanks).toEqual(answer.nameRanks);
+			}
+		});
+
+		test("x47: a hint that named the wrong partition asks the one that holds the name, not all of them", async () => {
+			const garbage = named([{ key: "ns:lightningbolt", partition: 1 }]);
+			const stores = { 3: { rankByName: { "lightning bolt": [3, "", 1, 0] } } };
+			const { engine, calls } = build(withIndex(stores, { "lightning bolt": [3] }), undefined, garbage, indexed());
+			const got = await engine.scryfallCollectionBatch(
+				{ keys: [], trees: [], names: names("lightning bolt") },
+				"https://x",
+			);
+			expect(names0(got)).toEqual([{ p: 3, name: "lightning bolt" }]);
+			expect(batches(calls)).toEqual(["scryfallCollectionBatch[|t0|n1]:1", "scryfallCollectionBatch[|t0|n1]:3"]);
+			expect(engine.collectionRounds).toBe(2);
+			expect(engine.collectionRepair).toBe("name:1");
+			expect(engine.collectionLocated).toBe(1);
+		});
+
+		test("x47: a served answer another partition's extras outrank asks only the holders — the same card", async () => {
+			const stores = {
+				1: { rankByName: { chaos: [3, "", 0, 0] } },
+				2: { rankByName: { "delver of secrets": [2, "", 1, 0] } },
+				3: { rankByName: { chaos: [2, "", 1, 9] } },
+			};
+			const batch = { keys: [], trees: [], names: names("chaos", "delver of secrets") };
+			const { engine, calls } = build(withIndex(stores, { chaos: [1, 3] }), undefined, CHAOS, indexed());
+			const got = await engine.scryfallCollectionBatch(batch, "https://x");
+			expect(names0(got)).toEqual([
+				{ p: 1, name: "chaos" },
+				{ p: 2, name: "delver of secrets" },
+			]);
+			// Round 1: each name's route (3 and 2). The repair: `chaos` of partition 1 alone — where it
+			// was 0, 1 and 2 (the test above).
+			expect(batches(calls).sort()).toEqual([
+				"scryfallCollectionBatch[|t0|n1]:1",
+				"scryfallCollectionBatch[|t0|n1]:2",
+				"scryfallCollectionBatch[|t0|n1]:3",
+			]);
+			// Only the unsettled name was located: `delver of secrets` settled on its route.
+			expect(calls.filter((c) => c.startsWith("located"))).toEqual(["located[chaos]:3"]);
+			const before = build(stores, undefined, CHAOS, indexed());
+			const old = await before.engine.scryfallCollectionBatch(batch, "https://x");
+			expect(names0(old)).toEqual(names0(got));
+			expect(old.nameRanks).toEqual(got.nameRanks);
+		});
+
+		test("x47: holders from another build, or naming a partition this build has not, are not used", async () => {
+			const garbage = named([{ key: "ns:lightningbolt", partition: 1 }]);
+			const stores = { 3: { rankByName: { "lightning bolt": [3, "", 1, 0] } } };
+			for (const lie of [
+				{ holders: {}, holdersBuiltAt: "99" },
+				{ holders: { "lightning bolt": [N] } },
+				{ holders: { "lightning bolt": [1.5] } },
+			]) {
+				const perPartition = Object.fromEntries(
+					Array.from({ length: N }, (_, p) => [p, { ...((stores as Record<number, object>)[p] ?? {}), ...lie }]),
+				);
+				const { engine, calls } = build(perPartition, undefined, garbage, indexed());
+				const got = await engine.scryfallCollectionBatch(
+					{ keys: [], trees: [], names: names("lightning bolt") },
+					"https://x",
+				);
+				// Every other partition is asked, as before, and the card is found.
+				expect(names0(got)).toEqual([{ p: 3, name: "lightning bolt" }]);
+				expect(batches(calls).length).toBe(N);
+				expect(engine.collectionLocated).toBe(0);
+			}
+		});
+
+		test("x47: only a route is asked to locate — not an unrouted name's partitions, a riding name's, or a build with no index", async () => {
+			const holders = {};
+			// An unrouted name (served in two partitions) beside a routed miss: every partition is called
+			// for `mystery`, and only partition 2 — `lightnig bolt`'s route — locates anything.
+			const routing = named([
+				{ key: "ns:lightnigbolt", partition: 2 },
+				{ key: "ns:mystery", partition: 1 },
+				{ key: "ns:mystery", partition: 3 },
+			]);
+			const mixed = build(withIndex({}, holders), undefined, routing, indexed());
+			await mixed.engine.scryfallCollectionBatch(
+				{ keys: [], trees: [], names: names("lightnig bolt", "mystery") },
+				"https://x",
+			);
+			expect(mixed.calls.filter((c) => c.startsWith("located"))).toEqual(["located[lightnig bolt]:2"]);
+			expect(mixed.engine.collectionRounds).toBe(1);
+			expect(batches(mixed.calls).length).toBe(N);
+
+			// A riding name (served-routed, under a scope filter) is asked of every partition round 1
+			// calls. When that is all of them there is nothing left to locate it in...
+			const ridingRouting = named([
+				{ key: "ns:brainstorm", partition: 2 },
+				{ key: "nm:brainstorm", partition: 0 },
+				{ key: "ns:mystery", partition: 1 },
+				{ key: "ns:mystery", partition: 3 },
+			]);
+			const wide = build(withIndex({}, holders), undefined, ridingRouting, indexed());
+			await wide.engine.scryfallCollectionBatch(
+				{ keys: [], trees: [], names: names("brainstorm", "mystery") },
+				"https://x",
+				SCOPE,
+			);
+			expect(wide.calls.filter((c) => c.startsWith("located"))).toEqual([]);
+			expect(wide.engine.collectionRounds).toBe(1);
+			// ...and when round 1 is its route alone, the route says who else holds it: the scope
+			// rejects the served card in 2, and only partition 0 — the extra's — is asked after it.
+			const alone = build(
+				withIndex({ 0: { rankByName: { brainstorm: [3, "", 0, 0] } } }, { brainstorm: [0, 2] }),
+				undefined,
+				SERVED,
+				indexed(),
+			);
+			const got = await alone.engine.scryfallCollectionBatch(
+				{ keys: [], trees: [], names: names("brainstorm") },
+				"https://x",
+				SCOPE,
+			);
+			expect(names0(got)).toEqual([{ p: 0, name: "brainstorm" }]);
+			expect(batches(alone.calls)).toEqual(["scryfallCollectionBatch[|t0|n1]:2", "scryfallCollectionBatch[|t0|n1]:0"]);
+
+			// No names index in the manifest: no partition is asked to locate, and the repair is the fan-out.
+			const garbage = named([{ key: "ns:lightnigbolt", partition: 2 }]);
+			const bare = build(withIndex({}, holders), undefined, garbage);
+			await bare.engine.scryfallCollectionBatch({ keys: [], trees: [], names: names("lightnig bolt") }, "https://x");
+			expect(bare.calls.filter((c) => c.startsWith("located"))).toEqual([]);
+			expect(batches(bare.calls).length).toBe(N);
+			expect(bare.engine.collectionRounds).toBe(2);
 		});
 	});
 

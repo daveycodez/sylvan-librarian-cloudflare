@@ -12,6 +12,7 @@ import {
 import type {
 	CollectionBatch,
 	CollectionBatchAnswer,
+	CollectionLocated,
 	CollectionScope,
 	Engine,
 	EngineSearchOptions,
@@ -166,7 +167,7 @@ interface SearchEngineStub {
 		baseUrl: string,
 		scope: CollectionScope | null,
 		reportedShards?: number,
-	): Promise<{ packet: Uint8Array } & Telemetry>;
+	): Promise<{ packet: Uint8Array; located?: CollectionLocated } & Telemetry>;
 	scryfallNamesContaining(
 		words: string[],
 		setCode: string,
@@ -1321,9 +1322,19 @@ export class RemoteEngine implements Engine {
 		baseUrl: string,
 		scope?: CollectionScope | null,
 	): Promise<CollectionBatchAnswer> {
-		const { packet } = await this.searchRpc("scryfallCollectionBatch", (stub, shards) =>
+		const { packet, located } = await this.searchRpc("scryfallCollectionBatch", (stub, shards) =>
 			stub.scryfallCollectionBatch(batch, baseUrl, scope ?? null, shards),
 		);
-		return decodeCollectionPacket(packet, batch);
+		const answer = decodeCollectionPacket(packet, batch);
+		// x47: where the routed names the store did not settle live, spread back over the batch's
+		// names (null where it did not look). Absent from a store on the build before it.
+		if (located !== undefined) {
+			const holders = new Array<number[] | null>(batch.names.length).fill(null);
+			for (const [j, at] of located.names.entries()) {
+				if (Number.isInteger(at) && at >= 0 && at < holders.length) holders[at] = located.holders[j] ?? null;
+			}
+			answer.nameHolders = { builtAt: located.builtAt, holders };
+		}
+		return answer;
 	}
 }

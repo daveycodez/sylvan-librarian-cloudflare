@@ -1109,13 +1109,13 @@ describe("POST /cards/collection", () => {
 		);
 		expect(lines.length).toBe(1);
 		expect(lines[0]).toMatch(
-			/^collection batch: n=2 id=0 key=0 pair=0 name=2 name\+set=0 q=1 calls=10 rounds=1 found=\d+$/,
+			/^collection batch: n=2 id=0 key=0 pair=0 name=2 name\+set=0 q=1 calls=10 rounds=1 found=\d+ repair=- located=-$/,
 		);
 		// An engine that counts nothing says so rather than claiming zero.
 		const unmetered = await loggedLines("collection batch: ", () =>
 			testDispatch(postCtx({ identifiers: [{ name: "Llanowar Elves" }] }), "/cards/collection", "POST"),
 		);
-		expect(unmetered[0]).toMatch(/ q=0 calls=-1 rounds=-1 found=\d+$/);
+		expect(unmetered[0]).toMatch(/ q=0 calls=-1 rounds=-1 found=\d+ repair=- located=-$/);
 	});
 
 	test("resolves identifiers and reports the ones that matched nothing", async () => {

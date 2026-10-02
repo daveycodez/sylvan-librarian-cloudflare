@@ -78,6 +78,10 @@ let fuzzyPlanAnswer: { partitions: number[]; everywhere: boolean; stage: string;
 let namesIndexAnswer: number[] | null = null;
 /** n15: the builds namesSearchPartitions was asked for. */
 const namesIndexAsked: string[] = [];
+/** x47: the packet the fake store answers a collection batch with, and the names index's holders. */
+let collectionPacket = new Uint8Array();
+let holdersAnswer: Record<string, number[]> | null = null;
+const holdersAsked: string[][] = [];
 
 // The real store is wasm-backed; the rendezvous does not touch it.
 mock.module("../../src/engine/store", () => ({
@@ -92,7 +96,12 @@ mock.module("../../src/engine/store", () => ({
 		if (fuzzyPlanAnswer === null) throw new Error("no names index");
 		return fuzzyPlanAnswer;
 	},
-	collectionPacketOf: () => new Uint8Array(),
+	collectionPacketOf: () => collectionPacket,
+	// x47: who holds each name, by the names index; the suite sets what it answers.
+	namesExactHolders: async (_env: unknown, _ctx: unknown, foldeds: string[]) => {
+		holdersAsked.push(foldeds);
+		return holdersAnswer === null ? null : { builtAt: "1", holders: foldeds.map((f) => holdersAnswer?.[f] ?? []) };
+	},
 	getEngine: async () => {
 		const g = gatherStore;
 		if (g && !g.loaded) {
@@ -1258,5 +1267,106 @@ describe("the routed partition answers its bundle and, unranked, the plan in one
 		} finally {
 			warn.mockRestore();
 		}
+	});
+});
+
+describe("a collection batch's route says where the names it did not settle live (x47)", () => {
+	type BatchDo = {
+		scryfallCollectionBatch(
+			batch: unknown,
+			baseUrl: string,
+			scope: null,
+			reportedShards?: number,
+		): Promise<{ packet: Uint8Array; located?: { builtAt: string; names: number[]; holders: number[][] } }>;
+	};
+	const batchDo = () => makeDo() as unknown as BatchDo;
+	/** A packet as engine/wasm's `collection_batch` writes it: the header, then one empty slot per name. */
+	const packetOf = (header: unknown, slots: number) => {
+		const json = new TextEncoder().encode(JSON.stringify(header));
+		const out = new Uint8Array(4 + json.length + 4 * slots);
+		new DataView(out.buffer).setUint32(0, json.length, true);
+		out.set(json, 4);
+		return out;
+	};
+	const names = (...folded: string[]) => folded.map((f) => ({ folded: f, setCode: "" }));
+
+	afterEach(() => {
+		collectionPacket = new Uint8Array();
+		holdersAnswer = null;
+		holdersAsked.length = 0;
+	});
+
+	test("an unsettled routed name comes back with its holders — none, for a name no card carries", async () => {
+		// Three names; this store is the route of the first two. It ranks `lightning bolt` (settled)
+		// and not `lightnig bolt`, which the filter never held: the index says nobody holds it.
+		collectionPacket = packetOf(
+			{ ranks: [[3, "lightningbolt", 1, "", 0.9], null, null], present: [true, false, false] },
+			3,
+		);
+		holdersAnswer = {};
+		const batch = {
+			keys: [],
+			trees: [],
+			names: names("lightning bolt", "lightnig bolt", "opt"),
+			presence: true,
+			locate: [
+				{ at: 0, hint: { sole: 4 } },
+				{ at: 1, hint: { sole: 4 } },
+			],
+		};
+		const reply = await batchDo().scryfallCollectionBatch(batch, "https://x", null, 1);
+		expect(reply.packet).toBe(collectionPacket);
+		expect(reply.located).toEqual({ builtAt: "1", names: [1], holders: [[]] });
+		// Only the unsettled name was looked up: not the settled one, not the one routed elsewhere.
+		expect(holdersAsked).toEqual([["lightnig bolt"]]);
+	});
+
+	test("a served answer another partition's extras may outrank is located too", async () => {
+		// `chaos`: this store answers a served FACE (tier 2) and the hint says another holds it whole.
+		collectionPacket = packetOf([[2, "orderchaos", 1, "", 0.5]], 1);
+		holdersAnswer = { chaos: [1, 3] };
+		const batch = {
+			keys: [],
+			trees: [],
+			names: names("chaos"),
+			locate: [{ at: 0, hint: { served: 3, rival: 3, needle: "chaos" } }],
+		};
+		const reply = await batchDo().scryfallCollectionBatch(batch, "https://x", null, 1);
+		expect(reply.located).toEqual({ builtAt: "1", names: [0], holders: [[1, 3]] });
+	});
+
+	test("a batch whose routed names all settle never reads the index — the hit path", async () => {
+		collectionPacket = packetOf({ ranks: [[3, "lightningbolt", 1, "", 0.9], null], present: [true, true] }, 2);
+		holdersAnswer = {};
+		const batch = {
+			keys: [],
+			trees: [],
+			// The second is a sole route's miss that presence settles (the name is here, not in the set).
+			names: [...names("lightning bolt"), { folded: "opt", setCode: "lea" }],
+			presence: true,
+			locate: [
+				{ at: 0, hint: { sole: 4 } },
+				{ at: 1, hint: { sole: 4 } },
+			],
+		};
+		const reply = await batchDo().scryfallCollectionBatch(batch, "https://x", null, 1);
+		expect(reply.located).toBeUndefined();
+		expect(holdersAsked).toEqual([]);
+	});
+
+	test("no locate, or no names index: the packet alone, as before", async () => {
+		collectionPacket = packetOf([null], 1);
+		holdersAnswer = {};
+		const plain = await batchDo().scryfallCollectionBatch(
+			{ keys: [], trees: [], names: names("nope") },
+			"https://x",
+			null,
+			1,
+		);
+		expect(plain.located).toBeUndefined();
+		expect(holdersAsked).toEqual([]);
+		holdersAnswer = null;
+		const batch = { keys: [], trees: [], names: names("nope"), locate: [{ at: 0, hint: { sole: 4 } }] };
+		expect((await batchDo().scryfallCollectionBatch(batch, "https://x", null, 1)).located).toBeUndefined();
 	});
 });

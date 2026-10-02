@@ -109,6 +109,7 @@ import { cardNamesOf } from "./card-names";
 import { type CardRestriction, cardRestrictionOf } from "./card-restriction";
 import { emptyCollectionAnswer } from "./collection-batch";
 import { edgeCacheUrl, readThroughEdgeCache } from "./edge-cache";
+import { nameReplySettles } from "./name-settle";
 import { NAMED_CONTAINMENT_LIMIT, resolveNamedFuzzyStaged, weakWinnerOrContained } from "./named-fuzzy";
 import { gatherPartitionOf, partitionOfOracleId } from "./partition";
 import { pinnedExactName, pinnedOracleId } from "./pinned-oracle";
@@ -332,62 +333,10 @@ function soleHint(hint: NameHint | null): number | null {
 	return hint !== null && "sole" in hint ? hint.sole : null;
 }
 
-/**
- * Whether the ONE reply a routed name got — from the partition its hint names — is the whole
- * store's answer, so no other partition need be asked (backlog n6).
- *
- * The filter's word is exact only for a key it was built with; for any other it is an arbitrary
- * byte. So the reply has to PROVE the key was real before the word is trusted:
- *
- *   sole p     p answered (it holds the name, so it emitted the key, so the value is exact and no
- *              other partition holds it) — or it missed, but holds the name without the set or
- *              scope (`present`): the same proof, and every other partition misses too.
- *   served s   s answered (it holds the name, so the value is exact: s is its one served holder,
- *   rival t    and every other partition holds it only as an extra — on tier t at most, 0 when
- *              only as an art series, which ranks below everything), and s's `[tier, name, served,
- *              …]` beats every one of theirs whatever their names and scores: a HIGHER tier than
- *              t, or the whole-name tier served under the NEEDLE'S OWN NAME (no whole-name rival
- *              sorts before it: a double-faced token's face that would is spelled served by the
- *              builders, so the filter holds no single served partition for it; see
- *              `name_routing_keys_of` in engine/builder/src/transform.rs). `delver of secrets` (a
- *              face of the served card, its art-series faces elsewhere, t = 0) settles; `chaos`
- *              (Order // Chaos's face, t = 3 from the fj25 front card Chaos) and `day` (Night //
- *              Day's face, t = 3 from the Day // Night token) do not, and the merge answers the
- *              extra — `night`, whose token name comes first, has no served route at all. A served
- *              double-faced token answering under its own joined name (Undercity // The Initiative
- *              for `undercity`) does not settle either: an extra named the needle would sort
- *              before it.
- *   served s   a filter built before the builders spelled tiers (no `rival`): s answered SERVED —
- *              the rule before x26, when served led the rank. Until the next build publishes a
- *              tiered filter it answers exactly as it did, a whole-name extra in another
- *              partition included (`chaos`); a reply it does not settle is merged tier-first.
- *
- * Anything else — a miss from a served route, a reply another partition's extras can beat, an
- * absent name under a garbage hint — settles nothing, and the caller asks the rest and merges
- * every reply.
- */
-export function nameReplySettles(hint: NameHint, rank: NameRank | null, present: boolean): boolean {
-	if ("sole" in hint) return rank !== null || present;
-	if (rank === null) return false;
-	const tier = Number(rank[0] ?? 0);
-	const served = Number(rank[2] ?? 0);
-	if (hint.rival === undefined) return served === 1;
-	if (tier > hint.rival) return true;
-	// On the whole-name tier every rival is named the needle or sorts after it, so the served card
-	// named the needle beats them all — and only that card: `needle` is absent only from a caller
-	// that routes no key, which settles nothing here.
-	return (
-		tier === hint.rival &&
-		tier === NAME_TIER_WHOLE &&
-		served === 1 &&
-		hint.needle !== undefined &&
-		rank[1] === hint.needle
-	);
-}
-
-/** The engine's whole-name tier (core_api's `TIER_WHOLE_NAME`): on it a candidate's name is the
- * needle, or a double-faced token's own name, so of two replies named the needle the served one wins. */
-const NAME_TIER_WHOLE = 3;
+// `nameReplySettles` — whether a routed name's one reply is the whole store's answer — lives in
+// name-settle.ts: the partition object reads it too (x47), to see which routed names of a collection
+// batch it has not settled.
+export { nameReplySettles };
 
 // ── The routing filter (src/engine/routing-filter.ts) ─────────────────────────
 //
@@ -1435,6 +1384,23 @@ export class PartitionedEngine implements Engine {
 	collectionRounds = 0;
 
 	/**
+	 * x47: why this request's collection batch took a round after the first, `+`-joined, or null
+	 * when it took one. Logged as `repair=`:
+	 *   oracle:K  K oracle ids missed their owner and the manifest's partition count had moved
+	 *   key:K     K routed ids (Scryfall, illustration, external) missed the partition their hint named
+	 *   pair:K    K `{set, collector_number}` trees whose address missed the partition its hint named
+	 *   name:K    K routed names their partition's reply did not settle, asked of the partitions
+	 *             that may hold them — the index's holders when it located them, else every other
+	 */
+	collectionRepair: string | null = null;
+
+	/**
+	 * x47: how many routed names of this request's batch their route did not settle AND the names
+	 * index located — each one a second round's fan-out saved or narrowed. Logged as `located=`.
+	 */
+	collectionLocated = 0;
+
+	/**
 	 * A whole collection batch in ONE round of at most N calls — see Engine.scryfallCollectionBatch.
 	 * The per-kind methods it replaced (b9bc501) spent up to 2N on the names (rank, then materialize
 	 * the winners), N on the `{set, collector_number}` trees and up to N on the keys, each its own
@@ -1473,6 +1439,20 @@ export class PartitionedEngine implements Engine {
 	 * hit — asks only the partitions round 1 did not ask it of. A hint from another build, or a
 	 * lookup of something the filter never held, costs that second round; it can never cost a
 	 * wrong answer.
+	 *
+	 * x47: A NAME THAT IS NOWHERE ENDS IN ROUND ONE. "A lookup of something the filter never held" is
+	 * not rare for a NAME: the filter reads a hint for ~78% of the names no card carries (see
+	 * `RoutingFilter.lookupName`), so a deck list with one misspelt name sent it to the partition the
+	 * hint named by accident, got nothing, and asked every other partition for it in a second round
+	 * — 299 of DeckGen's 14,526 batches on 2026-09-30, ~21 calls each where 11 answer the rest. Each
+	 * round-1 call now carries the names that partition is the ROUTE of (`CollectionBatch.locate`),
+	 * and for those its reply does not settle the partition answers who holds them, from the names
+	 * index beside its store (`nameHolders`). The repair round asks only those holders: nobody, for a
+	 * name no card carries, and the one or two partitions holding it for a served answer another
+	 * partition's extras may outrank (`chaos`) or a hint that named the wrong partition. A partition
+	 * outside the index's list ranks the name nowhere (store.ts `namesExactHolders`), so the merge
+	 * reads the same replies it would have read from every partition. No index, another build's, an
+	 * object on the build before x47: no list, and every other partition is asked, as before.
 	 */
 	async scryfallCollectionBatch(
 		batch: CollectionBatch,
@@ -1504,6 +1484,13 @@ export class PartitionedEngine implements Engine {
 		// Which partitions each name has been asked of, whichever round — a name is never asked of
 		// one twice, and one asked of all N is settled by construction.
 		const nameAsked = batch.names.map(() => new Set<number>());
+		// x47: per name, the partitions the names index says hold it — from its route's reply, when
+		// the route did not settle it and could say. Undefined: unknown, any partition may.
+		const nameHolders: (number[] | undefined)[] = batch.names.map(() => undefined);
+		const locatable = cardNamesOf(this.manifest) !== null;
+		const builtAt = String(this.manifest.built_at ?? "");
+		this.collectionRepair = null;
+		this.collectionLocated = 0;
 		// A SERVED-routed name rides every round-1 call when its route can MISS: under a scope FILTER
 		// or a set, the served partition may hold no printing that passes, and its miss proves nothing
 		// about the extras-only cards of the name the other partitions hold (`nameReplySettles`) — so
@@ -1519,7 +1506,8 @@ export class PartitionedEngine implements Engine {
 			return hint !== null && !("sole" in hint) && nameCanMiss(i);
 		});
 		type Ask = { p: number; keyAt: number[]; treeAt: number[]; nameAt: number[] };
-		const ask = (asks: Ask[]) => {
+		// `routes`: round 1, where a partition is told which of its names it is the route of (x47).
+		const ask = (asks: Ask[], routes = false) => {
 			if (asks.length > 0) this.collectionRounds++;
 			return Promise.all(
 				asks.map(async ({ p, keyAt, treeAt, nameAt }) => {
@@ -1530,6 +1518,16 @@ export class PartitionedEngine implements Engine {
 					};
 					// Presence settles a routed name's MISS (`nameReplySettles`); only a sole route reads it.
 					if (nameAt.some((i) => soleHint(nameHints[i] ?? null) === p)) sub.presence = true;
+					if (routes && locatable) {
+						// A riding name is asked of every partition round 1 calls: when that is all of them
+						// it is settled by construction, and there is nothing to locate.
+						const locate = nameAt.flatMap((i, at) => {
+							const hint = nameHints[i] ?? null;
+							const everyone = riding[i] && asks.length >= this.n;
+							return hint !== null && hintPartition(hint) === p && !everyone ? [{ at, hint }] : [];
+						});
+						if (locate.length > 0) sub.locate = locate;
+					}
 					for (const i of nameAt) nameAsked[i]?.add(p);
 					return { p, keyAt, treeAt, nameAt, answer: await this.at(p).scryfallCollectionBatch(sub, baseUrl, scope) };
 				}),
@@ -1546,6 +1544,9 @@ export class PartitionedEngine implements Engine {
 						card: answer.names[j] ?? null,
 						present: answer.namePresent?.[j] ?? false,
 					});
+					// The index's word — from this build's index only, and naming this build's partitions.
+					const holders = answer.nameHolders?.builtAt === builtAt ? answer.nameHolders.holders[j] : null;
+					if (holders?.every((q) => Number.isInteger(q) && q >= 0 && q < this.n)) nameHolders[i] = holders;
 				}
 			}
 		};
@@ -1580,9 +1581,12 @@ export class PartitionedEngine implements Engine {
 				Array.from({ length: this.n }, (_, p) => p)
 					.filter(askedIn1)
 					.map((p) => ({ p, keyAt: allKeys, treeAt: allTrees, nameAt: namesFor(p) })),
+				true,
 			),
 		);
 
+		// Why a round followed the first, for the route's log line (`repair=`).
+		const repair: string[] = [];
 		// An oracle id that missed its owner is not in the store at this N; if N has moved, it may
 		// be in its NEW owner, which round 1 did not ask when that owner is past the old count.
 		const oracleMissed = batch.keys.flatMap((key, i) => (key.kind === "oracle_id" && out.keys[i] === null ? [i] : []));
@@ -1597,6 +1601,7 @@ export class PartitionedEngine implements Engine {
 				const asks = [...regrouped]
 					.sort(([a], [b]) => a - b)
 					.map(([p, keyAt]) => ({ p, keyAt, treeAt: [], nameAt: [] }));
+				if (asks.length > 0) repair.push(`oracle:${asks.reduce((sum, a) => sum + a.keyAt.length, 0)}`);
 				fill(await ask(asks));
 			}
 		}
@@ -1622,17 +1627,30 @@ export class PartitionedEngine implements Engine {
 			const reply = nameReplies[i]?.find((r) => r.p === route);
 			return reply !== undefined && nameReplySettles(hint, reply.rank, reply.present) ? [] : [i];
 		});
+		// x47: an unsettled name the index located is asked of its holders only — of nobody, when no
+		// card carries it or its only holder is the route that already answered.
+		const mayHold = (i: number, p: number) => nameHolders[i]?.includes(p) ?? true;
+		this.collectionLocated = unsettled.filter((i) => nameHolders[i] !== undefined).length;
 		if (keyAt.length > 0 || treeAt.length > 0 || unsettled.length > 0) {
 			const asks = Array.from({ length: this.n }, (_, p) => p)
 				.map((p) => ({
 					p,
 					keyAt: askedIn1(p) ? [] : keyAt,
 					treeAt: askedIn1(p) ? [] : treeAt,
-					nameAt: unsettled.filter((i) => !nameAsked[i]?.has(p)),
+					nameAt: unsettled.filter((i) => !nameAsked[i]?.has(p) && mayHold(i, p)),
 				}))
 				.filter((a) => a.keyAt.length > 0 || a.treeAt.length > 0 || a.nameAt.length > 0);
+			const asked = (pick: (a: Ask) => number[]) => new Set(asks.flatMap(pick)).size;
+			for (const [kind, count] of [
+				["key", asked((a) => a.keyAt)],
+				["pair", asked((a) => a.treeAt)],
+				["name", asked((a) => a.nameAt)],
+			] as const) {
+				if (count > 0) repair.push(`${kind}:${count}`);
+			}
 			fill(await ask(asks));
 		}
+		this.collectionRepair = repair.length > 0 ? repair.join("+") : null;
 
 		for (const [i, replies] of nameReplies.entries()) {
 			replies.sort((a, b) => a.p - b.p);

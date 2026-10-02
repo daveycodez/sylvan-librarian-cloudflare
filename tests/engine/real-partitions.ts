@@ -1,7 +1,7 @@
 // Every partition of a local store build, each in its own instance of the committed wasm, with the
 // build's names index and printed-names blob in one more — and a partition client over them that
 // answers what a SearchEngine Durable Object answers, so the real PartitionedEngine and the real
-// routes can be driven against the real corpus (routed-miss-real.test.ts).
+// routes can be driven against the real corpus (routed-miss-real.test.ts, collection-locate-real.test.ts).
 //
 // Opt-in, like the other real-corpus suites: SYLVAN_REAL_DIFFERENTIAL=1, with STORE_BUILD_DIR
 // pointing at a store build (default: this checkout's store-build/) whose manifest.json names one
@@ -10,11 +10,20 @@
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { gzipSync } from "node:zlib";
-import { encodeCardNames, ledByPartition } from "../../src/engine/card-names";
+import { encodeCardNames, ledByPartition, nameHoldersFromIndex } from "../../src/engine/card-names";
+import {
+	collectionBatchRequest,
+	collectionPacketRanks,
+	decodeCollectionPacket,
+} from "../../src/engine/collection-batch";
+import { nameReplySettles } from "../../src/engine/name-settle";
 import { decodeNamedFuzzyPacket } from "../../src/engine/named-fuzzy";
 import { encodePrintedNames } from "../../src/engine/printed-names";
 import type { RemoteEngine } from "../../src/engine/remote-engine";
 import {
+	type CollectionBatch,
+	type CollectionBatchAnswer,
+	type CollectionScope,
 	FUZZY_SIMILARITY_FLOOR,
 	FUZZY_SIMILARITY_LEAD,
 	FUZZY_WEAK_BELOW,
@@ -37,6 +46,8 @@ interface BuildManifest {
 
 /** The wasm exports these suites call beyond wasm-engine.ts's hand-typed glue. */
 interface RealGlue {
+	collection_batch(requestJson: string, fieldsJson: string, baseUrl: string): Uint8Array;
+	exact_name_probe(folded: string, setCode: string, fieldsJson: string): string;
 	store_printed_records_tsv(): Uint8Array;
 	load_printed_names(gz: Uint8Array): number;
 	printed_names_partitions(wordsJson: string): string;
@@ -193,6 +204,34 @@ export function realFuzzyBundle(
 export interface RealPartitionOptions {
 	/** An object on the build before x48: no `scryfallNamedFuzzyRouted`. */
 	beforeX48?: boolean;
+	/** An object on the build before x47: a collection batch's `locate` is ignored. */
+	beforeX47?: boolean;
+}
+
+/** store.ts `namesExactHolders`, against the index instance: who holds `folded` as a name. */
+export function realNameHolders(store: RealStore, folded: string): number[] {
+	return store.index.use((g) => nameHoldersFromIndex(g, folded)) as number[];
+}
+
+/** Partition `p`'s collection packet for a batch — store.ts `WasmEngine.scryfallCollectionPacket`. */
+export function realCollectionPacket(
+	store: RealStore,
+	p: number,
+	batch: CollectionBatch,
+	baseUrl: string,
+	scope?: CollectionScope | null,
+): Uint8Array {
+	return (store.engines[p] as TestEngine).use((g) =>
+		(g as unknown as RealGlue).collection_batch(collectionBatchRequest(batch, scope), FIELDS, baseUrl),
+	);
+}
+
+/** Partition `p`'s `exact=` rank for a name, no set — `[tier, name, served, tie, score]` or null. */
+export function realExactRank(store: RealStore, p: number, folded: string): (number | string)[] | null {
+	const probe = (store.engines[p] as TestEngine).use((g) =>
+		(g as unknown as RealGlue).exact_name_probe(folded, "", '["name"]'),
+	);
+	return (JSON.parse(probe) as { rank: (number | string)[] | null }).rank;
 }
 
 /**
@@ -206,6 +245,28 @@ export function realPartition(
 	options: RealPartitionOptions = {},
 ): RemoteEngine {
 	const client = {
+		// search-engine-do.ts `scryfallCollectionBatch` and remote-engine.ts's decode of its reply.
+		scryfallCollectionBatch: async (
+			batch: CollectionBatch,
+			baseUrl: string,
+			scope?: CollectionScope | null,
+		): Promise<CollectionBatchAnswer> => {
+			calls.push(`batch:${p}`);
+			const packet = realCollectionPacket(store, p, batch, baseUrl, scope);
+			const answer = decodeCollectionPacket(packet, batch);
+			if (options.beforeX47 || !batch.locate) return answer;
+			const { ranks, present } = collectionPacketRanks(packet);
+			const unsettled = batch.locate
+				.filter(({ at, hint }) => !nameReplySettles(hint, ranks[at] ?? null, present?.[at] ?? false))
+				.map(({ at }) => at);
+			if (unsettled.length === 0) return answer;
+			calls.push(`located:${p}:${unsettled.length}`);
+			answer.nameHolders = {
+				builtAt: store.builtAt,
+				holders: batch.names.map((name, at) => (unsettled.includes(at) ? realNameHolders(store, name.folded) : null)),
+			};
+			return answer;
+		},
 		scryfallNamedFuzzyBundle: async (
 			folded: string,
 			setCode: string,
