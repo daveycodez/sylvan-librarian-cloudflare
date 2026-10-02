@@ -24,6 +24,8 @@
 // coordinating, so the caller's failover (remote-engine.ts) asks the neighbour region in
 // milliseconds instead of after four seconds, from every isolate at once.
 
+import type { HedgeNote } from "./sibling-hedge";
+
 /** One sibling call a gather made, as the coordinator timed it. */
 export interface SiblingCallTiming {
 	partition: number;
@@ -33,6 +35,9 @@ export interface SiblingCallTiming {
 	/** What the sibling said its own store load took (searchKeys only): time that is not a stall. */
 	acquireMs: number;
 	failed: boolean;
+	/** The second call sent for this one when it was late (sibling-hedge.ts), if one was. `ms` is then
+	 * the time to whichever answered first. */
+	hedge?: HedgeNote;
 }
 
 /**
@@ -54,21 +59,34 @@ export const SIBLING_QUICK_MEDIAN_MS = 300;
 export const STALL_MIN_CALLS = 3;
 
 export interface StallVerdict {
-	/** True: stalled. False: clean. Null: too few sibling calls to say (a list gather of one or two). */
+	/** True: stalled. False: clean. Null: no verdict — too few sibling calls to say (a list gather of
+	 * one or two), or a gather its hedges rescued. */
 	stalled: boolean | null;
+	/** Late calls a hedge answered for (x53), where no call was left over SIBLING_STALL_MS. */
+	rescued: number;
 	/** The calls over SIBLING_STALL_MS net of their sibling's load, slowest first. */
 	slow: SiblingCallTiming[];
 	medianMs: number;
 }
 
-/** Whether a gather's sibling calls show the stall: some a second late, the rest quick. */
+/**
+ * Whether a gather's sibling calls show the stall: some a second late, the rest quick.
+ *
+ * A call is timed to its ANSWER, so one a hedge answered at ~0.5s (x53) is not slow here, and a
+ * hedged call whose original won at 3.2s is — the hedge lost, and the gather stalled as it would
+ * have without it. A gather with no stall left but with a hedge that WON gets no verdict at all: it
+ * did not cost its caller the stall, so it must not count toward shedding, and its original call
+ * was still late, so it must not end a shedding period as a clean gather does either.
+ */
 export function stallOf(calls: readonly SiblingCallTiming[]): StallVerdict {
 	const net = (c: SiblingCallTiming) => Math.max(0, c.ms - c.acquireMs);
 	const sorted = calls.map(net).sort((a, b) => a - b);
 	const medianMs = sorted.length === 0 ? 0 : (sorted[Math.floor((sorted.length - 1) / 2)] as number);
 	const slow = calls.filter((c) => net(c) >= SIBLING_STALL_MS).sort((a, b) => net(b) - net(a));
-	if (calls.length < STALL_MIN_CALLS) return { stalled: null, slow, medianMs };
-	return { stalled: slow.length > 0 && medianMs < SIBLING_QUICK_MEDIAN_MS, slow, medianMs };
+	const stalled = slow.length > 0 && medianMs < SIBLING_QUICK_MEDIAN_MS;
+	const rescued = stalled ? 0 : calls.filter((c) => c.hedge?.won === "hedge").length;
+	if (calls.length < STALL_MIN_CALLS || rescued > 0) return { stalled: null, slow, medianMs, rescued };
+	return { stalled, slow, medianMs, rescued };
 }
 
 /** Stalled gathers in a row before the object stops coordinating. One is an eviction's hang. */
@@ -149,6 +167,15 @@ export const SLOW_GATHER_LOG_MS = 2_000;
  *   [engine-wnam-p9] slow gather: 3207ms, 20 sibling calls, median 9ms; searchKeys worst p0 3098ms,
  *   median 8ms; fetchRows worst p4 14ms, median 6ms; late: p0 searchKeys 3098ms; stalled=yes
  *   streak=2 shedding=30000ms inflight=2 isolate=912s
+ *
+ * A gather that hedged a sibling call (x53) logs the line too, however fast it was, with a
+ * `hedged:` field before `stalled=` — and `stalled=rescued` when the hedges answered for every late
+ * call:
+ *
+ *   ...; late: none; hedged: p5 searchKeys at 502ms won by hedge 519ms (original 3173ms);
+ *   stalled=rescued streak=0 ...
+ *
+ * `original pending` there means the first call had still not answered when the gather ended.
  */
 export function slowGatherLine(
 	label: string,
@@ -173,11 +200,23 @@ export function slowGatherLine(
 	const late = verdict.slow
 		.slice(0, 6)
 		.map((c) => `p${c.partition} ${c.method} ${c.ms}ms${c.acquireMs ? ` (its load ${c.acquireMs}ms)` : ""}`);
+	const hedged = calls
+		.filter((c) => c.hedge)
+		.slice(0, 6)
+		.map((c) => {
+			const h = c.hedge as HedgeNote;
+			const result = h.won === "neither" ? `both failed ${c.ms}ms` : `won by ${h.won} ${c.ms}ms`;
+			const original =
+				h.won === "original" ? "" : ` (original ${h.originalMs === null ? "pending" : `${h.originalMs}ms`})`;
+			return `p${c.partition} ${c.method} at ${h.firedAtMs}ms ${result}${original}`;
+		});
+	const stalled =
+		verdict.stalled === null ? (verdict.rescued > 0 ? "rescued" : "unknown") : verdict.stalled ? "yes" : "no";
 	const left = health.shedUntil - now;
 	return (
 		`[${label}] slow gather: ${totalMs}ms, ${calls.length} sibling calls, median ${verdict.medianMs}ms; ` +
 		`${phase("searchKeys")}; ${phase("fetchRows")}; late: ${late.length ? late.join(", ") : "none"}; ` +
-		`stalled=${verdict.stalled === null ? "unknown" : verdict.stalled ? "yes" : "no"} streak=${health.streak} ` +
+		`${hedged.length ? `hedged: ${hedged.join(", ")}; ` : ""}stalled=${stalled} streak=${health.streak} ` +
 		`shedding=${left > 0 ? `${left}ms` : "no"} inflight=${extra.inFlight} isolate=${Math.round(extra.isolateAgeMs / 1000)}s`
 	);
 }

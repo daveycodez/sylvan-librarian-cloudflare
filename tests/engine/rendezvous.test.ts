@@ -14,6 +14,7 @@
 // reports cannot keep a higher value alive.
 
 import { afterEach, beforeEach, describe, expect, mock, spyOn, test } from "bun:test";
+import { setSiblingHedgeForTests } from "../../src/engine/sibling-hedge";
 import { ARCHIVE_FORMAT_VERSION } from "../../src/engine/store-kv";
 
 let clock = 5_000_000;
@@ -943,10 +944,12 @@ describe("a full gather keeps at most six sibling calls outstanding (x44)", () =
 				fetchRows: () => encodeRowPacket([row(OWN)]),
 			},
 		};
-		const seen = { outstanding: 0, peak: 0, asked: [] as string[] };
-		const held = async () => {
+		/** `stuck`: the sibling whose first searchKeys stays outstanding 40ms of real time, the fake
+		 * clock reading 600ms meanwhile (x53) — -1 for none. */
+		const seen = { outstanding: 0, peak: 0, asked: [] as string[], stuck: -1 };
+		const held = async (ms = 1) => {
 			seen.peak = Math.max(seen.peak, ++seen.outstanding);
-			await new Promise((resolve) => setTimeout(resolve, 1));
+			await new Promise((resolve) => setTimeout(resolve, ms));
 			seen.outstanding--;
 		};
 		const env = {
@@ -957,7 +960,12 @@ describe("a full gather keeps at most six sibling calls outstanding (x44)", () =
 					return {
 						async searchKeys(_opts: unknown, inline: number) {
 							seen.asked.push(`keys:${p}`);
-							await held();
+							if (p === seen.stuck && seen.asked.filter((a) => a === `keys:${p}`).length === 1) {
+								setTimeout(() => {
+									clock += 600;
+								}, 3);
+								await held(40);
+							} else await held();
 							return {
 								packed: keys(p, inline),
 								storeKey: `card-store-v1-7-p${p}.store`,
@@ -1007,6 +1015,31 @@ describe("a full gather keeps at most six sibling calls outstanding (x44)", () =
 		expect(new TextDecoder().decode(page.cardsBytes)).toBe(WHOLE_PAGE);
 	});
 
+	test("a hedge (x53) takes a slot like any other call: still never more than six, and the same page", async () => {
+		const restoreHedge = setSiblingHedgeForTests({ floorMs: 5 });
+		const realWarn = console.warn;
+		const lines: string[] = [];
+		console.warn = (...args: unknown[]) => lines.push(args.join(" "));
+		try {
+			const { engine, seen } = warmRegion();
+			seen.stuck = 4;
+			const page = await engine.gatherSearchAsJson(OPTS, "rows");
+			expect(new TextDecoder().decode(page.cardsBytes)).toBe(WHOLE_PAGE);
+			expect(seen.asked.filter((a) => a === "keys:4")).toHaveLength(2);
+			expect(seen.asked.filter((a) => a.startsWith("keys:"))).toHaveLength(N);
+			expect(seen.peak).toBe(6);
+			expect(lines.filter((l) => l.includes("sibling hedge"))).toEqual([
+				expect.stringMatching(
+					/^\[engine-enam-p9\] sibling hedge p4 searchKeys: fired at 600ms; won by hedge at 600ms \(\d+ of 10 answered, median 0ms\)$/,
+				),
+			]);
+			await new Promise((resolve) => setTimeout(resolve, 45)); // let the first call land
+		} finally {
+			console.warn = realWarn;
+			restoreHedge();
+		}
+	});
+
 	test("two gathers on one coordinator each keep six, and both answer the whole page", async () => {
 		const { engine, seen } = warmRegion();
 		const [a, b] = await Promise.all([
@@ -1050,6 +1083,11 @@ describe("a coordinator whose sibling calls arrive late stops coordinating (x45)
 	 * while each sibling's call is on its way (set per test, read per call). */
 	function coordinator() {
 		const late: Record<number, number> = {};
+		/** x53: a sibling whose FIRST call each gather is on its way for `ms` of real time (the fake
+		 * clock reading 600ms once the others have answered and 3,100ms when it lands), and whose
+		 * second — the hedge — answers at once, or after `hedgeMs` of real time when that is set. */
+		const stuck: Record<number, { ms: number; hedgeMs?: number }> = {};
+		const calls: Record<number, number> = {};
 		const asked: number[] = [];
 		gatherStore = {
 			ownLoad: Promise.resolve(),
@@ -1067,6 +1105,18 @@ describe("a coordinator whose sibling calls arrive late stops coordinating (x45)
 		const sibling = (p: number) => ({
 			async searchKeys(_opts: unknown, inline: number, shaping: { shape: string }) {
 				asked.push(p);
+				const held = stuck[p];
+				if (held) {
+					calls[p] = (calls[p] ?? 0) + 1;
+					if ((calls[p] as number) % 2 === 1) {
+						await new Promise((resolve) => setTimeout(resolve, 1));
+						clock += 600;
+						await new Promise((resolve) => setTimeout(resolve, held.ms));
+						clock += 2_500;
+					} else if (held.hedgeMs) {
+						await new Promise((resolve) => setTimeout(resolve, held.hedgeMs));
+					}
+				}
 				if (late[p]) {
 					// The quick siblings answer (and are timed) first; only then does the clock run on
 					// for the late one — as in production, where the others had long since replied.
@@ -1108,7 +1158,7 @@ describe("a coordinator whose sibling calls arrive late stops coordinating (x45)
 					}),
 				}),
 			);
-		return { late, asked, gather };
+		return { late, stuck, asked, gather };
 	}
 
 	let lines: string[] = [];
@@ -1212,6 +1262,83 @@ describe("a coordinator whose sibling calls arrive late stops coordinating (x45)
 		// Slow enough to be worth a line, and the line says it did not stall.
 		expect(lines.every((l) => l.includes("slow gather") && l.includes("stalled=no"))).toBe(true);
 		expect(lines).toHaveLength(3);
+	});
+
+	describe("a late sibling call is asked a second time on a fresh stub (x53)", () => {
+		// DeckGen 2026-10-02: 43 stalled gathers in 100 minutes, one to four siblings 3.11–3.40s late
+		// and the rest at a median 8–121ms — and 14 of engine-wnam-p1's 15 on an isolate too young to
+		// have shed anything. The floor is 500ms in production; 5ms of real time here.
+		let restoreHedge = () => {};
+		beforeEach(() => {
+			restoreHedge = setSiblingHedgeForTests({ floorMs: 5 });
+		});
+		afterEach(() => restoreHedge());
+
+		test("the hedge's answer is the page, byte for byte, and the gather does not wait for the late call", async () => {
+			const { stuck, asked, gather } = coordinator();
+			const healthy = new Uint8Array(await (await gather(true)).arrayBuffer());
+			expect(lines).toEqual([]);
+			asked.length = 0;
+			stuck[2] = { ms: 60 };
+			const before = clock;
+			const rescued = await gather(true);
+			expect(rescued.status).toBe(200);
+			expect(new Uint8Array(await rescued.arrayBuffer())).toEqual(healthy);
+			// The late call is asked twice and nobody else is; the gather ended when the hedge
+			// answered, with the first call still on its way.
+			expect([...asked].sort()).toEqual([1, 2, 2, 3]);
+			expect(clock - before).toBe(600);
+			expect(lines).toEqual([
+				"[engine-oc-p0] sibling hedge p2 searchKeys: fired at 600ms; won by hedge at 600ms (2 of 3 answered, median 0ms)",
+				expect.stringMatching(
+					/^\[engine-oc-p0\] slow gather: 600ms, 3 sibling calls, median 0ms; searchKeys worst p2 600ms, median 0ms; fetchRows none; late: none; hedged: p2 searchKeys at 600ms won by hedge 600ms \(original pending\); stalled=rescued streak=0 shedding=no inflight=0 isolate=\d+s$/,
+				),
+			]);
+			await new Promise((resolve) => setTimeout(resolve, 70)); // let the first call land
+		});
+
+		test("gathers rescued by their hedge never shed", async () => {
+			const { stuck, gather } = coordinator();
+			stuck[2] = { ms: 30 };
+			for (let i = 0; i < 4; i++) {
+				expect((await gather(true)).status).toBe(200);
+				await new Promise((resolve) => setTimeout(resolve, 35));
+			}
+			expect(lines.filter((l) => l.includes("shedding gathers"))).toEqual([]);
+			expect(lines.filter((l) => l.includes("sibling hedge")).every((l) => l.includes("won by hedge"))).toBe(true);
+			expect(lines.filter((l) => l.includes("stalled=rescued"))).toHaveLength(4);
+		});
+
+		test("a hedge that loses is a stall like any other: two in a row and the object sheds", async () => {
+			const { stuck, gather } = coordinator();
+			stuck[2] = { ms: 30, hedgeMs: 80 };
+			expect((await gather(true)).status).toBe(200);
+			expect((await gather(true)).status).toBe(200);
+			expect(lines.filter((l) => l.includes("sibling hedge"))).toEqual([
+				"[engine-oc-p0] sibling hedge p2 searchKeys: fired at 600ms; won by original at 3100ms (2 of 3 answered, median 0ms)",
+				"[engine-oc-p0] sibling hedge p2 searchKeys: fired at 600ms; won by original at 3100ms (2 of 3 answered, median 0ms)",
+			]);
+			expect(lines.filter((l) => l.includes("slow gather"))[0]).toContain(
+				"late: p2 searchKeys 3100ms; hedged: p2 searchKeys at 600ms won by original 3100ms; stalled=yes streak=1",
+			);
+			expect(lines.filter((l) => l.includes("shedding gathers"))).toHaveLength(1);
+			expect((await gather(true)).status).toBe(503);
+			await new Promise((resolve) => setTimeout(resolve, 90));
+		});
+
+		test("a rescued gather does not end a shedding period the way a clean one does", async () => {
+			const { late, stuck, gather } = coordinator();
+			late[1] = 3_100;
+			await gather(true);
+			await gather(true);
+			expect((await gather(true)).status).toBe(503);
+			late[1] = 0;
+			stuck[1] = { ms: 30 };
+			expect((await gather(false)).status).toBe(200); // not sheddable, so it ran — rescued, not clean
+			expect(lines.at(-1)).toContain("stalled=rescued streak=2");
+			expect((await gather(true)).status).toBe(503);
+			await new Promise((resolve) => setTimeout(resolve, 35));
+		});
 	});
 });
 

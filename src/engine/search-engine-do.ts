@@ -79,6 +79,7 @@ import { nameReplySettles } from "./name-settle";
 import { probePlacement } from "./placement";
 import { ENGINE_SHED_ERROR, siblingCall } from "./remote-engine";
 import { foldWidthAnnouncement } from "./shard-controller";
+import { HedgePhase, siblingHedgeLine } from "./sibling-hedge";
 import { SiblingLimiter, type SiblingLoad } from "./sibling-limit";
 import {
 	autocompleteFromNames,
@@ -981,30 +982,35 @@ export class SearchEngine extends DurableObject<Env> {
 	 * sibling over RPC. Names derive from THIS object's label (siblingStub), so
 	 * a gather can only ever fan out within its own region and replica. */
 	private partitionClients(count: number, trace: SiblingCallTiming[]): PartitionClient[] {
-		/** Time one sibling call for the gather's stall verdict (gather-health.ts), from the moment it
-		 * is SENT — inside its limiter slot (x44), so a call's wait for a slot is not counted as the
-		 * call being late. The clock moves across the call's I/O, which is exactly what is measured,
-		 * and `call` starts synchronously, as the limiter's own contract requires. */
-		const timed = async <R>(
-			partition: number,
-			method: SiblingCallTiming["method"],
-			call: () => Promise<R>,
-			acquireMsOf: (reply: R) => number,
-		): Promise<R> => {
-			const started = Date.now();
-			try {
-				const reply = await call();
-				trace.push({ partition, method, ms: Date.now() - started, acquireMs: acquireMsOf(reply), failed: false });
-				return reply;
-			} catch (err) {
-				trace.push({ partition, method, ms: Date.now() - started, acquireMs: 0, failed: true });
-				throw err;
-			}
-		};
-		const own = parseEngineName(this.label)?.partition;
 		// x44: at most six sibling calls outstanding per gather — see sibling-limit.ts. One limiter
 		// for both phases of the gather these clients serve.
 		const limiter = new SiblingLimiter(this.siblingLoad);
+		// x53: a call still out when its phase's other calls have long answered is sent once more —
+		// see sibling-hedge.ts. One phase per method: the calls judged against each other.
+		const phases = { searchKeys: new HedgePhase(), fetchRows: new HedgePhase() };
+		/**
+		 * One sibling call, in a limiter slot, hedged if it is late, and timed for the gather's stall
+		 * verdict (gather-health.ts) from the moment it is SENT — the phase starts its clock inside the
+		 * slot, so a call's wait for a slot is not counted as the call being late — to the moment the
+		 * gather had its answer. The clock moves across the call's I/O, which is exactly what is
+		 * measured, and `send` starts synchronously, as the limiter's own contract requires. A hedge
+		 * takes a slot like any other call; one no longer wanted when its slot comes up is not sent.
+		 */
+		const timed = async <R>(
+			partition: number,
+			method: SiblingCallTiming["method"],
+			send: () => Promise<R>,
+			acquireMsOf: (reply: R) => number,
+		): Promise<R> => {
+			const call = await phases[method].run(send, (task) => limiter.run(task));
+			const acquireMs = call.ok ? acquireMsOf(call.value) : 0;
+			const { hedge } = call;
+			if (hedge) console.warn(siblingHedgeLine(this.label, partition, method, { ms: call.ms, hedge }, acquireMs));
+			trace.push({ partition, method, ms: call.ms, acquireMs, failed: !call.ok, ...(hedge ? { hedge } : {}) });
+			if (!call.ok) throw call.error;
+			return call.value;
+		};
+		const own = parseEngineName(this.label)?.partition;
 		const builtAt = Date.now();
 		const where = () =>
 			`coordinator=${this.label} gather_ms=${Date.now() - builtAt} gather_open=${limiter.open} ` +
@@ -1039,34 +1045,25 @@ export class SearchEngine extends DurableObject<Env> {
 			const stub = connect();
 			return {
 				searchKeys: (opts: EngineSearchOptions, inlineRows: number, shaping: RowShaping) =>
-					limiter.run(() =>
-						timed(
-							p,
-							"searchKeys",
-							() =>
-								siblingCall(
-									`partition-${p} searchKeys`,
-									connect,
-									(s) => s.searchKeys(opts, inlineRows, shaping),
-									where,
-								),
-							(reply) => reply.acquireMs ?? 0,
-						),
+					timed(
+						p,
+						"searchKeys",
+						() =>
+							siblingCall(`partition-${p} searchKeys`, connect, (s) => s.searchKeys(opts, inlineRows, shaping), where),
+						(reply) => reply.acquireMs ?? 0,
 					),
 				fetchRows: (vpids: number[], fields: string[], storeKey: string, shaping: RowShaping) =>
-					limiter.run(() =>
-						timed(
-							p,
-							"fetchRows",
-							() =>
-								siblingCall(
-									`partition-${p} fetchRows`,
-									connect,
-									(s) => s.fetchRows(vpids, fields, storeKey, shaping),
-									where,
-								),
-							() => 0,
-						),
+					timed(
+						p,
+						"fetchRows",
+						() =>
+							siblingCall(
+								`partition-${p} fetchRows`,
+								connect,
+								(s) => s.fetchRows(vpids, fields, storeKey, shaping),
+								where,
+							),
+						() => 0,
 					),
 				refresh: async () => {
 					const { swapped } = await stub.notifyPublish();
@@ -1131,7 +1128,7 @@ export class SearchEngine extends DurableObject<Env> {
 					`callers fail over to their neighbour region`,
 			);
 		}
-		if (verdict.stalled === true || totalMs >= SLOW_GATHER_LOG_MS) {
+		if (verdict.stalled === true || totalMs >= SLOW_GATHER_LOG_MS || trace.some((c) => c.hedge)) {
 			console.warn(
 				slowGatherLine(this.label, totalMs, trace, verdict, health, now, {
 					inFlight: this.inFlightGathers,

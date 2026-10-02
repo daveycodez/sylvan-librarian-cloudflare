@@ -69,6 +69,33 @@ describe("stallOf", () => {
 		expect(stallOf([call(1, 3_100), call(2, 8)]).stalled).toBeNull();
 		expect(stallOf([call(1, 3_100), call(2, 8), call(3, 9)]).stalled).toBe(true);
 	});
+
+	// x53: a late call is asked a second time, and timed to whichever answer came first.
+	const hedge = (won: "hedge" | "original" | "neither", originalMs: number | null = null) => ({
+		hedge: { firedAtMs: 502, won, originalMs, answered: 8, issued: 10, peerMedianMs: 12 },
+	});
+
+	test("a gather its hedge rescued gets no verdict: not a stall, and not a clean gather either", () => {
+		const verdict = stallOf(phase1(12, { 5: 519 }).map((c) => (c.partition === 5 ? { ...c, ...hedge("hedge") } : c)));
+		expect(verdict).toMatchObject({ stalled: null, rescued: 1, slow: [] });
+	});
+
+	test("a hedge that lost leaves the stall a stall", () => {
+		const lost = phase1(12, { 5: 3_173 }).map((c) => (c.partition === 5 ? { ...c, ...hedge("original", 3_173) } : c));
+		expect(stallOf(lost)).toMatchObject({ stalled: true, rescued: 0 });
+		// ...and so does a hedge that won too late to matter, or one that rescued only one of two.
+		const slowWin = phase1(12, { 5: 1_400 }).map((c) => (c.partition === 5 ? { ...c, ...hedge("hedge") } : c));
+		expect(stallOf(slowWin).stalled).toBe(true);
+		const oneOfTwo = phase1(12, { 4: 3_170, 5: 519 }).map((c) =>
+			c.partition === 5 ? { ...c, ...hedge("hedge") } : c.partition === 4 ? { ...c, ...hedge("original", 3_170) } : c,
+		);
+		expect(stallOf(oneOfTwo)).toMatchObject({ stalled: true, rescued: 0 });
+	});
+
+	test("a hedge the original beat without stalling is an ordinary clean gather", () => {
+		const beaten = phase1(12, { 5: 540 }).map((c) => (c.partition === 5 ? { ...c, ...hedge("original", 540) } : c));
+		expect(stallOf(beaten)).toMatchObject({ stalled: false, rescued: 0 });
+	});
 });
 
 describe("GatherHealth", () => {
@@ -172,5 +199,36 @@ describe("slowGatherLine", () => {
 			isolateAgeMs: 0,
 		});
 		expect(line).toContain("fetchRows none; late: none; stalled=no streak=0 shedding=no");
+	});
+
+	test("a hedged call is named with who won, and a rescued gather says rescued (x53)", () => {
+		const note = { firedAtMs: 502, answered: 8, issued: 10, peerMedianMs: 12 };
+		const calls = phase1(12, { 4: 530, 5: 519 }).map((c) =>
+			c.partition === 5
+				? { ...c, hedge: { ...note, won: "hedge" as const, originalMs: null } }
+				: c.partition === 4
+					? { ...c, hedge: { ...note, won: "hedge" as const, originalMs: 3_170 } }
+					: c,
+		);
+		const health = new GatherHealth();
+		health.note(stallOf(calls).stalled, 0);
+		expect(health.streak).toBe(0);
+		expect(
+			slowGatherLine("engine-wnam-p10", 561, calls, stallOf(calls), health, 0, { inFlight: 0, isolateAgeMs: 3_000 }),
+		).toBe(
+			"[engine-wnam-p10] slow gather: 561ms, 10 sibling calls, median 12ms; searchKeys worst p4 530ms, median 12ms; " +
+				"fetchRows none; late: none; hedged: p4 searchKeys at 502ms won by hedge 530ms (original 3170ms), " +
+				"p5 searchKeys at 502ms won by hedge 519ms (original pending); stalled=rescued streak=0 shedding=no " +
+				"inflight=0 isolate=3s",
+		);
+		const lost = phase1(12, { 5: 3_173 }).map((c) =>
+			c.partition === 5 ? { ...c, hedge: { ...note, won: "original" as const, originalMs: 3_173 } } : c,
+		);
+		expect(
+			slowGatherLine("engine-wnam-p10", 3_180, lost, stallOf(lost), new GatherHealth(), 0, {
+				inFlight: 0,
+				isolateAgeMs: 0,
+			}),
+		).toContain("late: p5 searchKeys 3173ms; hedged: p5 searchKeys at 502ms won by original 3173ms; stalled=yes");
 	});
 });
