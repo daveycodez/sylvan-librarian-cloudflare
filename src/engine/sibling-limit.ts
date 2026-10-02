@@ -27,6 +27,16 @@
  * One limiter per gather (the limit is counted per invocation, and the 7th–10th shape stayed exact
  * under the sweep's concurrent gathers, which a per-object count would have scrambled). A retry runs
  * inside the slot of the call it replaces — the dead connection is gone before the fresh one opens.
+ *
+ * x55: A CALL THE GATHER HAS STOPPED WAITING FOR STILL HOLDS ITS SLOT. A late sibling call whose
+ * hedge answered (sibling-hedge.ts) is not cancelled — nothing can cancel it — and until it settles
+ * it is exactly what the runtime counts: a connection awaiting its answer. Releasing its slot here
+ * would let a seventh call out, which the runtime would queue behind the six (the stuck ones among
+ * them) and send no sooner, in the queue where calls are cancelled together. So with k stuck calls a
+ * gather has 6−k slots, and what x55 changes is who gets them: a HEDGE goes to the head of the line
+ * (`urgent`), ahead of calls not yet started — on DeckGen 2026-10-02, 49 hedges in multi-late
+ * gathers were sent 0.1–3.4s after they were due because the one or two free slots were held by
+ * other hedges riding the same stuck path, and the gather was waiting on nothing else.
  */
 export const SIBLING_CALLS_AT_ONCE = 6;
 
@@ -57,20 +67,29 @@ export class SiblingLimiter {
 		return this.waiting.length;
 	}
 
+	/** Slots a call could take at once. Zero whenever anything is waiting (the count never dips). */
+	get free(): number {
+		return this.limit - this.openCalls;
+	}
+
 	/**
 	 * `task`, started at once when a slot is free — synchronously, so a fan-out of six or fewer is
 	 * issued exactly as it was before (x23 depends on nothing running between the coordinator's
 	 * memory reservation and its calls going out) — and otherwise when an earlier call settles, in
-	 * the order asked.
+	 * the order asked — except an `urgent` task (a hedge), which goes ahead of every task still
+	 * waiting: the gather is waiting on its answer NOW, and on nothing a not-yet-started call holds.
 	 */
-	run<T>(task: () => Promise<T>): Promise<T> {
+	run<T>(task: () => Promise<T>, urgent = false): Promise<T> {
 		if (this.openCalls < this.limit) {
 			this.openCalls++;
 			this.load.open++;
 			return this.settle(task);
 		}
 		this.load.queued++;
-		return new Promise<void>((resolve) => this.waiting.push(resolve)).then(() => {
+		return new Promise<void>((resolve) => {
+			if (urgent) this.waiting.unshift(resolve);
+			else this.waiting.push(resolve);
+		}).then(() => {
 			// The slot was handed over still counted (see release), so only the tallies move.
 			this.load.queued--;
 			this.load.open++;

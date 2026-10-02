@@ -24,7 +24,7 @@
 // coordinating, so the caller's failover (remote-engine.ts) asks the neighbour region in
 // milliseconds instead of after four seconds, from every isolate at once.
 
-import type { HedgeNote } from "./sibling-hedge";
+import { type HedgeNote, hedgeFired, hedgeVerdict } from "./sibling-hedge";
 
 /** One sibling call a gather made, as the coordinator timed it. */
 export interface SiblingCallTiming {
@@ -35,8 +35,9 @@ export interface SiblingCallTiming {
 	/** What the sibling said its own store load took (searchKeys only): time that is not a stall. */
 	acquireMs: number;
 	failed: boolean;
-	/** The second call sent for this one when it was late (sibling-hedge.ts), if one was. `ms` is then
-	 * the time to whichever answered first. */
+	/** The second call sent for this one when it was late (sibling-hedge.ts) — to the same object, to
+	 * the neighbour region's copy of it, or both — if one was. `ms` is then the time to whichever
+	 * answered first. */
 	hedge?: HedgeNote;
 }
 
@@ -175,7 +176,9 @@ export const SLOW_GATHER_LOG_MS = 2_000;
  *   ...; late: none; hedged: p5 searchKeys at 502ms won by hedge 519ms (original 3173ms);
  *   stalled=rescued streak=0 ...
  *
- * `original pending` there means the first call had still not answered when the gather ended.
+ * `original pending` there means the first call had still not answered when the gather ended. A
+ * hedge sent to the neighbour region's copy of the partition (x55) says so in both places:
+ * `at 502ms, to enam at 655ms won by hedge to enam 731ms`.
  */
 export function slowGatherLine(
 	label: string,
@@ -205,10 +208,9 @@ export function slowGatherLine(
 		.slice(0, 6)
 		.map((c) => {
 			const h = c.hedge as HedgeNote;
-			const result = h.won === "neither" ? `both failed ${c.ms}ms` : `won by ${h.won} ${c.ms}ms`;
 			const original =
 				h.won === "original" ? "" : ` (original ${h.originalMs === null ? "pending" : `${h.originalMs}ms`})`;
-			return `p${c.partition} ${c.method} at ${h.firedAtMs}ms ${result}${original}`;
+			return `p${c.partition} ${c.method} ${hedgeFired(h, "at ")} ${hedgeVerdict(h)} ${c.ms}ms${original}`;
 		});
 	const stalled =
 		verdict.stalled === null ? (verdict.rescued > 0 ? "rescued" : "unknown") : verdict.stalled ? "yes" : "no";

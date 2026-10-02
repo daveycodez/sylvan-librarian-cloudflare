@@ -59,7 +59,7 @@ import { concatBytes, encodeUtf8 } from "./bytes";
 import { mayBeNameOnly } from "./card-names";
 import { collectionPacketRanks } from "./collection-batch";
 import { assembleColumnar, columnKeys, columnsGather } from "./columnar";
-import { parseEngineName, siblingStub } from "./engine-namespace";
+import { parseEngineName, placeEngineStub, siblingStub } from "./engine-namespace";
 import {
 	decodeRowPacket,
 	type FetchRowsReply,
@@ -77,9 +77,16 @@ import {
 import { gatherHealthOf, type SiblingCallTiming, SLOW_GATHER_LOG_MS, slowGatherLine, stallOf } from "./gather-health";
 import { nameReplySettles } from "./name-settle";
 import { probePlacement } from "./placement";
-import { ENGINE_SHED_ERROR, siblingCall } from "./remote-engine";
+import { ENGINE_SHED_ERROR, SIBLING_CALL_DEADLINE_MS, siblingCall, withDeadline } from "./remote-engine";
 import { foldWidthAnnouncement } from "./shard-controller";
-import { HedgePhase, siblingHedgeLine } from "./sibling-hedge";
+import {
+	type CrossTarget,
+	HedgePhase,
+	hedgeNeighbourOf,
+	PhaseBuild,
+	siblingHedgeLine,
+	siblingMemoryOf,
+} from "./sibling-hedge";
 import { SiblingLimiter, type SiblingLoad } from "./sibling-limit";
 import {
 	autocompleteFromNames,
@@ -980,34 +987,117 @@ export class SearchEngine extends DurableObject<Env> {
 
 	/** One client per partition: this object's own store served locally, every
 	 * sibling over RPC. Names derive from THIS object's label (siblingStub), so
-	 * a gather can only ever fan out within its own region and replica. */
-	private partitionClients(count: number, trace: SiblingCallTiming[]): PartitionClient[] {
+	 * a gather fans out within its own region and replica — and only a call that is LATE is also
+	 * sent to the neighbour region's copy of the partition (x55, below).
+	 *
+	 * `cold` is the manifest gatherWidth found while this object's own store is not loaded: where the
+	 * placement block (which region is the neighbour, and its name generation) comes from until it is. */
+	private partitionClients(
+		count: number,
+		trace: SiblingCallTiming[],
+		cold: StoreManifest | null = null,
+	): PartitionClient[] {
 		// x44: at most six sibling calls outstanding per gather — see sibling-limit.ts. One limiter
 		// for both phases of the gather these clients serve.
 		const limiter = new SiblingLimiter(this.siblingLoad);
 		// x53: a call still out when its phase's other calls have long answered is sent once more —
 		// see sibling-hedge.ts. One phase per method: the calls judged against each other.
 		const phases = { searchKeys: new HedgePhase(), fetchRows: new HedgePhase() };
+		// x55: what this isolate already knows about each sibling (awake? is this isolate's path the
+		// stuck one?), the build this region's phase-1 answers name, and which partitions' keys the
+		// neighbour supplied.
+		const memory = siblingMemoryOf(this.label);
+		const pinned = new PhaseBuild();
+		const keysFromNeighbour = new Set<number>();
+		const ownBuild = () => {
+			const built = String(currentManifest(this.label)?.built_at ?? "");
+			return built === "" ? undefined : built;
+		};
+		type SiblingStub = {
+			searchKeys(opts: EngineSearchOptions, inlineRows: number, shaping: RowShaping): Promise<SearchKeysReply>;
+			fetchRows(vpids: number[], fields: string[], storeKey: string, shaping: RowShaping): Promise<FetchRowsReply>;
+			notifyPublish(manifest?: StoreManifest): Promise<{ swapped: boolean; shards: number }>;
+		};
+		/**
+		 * x55: the same call to partition `p`'s object in the NEIGHBOUR region, resolved only when a
+		 * hedge is due. The region, the shard-0 name and the stub are the ones the Worker's own hedge
+		 * of a slow engine call uses (index.ts resolveEngine: hedgeRegionFor, generationOf,
+		 * placeEngineStub) — one naming scheme, one code path. placeEngineStub passes that region's
+		 * own hint, so were the object ever created by this call it would be created THERE, not near
+		 * this object; in practice the neighbour's own traffic and the publish fan-out made it long
+		 * ago. One attempt, bounded like any sibling call; its failure is not this gather's.
+		 */
+		const neighbourCall =
+			<R>(
+				p: number,
+				what: string,
+				call: (stub: SiblingStub) => Promise<R>,
+				refuse: (reply: R) => string | null,
+			): (() => CrossTarget<R> | null) =>
+			() => {
+				const manifest = currentManifest(this.label) ?? cold;
+				const neighbour = manifest ? hedgeNeighbourOf(this.label, manifest.placement) : null;
+				if (!neighbour) return null;
+				const { region, generation } = neighbour;
+				return {
+					region,
+					send: () =>
+						withDeadline(
+							Promise.resolve().then(() =>
+								call(placeEngineStub(this.env, region, 0, p, generation) as unknown as SiblingStub),
+							),
+							SIBLING_CALL_DEADLINE_MS,
+							`${what} (${region})`,
+						),
+					refuse,
+				};
+			};
 		/**
 		 * One sibling call, in a limiter slot, hedged if it is late, and timed for the gather's stall
 		 * verdict (gather-health.ts) from the moment it is SENT — the phase starts its clock inside the
 		 * slot, so a call's wait for a slot is not counted as the call being late — to the moment the
 		 * gather had its answer. The clock moves across the call's I/O, which is exactly what is
 		 * measured, and `send` starts synchronously, as the limiter's own contract requires. A hedge
-		 * takes a slot like any other call; one no longer wanted when its slot comes up is not sent.
+		 * takes a slot like any other call, at the head of the line; one no longer wanted when its
+		 * slot comes up is not sent.
+		 *
+		 * `hedging` is what x55 adds for a call to this region's own sibling: the neighbour's copy,
+		 * and what its answer teaches (`heard`). Null for a call that is not one — then it is hedged
+		 * as x53 hedged it, by a second `send`.
 		 */
 		const timed = async <R>(
 			partition: number,
 			method: SiblingCallTiming["method"],
 			send: () => Promise<R>,
 			acquireMsOf: (reply: R) => number,
+			hedging: { cross: () => CrossTarget<R> | null; heard?: (reply: R) => void } | null,
 		): Promise<R> => {
-			const call = await phases[method].run(send, (task) => limiter.run(task));
+			const call = await phases[method].run(
+				send,
+				(task) => limiter.run(task),
+				hedging === null
+					? { scheduleHedge: (task) => limiter.run(task, true) }
+					: {
+							mayBeWaking: () => memory.mayBeWaking(partition, Date.now()),
+							cross: hedging.cross,
+							free: () => limiter.free,
+							scheduleHedge: (task) => limiter.run(task, true),
+							onOriginal: (outcome) => {
+								if (!outcome.ok) return;
+								memory.answered(partition, Date.now(), Math.max(0, outcome.ms - acquireMsOf(outcome.value)));
+								hedging.heard?.(outcome.value);
+							},
+						},
+			);
 			const acquireMs = call.ok ? acquireMsOf(call.value) : 0;
 			const { hedge } = call;
 			if (hedge) console.warn(siblingHedgeLine(this.label, partition, method, { ms: call.ms, hedge }, acquireMs));
 			trace.push({ partition, method, ms: call.ms, acquireMs, failed: !call.ok, ...(hedge ? { hedge } : {}) });
 			if (!call.ok) throw call.error;
+			if (method === "searchKeys") {
+				if (hedge?.cross?.won) keysFromNeighbour.add(partition);
+				else keysFromNeighbour.delete(partition);
+			}
 			return call.value;
 		};
 		const own = parseEngineName(this.label)?.partition;
@@ -1032,11 +1122,6 @@ export class SearchEngine extends DurableObject<Env> {
 					},
 				};
 			}
-			type SiblingStub = {
-				searchKeys(opts: EngineSearchOptions, inlineRows: number, shaping: RowShaping): Promise<SearchKeysReply>;
-				fetchRows(vpids: number[], fields: string[], storeKey: string, shaping: RowShaping): Promise<FetchRowsReply>;
-				notifyPublish(manifest?: StoreManifest): Promise<{ swapped: boolean; shards: number }>;
-			};
 			const connect = (): SiblingStub => {
 				const s = siblingStub(this.env, this.label, p) as unknown as SiblingStub | null;
 				if (!s) throw new Error(`${this.label} cannot derive its partition-${p} sibling's name`);
@@ -1044,27 +1129,53 @@ export class SearchEngine extends DurableObject<Env> {
 			};
 			const stub = connect();
 			return {
-				searchKeys: (opts: EngineSearchOptions, inlineRows: number, shaping: RowShaping) =>
-					timed(
+				searchKeys: (opts: EngineSearchOptions, inlineRows: number, shaping: RowShaping) => {
+					const keys = (s: SiblingStub) => s.searchKeys(opts, inlineRows, shaping);
+					return timed(
 						p,
 						"searchKeys",
-						() =>
-							siblingCall(`partition-${p} searchKeys`, connect, (s) => s.searchKeys(opts, inlineRows, shaping), where),
+						() => siblingCall(`partition-${p} searchKeys`, connect, keys, where),
 						(reply) => reply.acquireMs ?? 0,
-					),
-				fetchRows: (vpids: number[], fields: string[], storeKey: string, shaping: RowShaping) =>
-					timed(
-						p,
-						"fetchRows",
-						() =>
-							siblingCall(
-								`partition-${p} fetchRows`,
-								connect,
-								(s) => s.fetchRows(vpids, fields, storeKey, shaping),
-								where,
+						{
+							// The neighbour's keys stand in for this sibling's only from the build this
+							// region's answers are pinned to, in the shape asked — see PhaseBuild.
+							cross: neighbourCall(p, `partition-${p} searchKeys`, keys, (reply) =>
+								reply.shape !== shaping.shape
+									? `${reply.shape ?? "unshaped"} rows where ${shaping.shape} was asked`
+									: pinned.refuse(reply, ownBuild()),
 							),
-						() => 0,
-					),
+							heard: (reply) => pinned.note(reply),
+						},
+					);
+				},
+				fetchRows: (vpids: number[], fields: string[], storeKey: string, shaping: RowShaping) => {
+					const rows = (s: SiblingStub) => s.fetchRows(vpids, fields, storeKey, shaping);
+					const here = () => siblingCall(`partition-${p} fetchRows`, connect, rows, where);
+					// `storeKey` is the archive phase 1 pinned, and an object holding any other refuses
+					// the call itself — so the neighbour's rows are that archive's rows or an error.
+					const cross = neighbourCall(p, `partition-${p} fetchRows`, rows, (reply) =>
+						reply.shape === shaping.shape ? null : `${reply.shape ?? "unshaped"} rows where ${shaping.shape} was asked`,
+					);
+					// The keys were the neighbour's because this region's sibling was not answering, so
+					// the rows those keys name are asked of the neighbour too: it is known to hold the
+					// pinned archive (this region's sibling, unheard, may be a build behind and would
+					// refuse), and the call to it is not the one that just stalled. Any failure there
+					// falls back to this region's sibling, as if the neighbour had never been asked.
+					const there = keysFromNeighbour.has(p) ? cross() : null;
+					if (there) {
+						const elsewhere = () =>
+							there
+								.send()
+								.then((reply) => {
+									const refused = there.refuse?.(reply) ?? null;
+									if (refused !== null) throw new Error(refused);
+									return reply;
+								})
+								.catch(here);
+						return timed(p, "fetchRows", elsewhere, () => 0, null);
+					}
+					return timed(p, "fetchRows", here, () => 0, { cross });
+				},
 				refresh: async () => {
 					const { swapped } = await stub.notifyPublish();
 					console.warn(
@@ -1153,7 +1264,7 @@ export class SearchEngine extends DurableObject<Env> {
 		// Nothing awaits between this and the fan-out below: the growth must land before any
 		// sibling call is issued, not merely before the load (see reserveOwnStore).
 		if (manifest) this.reserveOwnStore(manifest, width);
-		let page = await runTwoPhase(this.partitionClients(width, trace), opts, shaping);
+		let page = await runTwoPhase(this.partitionClients(width, trace, manifest), opts, shaping);
 		// Free when the fan-out included this partition, which it always does at a correct width.
 		await this.engine();
 		const loaded = currentManifest(this.label);
@@ -1207,7 +1318,7 @@ export class SearchEngine extends DurableObject<Env> {
 		if (loaded && String(loaded.built_at ?? "") !== list.build) return null;
 		const { width, manifest } = await this.gatherWidth();
 		if ((partitions[partitions.length - 1] as number) >= width) return null;
-		const clients = this.partitionClients(width, trace);
+		const clients = this.partitionClients(width, trace, manifest);
 		// x23, as in gatherRun: a cold coordinator that is one of the listed partitions grows its
 		// memory for its own store BEFORE the fan-out, so no sibling call is still connecting when
 		// the load allocates. Nothing awaits between this and runTwoPhase.

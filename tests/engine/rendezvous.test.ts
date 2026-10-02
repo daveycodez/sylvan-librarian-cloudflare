@@ -14,7 +14,7 @@
 // reports cannot keep a higher value alive.
 
 import { afterEach, beforeEach, describe, expect, mock, spyOn, test } from "bun:test";
-import { setSiblingHedgeForTests } from "../../src/engine/sibling-hedge";
+import { resetSiblingMemoryForTests, setSiblingHedgeForTests } from "../../src/engine/sibling-hedge";
 import { ARCHIVE_FORMAT_VERSION } from "../../src/engine/store-kv";
 
 let clock = 5_000_000;
@@ -1016,7 +1016,7 @@ describe("a full gather keeps at most six sibling calls outstanding (x44)", () =
 	});
 
 	test("a hedge (x53) takes a slot like any other call: still never more than six, and the same page", async () => {
-		const restoreHedge = setSiblingHedgeForTests({ floorMs: 5 });
+		const restoreHedge = setSiblingHedgeForTests({ floorMs: 5, wakingFloorMs: 5, crossRegion: false });
 		const realWarn = console.warn;
 		const lines: string[] = [];
 		console.warn = (...args: unknown[]) => lines.push(args.join(" "));
@@ -1089,6 +1089,33 @@ describe("a coordinator whose sibling calls arrive late stops coordinating (x45)
 		const stuck: Record<number, { ms: number; hedgeMs?: number }> = {};
 		const calls: Record<number, number> = {};
 		const asked: number[] = [];
+		const rowsAsked: number[] = [];
+		/** x55: the neighbour region's objects (oc's is apac-se) — the build they hold, every call they
+		 * were sent, and how each stub to them was obtained. */
+		const there = {
+			build: "7",
+			asked: [] as string[],
+			gets: [] as { name: string; options: unknown }[],
+		};
+		const neighbourSibling = (p: number) => ({
+			async searchKeys(_opts: unknown, inline: number, shaping: { shape: string }) {
+				there.asked.push(`keys:${p}`);
+				return {
+					packed: packet(p, inline),
+					storeKey: `card-store-v1-${there.build}-p${p}.store`,
+					sortKeyVersion: 1,
+					shape: shaping.shape,
+					acquireMs: 0,
+				};
+			},
+			async fetchRows(_vpids: unknown, _fields: unknown, storeKey: string) {
+				there.asked.push(`rows:${p}`);
+				const held = `card-store-v1-${there.build}-p${p}.store`;
+				if (storeKey !== held)
+					throw new Error(`generation mismatch: rows asked from ${storeKey} but it serves ${held}`);
+				return { rowsBytes: encodeRowPacket([row(p)]), shape: "cards" };
+			},
+		});
 		gatherStore = {
 			ownLoad: Promise.resolve(),
 			loaded: true,
@@ -1132,13 +1159,18 @@ describe("a coordinator whose sibling calls arrive late stops coordinating (x45)
 				};
 			},
 			async fetchRows() {
+				rowsAsked.push(p);
 				return { rowsBytes: encodeRowPacket([row(p)]), shape: "cards" };
 			},
 		});
 		const env = {
 			SEARCH_ENGINE: {
 				idFromName: (name: string) => name,
-				get: (name: string) => sibling(Number(name.slice("engine-oc-p".length))),
+				get: (name: string, options?: unknown) => {
+					if (name.startsWith("engine-oc-p")) return sibling(Number(name.slice("engine-oc-p".length)));
+					there.gets.push({ name, options });
+					return neighbourSibling(Number(name.slice(name.lastIndexOf("-p") + 2)));
+				},
 			},
 		};
 		const storage = { sql: { exec: () => ({ toArray: () => [] }) } };
@@ -1146,19 +1178,19 @@ describe("a coordinator whose sibling calls arrive late stops coordinating (x45)
 			{ waitUntil: () => {}, storage, id: { name: "engine-oc-p0" } } as never,
 			env as never,
 		) as unknown as { fetch(request: Request): Promise<Response> };
-		const gather = (sheddable: boolean) =>
+		const gather = (sheddable: boolean, opts: typeof OPTS = OPTS) =>
 			engine.fetch(
 				new Request("https://engine/engine/payload", {
 					method: "POST",
 					body: JSON.stringify({
 						call: "cards2",
-						opts: OPTS,
+						opts,
 						baseUrl: "https://x",
 						...(sheddable ? { sheddable } : {}),
 					}),
 				}),
 			);
-		return { late, stuck, asked, gather };
+		return { late, stuck, calls, asked, rowsAsked, there, gather };
 	}
 
 	let lines: string[] = [];
@@ -1270,7 +1302,8 @@ describe("a coordinator whose sibling calls arrive late stops coordinating (x45)
 		// have shed anything. The floor is 500ms in production; 5ms of real time here.
 		let restoreHedge = () => {};
 		beforeEach(() => {
-			restoreHedge = setSiblingHedgeForTests({ floorMs: 5 });
+			// x53 as it shipped: no neighbour (x55 has its own suite below), no waking floor.
+			restoreHedge = setSiblingHedgeForTests({ floorMs: 5, wakingFloorMs: 5, crossRegion: false });
 		});
 		afterEach(() => restoreHedge());
 
@@ -1338,6 +1371,141 @@ describe("a coordinator whose sibling calls arrive late stops coordinating (x45)
 			expect(lines.at(-1)).toContain("stalled=rescued streak=2");
 			expect((await gather(true)).status).toBe(503);
 			await new Promise((resolve) => setTimeout(resolve, 35));
+		});
+	});
+
+	describe("a late sibling call is also asked of the neighbour region's copy of the partition (x55)", () => {
+		// DeckGen 2026-10-02 09:48–19:48: 53 second calls to the same object lost with the original
+		// at ≥3s — the same stuck path — and 170 were spent on a sibling that was only waking.
+		let restoreHedge = () => {};
+		beforeEach(() => {
+			resetSiblingMemoryForTests();
+			restoreHedge = setSiblingHedgeForTests({ floorMs: 5, wakingFloorMs: 5, crossAfterMs: 10 });
+		});
+		afterEach(() => restoreHedge());
+
+		const bytes = async (response: Response) => {
+			expect(response.status).toBe(200);
+			return new Uint8Array(await response.arrayBuffer());
+		};
+		const settle = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
+		test("the second call sticks too: the neighbour answers, and the page is the same bytes", async () => {
+			const { stuck, asked, there, gather } = coordinator();
+			const healthy = await bytes(await gather(true));
+			expect(there.gets).toEqual([]);
+			asked.length = 0;
+			// The first call is out 60ms and the second 200ms: the path is stuck for both.
+			stuck[2] = { ms: 60, hedgeMs: 200 };
+			const before = clock;
+			expect(await bytes(await gather(true))).toEqual(healthy);
+			expect(clock - before).toBe(600);
+			// This region's sibling was asked twice, the neighbour once — for that partition alone,
+			// by the name and with the hint the Worker's own hedge uses.
+			expect([...asked].sort()).toEqual([1, 2, 2, 3]);
+			expect(there.asked).toEqual(["keys:2"]);
+			expect(there.gets).toEqual([{ name: "engine-apac-se-p2", options: { locationHint: "apac-se" } }]);
+			expect(lines[0]).toBe(
+				"[engine-oc-p0] sibling hedge p2 searchKeys: fired at 600ms, to apac-se at 600ms; won by hedge to apac-se at 600ms (2 of 3 answered, median 0ms)",
+			);
+			expect(lines[1]).toContain(
+				"late: none; hedged: p2 searchKeys at 600ms, to apac-se at 600ms won by hedge to apac-se 600ms (original pending); stalled=rescued",
+			);
+			await settle(210);
+		});
+
+		test("whichever call wins, the page is the same bytes", async () => {
+			const { stuck, there, gather } = coordinator();
+			const healthy = await bytes(await gather(true));
+			// The original, the second call, the neighbour: each in turn is the one that answers.
+			stuck[2] = { ms: 60, hedgeMs: 200 };
+			const byNeighbour = await bytes(await gather(true));
+			await settle(210);
+			stuck[2] = { ms: 60 };
+			const bySecondCall = await bytes(await gather(true));
+			await settle(70);
+			restoreHedge();
+			restoreHedge = setSiblingHedgeForTests({ enabled: false, crossRegion: false });
+			const byOriginal = await bytes(await gather(true));
+			expect(byNeighbour).toEqual(healthy);
+			expect(bySecondCall).toEqual(healthy);
+			expect(byOriginal).toEqual(healthy);
+			const won = lines.filter((l) => l.includes("sibling hedge")).map((l) => /won by [a-z -]+ at/.exec(l)?.[0]);
+			expect(won).toEqual(["won by hedge to apac-se at", "won by hedge at"]);
+			expect(there.asked).toEqual(["keys:2"]);
+		});
+
+		test("a neighbour on another build is not believed: its answer is discarded and the original waited for", async () => {
+			const { stuck, there, gather } = coordinator();
+			const healthy = await bytes(await gather(true));
+			there.build = "8"; // mid-publish: the neighbour has swapped, this region has not
+			stuck[2] = { ms: 30, hedgeMs: 80 };
+			expect(await bytes(await gather(true))).toEqual(healthy);
+			expect(there.asked).toEqual(["keys:2"]);
+			expect(lines[0]).toBe(
+				"[engine-oc-p0] sibling hedge p2 searchKeys: fired at 600ms, to apac-se at 600ms; won by original at 3100ms, " +
+					"apac-se's answer discarded: build 8 where 7 is pinned (2 of 3 answered, median 0ms)",
+			);
+			expect(lines[1]).toContain("stalled=yes");
+			await settle(90);
+		});
+
+		test("a sibling never heard from may be waking: it is given the waking floor, then the neighbour alone", async () => {
+			restoreHedge();
+			restoreHedge = setSiblingHedgeForTests({ floorMs: 5, wakingFloorMs: 25, crossAfterMs: 10 });
+			const { stuck, calls, asked, there, gather } = coordinator();
+			// This isolate's first gather: no sibling has answered it yet.
+			stuck[2] = { ms: 60, hedgeMs: 200 };
+			const first = await bytes(await gather(true));
+			expect([...asked].sort()).toEqual([1, 2, 3]);
+			expect(there.asked).toEqual(["keys:2"]);
+			expect(lines[0]).toBe(
+				"[engine-oc-p0] sibling hedge p2 searchKeys: fired at 600ms to apac-se; won by hedge to apac-se at 600ms (2 of 3 answered, median 0ms)",
+			);
+			await settle(70);
+			// The original has landed 3.1s late: this isolate has now SEEN the stall, so its next late
+			// call is hedged at the ordinary floor, to the same object first.
+			asked.length = 0;
+			calls[2] = 0; // the fixture's next call to p2 is a first call again
+			stuck[2] = { ms: 60 };
+			expect(await bytes(await gather(true))).toEqual(first);
+			expect([...asked].sort()).toEqual([1, 2, 2, 3]);
+			expect(there.asked).toEqual(["keys:2"]);
+			expect(lines.filter((l) => l.includes("sibling hedge"))[1]).toContain("fired at 600ms; won by hedge at 600ms");
+			await settle(70);
+		});
+
+		test("rows for keys the neighbour supplied are asked of the neighbour, and the page is the same bytes", async () => {
+			const { stuck, rowsAsked, there, gather } = coordinator();
+			// Past the first row, no rows ride with the keys: every partition on the page owes a fetchRows.
+			const paged = { ...OPTS, offset: 1 };
+			const healthy = await bytes(await gather(true, paged));
+			expect([...rowsAsked].sort()).toEqual([1, 2, 3]);
+			rowsAsked.length = 0;
+			stuck[2] = { ms: 60, hedgeMs: 200 };
+			expect(await bytes(await gather(true, paged))).toEqual(healthy);
+			expect(there.asked).toEqual(["keys:2", "rows:2"]);
+			expect([...rowsAsked].sort()).toEqual([1, 3]);
+			await settle(210);
+		});
+
+		test("a region with no neighbour keeps the second call to the same object", async () => {
+			// oc's neighbours are apac-se and apac; with both aliased away there is nowhere to ask.
+			const { stuck, asked, there, gather } = coordinator();
+			(gatherStore as { manifest: Record<string, unknown> }).manifest = {
+				...WIDE,
+				placement: { v: 1, alias: { "apac-se": { to: "enam", since: "1" }, apac: { to: "enam", since: "1" } } },
+			};
+			const healthy = await bytes(await gather(true));
+			asked.length = 0;
+			stuck[2] = { ms: 60 };
+			expect(await bytes(await gather(true))).toEqual(healthy);
+			expect([...asked].sort()).toEqual([1, 2, 2, 3]);
+			expect(there.gets).toEqual([]);
+			expect(lines[0]).toBe(
+				"[engine-oc-p0] sibling hedge p2 searchKeys: fired at 600ms; won by hedge at 600ms (2 of 3 answered, median 0ms)",
+			);
+			await settle(70);
 		});
 	});
 });

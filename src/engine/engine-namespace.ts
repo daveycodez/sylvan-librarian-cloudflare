@@ -167,6 +167,14 @@ export function siblingStub(env: Env, label: string, partition: number): EngineS
  * call's neighbouring served region, same partition, shard 0. Still an edge isolate passing that
  * region's own hint, and those objects already exist in practice — the neighbour's own traffic made
  * them — so a hedge addresses them rather than creating them.
+ *
+ * x55 makes the same call from INSIDE an engine object: a gather coordinator whose call to a sibling
+ * is late asks the neighbour region's shard-0 copy of that partition (search-engine-do.ts
+ * partitionClients, sibling-hedge.ts). It is the hedge's own name, hint and generation, built by
+ * this function for the same reason — the hint is the NEIGHBOUR's, so an object this call created
+ * would be created in the region its name claims, wherever the caller runs. What must never happen
+ * is the thing `siblingStub` exists to prevent: addressing a name with no hint, or with the
+ * caller's.
  */
 export function placeEngineStub(
 	env: Env,
