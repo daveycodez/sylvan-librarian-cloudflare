@@ -883,3 +883,121 @@ describe("the fuzzy plan's object answers its own bundle in the same call (x22)"
 		expect(bundlesAsked).toEqual([]);
 	});
 });
+
+describe("a full gather keeps at most six sibling calls outstanding (x44)", () => {
+	// DeckGen 2026-09-29 → 10-02: 893 sibling calls died "Network connection lost." inside warm
+	// coordinators, each burst either the first k calls the coordinator issued or its last four —
+	// the runtime's six-connection queue, which a ten-call fan-out always overflowed by four.
+	const N = 11;
+	const OWN = 9;
+	const row = (p: number) => new TextEncoder().encode(`{"name":"p${p}"}`);
+	const keys = (p: number, inline: number) =>
+		encodeKeyPacket({
+			total: 1,
+			entries: [{ key: new Uint8Array([p + 1]), vpid: 0 }],
+			inlineRows: inline > 0 ? [row(p)] : [],
+		});
+	const OPTS = { filterTreeJson: "{}", unique: "printing", orderby: "name", limit: 20, offset: 0, fields: ["name"] };
+
+	function warmRegion() {
+		gatherStore = {
+			ownLoad: Promise.resolve(),
+			loaded: true,
+			ownLoadMs: 0,
+			events: [],
+			manifest: {
+				store_key: "card-store-v1-7.store",
+				store_bytes: 10 * N,
+				built_at: "7",
+				card_count: N,
+				partition_count: N,
+				format_version: ARCHIVE_FORMAT_VERSION,
+				partitions: Array.from({ length: N }, (_, p) => ({
+					store_key: `card-store-v1-7-p${p}.store`,
+					store_bytes: 10,
+					chunk_count: 1,
+					card_count: 1,
+				})),
+			},
+			ops: {
+				storeKey: `card-store-v1-7-p${OWN}.store`,
+				sortKeyVersion: () => 1,
+				queryKeys: () => keys(OWN, 0),
+				fetchRows: () => encodeRowPacket([row(OWN)]),
+			},
+		};
+		const seen = { outstanding: 0, peak: 0, asked: [] as string[] };
+		const held = async () => {
+			seen.peak = Math.max(seen.peak, ++seen.outstanding);
+			await new Promise((resolve) => setTimeout(resolve, 1));
+			seen.outstanding--;
+		};
+		const env = {
+			SEARCH_ENGINE: {
+				idFromName: (name: string) => name,
+				get: (name: string) => {
+					const p = Number(name.slice("engine-enam-p".length));
+					return {
+						async searchKeys(_opts: unknown, inline: number) {
+							seen.asked.push(`keys:${p}`);
+							await held();
+							return {
+								packed: keys(p, inline),
+								storeKey: `card-store-v1-7-p${p}.store`,
+								sortKeyVersion: 1,
+								shape: "rows",
+								acquireMs: 0,
+							};
+						},
+						async fetchRows() {
+							seen.asked.push(`rows:${p}`);
+							await held();
+							return { rowsBytes: encodeRowPacket([row(p)]), shape: "rows" };
+						},
+					};
+				},
+			},
+		};
+		const storage = { sql: { exec: () => ({ toArray: () => [] }) } };
+		const engine = new SearchEngine(
+			{ waitUntil: () => {}, storage, id: { name: `engine-enam-p${OWN}` } } as never,
+			env as never,
+		) as unknown as {
+			gatherSearchAsJson(o: unknown, shape: string): Promise<{ totalCards: number; cardsBytes: Uint8Array }>;
+		};
+		return { engine, seen };
+	}
+
+	const WHOLE_PAGE = `[${Array.from({ length: N }, (_, p) => `{"name":"p${p}"}`).join(",")}]`;
+
+	afterEach(() => {
+		gatherStore = null;
+	});
+
+	test("ten siblings: each asked once, in order, never more than six at a time, and the same page", async () => {
+		const { engine, seen } = warmRegion();
+		const page = await engine.gatherSearchAsJson(OPTS, "rows");
+		expect(seen.peak).toBe(6);
+		// No call added for the limit, none dropped, none reordered: one searchKeys per sibling in
+		// partition order, and a fetchRows only where the page's rows were not inlined.
+		expect(seen.asked.filter((a) => a.startsWith("keys:"))).toEqual(
+			Array.from({ length: N }, (_, p) => p)
+				.filter((p) => p !== OWN)
+				.map((p) => `keys:${p}`),
+		);
+		expect(new Set(seen.asked).size).toBe(seen.asked.length);
+		expect(page.totalCards).toBe(N);
+		expect(new TextDecoder().decode(page.cardsBytes)).toBe(WHOLE_PAGE);
+	});
+
+	test("two gathers on one coordinator each keep six, and both answer the whole page", async () => {
+		const { engine, seen } = warmRegion();
+		const [a, b] = await Promise.all([
+			engine.gatherSearchAsJson(OPTS, "rows"),
+			engine.gatherSearchAsJson(OPTS, "rows"),
+		]);
+		expect(seen.peak).toBe(12);
+		expect(new TextDecoder().decode(a.cardsBytes)).toBe(WHOLE_PAGE);
+		expect(new TextDecoder().decode(b.cardsBytes)).toBe(WHOLE_PAGE);
+	});
+});

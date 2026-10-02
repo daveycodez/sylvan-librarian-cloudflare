@@ -265,16 +265,44 @@ export function withDeadline<T>(promise: Promise<T>, ms: number, what: string): 
  */
 export const SIBLING_CALL_DEADLINE_MS = 25_000;
 
-/** One sibling RPC with a deadline and ONE retry of a reset or an abandoned load. */
-export async function siblingCall<T, S>(what: string, connect: () => S, call: (stub: S) => Promise<T>): Promise<T> {
+/**
+ * One sibling RPC with a deadline and ONE retry of a reset or an abandoned load.
+ *
+ * `where` describes the caller at the moment of a failure (the coordinator, how far into its gather,
+ * how many sibling calls it has open) and is only called when one happens. The warning then reads
+ *
+ *   partition-6 searchKeys failed transiently (Error: Network connection lost.) attempt=1
+ *   elapsed=212ms coordinator=engine-enam-p9 gather_ms=215 gather_open=6 gather_queued=4
+ *   object_open=6 object_queued=4; asking once more on a fresh stub
+ *
+ * — the fields x44 needs to tell a call cancelled in the runtime's connection queue (gather_open
+ * above six, which sibling-limit.ts now forbids) from a sibling that really went away.
+ */
+export async function siblingCall<T, S>(
+	what: string,
+	connect: () => S,
+	call: (stub: S) => Promise<T>,
+	where?: () => string,
+): Promise<T> {
+	const describe = (attempt: number, since: number) => {
+		const context = where?.();
+		return `attempt=${attempt} elapsed=${Date.now() - since}ms${context ? ` ${context}` : ""}`;
+	};
+	const first = Date.now();
 	try {
 		return await withDeadline(call(connect()), SIBLING_CALL_DEADLINE_MS, what);
 	} catch (err) {
 		if (!isTransientEngineFailure(err)) throw err;
-		console.warn(`${what} failed transiently (${err}); asking once more on a fresh stub`);
+		console.warn(`${what} failed transiently (${err}) ${describe(1, first)}; asking once more on a fresh stub`);
 		// A FRESH stub: after "this Durable Object instance is no longer active. Reconnect or retry"
 		// the first stub's connection is dead, and a retry through it fails the same way.
-		return withDeadline(call(connect()), SIBLING_CALL_DEADLINE_MS, what);
+		const second = Date.now();
+		try {
+			return await withDeadline(call(connect()), SIBLING_CALL_DEADLINE_MS, what);
+		} catch (again) {
+			console.warn(`${what} failed on its retry (${again}) ${describe(2, second)}; giving up on this sibling`);
+			throw again;
+		}
 	}
 }
 

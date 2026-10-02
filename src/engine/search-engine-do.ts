@@ -76,6 +76,7 @@ import {
 import { probePlacement } from "./placement";
 import { siblingCall } from "./remote-engine";
 import { foldWidthAnnouncement } from "./shard-controller";
+import { SiblingLimiter, type SiblingLoad } from "./sibling-limit";
 import {
 	autocompleteFromNames,
 	collectionPacketOf,
@@ -186,6 +187,9 @@ export class SearchEngine extends DurableObject<Env> {
 	 * DeckGen burst with no store load anywhere in the window; weur-1 then served ~30 requests in
 	 * 48h. See instrumentedGather. */
 	private inFlightSearches = 0;
+	/** Sibling calls open and queued across every gather this object is running — read only by the
+	 * "failed transiently" line, to say what the object was doing when a call died (x44). */
+	private readonly siblingLoad: SiblingLoad = { open: 0, queued: 0 };
 	/** Arrivals per second, for the request-RATE the shard controller gates
 	 * expansion on. Rate is the cause-side measurement: latency rises for
 	 * reasons sharding cannot fix (KV slowness, network, a noisy neighbour),
@@ -880,6 +884,13 @@ export class SearchEngine extends DurableObject<Env> {
 	 * a gather can only ever fan out within its own region and replica. */
 	private partitionClients(count: number): PartitionClient[] {
 		const own = parseEngineName(this.label)?.partition;
+		// x44: at most six sibling calls outstanding per gather — see sibling-limit.ts. One limiter
+		// for both phases of the gather these clients serve.
+		const limiter = new SiblingLimiter(this.siblingLoad);
+		const builtAt = Date.now();
+		const where = () =>
+			`coordinator=${this.label} gather_ms=${Date.now() - builtAt} gather_open=${limiter.open} ` +
+			`gather_queued=${limiter.queued} object_open=${this.siblingLoad.open} object_queued=${this.siblingLoad.queued}`;
 		return Array.from({ length: count }, (_, p) => {
 			if (p === own) {
 				// The gather's OWN partition answers in-process, so inlining its rows would only
@@ -910,9 +921,18 @@ export class SearchEngine extends DurableObject<Env> {
 			const stub = connect();
 			return {
 				searchKeys: (opts: EngineSearchOptions, inlineRows: number, shaping: RowShaping) =>
-					siblingCall(`partition-${p} searchKeys`, connect, (s) => s.searchKeys(opts, inlineRows, shaping)),
+					limiter.run(() =>
+						siblingCall(`partition-${p} searchKeys`, connect, (s) => s.searchKeys(opts, inlineRows, shaping), where),
+					),
 				fetchRows: (vpids: number[], fields: string[], storeKey: string, shaping: RowShaping) =>
-					siblingCall(`partition-${p} fetchRows`, connect, (s) => s.fetchRows(vpids, fields, storeKey, shaping)),
+					limiter.run(() =>
+						siblingCall(
+							`partition-${p} fetchRows`,
+							connect,
+							(s) => s.fetchRows(vpids, fields, storeKey, shaping),
+							where,
+						),
+					),
 				refresh: async () => {
 					const { swapped } = await stub.notifyPublish();
 					console.warn(
