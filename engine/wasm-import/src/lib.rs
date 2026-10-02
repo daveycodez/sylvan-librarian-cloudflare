@@ -117,7 +117,7 @@ use sylvan_store_builder::ranks::PrintingRanks;
 use sylvan_store_builder::tags::{TagAccumulator, TagData, TagKind};
 use sylvan_store_builder::transform::{
     art_tags_of, finalize_row, illust_count_qualifies, illustration_ids, is_name_routing_key, is_pinned, transform_row,
-    ArtistSpellings, CorpusPassDraft, CorpusTables, PinnedPrintings, RowDraft, NAME_KEYS_STAMP, ORACLE_PAIR_BYTES,
+    ArtistSpellings, CorpusPassDraft, CorpusTables, FunnyCards, PinnedPrintings, RowDraft, NAME_KEYS_STAMP, ORACLE_PAIR_BYTES,
 };
 
 // ─── counting allocator (observability; OOM shows as a trap regardless) ──────
@@ -335,6 +335,10 @@ struct AggState {
     /// under a filter the pinned printing does not survive (sylvan_store_builder::ranks).
     /// Partition-local for exactly the reason `pins` is: the order is keyed inside one card.
     ranks: PrintingRanks,
+    /// Which of this partition's cards have a funny printing — what lets a printing with no funny
+    /// signal of its own carry `is:funny` for its card (transform::FunnyCards). Partition-local
+    /// like the two above: the key is the oracle id.
+    funny: FunnyCards,
     sealed: bool,
     positions_seen: u32,
     /// The partition's card names and illustration ids, gathered as its drafts go past — the keys
@@ -1149,6 +1153,7 @@ pub extern "C" fn agg_drafts(ptr: *mut u8, len: usize) -> i64 {
             // only while that row goes past (transform::PIN_BONUS).
             s.agg.pins.observe(&draft, &s.tags.labels);
             s.agg.ranks.observe(&draft);
+            s.agg.funny.observe(&draft);
             // Every key finalize will look this draft up by, other than its oracle id (which the
             // partition rule already decides): its name for the cubecobra score and the
             // illustration count, and every illustration it shows for the art tags.
@@ -1191,6 +1196,7 @@ pub extern "C" fn agg_finish() -> i64 {
             "positions": s.agg.positions_seen,
             "pinned_slots": s.agg.pins.len(),
             "ranked_slots": s.agg.ranks.len(),
+            "funny_cards": s.agg.funny.len(),
         }));
         s.agg.by_id.len() as i64
     })
@@ -1275,7 +1281,9 @@ pub extern "C" fn finalize_drafts(ptr: *mut u8, len: usize) -> i64 {
             // this port answers like Scryfall.
             let pinned = is_pinned(&draft, &s.tags.labels, &s.agg.pins);
             let rank = s.agg.ranks.rank_of(&draft);
-            let row = finalize_row(draft, &oracle_tags, &art_tags, illustration_count, cubecobra_score, pinned, rank);
+            let is_funny = s.agg.funny.is_funny(&draft);
+            let row =
+                finalize_row(draft, &oracle_tags, &art_tags, illustration_count, cubecobra_score, pinned, rank, is_funny);
             let row_json = row.to_string();
             let builder = s.staging.as_mut().expect("checked above");
             match builder.add_card(&row) {

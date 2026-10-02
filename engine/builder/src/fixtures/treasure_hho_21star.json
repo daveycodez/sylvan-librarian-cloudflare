@@ -1,0 +1,158 @@
+{
+ "all_parts": [
+  {
+   "component": "combo_piece",
+   "id": "f679da19-5dac-4be6-983d-fee7e80cdb9c",
+   "name": "Ruthless Knave",
+   "object": "related_card",
+   "type_line": "Creature — Orc Pirate",
+   "uri": "https://api.scryfall.com/cards/f679da19-5dac-4be6-983d-fee7e80cdb9c"
+  },
+  {
+   "component": "combo_piece",
+   "id": "7ba507e2-fe5e-4947-aada-20184aa09700",
+   "name": "Surly Badgersaur",
+   "object": "related_card",
+   "type_line": "Creature — Badger Dinosaur",
+   "uri": "https://api.scryfall.com/cards/7ba507e2-fe5e-4947-aada-20184aa09700"
+  },
+  {
+   "component": "combo_piece",
+   "id": "86c65c7f-c440-482d-964d-175c75ca4458",
+   "name": "Beza, the Bounding Spring",
+   "object": "related_card",
+   "type_line": "Legendary Creature — Elemental Elk",
+   "uri": "https://api.scryfall.com/cards/86c65c7f-c440-482d-964d-175c75ca4458"
+  }
+ ],
+ "artist": "Rachta Lin",
+ "artist_ids": [
+  "22639b52-9021-4c88-b53a-35d3fc9ebcdd"
+ ],
+ "booster": false,
+ "border_color": "gold",
+ "card_back_id": "456c2bfe-4990-4740-abc3-7ec3060d451a",
+ "cmc": 0.0,
+ "collector_number": "21★",
+ "color_identity": [],
+ "colors": [],
+ "digital": false,
+ "finishes": [
+  "foil"
+ ],
+ "foil": true,
+ "frame": "2015",
+ "frame_effects": [
+  "fullart"
+ ],
+ "full_art": true,
+ "game_changer": false,
+ "games": [
+  "paper"
+ ],
+ "highres_image": true,
+ "id": "5379b994-5f9e-44ec-a69c-8d58ffb0dbd8",
+ "illustration_id": "a2f3093e-7572-457b-acc6-9d9e3e526db2",
+ "image_status": "highres_scan",
+ "image_updated_at": "2026-07-13T06:45:18Z",
+ "image_uris": {
+  "art": "https://cards.scryfall.io/art/front/5/3/5379b994-5f9e-44ec-a69c-8d58ffb0dbd8.webp?1783925118",
+  "art_crop": "https://cards.scryfall.io/art_crop/front/5/3/5379b994-5f9e-44ec-a69c-8d58ffb0dbd8.jpg?1783925118",
+  "border_crop": "https://cards.scryfall.io/border_crop/front/5/3/5379b994-5f9e-44ec-a69c-8d58ffb0dbd8.jpg?1783925118",
+  "crop": "https://cards.scryfall.io/crop/front/5/3/5379b994-5f9e-44ec-a69c-8d58ffb0dbd8.webp?1783925118",
+  "display": "https://cards.scryfall.io/display/front/5/3/5379b994-5f9e-44ec-a69c-8d58ffb0dbd8.webp?1783925118",
+  "grid": "https://cards.scryfall.io/grid/front/5/3/5379b994-5f9e-44ec-a69c-8d58ffb0dbd8.webp?1783925118",
+  "large": "https://cards.scryfall.io/large/front/5/3/5379b994-5f9e-44ec-a69c-8d58ffb0dbd8.jpg?1783925118",
+  "normal": "https://cards.scryfall.io/normal/front/5/3/5379b994-5f9e-44ec-a69c-8d58ffb0dbd8.jpg?1783925118",
+  "png": "https://cards.scryfall.io/png/front/5/3/5379b994-5f9e-44ec-a69c-8d58ffb0dbd8.png?1783925118",
+  "small": "https://cards.scryfall.io/small/front/5/3/5379b994-5f9e-44ec-a69c-8d58ffb0dbd8.jpg?1783925118",
+  "thumb": "https://cards.scryfall.io/thumb/front/5/3/5379b994-5f9e-44ec-a69c-8d58ffb0dbd8.webp?1783925118"
+ },
+ "keywords": [],
+ "lang": "en",
+ "layout": "token",
+ "legalities": {
+  "alchemy": "not_legal",
+  "brawl": "not_legal",
+  "commander": "not_legal",
+  "competitivebrawl": "not_legal",
+  "duel": "not_legal",
+  "future": "not_legal",
+  "gladiator": "not_legal",
+  "historic": "not_legal",
+  "legacy": "not_legal",
+  "modern": "not_legal",
+  "oathbreaker": "not_legal",
+  "oldschool": "not_legal",
+  "pauper": "not_legal",
+  "paupercommander": "not_legal",
+  "penny": "not_legal",
+  "pioneer": "not_legal",
+  "predh": "not_legal",
+  "premodern": "not_legal",
+  "standard": "not_legal",
+  "standardbrawl": "not_legal",
+  "timeless": "not_legal",
+  "tlr": "not_legal",
+  "vintage": "not_legal"
+ },
+ "mana_cost": "",
+ "multiverse_ids": [],
+ "name": "Treasure",
+ "nonfoil": false,
+ "object": "card",
+ "oracle_id": "3c549374-6c37-42e0-8d88-a8555d46732d",
+ "oracle_text": "{T}, Sacrifice this token: Add one mana of any color.",
+ "oversized": false,
+ "prices": {
+  "eur": null,
+  "eur_foil": null,
+  "tix": null,
+  "usd": null,
+  "usd_etched": null,
+  "usd_foil": null
+ },
+ "prints_search_uri": "https://api.scryfall.com/cards/search?order=released&q=oracleid%3A3c549374-6c37-42e0-8d88-a8555d46732d&unique=prints",
+ "produced_mana": [
+  "B",
+  "G",
+  "R",
+  "U",
+  "W"
+ ],
+ "promo": true,
+ "promo_types": [
+  "metal",
+  "serialized",
+  "thick",
+  "event"
+ ],
+ "purchase_uris": {
+  "cardhoarder": "https://www.cardhoarder.com/cards?affiliate_id=scryfall&data%5Bsearch%5D=Treasure&ref=card-profile&utm_campaign=affiliate&utm_medium=card&utm_source=scryfall",
+  "cardmarket": "https://www.cardmarket.com/en/Magic/Products/Search?referrer=scryfall&searchString=Treasure&utm_campaign=card_prices&utm_medium=text&utm_source=scryfall",
+  "tcgplayer": "https://partner.tcgplayer.com/c/4931599/1830156/21018?subId1=api&u=https%3A%2F%2Fwww.tcgplayer.com%2Fsearch%2Fmagic%2Fproduct%3FproductLineName%3Dmagic%26q%3DTreasure%26view%3Dgrid"
+ },
+ "rarity": "rare",
+ "related_uris": {
+  "edhrec": "https://edhrec.com/route/?cc=Treasure",
+  "tcgplayer_infinite_articles": "https://partner.tcgplayer.com/c/4931599/1830156/21018?subId1=api&trafcat=tcgplayer.com%2Fsearch%2Farticles&u=https%3A%2F%2Fwww.tcgplayer.com%2Fsearch%2Farticles%3FproductLineName%3Dmagic%26q%3DTreasure",
+  "tcgplayer_infinite_decks": "https://partner.tcgplayer.com/c/4931599/1830156/21018?subId1=api&trafcat=tcgplayer.com%2Fsearch%2Fdecks&u=https%3A%2F%2Fwww.tcgplayer.com%2Fsearch%2Fdecks%3FproductLineName%3Dmagic%26q%3DTreasure"
+ },
+ "released_at": "2021-11-18",
+ "reprint": true,
+ "reserved": false,
+ "rulings_uri": "https://api.scryfall.com/cards/5379b994-5f9e-44ec-a69c-8d58ffb0dbd8/rulings",
+ "scryfall_set_uri": "https://scryfall.com/sets/hho?utm_source=api",
+ "scryfall_uri": "https://scryfall.com/card/hho/21%E2%98%85/treasure?utm_source=api",
+ "set": "hho",
+ "set_id": "5ba8edcc-a729-4023-8a68-0280ad19337e",
+ "set_name": "Happy Holidays",
+ "set_search_uri": "https://api.scryfall.com/cards/search?order=set&q=e%3Ahho&unique=prints",
+ "set_type": "funny",
+ "set_uri": "https://api.scryfall.com/sets/5ba8edcc-a729-4023-8a68-0280ad19337e",
+ "story_spotlight": false,
+ "textless": false,
+ "type_line": "Token Artifact — Treasure",
+ "uri": "https://api.scryfall.com/cards/5379b994-5f9e-44ec-a69c-8d58ffb0dbd8",
+ "variation": false
+}

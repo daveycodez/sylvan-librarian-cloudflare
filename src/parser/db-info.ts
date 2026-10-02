@@ -340,8 +340,17 @@ export const EXTRA_IS_TAG = "extra";
  * silver-bordered tust/tugl tokens Scryfall calls not funny. Residual 11 of 1,461, named at the
  * builder's `FUNNY_IS_TAG` — against 341 for the set-type rewrite it replaces.
  *
- * Computed by the importer, like `extra`, because it reads five fields of the printing at once.
- * Spelled once here and once as the builder's `FUNNY_IS_TAG`.
+ * AND IT ASKS THE CARD'S OTHER PRINTINGS (generation 56). That rule reads one printing; a
+ * printing with none of its signals is still funny on Scryfall when a sibling has one — sld/869
+ * Blacker Lotus for ugl/70, olep's oversized Unglued cards, past/2 Call from the Grave for its
+ * playtest reprint — and a token is funny exactly when its FIRST printing was (the h17 Dragon's
+ * three printings are, the 99 Treasures are not, hho/21★ included). Measured 2026-10-01
+ * (unique=prints): 1,966 of api.scryfall.com's 1,973 and nothing it lacks; the seven left have no
+ * funny printing on their card. The rule is on the builder's `FunnyCards`.
+ *
+ * Computed by the importer, like `extra`, because it reads five fields of the printing at once —
+ * and then the card's other printings, which only an importer holds together. Spelled once here
+ * and once as the builder's `FUNNY_IS_TAG`.
  */
 export const FUNNY_IS_TAG = "funny";
 

@@ -1747,8 +1747,26 @@ export async function gzipBytes(bytes: Uint8Array): Promise<Uint8Array> {
  *      answer `is:commander` from no row at all once the parser stops rewriting it. This constant
  *      is what makes store-age.ts rebuild; the format, and so the per-format manifest key, stays
  *      2026092601 and the rebuild replaces the store in place.
+ *
+ *   56 (2026-10-01): `is:funny` ASKS THE CARD'S OTHER PRINTINGS (backlog x42). The tag was the
+ *      printing's own verdict — never legal, and funny-set OR playtest OR silver-bordered OR
+ *      acorn-stamped, outside a token set — and Scryfall's class is wider: a printing with none of
+ *      those signals is funny when a sibling printing has one. `is:funny` (`unique=prints`,
+ *      `include_extras`) answered 1,957 here against api.scryfall.com's 1,973, plus one printing
+ *      Scryfall does not have; it answers 1,966 and nothing Scryfall lacks. In: sld/869 and
+ *      olep/47 Blacker Lotus, olep/48 Mirror Mirror, olep/49 and olep/50 Squirrel Farm, olep/51
+ *      Infernal Spawn of Evil, o90p/10 Incoming!, past/2 Call from the Grave, and the Dragon
+ *      tokens tund/4 and tust/16. Out: hho/21★ Treasure — a TOKEN is funny only when its first
+ *      printing was, so a Treasure reprinted into a funny set leaves all 99 Treasures alone. The
+ *      seven left have no funny printing on their card (Gleemox, tclb/0, five sticker sheets).
+ *      The rule and its evidence are on the builder's `FunnyCards`.
+ *
+ *      GENERATION-ONLY, and nothing on the query path moves: the same word in the same
+ *      `card_is_tags` column, read as before, on ten more rows and one fewer. The importers
+ *      resolve it in the per-card pass they already make for the pins and the print ranks — one
+ *      oracle id held per funny card, no new field on a staged draft.
  */
-export const STORE_CONTENT_GENERATION = 55;
+export const STORE_CONTENT_GENERATION = 56;
 
 /**
  * Chunk key for a store. Keyed by store_key, so publishes never collide.

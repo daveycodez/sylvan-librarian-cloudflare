@@ -1,0 +1,140 @@
+{
+ "all_parts": [
+  {
+   "component": "combo_piece",
+   "id": "bacce818-96b4-4b6f-97c4-74a22c8d9afb",
+   "name": "Sword of Dungeons & Dragons",
+   "object": "related_card",
+   "type_line": "Artifact — Equipment",
+   "uri": "https://api.scryfall.com/cards/bacce818-96b4-4b6f-97c4-74a22c8d9afb"
+  },
+  {
+   "component": "token",
+   "id": "44c65dfd-69be-4345-92e9-51a35a486f21",
+   "name": "Dragon",
+   "object": "related_card",
+   "type_line": "Token Creature — Dragon",
+   "uri": "https://api.scryfall.com/cards/44c65dfd-69be-4345-92e9-51a35a486f21"
+  }
+ ],
+ "artist": "Autumn Rain Turkel",
+ "artist_ids": [
+  "16401e64-3cd9-44e7-99e9-c052e3355040"
+ ],
+ "booster": true,
+ "border_color": "silver",
+ "card_back_id": "0aeebaf5-8c7d-4636-9e82-8c27447861f7",
+ "cardmarket_id": 313922,
+ "cmc": 0.0,
+ "collector_number": "16",
+ "color_identity": [],
+ "colors": [],
+ "digital": false,
+ "finishes": [
+  "foil"
+ ],
+ "foil": true,
+ "frame": "2015",
+ "full_art": false,
+ "game_changer": false,
+ "games": [
+  "paper"
+ ],
+ "highres_image": true,
+ "id": "44c65dfd-69be-4345-92e9-51a35a486f21",
+ "illustration_id": "3dbbf7be-32ef-4782-aedc-fd7c6c24c7d7",
+ "image_status": "highres_scan",
+ "image_updated_at": "2026-07-13T09:35:49Z",
+ "image_uris": {
+  "art": "https://cards.scryfall.io/art/front/4/4/44c65dfd-69be-4345-92e9-51a35a486f21.webp?1783935349",
+  "art_crop": "https://cards.scryfall.io/art_crop/front/4/4/44c65dfd-69be-4345-92e9-51a35a486f21.jpg?1783935349",
+  "border_crop": "https://cards.scryfall.io/border_crop/front/4/4/44c65dfd-69be-4345-92e9-51a35a486f21.jpg?1783935349",
+  "crop": "https://cards.scryfall.io/crop/front/4/4/44c65dfd-69be-4345-92e9-51a35a486f21.webp?1783935349",
+  "display": "https://cards.scryfall.io/display/front/4/4/44c65dfd-69be-4345-92e9-51a35a486f21.webp?1783935349",
+  "grid": "https://cards.scryfall.io/grid/front/4/4/44c65dfd-69be-4345-92e9-51a35a486f21.webp?1783935349",
+  "large": "https://cards.scryfall.io/large/front/4/4/44c65dfd-69be-4345-92e9-51a35a486f21.jpg?1783935349",
+  "normal": "https://cards.scryfall.io/normal/front/4/4/44c65dfd-69be-4345-92e9-51a35a486f21.jpg?1783935349",
+  "png": "https://cards.scryfall.io/png/front/4/4/44c65dfd-69be-4345-92e9-51a35a486f21.png?1783935349",
+  "small": "https://cards.scryfall.io/small/front/4/4/44c65dfd-69be-4345-92e9-51a35a486f21.jpg?1783935349",
+  "thumb": "https://cards.scryfall.io/thumb/front/4/4/44c65dfd-69be-4345-92e9-51a35a486f21.webp?1783935349"
+ },
+ "keywords": [
+  "Flying"
+ ],
+ "lang": "en",
+ "layout": "token",
+ "legalities": {
+  "alchemy": "not_legal",
+  "brawl": "not_legal",
+  "commander": "not_legal",
+  "competitivebrawl": "not_legal",
+  "duel": "not_legal",
+  "future": "not_legal",
+  "gladiator": "not_legal",
+  "historic": "not_legal",
+  "legacy": "not_legal",
+  "modern": "not_legal",
+  "oathbreaker": "not_legal",
+  "oldschool": "not_legal",
+  "pauper": "not_legal",
+  "paupercommander": "not_legal",
+  "penny": "not_legal",
+  "pioneer": "not_legal",
+  "predh": "not_legal",
+  "premodern": "not_legal",
+  "standard": "not_legal",
+  "standardbrawl": "not_legal",
+  "timeless": "not_legal",
+  "tlr": "not_legal",
+  "vintage": "not_legal"
+ },
+ "mana_cost": "",
+ "multiverse_ids": [],
+ "name": "Dragon",
+ "nonfoil": false,
+ "object": "card",
+ "oracle_id": "eaf318f0-2cad-437c-8162-78462ecbc235",
+ "oracle_text": "Flying",
+ "oversized": false,
+ "power": "4",
+ "prices": {
+  "eur": null,
+  "eur_foil": "0.24",
+  "tix": null,
+  "usd": null,
+  "usd_etched": null,
+  "usd_foil": "0.42"
+ },
+ "prints_search_uri": "https://api.scryfall.com/cards/search?order=released&q=oracleid%3Aeaf318f0-2cad-437c-8162-78462ecbc235&unique=prints",
+ "promo": false,
+ "purchase_uris": {
+  "cardhoarder": "https://www.cardhoarder.com/cards?affiliate_id=scryfall&data%5Bsearch%5D=Dragon&ref=card-profile&utm_campaign=affiliate&utm_medium=card&utm_source=scryfall",
+  "cardmarket": "https://www.cardmarket.com/en/Magic/Products?idProduct=313922&referrer=scryfall&utm_campaign=card_prices&utm_medium=text&utm_source=scryfall",
+  "tcgplayer": "https://partner.tcgplayer.com/c/4931599/1830156/21018?subId1=api&u=https%3A%2F%2Fwww.tcgplayer.com%2Fproduct%2F153064%3Fpage%3D1"
+ },
+ "rarity": "common",
+ "related_uris": {
+  "edhrec": "https://edhrec.com/route/?cc=Dragon",
+  "tcgplayer_infinite_articles": "https://partner.tcgplayer.com/c/4931599/1830156/21018?subId1=api&trafcat=tcgplayer.com%2Fsearch%2Farticles&u=https%3A%2F%2Fwww.tcgplayer.com%2Fsearch%2Farticles%3FproductLineName%3Dmagic%26q%3DDragon",
+  "tcgplayer_infinite_decks": "https://partner.tcgplayer.com/c/4931599/1830156/21018?subId1=api&trafcat=tcgplayer.com%2Fsearch%2Fdecks&u=https%3A%2F%2Fwww.tcgplayer.com%2Fsearch%2Fdecks%3FproductLineName%3Dmagic%26q%3DDragon"
+ },
+ "released_at": "2017-12-08",
+ "reprint": true,
+ "reserved": false,
+ "rulings_uri": "https://api.scryfall.com/cards/44c65dfd-69be-4345-92e9-51a35a486f21/rulings",
+ "scryfall_set_uri": "https://scryfall.com/sets/tust?utm_source=api",
+ "scryfall_uri": "https://scryfall.com/card/tust/16/dragon?utm_source=api",
+ "set": "tust",
+ "set_id": "f494ec08-2e39-4228-bddb-200967e2b109",
+ "set_name": "Unstable Tokens",
+ "set_search_uri": "https://api.scryfall.com/cards/search?order=set&q=e%3Atust&unique=prints",
+ "set_type": "token",
+ "set_uri": "https://api.scryfall.com/sets/f494ec08-2e39-4228-bddb-200967e2b109",
+ "story_spotlight": false,
+ "tcgplayer_id": 153064,
+ "textless": false,
+ "toughness": "4",
+ "type_line": "Token Creature — Dragon",
+ "uri": "https://api.scryfall.com/cards/44c65dfd-69be-4345-92e9-51a35a486f21",
+ "variation": false
+}

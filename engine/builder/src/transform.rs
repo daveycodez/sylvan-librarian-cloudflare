@@ -940,6 +940,11 @@ pub const EXTRA_IS_TAG: &str = "extra";
 ///     o90p/10, olep/48, olep/49, olep/51 (oversized memorabilia); sld/335 Sticker sheet.
 ///
 /// Against 341 for the `st:funny` rewrite this replaces.
+///
+/// MOST OF THAT RESIDUAL WAS ONE THING, and it is closed (generation 56): the rule above reads
+/// one printing, and those printings are funny for ANOTHER printing of their card. This rule is
+/// now the printing-level half — what `transform_row` records on the draft — and [`FunnyCards`]
+/// resolves the class at finalize, which is where hho/21★ leaves it and the siblings join.
 pub const FUNNY_IS_TAG: &str = "funny";
 
 /// `is:hybrid`, computed here because no Scryfall field carries it and no `m:` rewrite can.
@@ -1328,13 +1333,21 @@ fn never_legal(card: &Map<String, Value>) -> Result<bool, TransformError> {
         .get("legalities")
         .and_then(Value::as_object)
         .ok_or_else(|| TransformError::MissingField { card: s(card, "name").unwrap_or_default(), field: "legalities" })?;
-    Ok(!legalities.values().any(|v| matches!(v.as_str(), Some("legal") | Some("restricted"))))
+    Ok(no_format_allows(legalities))
 }
 
-/// Whether this printing is in Scryfall's `is:funny` class — see [`FUNNY_IS_TAG`] for the rule,
-/// its measurement and its 11-card residual. A property of the PRINTING, decided once per row like
-/// the extras class, and independent of it: mb2's playtest cards are both, Unfinity's eternal-legal
-/// cards are neither, and a never-legal Unstable card is funny and served.
+/// The test [`never_legal`] makes, over the `legalities` object itself — which a draft carries
+/// verbatim as `card_legalities`, so [`FunnyCards`] asks a draft exactly what the transform asked
+/// the card.
+fn no_format_allows(legalities: &Map<String, Value>) -> bool {
+    !legalities.values().any(|v| matches!(v.as_str(), Some("legal") | Some("restricted")))
+}
+
+/// The PRINTING-LEVEL half of Scryfall's `is:funny` class — the rule at [`FUNNY_IS_TAG`], read off
+/// this row alone and recorded on the draft by `set_funny`. The class itself also asks the card's
+/// OTHER printings, which no row can answer for itself: [`FunnyCards`] resolves it at finalize.
+/// Independent of the extras class: mb2's playtest cards are both, Unfinity's eternal-legal cards
+/// are neither, and a never-legal Unstable card is funny and served.
 fn funny_class(card: &Map<String, Value>) -> Result<bool, TransformError> {
     if !never_legal(card)? {
         return Ok(false);
@@ -1347,6 +1360,112 @@ fn funny_class(card: &Map<String, Value>) -> Result<bool, TransformError> {
         || array_contains(card, "promo_types", "playtest")
         || s(card, "border_color").as_deref() == Some("silver")
         || s(card, "security_stamp").as_deref() == Some("acorn"))
+}
+
+/// The layouts of a TOKEN — a game object any number of cards make, where a card is one thing.
+/// [`FunnyCards`] treats the two differently, and says why.
+const TOKEN_LAYOUTS: [&str; 2] = ["token", "double_faced_token"];
+
+/// The BOOLEAN_IS_TAGS word for Scryfall's `reprint: true` — "this card was printed before".
+const REPRINT_IS_TAG: &str = "reprint";
+
+/// WHICH CARDS ARE FUNNY — the half of `is:funny` a row cannot answer for itself.
+///
+/// [`funny_class`] reads one printing. Scryfall's class is wider: a printing with no funny signal
+/// of its own is funny when ANOTHER printing of the same card has one. Measured on api.scryfall.com
+/// 2026-10-01 (`unique=prints`, `include_extras`): 1,973 printings there against 1,957 for the
+/// printing rule alone, and ten of the seventeen it lacked are siblings —
+///
+/// ```text
+/// sld/869, olep/47   Blacker Lotus            (ugl/70 is the silver-bordered one)
+/// olep/48            Mirror Mirror            olep/49, olep/50  Squirrel Farm
+/// olep/51            Infernal Spawn of Evil   o90p/10           Incoming!
+/// past/2             Call from the Grave      (mb2/541 is a playtest printing, 27 years later)
+/// tund/4, tust/16    Dragon                   (h17/4, the token Sword of Dungeons & Dragons makes)
+/// ```
+///
+/// THE RULE, for a printing legal in no format:
+///
+/// ```text
+/// a CARD   (any layout but a token's), outside a token set:
+///            funny by its own printing rule, OR some printing of the card is
+/// a TOKEN  (layout token / double_faced_token), in any set:
+///            the TOKEN WAS BORN FUNNY — its first printing (`reprint: false`) is a funny one
+/// ```
+///
+/// WHY A TOKEN IS ASKED A DIFFERENT QUESTION. One oracle id is every Treasure ever printed — 99
+/// printings — and one of them, hho/21★, is a gold-bordered holiday-promo Treasure in a
+/// funny set. Scryfall calls none of the 99 funny, hho/21★ included, where the printing rule called
+/// hho/21★ funny and plain sibling propagation would have added the twenty Treasures printed
+/// outside token sets (sld, plst, ptsnc, the league promos). The Dragon is the opposite case and
+/// the only other one: h17/4 is that token's FIRST printing, and Scryfall calls all three of its
+/// printings funny — tund/4 among them, a black-bordered token in a token set with no funny signal
+/// on the row at all, so nothing but its sibling can be deciding it. A token reprinted INTO a funny
+/// set is still the ordinary token; a token first made BY a funny card is a funny token wherever it
+/// is reprinted. Two oracle ids are the whole evidence for that reading, and it is the one that
+/// fails safe: no later holiday promo can turn every Goblin or Treasure in the corpus funny.
+///
+/// MEASURED over the 2026-10-01 bulk against api.scryfall.com: 1,966 of 1,973, and nothing Scryfall
+/// does not also call funny (the printing rule alone: 1,957, and hho/21★). THE RESIDUAL is seven
+/// printings with no funny printing anywhere on their card, named rather than chased: prm/26584
+/// Gleemox, tclb/0 Baldur's Gate Wilderness, and the sticker sheets sld/335-339.
+///
+/// ORACLE-LOCAL, so partition-local: the key is the oracle id and `hash(oracle_id)` puts every
+/// printing of a card in one partition, which is what lets the nightly coordinator fill this per
+/// partition and the native builder fill it while the corpus streams — the same shape, and the
+/// same two call sites, as [`PinnedPrintings`] and `ranks::PrintingRanks`. It holds one id per
+/// funny CARD (~1,500 corpus-wide), and THE DRAFT CARRIES NOTHING NEW: the two facts the verdict
+/// needs beyond the tag `set_funny` wrote — `card_legalities` and `raw_set_type` — were already on
+/// it, so not one staged byte moves.
+///
+/// WHAT IT COSTS AN IMPORT, measured on the real corpus (545,288 rows, the 2026-10-01 bulk, one
+/// machine, four interleaved rounds): nothing a clock or a memory meter can see — 57.5s wall and
+/// 56.3s CPU against 57.8s and 56.5s before, ~600MB peak either way, and the staged drafts the
+/// same 1,799,799,891 bytes. Two alternatives were built and measured the same way, and both lost:
+///
+///   * asking the row's LEGALITIES before hashing its oracle id — fewer instructions retired and
+///     0.3s MORE CPU, in every round of seven: walking a row's legalities map is a cache miss and
+///     the hash is not;
+///   * a never-legal BOOL on the draft, so the 98.1% of rows legal somewhere leave on one test —
+///     no faster (57.7s), and 240KB more staged drafts.
+#[derive(Debug, Default, Clone)]
+pub struct FunnyCards(std::collections::HashSet<String>);
+
+impl FunnyCards {
+    /// Record `r`'s card when `r` is a printing that makes its card funny: one the printing rule
+    /// tagged, and — for a token — the token's first printing.
+    pub fn observe(&mut self, r: &RowDraft) {
+        if r.has_is_tag(FUNNY_IS_TAG)
+            && !(r.is_token_layout() && r.has_is_tag(REPRINT_IS_TAG))
+            && !self.0.contains(&r.oracle_id)
+        {
+            self.0.insert(r.oracle_id.clone());
+        }
+    }
+
+    /// Is `r` in the `is:funny` class? What `finalize_row` writes, whatever the draft's own tag
+    /// says: a card keeps the tag its printing earned and can gain its card's, a token answers for
+    /// its card alone.
+    pub fn is_funny(&self, r: &RowDraft) -> bool {
+        let token = r.is_token_layout();
+        if !token && r.has_is_tag(FUNNY_IS_TAG) {
+            return true;
+        }
+        // THE LOOKUP FIRST, and that order is measured rather than assumed — see WHAT IT COSTS AN
+        // IMPORT above. It is false for all but ~1,500 cards, so the legalities are read only for
+        // their printings.
+        self.0.contains(&r.oracle_id)
+            && no_format_allows(&r.card_legalities)
+            && (token || r.raw_set_type.as_deref() != Some(TOKEN_SET_TYPE))
+    }
+
+    pub fn len(&self) -> usize {
+        self.0.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
 }
 
 /// Whether Scryfall hides this printing from a default `/cards/search` — the `is:extra` class.
@@ -1838,10 +1957,26 @@ impl RowDraft {
     /// `set_extra` for the same reason: computed from five fields of the printing, so it can ride
     /// neither BOOLEAN_IS_TAGS nor ARRAY_IS_TAGS, and `card_is_tags` is where the query plane
     /// reads a per-printing class.
+    ///
+    /// Called twice in a row's life. `transform_row` records the PRINTING's own verdict
+    /// ([`funny_class`]), which is what [`FunnyCards::observe`] reads; `finalize_row` then writes
+    /// the class ([`FunnyCards::is_funny`]) — adding the tag a sibling earned, and taking it back
+    /// off a token reprinted into a funny set.
     fn set_funny(&mut self, is_funny: bool) {
-        if is_funny && !self.card_is_tags.iter().any(|t| t == FUNNY_IS_TAG) {
+        let present = self.has_is_tag(FUNNY_IS_TAG);
+        if is_funny && !present {
             self.card_is_tags.push(FUNNY_IS_TAG.to_owned());
+        } else if !is_funny && present {
+            self.card_is_tags.retain(|t| t != FUNNY_IS_TAG);
         }
+    }
+
+    fn has_is_tag(&self, tag: &str) -> bool {
+        self.card_is_tags.iter().any(|t| t == tag)
+    }
+
+    fn is_token_layout(&self) -> bool {
+        self.card_layout.as_deref().is_some_and(|layout| TOKEN_LAYOUTS.contains(&layout))
     }
 
     /// Set or clear `is:hybrid`. Called once per PRINTING from `transform_row`, after the faces
@@ -2715,6 +2850,13 @@ pub fn finalize(drafts: Vec<RowDraft>, tags: &TagData) -> impl Iterator<Item = V
     }
     ranks.seal(&pins);
 
+    // 7. which cards are funny, so a printing with no funny signal of its own can answer for its
+    //    card — the third per-card pass of the same shape. See `FunnyCards`.
+    let mut funny = FunnyCards::default();
+    for r in &rows {
+        funny.observe(r);
+    }
+
     let empty: Vec<u32> = Vec::new();
     let tags = tags.clone();
     rows.into_iter().map(move |r| {
@@ -2729,7 +2871,8 @@ pub fn finalize(drafts: Vec<RowDraft>, tags: &TagData) -> impl Iterator<Item = V
         let cubecobra_score = cubecobra.get(&r.card_name).copied();
         let pinned = is_pinned(&r, &tags.labels, &pins);
         let rank = ranks.rank_of(&r);
-        finalize_row(r, &oracle_tags, &art_tags, illustration_count, cubecobra_score, pinned, rank)
+        let is_funny = funny.is_funny(&r);
+        finalize_row(r, &oracle_tags, &art_tags, illustration_count, cubecobra_score, pinned, rank, is_funny)
     })
 }
 
@@ -2929,6 +3072,7 @@ pub fn artist_entity_table(table: &ArtistSpellings) -> Value {
     Value::Array(entities)
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn finalize_row(
     r: RowDraft,
     oracle_tags: &[&str],
@@ -2945,7 +3089,13 @@ pub fn finalize_row(
     // per-card fact, decided by the caller for the same reason `pinned` is. `RANK_SPAN` (last)
     // for a row no import path ranked, which is what a caller that has no ranking passes.
     rank: u32,
+    // Whether this printing is in the `is:funny` class ([`FunnyCards::is_funny`]) — the third
+    // per-card fact, the caller's for the same reason: the draft's own tag is only its PRINTING's
+    // verdict, and the class also asks the card's other printings.
+    is_funny: bool,
 ) -> Value {
+    let mut r = r;
+    r.set_funny(is_funny);
     {
         // The rank leads by construction: one rank step outweighs the ordinary score and the pin
         // bonus together, so the card's order is the measured rule and everything underneath only
@@ -4651,15 +4801,16 @@ mod tests {
         c["legalities"] = never_legal.clone();
         let tags = transform(&c).unwrap().unwrap().card_is_tags;
         assert!(tags.iter().any(|t| t == FUNNY_IS_TAG) && tags.iter().any(|t| t == EXTRA_IS_TAG));
-        // The recorded residual, asserted AS the rule and not as Scryfall's verdict: hho/21★
-        // Treasure is a never-legal funny-set printing and Scryfall does not call it funny. The
-        // rule does, and this pins that the residual is known rather than accidental.
+        // hho/21★ Treasure is a never-legal funny-set printing and Scryfall does not call it
+        // funny. The PRINTING rule does, and this draft says so; the class is resolved at
+        // finalize, where a token reprinted into a funny set loses the tag (`FunnyCards`, and
+        // tests/funny_siblings.rs with the real card).
         let mut c = minimal_card("Treasure");
         c["set_type"] = json!("funny");
         c["set"] = json!("hho");
         c["border_color"] = json!("gold");
         c["legalities"] = never_legal.clone();
-        assert!(tag(&c), "hho/21 Treasure: the one card the rule over-catches, by name");
+        assert!(tag(&c), "hho/21 Treasure passes the printing rule; finalize is what refuses it");
 
         // ─── not funny ────────────────────────────────────────────────────────────────────────
         // NEVER-LEGAL IS NECESSARY. All 190 of `st:funny -is:funny` are legal somewhere —

@@ -1,0 +1,146 @@
+{
+ "all_parts": [
+  {
+   "component": "combo_piece",
+   "id": "07ea8a49-9644-4de9-8633-a38431a29c0b",
+   "name": "Faerie Aerie",
+   "object": "related_card",
+   "type_line": "Artifact — Contraption",
+   "uri": "https://api.scryfall.com/cards/07ea8a49-9644-4de9-8633-a38431a29c0b"
+  },
+  {
+   "component": "token",
+   "id": "1008e47a-a8c4-4f4f-8628-ac4b8f978dd0",
+   "name": "Faerie Spy",
+   "object": "related_card",
+   "type_line": "Token Creature — Faerie Spy",
+   "uri": "https://api.scryfall.com/cards/1008e47a-a8c4-4f4f-8628-ac4b8f978dd0"
+  }
+ ],
+ "artist": "Dmitry Burmak",
+ "artist_ids": [
+  "9872f5c0-274a-48ce-a9ad-6f0d5654e29c"
+ ],
+ "booster": true,
+ "border_color": "silver",
+ "card_back_id": "0aeebaf5-8c7d-4636-9e82-8c27447861f7",
+ "cardmarket_id": 313923,
+ "cmc": 0.0,
+ "collector_number": "4",
+ "color_identity": [
+  "U"
+ ],
+ "colors": [
+  "U"
+ ],
+ "digital": false,
+ "finishes": [
+  "foil"
+ ],
+ "foil": true,
+ "frame": "2015",
+ "full_art": false,
+ "game_changer": false,
+ "games": [
+  "paper"
+ ],
+ "highres_image": true,
+ "id": "1008e47a-a8c4-4f4f-8628-ac4b8f978dd0",
+ "illustration_id": "487072c4-13aa-4e53-bf77-0a365f8d6600",
+ "image_status": "highres_scan",
+ "image_updated_at": "2026-07-13T09:35:56Z",
+ "image_uris": {
+  "art": "https://cards.scryfall.io/art/front/1/0/1008e47a-a8c4-4f4f-8628-ac4b8f978dd0.webp?1783935356",
+  "art_crop": "https://cards.scryfall.io/art_crop/front/1/0/1008e47a-a8c4-4f4f-8628-ac4b8f978dd0.jpg?1783935356",
+  "border_crop": "https://cards.scryfall.io/border_crop/front/1/0/1008e47a-a8c4-4f4f-8628-ac4b8f978dd0.jpg?1783935356",
+  "crop": "https://cards.scryfall.io/crop/front/1/0/1008e47a-a8c4-4f4f-8628-ac4b8f978dd0.webp?1783935356",
+  "display": "https://cards.scryfall.io/display/front/1/0/1008e47a-a8c4-4f4f-8628-ac4b8f978dd0.webp?1783935356",
+  "grid": "https://cards.scryfall.io/grid/front/1/0/1008e47a-a8c4-4f4f-8628-ac4b8f978dd0.webp?1783935356",
+  "large": "https://cards.scryfall.io/large/front/1/0/1008e47a-a8c4-4f4f-8628-ac4b8f978dd0.jpg?1783935356",
+  "normal": "https://cards.scryfall.io/normal/front/1/0/1008e47a-a8c4-4f4f-8628-ac4b8f978dd0.jpg?1783935356",
+  "png": "https://cards.scryfall.io/png/front/1/0/1008e47a-a8c4-4f4f-8628-ac4b8f978dd0.png?1783935356",
+  "small": "https://cards.scryfall.io/small/front/1/0/1008e47a-a8c4-4f4f-8628-ac4b8f978dd0.jpg?1783935356",
+  "thumb": "https://cards.scryfall.io/thumb/front/1/0/1008e47a-a8c4-4f4f-8628-ac4b8f978dd0.webp?1783935356"
+ },
+ "keywords": [
+  "Flying",
+  "Haste"
+ ],
+ "lang": "en",
+ "layout": "token",
+ "legalities": {
+  "alchemy": "not_legal",
+  "brawl": "not_legal",
+  "commander": "not_legal",
+  "competitivebrawl": "not_legal",
+  "duel": "not_legal",
+  "future": "not_legal",
+  "gladiator": "not_legal",
+  "historic": "not_legal",
+  "legacy": "not_legal",
+  "modern": "not_legal",
+  "oathbreaker": "not_legal",
+  "oldschool": "not_legal",
+  "pauper": "not_legal",
+  "paupercommander": "not_legal",
+  "penny": "not_legal",
+  "pioneer": "not_legal",
+  "predh": "not_legal",
+  "premodern": "not_legal",
+  "standard": "not_legal",
+  "standardbrawl": "not_legal",
+  "timeless": "not_legal",
+  "tlr": "not_legal",
+  "vintage": "not_legal"
+ },
+ "mana_cost": "",
+ "multiverse_ids": [],
+ "name": "Faerie Spy",
+ "nonfoil": false,
+ "object": "card",
+ "oracle_id": "3e37354d-26c0-459d-a0b6-d30fd9f4ea8d",
+ "oracle_text": "Flying, haste\nWhenever this creature deals combat damage to a player, draw a card.",
+ "oversized": false,
+ "power": "1",
+ "prices": {
+  "eur": null,
+  "eur_foil": "0.14",
+  "tix": null,
+  "usd": null,
+  "usd_etched": null,
+  "usd_foil": "0.26"
+ },
+ "prints_search_uri": "https://api.scryfall.com/cards/search?order=released&q=oracleid%3A3e37354d-26c0-459d-a0b6-d30fd9f4ea8d&unique=prints",
+ "promo": false,
+ "purchase_uris": {
+  "cardhoarder": "https://www.cardhoarder.com/cards?affiliate_id=scryfall&data%5Bsearch%5D=Faerie+Spy&ref=card-profile&utm_campaign=affiliate&utm_medium=card&utm_source=scryfall",
+  "cardmarket": "https://www.cardmarket.com/en/Magic/Products?idProduct=313923&referrer=scryfall&utm_campaign=card_prices&utm_medium=text&utm_source=scryfall",
+  "tcgplayer": "https://partner.tcgplayer.com/c/4931599/1830156/21018?subId1=api&u=https%3A%2F%2Fwww.tcgplayer.com%2Fproduct%2F153059%3Fpage%3D1"
+ },
+ "rarity": "common",
+ "related_uris": {
+  "edhrec": "https://edhrec.com/route/?cc=Faerie+Spy",
+  "tcgplayer_infinite_articles": "https://partner.tcgplayer.com/c/4931599/1830156/21018?subId1=api&trafcat=tcgplayer.com%2Fsearch%2Farticles&u=https%3A%2F%2Fwww.tcgplayer.com%2Fsearch%2Farticles%3FproductLineName%3Dmagic%26q%3DFaerie%2BSpy",
+  "tcgplayer_infinite_decks": "https://partner.tcgplayer.com/c/4931599/1830156/21018?subId1=api&trafcat=tcgplayer.com%2Fsearch%2Fdecks&u=https%3A%2F%2Fwww.tcgplayer.com%2Fsearch%2Fdecks%3FproductLineName%3Dmagic%26q%3DFaerie%2BSpy"
+ },
+ "released_at": "2017-12-08",
+ "reprint": false,
+ "reserved": false,
+ "rulings_uri": "https://api.scryfall.com/cards/1008e47a-a8c4-4f4f-8628-ac4b8f978dd0/rulings",
+ "scryfall_set_uri": "https://scryfall.com/sets/tust?utm_source=api",
+ "scryfall_uri": "https://scryfall.com/card/tust/4/faerie-spy?utm_source=api",
+ "set": "tust",
+ "set_id": "f494ec08-2e39-4228-bddb-200967e2b109",
+ "set_name": "Unstable Tokens",
+ "set_search_uri": "https://api.scryfall.com/cards/search?order=set&q=e%3Atust&unique=prints",
+ "set_type": "token",
+ "set_uri": "https://api.scryfall.com/sets/f494ec08-2e39-4228-bddb-200967e2b109",
+ "story_spotlight": false,
+ "tcgplayer_id": 153059,
+ "textless": false,
+ "toughness": "1",
+ "type_line": "Token Creature — Faerie Spy",
+ "uri": "https://api.scryfall.com/cards/1008e47a-a8c4-4f4f-8628-ac4b8f978dd0",
+ "variation": false,
+ "watermark": "agentsofsneak"
+}

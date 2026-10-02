@@ -63,7 +63,7 @@ use serde_json::Value;
 use crate::ranks::PrintingRanks;
 use crate::tags::TagData;
 use crate::transform::{
-    cubecobra_scores_from_pairs, finalize_row, illust_count_key, is_pinned, PinnedPrintings, RowDraft,
+    cubecobra_scores_from_pairs, finalize_row, illust_count_key, is_pinned, FunnyCards, PinnedPrintings, RowDraft,
 };
 
 
@@ -149,6 +149,10 @@ struct CorpusAggregator<'a> {
     /// excludes the pinned printing (`ranks`). Collected as rows stream past, for the same
     /// reason `pins` is, and sealed against them at the end of the stream.
     ranks: PrintingRanks,
+    /// Which cards have a funny printing, so a sibling with no funny signal of its own can answer
+    /// for its card (`transform::FunnyCards`). Collected as rows stream past, as `pins` is — one
+    /// oracle id per funny card, ~1,500 of them.
+    funny: FunnyCards,
     /// Every artist's credited spellings, corpus-wide — see `transform::ArtistSpellings`.
     artist_spellings: crate::transform::ArtistSpellings,
 }
@@ -165,6 +169,7 @@ impl<'a> CorpusAggregator<'a> {
             labels,
             pins: PinnedPrintings::default(),
             ranks: PrintingRanks::default(),
+            funny: FunnyCards::default(),
             artist_spellings: crate::transform::ArtistSpellings::new(),
         }
     }
@@ -172,6 +177,7 @@ impl<'a> CorpusAggregator<'a> {
     fn observe(&mut self, record: u64, part_hash: u64, draft: &RowDraft) {
         self.pins.observe(draft, self.labels);
         self.ranks.observe(draft);
+        self.funny.observe(draft);
         crate::transform::observe_artist_spellings(&mut self.artist_spellings, draft.card_artist.as_deref(), &draft.compat_blob);
         let info = Winner {
             record,
@@ -208,6 +214,7 @@ impl<'a> CorpusAggregator<'a> {
             by_id,
             pins,
             mut ranks,
+            funny,
             artist_spellings,
             labels: _,
         } = self;
@@ -244,6 +251,7 @@ impl<'a> CorpusAggregator<'a> {
             cubecobra,
             pins,
             ranks,
+            funny,
             artist_spellings,
             superseded,
             cross_partition_dupes,
@@ -267,6 +275,9 @@ pub struct Aggregates {
     /// Where each printing slot sits in its card's order — the representative choice for every
     /// filter the pinned printing does not survive (`ranks`).
     ranks: PrintingRanks,
+    /// The cards with a funny printing — what makes a printing funny on its sibling's account
+    /// (`transform::FunnyCards`). Observed as rows stream past, exactly as `pins` is.
+    funny: FunnyCards,
     /// Every credited spelling of every artist, corpus-wide — the input to the `card_artist_alt`
     /// column. Observed as rows STREAM PAST rather than from the deduped winners, exactly as
     /// `pins` is, and for the same reason: a repeated scryfall_id cannot change who drew the card.
@@ -302,7 +313,8 @@ impl Aggregates {
         let cubecobra_score = self.cubecobra.get(&draft.card_name).copied();
         let pinned = is_pinned(&draft, &tags.labels, &self.pins);
         let rank = self.ranks.rank_of(&draft);
-        finalize_row(draft, &oracle_tags, &art_tags, illustration_count, cubecobra_score, pinned, rank)
+        let is_funny = self.funny.is_funny(&draft);
+        finalize_row(draft, &oracle_tags, &art_tags, illustration_count, cubecobra_score, pinned, rank, is_funny)
     }
 }
 
@@ -755,6 +767,67 @@ mod tests {
         assert!(components(0) > 900.0, "the labelled printing is pinned");
         assert!(components(1) > 900.0, "so is its Japanese edition at the same slot");
         assert!(components(2) < 900.0, "and nothing else is");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// `is:funny` on a sibling's account is the same through the spill and through every partition
+    /// cut as it is in memory: the fact is keyed by oracle id, and `hash(oracle_id)` keeps a card's
+    /// printings together, so no cut can separate sld/869 Blacker Lotus from the Unglued printing
+    /// it is funny for, or the Dragon tokens from h17/4 (`transform::FunnyCards`).
+    #[test]
+    fn a_funny_sibling_survives_the_spill_and_every_partition_cut() {
+        let drafts: Vec<RowDraft> = [
+            "blacker_lotus_sld_869",
+            "treasure_sld_1432",
+            "dragon_tund_4",
+            "lightning_bolt",
+            "blacker_lotus_ugl_70",
+            "treasure_hho_21star",
+            "dragon_h17_4",
+            "dragon_tust_16",
+            "treasure_txln_8",
+            "faerie_spy_tust_4",
+        ]
+        .iter()
+        .map(|name| transform_row(&fixture(name), true).expect("transform").expect("kept"))
+        .collect();
+        let tags = TagData::default();
+        let want: Vec<String> = finalize(drafts.clone(), &tags).map(|r| r.to_string()).collect();
+        let funny_of = |rows: &[String]| {
+            let mut out: Vec<String> = rows
+                .iter()
+                .map(|r| serde_json::from_str::<Value>(r).unwrap())
+                .filter(|r| r["card_is_tags"].get("funny").is_some())
+                .map(|r| format!("{}/{}", r["card_set_code"].as_str().unwrap(), r["collector_number"].as_str().unwrap()))
+                .collect();
+            out.sort();
+            out
+        };
+        assert_eq!(funny_of(&want), ["h17/4", "sld/869", "tund/4", "tust/16", "ugl/70"]);
+
+        let dir = scratch("funny");
+        let corpus = spill_of(&drafts, &dir);
+        let mut rows = corpus.rows(&tags).expect("replay");
+        let got: Vec<String> = rows.by_ref().map(|r| r.to_string()).collect();
+        assert!(rows.take_error().is_none());
+        assert_eq!(got, want, "the spilled replay resolves the class exactly as finalize() does");
+        drop(rows);
+        drop(corpus);
+
+        let mut sorted_want = want.clone();
+        sorted_want.sort();
+        for n in [1u32, 2, 3, 7, 10] {
+            let (aggregates, mut parts) = spill_of(&drafts, &dir).demux(n, &dir).expect("demux");
+            let mut cut: Vec<String> = Vec::new();
+            for k in 0..parts.len() {
+                let mut rows = parts.rows(k, &aggregates, &tags).expect("partition rows");
+                cut.extend(rows.by_ref().map(|r| r.to_string()));
+                assert!(rows.take_error().is_none());
+                parts.release(k);
+            }
+            cut.sort();
+            assert_eq!(cut, sorted_want, "N={n}: every partition cut finalizes the same rows");
+        }
         let _ = std::fs::remove_dir_all(&dir);
     }
 
