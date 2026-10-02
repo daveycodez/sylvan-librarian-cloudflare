@@ -1,7 +1,7 @@
 // The partition count (src/import-sizing.ts, backlog x28): the smallest N whose LARGEST partition
 // projects under the KV chunk cut less a 5% margin — the nightly's copy of the rule, held to the
 // deploy path's Rust twin (engine/builder/src/sizing.rs) through a shared vectors file, and to the
-// real corpus through builds measured on 2026-09-26.
+// real corpus through builds measured on 2026-10-02 (backlog x50, which re-fitted the projection).
 
 import { describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
@@ -114,10 +114,10 @@ describe("the two builders choose the same N (vectors shared with engine/builder
 });
 
 describe("the ceiling", () => {
-	test("is the 46MB cut less the 5% margin, less the projection's 1% error on top", () => {
+	test("is the 46MB cut less the 5% margin, less the projection's 1.25% error on top", () => {
 		expect(PARTITION_SAFETY_MARGIN_PCT).toBe(5);
-		expect(PARTITION_PROJECTION_ERROR_PCT).toBe(1);
-		expect(PARTITION_CEILING_BYTES).toBe(43_267_326);
+		expect(PARTITION_PROJECTION_ERROR_PCT).toBe(1.25);
+		expect(PARTITION_CEILING_BYTES).toBe(43_160_493);
 		// A partition landing at the worst error allowed is still the whole margin under the cut.
 		expect(PARTITION_CEILING_BYTES * (1 + PARTITION_PROJECTION_ERROR_PCT / 100)).toBeLessThanOrEqual(
 			KV_CHUNK_BYTES * (1 - PARTITION_SAFETY_MARGIN_PCT / 100),
@@ -126,59 +126,94 @@ describe("the ceiling", () => {
 });
 
 /**
- * Measured 2026-09-26 (format 2026092601): per partition [cards, framed draft bytes, built archive
- * bytes], the 2026-08-16 all_cards dump built natively at a pinned N — two of the nine builds the
- * coefficients were fitted on.
+ * Measured 2026-10-02 (format 2026092601): per partition [cards, framed draft bytes, built archive
+ * bytes], the 2026-10-01 all_cards dump (545,288 drafts, 38,705 cards) built natively at a pinned
+ * N — two of the eleven builds the coefficients were fitted on. The N=11 sizes are the ones both
+ * accounts' nightlies built on 2026-10-01, to within 400 bytes.
  */
-const AUG16_N10: [number, number, number][] = [
-	[3902, 166060618, 41152200],
-	[3738, 192391229, 44520384],
-	[3916, 191769830, 45093600],
-	[3826, 167582866, 41044824],
-	[3926, 178107689, 43318360],
-	[3818, 176899122, 42528648],
-	[3917, 175737922, 42998272],
-	[3860, 168825962, 41458760],
-	[3883, 169579555, 41689760],
-	[3840, 190999502, 44789040],
+const OCT01_N10: [number, number, number][] = [
+	[3893, 167806922, 41592128],
+	[3752, 194727930, 45095704],
+	[3940, 194463070, 45791080],
+	[3843, 169527922, 41571448],
+	[3934, 180207790, 43867784],
+	[3830, 179240300, 43137208],
+	[3918, 177864008, 43532408],
+	[3860, 170973317, 41987584],
+	[3887, 171451029, 42186664],
+	[3848, 193537603, 45426064],
 ];
-const AUG16_N11: [number, number, number][] = [
-	[3502, 161587516, 39120960],
-	[3516, 165196393, 39536384],
-	[3496, 146451588, 36554264],
-	[3506, 166265529, 39665696],
-	[3571, 160239547, 39069128],
-	[3571, 156137061, 38322600],
-	[3401, 146196161, 36096640],
-	[3533, 174188284, 41196264],
-	[3552, 157455816, 38809624],
-	[3521, 182713034, 42232944],
-	[3457, 161523366, 39078536],
+const OCT01_N11: [number, number, number][] = [
+	[3515, 163579656, 39633688],
+	[3527, 167459705, 40128944],
+	[3498, 148231100, 37030176],
+	[3512, 168438756, 40204712],
+	[3565, 162120560, 39542848],
+	[3569, 157899273, 38761240],
+	[3407, 147814963, 36532096],
+	[3556, 176547213, 41807176],
+	[3562, 159243808, 39288864],
+	[3532, 185012933, 42796072],
+	[3462, 163451924, 39557088],
 ];
 
+/**
+ * The fit x50 replaced (2026-09-26, on the 2026-08-16 dump). Against it p8 and p10 of the eleven
+ * built 1.04% high on 2026-10-01 and tripped the 1% drift warning on every build, nightly and deploy.
+ */
+const X28_FIT = (cards: number, framed: number) => Math.floor(1_141_000 + 3_770 * cards + 0.1527 * framed);
+
 describe("the projection, against real builds", () => {
-	test("every partition lands within the projection's error allowance", () => {
-		for (const [cards, framed, built] of [...AUG16_N10, ...AUG16_N11]) {
+	test("every partition lands within the fit's measured residual, well inside the allowance", () => {
+		const residuals = [...OCT01_N10, ...OCT01_N11].map(([cards, framed, built]) => {
 			const projected = projectPartitionBytes(cards, framed);
-			expect(Math.abs(built - projected) / projected).toBeLessThan(PARTITION_PROJECTION_ERROR_PCT / 100);
 			expect(projectionDriftWarning(0, built, projected)).toBeNull();
+			return ((built - projected) / projected) * 100;
+		});
+		// -0.47% .. +0.62% here; -0.74% .. +0.62% over all 77 fitted partitions, +0.78% the worst
+		// of 127 across five states of the corpus (src/import-sizing.ts). The allowance leaves the
+		// furthest drift seen between two fits, 0.46%, on top of that.
+		expect(Math.min(...residuals)).toBeGreaterThan(-0.5);
+		expect(Math.max(...residuals)).toBeLessThan(0.63);
+		expect(0.78 + 0.46).toBeLessThanOrEqual(PARTITION_PROJECTION_ERROR_PCT);
+	});
+
+	test("the re-fit took out a drift common to every partition, not the two that warned", () => {
+		const mean = (project: (cards: number, framed: number) => number) =>
+			OCT01_N11.reduce((sum, [c, f, built]) => sum + ((built - project(c, f)) / project(c, f)) * 100, 0) /
+			OCT01_N11.length;
+		// Every partition but one sat above the x28 fit, +0.46% on average; p8 and p10 were +0.6%
+		// above it the day it was fitted, and the drift took them past 1%.
+		expect(OCT01_N11.filter(([c, f, built]) => built > X28_FIT(c, f)).length).toBe(10);
+		expect(mean(X28_FIT)).toBeGreaterThan(0.45);
+		expect(mean(X28_FIT)).toBeLessThan(0.47);
+		expect(Math.abs(mean(projectPartitionBytes))).toBeLessThan(0.02);
+		for (const k of [8, 10]) {
+			const [cards, framed, built] = OCT01_N11[k] as [number, number, number];
+			expect(built / X28_FIT(cards, framed)).toBeGreaterThan(1.01);
+			expect(built / projectPartitionBytes(cards, framed)).toBeLessThan(1.0062);
 		}
 	});
 
-	test("the corpus the mean rule left 1.4% under the cut is 11 partitions, largest 8% under", () => {
-		// The mean rule cut this corpus (and today's, one day's growth on) into 10: its largest
-		// partition built to 45.09MB here and 45.34MB on 2026-09-26, 2.0% and 1.4% under the cut.
-		const largest10 = Math.max(...AUG16_N10.map(([c, d]) => projectPartitionBytes(c, d)));
+	test("today's corpus is still 11 partitions, largest 7% under the cut, and 10 is still refused", () => {
+		// What the mean rule did with this corpus: 10 partitions, the largest 45.79MB, 0.5% under.
+		const largest10 = Math.max(...OCT01_N10.map(([c, d]) => projectPartitionBytes(c, d)));
 		expect(largest10).toBeGreaterThan(PARTITION_CEILING_BYTES);
-		const largest11 = Math.max(...AUG16_N11.map(([c, d]) => projectPartitionBytes(c, d)));
+		// The re-fit and the wider allowance both move toward N=12, and neither reaches it: the
+		// largest partition projects to 42,921,158 against a ceiling of 43,160,493 (0.56% of room;
+		// the x28 fit and its 1% allowance left 1.31%).
+		const largest11 = Math.max(...OCT01_N11.map(([c, d]) => projectPartitionBytes(c, d)));
+		expect(largest11).toBe(42_921_158);
 		expect(largest11).toBeLessThanOrEqual(PARTITION_CEILING_BYTES);
-		const built11 = Math.max(...AUG16_N11.map(([, , a]) => a));
-		expect((KV_CHUNK_BYTES - built11) / KV_CHUNK_BYTES).toBeGreaterThan(0.08);
+		expect(Math.max(...OCT01_N11.map(([c, d]) => X28_FIT(c, d)))).toBeLessThanOrEqual(43_267_326);
+		const built11 = Math.max(...OCT01_N11.map(([, , a]) => a));
+		expect((KV_CHUNK_BYTES - built11) / KV_CHUNK_BYTES).toBeGreaterThan(0.069);
 	});
 
 	test("a partition built further above its projection than the fit allows says so", () => {
 		expect(projectionDriftWarning(3, 42_000_000, 41_000_000)).toMatch(/p3 built 42000000 bytes, 2\.44% above/);
-		expect(projectionDriftWarning(3, 41_400_000, 41_000_000)).toBeNull();
+		expect(projectionDriftWarning(3, 41_520_000, 41_000_000)).toMatch(/more than the 1\.25% the sizing fit allows/);
+		expect(projectionDriftWarning(3, 41_500_000, 41_000_000)).toBeNull();
 		expect(projectionDriftWarning(3, 30_000_000, 41_000_000)).toBeNull();
 	});
 

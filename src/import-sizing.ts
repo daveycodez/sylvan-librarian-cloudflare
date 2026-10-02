@@ -26,8 +26,9 @@
 // ids — each carries oracle-level text, names, the card-level indexes) and its framed DRAFT BYTES
 // (every printing's own fields). Draft bytes alone mispredict by ±4%, because a heavily reprinted
 // card's drafts repeat text the archive stores once; with the card count beside them the residual
-// is under 1% (PARTITION_PROJECTION_ERROR_PCT). Both are computable before anything is built, from
-// the staged (hash, length) pairs — the hash IS the oracle id's, so distinct hashes are cards.
+// is within -0.8% .. +0.8% (PARTITION_PROJECTION_ERROR_PCT allows 1.25%). Both are computable before
+// anything is built, from the staged (hash, length) pairs — the hash IS the oracle id's, so distinct
+// hashes are cards.
 //
 // Integer arithmetic throughout, in units of 1/STORE_PER_DRAFT_BYTE_DEN of a byte: the two
 // builders are different languages and must not disagree on a rounding.
@@ -53,43 +54,73 @@ export const DRAFT_FRAME_BYTES = 8;
  *
  *   STORE_BYTES_PER_PARTITION + STORE_BYTES_PER_CARD x cards + (NUM / DEN) x framed draft bytes
  *
- * FITTED 2026-09-26 by least squares over 181 real partitions — the 2026-08-16 all_cards corpus
- * (540,484 drafts, 38,626 cards) built natively at N = 8, 10, 11, 12, 16, 20, 24, 32 and 48,
- * format 2026092601 — weighted to the partitions that matter, the 41 between 30 and 60MB (the
- * sizes a partition near the ceiling has): residuals -0.77% .. +0.62%, rms 0.36%. Over all 181
- * (9-55MB) the fit holds to +0.6%; the small partitions of N=24-48 come in UNDER it by up to 6%,
- * the safe side. Draft bytes alone, the old rule's single ratio, miss by -4% .. +4% in the same
- * window: a heavily reprinted card's drafts repeat text the archive stores once.
+ * FITTED 2026-10-02 (backlog x50) by least squares over the 77 partitions between 30 and 60MB — the
+ * sizes a partition near the ceiling has — of the 2026-10-01 all_cards corpus (545,288 drafts, 38,705
+ * cards) built natively at N = 8, 9, 10, 11, 12, 13, 14, 16, 20, 24 and 32, format 2026092601:
+ * residuals -0.74% .. +0.62%, rms 0.32%. The 92 smaller partitions of N = 16-32 come in UNDER it by
+ * up to 2.6% (never more than 0.7% over), the safe side. Draft bytes alone, the first rule's single
+ * ratio, miss by -4% .. +4% in the same window.
  *
- * OUT OF SAMPLE, the 2026-09-26 dump (542,704 drafts, 38,690 cards): -0.17% .. +0.76% against the
- * ten partitions the mean rule built that morning, and -0.36% .. +0.78% against the eleven this
- * rule builds (largest 42,443,712 bytes built, 42,480,196 projected).
+ * OUT OF SAMPLE, the same dump cut down to four other states of the corpus (50 more partitions
+ * between 30 and 60MB): only the printings released before 2025-10-01, 2023-10-01 and 2020-10-01,
+ * each built at N = 8, 11 and 16 — -0.67% .. +0.55%, -0.24% .. +0.78% and -1.30% .. -0.62% — and
+ * today's corpus without the foreign-language printings released since 2026-07-01, at N = 11:
+ * -0.77% .. +0.27%. Over all 127: 95th percentile +0.57%, 99th +0.68%, worst +0.78%.
+ *
+ * WHAT THE RESIDUAL IS, and why this is a re-fit and not a fourth term. The fit this replaces
+ * (2026-09-26, on the 2026-08-16 dump: 1,141,000 + 3,770 x cards + 0.1527 x bytes) had two things
+ * in it by 2026-10-01, when p8 and p10 of 11 built 1.02-1.04% above it on both accounts, nightly
+ * and deploy alike:
+ *
+ *   - a per-partition part that does not move: p8 and p10 were +0.61% and +0.62% on the day it was
+ *     fitted and p6 -0.52%, the same order they hold now. It is what the partition's cards happen
+ *     to be, and no count the staging has explains it: ten candidate terms were fitted (drafts,
+ *     canonical printings, canonical bytes, foreign rows, distinct draft lengths per card, each
+ *     card's bytes over its shortest draft, min(drafts, 8), min(drafts, 16), the square root and
+ *     the bit length of a card's drafts) and none holds across the five corpora — the ones that
+ *     narrow today's N=11 to +-0.3% put the 2023 and 2025 corpora 0.5-1.1% off, and the
+ *     canonical/foreign split, which the staging does not even carry, narrows nothing;
+ *   - a part common to every partition that had drifted up 0.46%: +0.26% by the 2026-09-26
+ *     evening deploy (six weeks of corpus, and that afternoon's additions to the row's tags),
+ *     +0.20% in the five days after, as 2,521 foreign-language printings of a new set arrived. A
+ *     newly arrived foreign row cost ~880 archive bytes where the fit's draft-byte ratio gave it
+ *     ~550 (its printed text is new, so nothing dedupes); the fit is right over a whole release —
+ *     a year of the corpus removed moves the mean 0.06% — but between a set's English and its
+ *     foreign printings the mean wanders by ~0.3%.
+ *
+ * So the coefficients are re-measured (the common part returns to zero: p8 and p10 are +0.61% and
+ * +0.58%) and the allowance below is set from the distribution rather than from one day's worst.
  *
  * The intercept is real: every partition carries its own copy of the corpus-wide tables (set
  * vocabulary, artist entities, tag slugs), ~1.1MB of archive whatever it holds — which is also why
- * the old single ratio drifted upward with N (0.239 at N=8, 0.247 at N=32).
+ * the first rule's single ratio drifted upward with N (0.239 at N=8, 0.247 at N=32).
  *
  * Re-fit after a FORMAT change that adds per-printing or per-card bytes: both builders log each
  * partition against its projection, and warn when one lands more than PARTITION_PROJECTION_ERROR_PCT
  * above it.
  */
-export const STORE_BYTES_PER_PARTITION = 1_141_000;
-export const STORE_BYTES_PER_CARD = 3_770;
-export const STORE_PER_DRAFT_BYTE_NUM = 1_527;
+export const STORE_BYTES_PER_PARTITION = 1_074_000;
+export const STORE_BYTES_PER_CARD = 3_755;
+export const STORE_PER_DRAFT_BYTE_NUM = 1_545;
 export const STORE_PER_DRAFT_BYTE_DEN = 10_000;
 
 /** The largest partition's required distance under the KV chunk cut, in percent of the cut. */
 export const PARTITION_SAFETY_MARGIN_PCT = 5;
 
 /**
- * The projection's error allowance, in percent: above the worst residual measured on the side that
- * matters — a partition landing ABOVE its projection — +0.62% in the fit, +0.78% out of sample.
+ * The projection's error allowance, in percent, on the side that matters — a partition landing ABOVE
+ * its projection. From the measured distribution, not one day's worst: +0.78% is the furthest any of
+ * the 127 ceiling-sized partitions of the five corpora lands above the fit (99th percentile +0.68%),
+ * and +0.46% is the furthest the whole distribution has moved between two fits (2026-08-16 to
+ * 2026-10-01, above). 0.78 + 0.46 = 1.24: a partition past 1.25% is outside both together, which is
+ * the signal the coefficients have moved — at 1%, the worst partition of a fresh fit tripped it on
+ * 0.4% of ordinary drift.
  */
-export const PARTITION_PROJECTION_ERROR_PCT = 1;
+export const PARTITION_PROJECTION_ERROR_PCT = 1.25;
 
 /**
  * The most a partition may PROJECT to: the 46MB chunk cut less the 5% margin (43.7MB), less the
- * projection's own error allowance on top (43,267,326) — so a partition that lands at the worst
+ * projection's own error allowance on top (43,160,493) — so a partition that lands at the worst
  * residual allowed is still the full margin under the cut.
  */
 export const PARTITION_CEILING_BYTES = Math.floor(

@@ -583,7 +583,7 @@ async function main(): Promise<number> {
 
 	// ── x28: the largest partition the nightly built stays the full margin under the (scaled) cut ──
 	// The sizing guarantees a largest partition PROJECTED at or under the ceiling, and a projection
-	// is allowed PARTITION_PROJECTION_ERROR_PCT of error — so the built one may reach ceiling x 1.01,
+	// is allowed PARTITION_PROJECTION_ERROR_PCT of error — so the built one may reach ceiling x 1.0125,
 	// which is the cut less PARTITION_SAFETY_MARGIN_PCT at the scale the ceiling stands for. Run at
 	// --printings 6000 / 12000 / 18000 (1x / 2x / 3x the harness corpus) this is the 1x/2x/3x check.
 	{

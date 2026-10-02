@@ -24,21 +24,25 @@ pub const KV_CHUNK_BYTES: u64 = 46_000_000;
 
 /// The projection's coefficients — a partition's archive is
 /// `STORE_BYTES_PER_PARTITION + STORE_BYTES_PER_CARD x cards + (NUM / DEN) x framed draft bytes`,
-/// fitted 2026-09-26 over 181 real partitions of the 2026-08-16 corpus built at N = 8..48
-/// (src/import-sizing.ts has the fit and its residuals: -0.77% .. +0.62% between 30 and 60MB).
-pub const STORE_BYTES_PER_PARTITION: u64 = 1_141_000;
-pub const STORE_BYTES_PER_CARD: u64 = 3_770;
-pub const STORE_PER_DRAFT_BYTE_NUM: u64 = 1_527;
+/// re-fitted 2026-10-02 (backlog x50) over the 77 partitions between 30 and 60MB of the 2026-10-01
+/// corpus built at N = 8..32: residuals -0.74% .. +0.62%, and -1.30% .. +0.78% over 50 more from
+/// four other states of the corpus (src/import-sizing.ts has the fit, what its residual is, and
+/// why the first fit — 1,141,000 + 3,770 x cards + 0.1527 x bytes — had drifted 0.46% low).
+pub const STORE_BYTES_PER_PARTITION: u64 = 1_074_000;
+pub const STORE_BYTES_PER_CARD: u64 = 3_755;
+pub const STORE_PER_DRAFT_BYTE_NUM: u64 = 1_545;
 pub const STORE_PER_DRAFT_BYTE_DEN: u64 = 10_000;
 
-/// The projection's error allowance (src/import-sizing.ts's `PARTITION_PROJECTION_ERROR_PCT`):
-/// a partition built further above its projection than this means the fit needs re-measuring.
-pub const PROJECTION_ERROR: f64 = 0.01;
+/// The projection's error allowance (src/import-sizing.ts's `PARTITION_PROJECTION_ERROR_PCT`, 1.25%
+/// — the worst partition measured above the fit, +0.78%, plus the furthest the fit has drifted
+/// between two measurements, +0.46%): a partition built further above its projection than this
+/// means the fit needs re-measuring.
+pub const PROJECTION_ERROR: f64 = 0.0125;
 
-/// The most a partition may PROJECT to: the cut less the 5% safety margin, less the 1% projection
-/// error on top — `floor(46_000_000 x 95 / 101)`, src/import-sizing.ts's `PARTITION_CEILING_BYTES`
-/// (the shared vectors file holds the two equal).
-pub const PARTITION_CEILING_BYTES: u64 = KV_CHUNK_BYTES * 95 / 101;
+/// The most a partition may PROJECT to: the cut less the 5% safety margin, less the 1.25%
+/// projection error on top — `floor(46_000_000 x 95 / 101.25)` in integers, src/import-sizing.ts's
+/// `PARTITION_CEILING_BYTES` (the shared vectors file holds the two equal).
+pub const PARTITION_CEILING_BYTES: u64 = KV_CHUNK_BYTES * 9_500 / 10_125;
 const _: () = assert!(PARTITION_CEILING_BYTES < KV_CHUNK_BYTES);
 
 /// The ceiling in force: the constant, or `SYLVAN_PARTITION_CEILING_BYTES` for the import harness

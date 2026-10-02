@@ -35,7 +35,7 @@ export const MIN_PARTITION_COUNT = 2;
 
 /**
  * The ceiling, a safety rail rather than a plan: 48 partitions each held under the sizing ceiling
- * (src/import-sizing.ts, 43.3MB projected for the largest, ~39-41MB for the typical one) is ~1.9GB
+ * (src/import-sizing.ts, 43.2MB projected for the largest, ~39-41MB for the typical one) is ~1.9GB
  * of store, ~4.4x today's corpus (N=11 on 430.6MB). Hitting it means the sizing input is garbage
  * (and N should not amplify the garbage), or the corpus grew past every budget in this deployment
  * and needs a human anyway.
