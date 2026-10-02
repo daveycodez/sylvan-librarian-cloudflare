@@ -865,6 +865,20 @@ export class PartitionedEngine implements Engine {
 	namedFuzzyPrinted: string | null = null;
 
 	/**
+	 * x48: why this request's fuzzy lookup made more than one partition call, `+`-joined in the order
+	 * the calls were made, or null when nothing followed its first. Logged as `more=`:
+	 *   route     the routed partition could not answer its bundle and plan in one call (an object on
+	 *             the build before x48, or a failure), and was asked for the bundle alone
+	 *   plan      a plan was asked for after the routed reply: the reply ranked the needle without
+	 *             settling it, or its object had no plan to give
+	 *   named:K   the plan named K partitions that had not answered yet — a typo's contenders, a
+	 *             containment match, a name held elsewhere
+	 *   wide      the plan asked every partition (no printed-names blob to settle containment)
+	 *   all       no plan (a set scope, no names index, a plan from another build): every partition
+	 */
+	namedFuzzyMore: string | null = null;
+
+	/**
 	 * Whether this request's search was ANSWERED by one pinned partition — an oracle id's owner or a
 	 * `!"Name"`'s sole partition — rather than by the gather. A pin that fell back (stale modulus, a
 	 * stuck owner, an empty name-pinned page) is false. Read by `/cards/search`'s per-miss log line.
@@ -1686,6 +1700,15 @@ export class PartitionedEngine implements Engine {
 	 * a garbage hint — asks the rest in one more round and merges every reply, the routed one
 	 * included.
 	 *
+	 * x48: THE ROUTED PARTITION PLANS IN THE CALL IT IS ASKED ANYWAY. The filter answers a name it
+	 * never held with a hint ~78% of the time (see NamedFuzzyRoutedReply), so most misses used to
+	 * spend one call on that partition's bundle and a second on the plan saying nothing holds the
+	 * needle. `scryfallNamedFuzzyRouted` returns the bundle and — beside one that ranks nothing — the
+	 * plan: a miss is one call with or without a hint, a typo saves the plan's call, and a ranked
+	 * reply (the hit path) carries no plan and costs what it did. The replies merged are the same
+	 * ones: the routed partition's bundle is its bundle, and the plan is a function of the needle
+	 * and the build, whichever object makes it.
+	 *
 	 * A combination of replies the merge cannot read (a stage a partition skipped turning out to be
 	 * needed, which the skip rules make impossible) is answered by the three stages, logged.
 	 */
@@ -1706,12 +1729,35 @@ export class PartitionedEngine implements Engine {
 		this.namedFuzzyWide = null;
 		this.namedFuzzyBundles = null;
 		this.namedFuzzyPrinted = null;
+		this.namedFuzzyMore = null;
+		// Why this request made more than one call, in the order the calls were made (`more=`).
+		const more: string[] = [];
+		const callsBefore = this.partitionCalls;
+		// Undefined until a plan is in hand or known to be unavailable (null: ask every partition).
+		let plan: NamedFuzzyPlan | null | undefined = setCode === "" ? undefined : null;
+		const plannable = setCode === "" && cardNamesOf(this.manifest) !== null;
 		if (hint !== null) {
 			const first = hintPartition(hint);
-			const reply = await bundle(first);
+			let reply: NamedFuzzyBundle | undefined;
+			if (plannable) {
+				try {
+					const routed = await this.at(first).scryfallNamedFuzzyRouted(folded, words, NAMED_CONTAINMENT_LIMIT, baseUrl);
+					reply = routed.bundle;
+					if (routed.plan !== null && this.acceptPlan(routed.plan)) plan = routed.plan;
+				} catch (err) {
+					// An object on the build before x48, or one that failed: its bundle is asked for as it
+					// always was (and a partition that is really down fails there, as it always did).
+					console.warn(
+						`named fuzzy: partition ${first} did not answer its routed bundle (${err}); asking for it alone`,
+					);
+					more.push("route");
+				}
+			}
+			reply ??= await bundle(first);
 			if (nameReplySettles(hint, reply.exact.rank, reply.exact.present)) {
 				if (reply.exact.rank !== null && reply.exact.card !== null) {
 					this.namedFuzzyBundles = 1;
+					this.namedFuzzyMore = more.length > 0 ? more.join("+") : null;
 					return { status: "card", card: reply.exact.card };
 				}
 				exactSettledMiss = reply.exact.rank === null;
@@ -1722,23 +1768,43 @@ export class PartitionedEngine implements Engine {
 		// other partition's bundle is read as answering nothing (EMPTY_NAMED_FUZZY_BUNDLE), which the
 		// plan proves it would. No plan (no index, a set scope, an object that cannot say): all of them.
 		// x22: the plan object answers its own bundle in the plan's call when the plan names it.
-		const plan = setCode === "" ? await this.namedFuzzyPlan(folded, words, replies, baseUrl) : null;
+		if (plan === undefined) {
+			// After a routed reply this is a second call: the reply ranked the needle without settling
+			// it (another partition's extras may outrank it), or its object could not plan.
+			if (hint !== null && plannable) more.push("plan");
+			plan = await this.namedFuzzyPlan(folded, words, replies, baseUrl);
+		}
 		const wanted = plan === null || plan.everywhere ? Array.from({ length: this.n }, (_, p) => p) : plan.partitions;
 		this.namedFuzzyWide = plan === null ? null : plan.everywhere;
+		const unasked = wanted.filter((p) => replies[p] === undefined);
+		// Only a reason when something was called before them: a fan-out that IS the first round
+		// (a set scope with no hint, no names index) is one wait, not a second call.
+		if (unasked.length > 0 && this.partitionCalls > callsBefore) {
+			more.push(plan === null ? "all" : plan.everywhere ? "wide" : `named:${unasked.length}`);
+		}
 		await Promise.all(
-			wanted
-				.filter((p) => replies[p] === undefined)
-				.map(async (p) => {
-					replies[p] = await bundle(p);
-				}),
+			unasked.map(async (p) => {
+				replies[p] = await bundle(p);
+			}),
 		);
 		this.namedFuzzyBundles = replies.filter((r) => r !== undefined).length;
+		this.namedFuzzyMore = more.length > 0 ? more.join("+") : null;
 		// Array.from, not map: `replies` is sparse, and map skips its holes.
 		const filled = Array.from({ length: this.n }, (_, p) => replies[p] ?? EMPTY_NAMED_FUZZY_BUNDLE);
 		const merged = mergeNamedFuzzyBundles(filled, words, NAMED_CONTAINMENT_LIMIT, exactSettledMiss);
 		if (merged !== null) return merged;
 		console.warn("named fuzzy: the bundles do not combine; asking the three stages instead");
 		return resolveNamedFuzzyStaged(this, folded, words, setCode, baseUrl);
+	}
+
+	/** Whether a plan is this request's to use — made from its build, naming its partitions — and,
+	 * when it is, what it says for the log line. A plan from another build numbers them differently. */
+	private acceptPlan(plan: NamedFuzzyPlan): boolean {
+		if (plan.builtAt !== String(this.manifest.built_at ?? "")) return false;
+		if (plan.partitions.some((q) => !Number.isInteger(q) || q < 0 || q >= this.n)) return false;
+		this.namedFuzzyPlanStage = plan.stage;
+		this.namedFuzzyPrinted = plan.printed ?? null;
+		return true;
 	}
 
 	/**
@@ -1765,10 +1831,7 @@ export class PartitionedEngine implements Engine {
 		const own = replies[p] === undefined ? { partition: p, limit: NAMED_CONTAINMENT_LIMIT, baseUrl } : undefined;
 		try {
 			const plan = await this.at(p).scryfallNamedFuzzyPlan(folded, words, own);
-			if (plan.builtAt !== String(this.manifest.built_at ?? "")) return null;
-			if (plan.partitions.some((q) => !Number.isInteger(q) || q < 0 || q >= this.n)) return null;
-			this.namedFuzzyPlanStage = plan.stage;
-			this.namedFuzzyPrinted = plan.printed ?? null;
+			if (!this.acceptPlan(plan)) return null;
 			if (own !== undefined && plan.bundle !== undefined) replies[p] = plan.bundle;
 			return plan;
 		} catch (err) {

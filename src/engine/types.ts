@@ -504,6 +504,22 @@ export interface NamedFuzzyPlanReply extends NamedFuzzyPlan {
 	bundle?: NamedFuzzyBundle;
 }
 
+/**
+ * x48: what the partition a needle's NAME HINT routes to answers in one call — its own bundle,
+ * always, and the plan when that bundle does not rank the needle (null beside a ranked one, which
+ * is the hit path and plans nothing; null too when the object has no names index to plan from).
+ *
+ * A name the routing filter never held reads an arbitrary value, and the filter's cells are XORs of
+ * small numbers (a partition, or `N + 4s + t`), so ~78% of such needles come back with a hint: on
+ * DeckGen 2026-09-30, 63 of 81 fuzzy misses spent a call on the bundle of a partition the hint
+ * named by accident and a second on the plan that said no partition holds anything. The routed
+ * partition plans in the call it was already asked, and a miss is one call whatever its hint read.
+ */
+export interface NamedFuzzyRoutedReply {
+	bundle: NamedFuzzyBundle;
+	plan: NamedFuzzyPlan | null;
+}
+
 /** One cross-partition fuzzy candidate, decoded off the wasm `fuzzy_candidates` packet.
  * `oracleId` is the global card identity the race's "a card never competes with itself" rule
  * keys on; `vpid` is partition-local and unused by the race. */

@@ -38,9 +38,16 @@ const fakeEngine = {
 	searchCardsAsJson: async () => ({ totalCards: 1, cards: "[]" }),
 	scryfallNamedFuzzyBundle: async (...args: unknown[]) => {
 		bundlesAsked.push(args);
-		return { exact: { rank: null, present: false, card: null }, fuzzy: null, candidates: [], contained: [] };
+		return {
+			exact: { rank: bundleRank, present: bundleRank !== null, card: null },
+			fuzzy: null,
+			candidates: [],
+			contained: [],
+		};
 	},
 };
+/** x48: the rank the fake engine's bundle answers the needle with (null: it ranks nothing). */
+let bundleRank: unknown[] | null = null;
 
 /** The two-step publish's call log, asserted by the prepare/commit suite below. */
 const publishCalls: string[] = [];
@@ -1196,5 +1203,60 @@ describe("a coordinator whose sibling calls arrive late stops coordinating (x45)
 		// Slow enough to be worth a line, and the line says it did not stall.
 		expect(lines.every((l) => l.includes("slow gather") && l.includes("stalled=no"))).toBe(true);
 		expect(lines).toHaveLength(3);
+	});
+});
+
+describe("the routed partition answers its bundle and, unranked, the plan in one call (x48)", () => {
+	type RoutedDo = {
+		scryfallNamedFuzzyRouted(
+			folded: string,
+			words: string[],
+			limit: number,
+			baseUrl: string,
+			reportedShards?: number,
+		): Promise<{ bundle: { exact: { rank: unknown } }; plan: { partitions: number[]; stage: string } | null }>;
+	};
+	const routedDo = () => makeDo() as unknown as RoutedDo;
+
+	afterEach(() => {
+		fuzzyPlanAnswer = null;
+		bundleRank = null;
+		bundlesAsked.length = 0;
+	});
+
+	test("a bundle that ranks nothing comes back with the plan — a miss is this one call", async () => {
+		fuzzyPlanAnswer = { partitions: [], everywhere: false, stage: "miss", builtAt: "1" };
+		const reply = await routedDo().scryfallNamedFuzzyRouted(
+			"tap opponent mills",
+			["tap", "opponent", "mills"],
+			2,
+			"https://x",
+			1,
+		);
+		expect(reply.bundle.exact.rank).toBeNull();
+		expect(reply.plan).toEqual(fuzzyPlanAnswer as never);
+		// The bundle's own arguments; never a set (a set= needle is never planned).
+		expect(bundlesAsked).toEqual([["tap opponent mills", "", ["tap", "opponent", "mills"], 2, "https://x"]]);
+	});
+
+	test("a ranked bundle — the hit path — plans nothing", async () => {
+		bundleRank = [3, "lightningbolt", 1, "", 0.9];
+		// Any plan asked for here would be this one, and the reply must not carry it.
+		fuzzyPlanAnswer = { partitions: [4], everywhere: false, stage: "exact", builtAt: "1" };
+		const reply = await routedDo().scryfallNamedFuzzyRouted("lightning bolt", ["lightning", "bolt"], 2, "https://x", 1);
+		expect(reply.bundle.exact.rank).toEqual(bundleRank);
+		expect(reply.plan).toBeNull();
+	});
+
+	test("no names index: the bundle alone, and the router asks for a plan as it did", async () => {
+		const warn = spyOn(console, "warn").mockImplementation(() => {});
+		try {
+			fuzzyPlanAnswer = null;
+			const reply = await routedDo().scryfallNamedFuzzyRouted("zzqx", ["zzqx"], 2, "https://x", 1);
+			expect(reply.bundle.exact.rank).toBeNull();
+			expect(reply.plan).toBeNull();
+		} finally {
+			warn.mockRestore();
+		}
 	});
 });

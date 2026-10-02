@@ -22,6 +22,7 @@ import type {
 	NamedFuzzyBundle,
 	NamedFuzzyOwnBundle,
 	NamedFuzzyPlanReply,
+	NamedFuzzyRoutedReply,
 	NameRank,
 	ResultShape,
 	ScryfallFuzzyResult,
@@ -128,6 +129,13 @@ interface SearchEngineStub {
 		reportedShards?: number,
 		own?: NamedFuzzyOwnBundle,
 	): Promise<NamedFuzzyPlanReply & Telemetry>;
+	scryfallNamedFuzzyRouted(
+		folded: string,
+		words: string[],
+		limit: number,
+		baseUrl: string,
+		reportedShards?: number,
+	): Promise<NamedFuzzyRoutedReply & Telemetry>;
 	scryfallExactName(
 		folded: string,
 		setCode: string,
@@ -1224,6 +1232,23 @@ export class RemoteEngine implements Engine {
 			...(bundle === undefined ? {} : { bundle }),
 			...(printed === undefined ? {} : { printed }),
 		};
+	}
+
+	/** x48: the routed partition's own bundle and, beside an unranked one, the plan — one call (see the
+	 * DO's scryfallNamedFuzzyRouted). Throws from an object on the build before it; the router then
+	 * asks for the bundle and the plan separately. The plan's fields are picked by name, as above. */
+	async scryfallNamedFuzzyRouted(
+		folded: string,
+		words: string[],
+		limit: number,
+		baseUrl: string,
+	): Promise<NamedFuzzyRoutedReply> {
+		const { bundle, plan } = await this.searchRpc("scryfallNamedFuzzyRouted", (stub, shards) =>
+			stub.scryfallNamedFuzzyRouted(folded, words, limit, baseUrl, shards),
+		);
+		if (plan === null) return { bundle, plan };
+		const { partitions, everywhere, stage, builtAt, printed } = plan;
+		return { bundle, plan: { partitions, everywhere, stage, builtAt, ...(printed === undefined ? {} : { printed }) } };
 	}
 
 	/** n8: the whole corpus's autocomplete from this one object's card-names blob (see the DO's

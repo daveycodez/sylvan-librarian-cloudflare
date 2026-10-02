@@ -110,6 +110,7 @@ import type {
 	NamedFuzzyBundle,
 	NamedFuzzyOwnBundle,
 	NamedFuzzyPlanReply,
+	NamedFuzzyRoutedReply,
 	NameRank,
 	ResultShape,
 	ScryfallFuzzyResult,
@@ -713,6 +714,39 @@ export class SearchEngine extends DurableObject<Env> {
 			const wanted = own !== undefined && (plan.everywhere || plan.partitions.includes(own.partition));
 			if (!wanted || !engine.scryfallNamedFuzzyBundle) return plan;
 			return { ...plan, bundle: await engine.scryfallNamedFuzzyBundle(folded, "", words, own.limit, own.baseUrl) };
+		});
+	}
+
+	/**
+	 * x48: `/cards/named?fuzzy=` asked of the partition the needle's name hint routes to — its own
+	 * bundle, and, when that bundle does not rank the needle, the plan too (see NamedFuzzyRoutedReply).
+	 * A ranked bundle is the hit path and does exactly the work `scryfallNamedFuzzyBundle` does; an
+	 * unranked one is a typo, a miss or a hint the filter never held, where the router's next call was
+	 * always the plan. A new method, so an object on the build before it fails the call and the
+	 * router asks for the bundle and the plan separately, as it did. No names index: `plan` is null,
+	 * likewise.
+	 */
+	async scryfallNamedFuzzyRouted(
+		folded: string,
+		words: string[],
+		limit: number,
+		baseUrl: string,
+		reportedShards?: number,
+	): Promise<NamedFuzzyRoutedReply & SearchTelemetry> {
+		return this.instrumented(reportedShards, async (engine) => {
+			if (!engine.scryfallNamedFuzzyBundle) throw new Error("named-fuzzy bundles come from a loaded store only");
+			const bundle = await engine.scryfallNamedFuzzyBundle(folded, "", words, limit, baseUrl);
+			if (bundle.exact.rank !== null) return { bundle, plan: null };
+			try {
+				return { bundle, plan: await namesFuzzyPlan(this.env, this.loadContext(), folded, words) };
+			} catch (err) {
+				// A build with no names index (CardNamesUnavailableError, by name: this module's tests
+				// stand a partial store module in for the real one) is the quiet case.
+				if (!(err instanceof Error && err.name === "CardNamesUnavailableError")) {
+					console.warn(`[${this.label}] no fuzzy plan beside a routed bundle (the router asks for one): ${err}`);
+				}
+				return { bundle, plan: null };
+			}
 		});
 	}
 

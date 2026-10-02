@@ -1203,10 +1203,15 @@ export class RoutingFilter {
 	 * filter carries tiers), or null — ask them all. Always null on a filter without name keys,
 	 * where a name's value would be whatever its cells happen to XOR to.
 	 *
-	 * A HINT, exactly like `lookup`: a name never built in reads an arbitrary byte, ~(256 − 2N)/256
-	 * of which land on 255 or beyond 2N and come back null here. The rest name some partition, and
-	 * the caller must let that partition's REPLY prove the key was real before trusting it — see
-	 * `nameReplySettles` in partitioned-engine.ts.
+	 * A HINT, exactly like `lookup`: a name never built in reads the XOR of three cells, which names
+	 * some partition MORE OFTEN THAN NOT — the cells are themselves XORs of the values built in, nearly
+	 * all of them a partition or `N + 4s + t` and so under 64, and so is what an absent key reads
+	 * unless a 255 is mixed in. It is not a uniform byte: on DeckGen 2026-09-30, 63 of 81 names no
+	 * card carries read a hint (78%; a uniform byte would be 5N/256, 21%). So the caller must let the
+	 * named partition's REPLY prove the key was real before trusting it (`nameReplySettles` in
+	 * partitioned-engine.ts), and must not let an absent name cost a call more than a hinted one
+	 * (x48: the routed partition plans a fuzzy miss in its own call; x47: it locates a collection
+	 * name it does not settle).
 	 */
 	lookupName(key: string): NameHint | null {
 		if (!this.hasNameKeys) return null;

@@ -904,6 +904,10 @@ async function namedFuzzy(
 		// `printed=`: what the build's printed-names blob said where the plan needed it — `hit` (it named
 		// partitions), `miss` (none: a miss answered by the plan's object alone), `absent` (no blob or an
 		// unreadable one: every partition asked) — and `-` where no plan reached that tier.
+		// x48's `more=`: WHY a call followed the first, in call order and `+`-joined — `route` (the
+		// routed partition was asked again for its bundle alone), `plan` (a plan asked for after the
+		// routed reply), `named:K` (the plan named K partitions not yet asked), `wide`, `all` — and
+		// `-` for a lookup that ended with its first call (PartitionedEngine.namedFuzzyMore).
 		// Grep "cards/named fuzzy:".
 		const partitioned = engine as {
 			partitionCalls?: number;
@@ -911,10 +915,11 @@ async function namedFuzzy(
 			namedFuzzyWide?: boolean | null;
 			namedFuzzyBundles?: number | null;
 			namedFuzzyPrinted?: string | null;
+			namedFuzzyMore?: string | null;
 		};
 		const wide = partitioned.namedFuzzyWide == null ? "-" : partitioned.namedFuzzyWide ? 1 : 0;
 		console.log(
-			`cards/named fuzzy: plan=${partitioned.namedFuzzyPlanStage ?? "-"} set=${setCode ? 1 : 0} calls=${partitioned.partitionCalls ?? -1} status=${status} wide=${wide} bundles=${partitioned.namedFuzzyBundles ?? "-"} printed=${partitioned.namedFuzzyPrinted ?? "-"}`,
+			`cards/named fuzzy: plan=${partitioned.namedFuzzyPlanStage ?? "-"} set=${setCode ? 1 : 0} calls=${partitioned.partitionCalls ?? -1} status=${status} wide=${wide} bundles=${partitioned.namedFuzzyBundles ?? "-"} printed=${partitioned.namedFuzzyPrinted ?? "-"} more=${partitioned.namedFuzzyMore ?? "-"}`,
 		);
 	}
 	return scryfallJson(notFoundError(`No cards found matching “${fuzzy}”`), pretty, CARDS_CACHE);

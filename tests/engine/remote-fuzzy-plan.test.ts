@@ -33,3 +33,32 @@ describe("RemoteEngine.scryfallNamedFuzzyPlan", () => {
 		expect("printed" in bare).toBe(false);
 	});
 });
+
+describe("RemoteEngine.scryfallNamedFuzzyRouted (x48)", () => {
+	const bundle = { exact: { rank: null, present: false, card: null } } as never;
+	const riders = { acquireMs: 0, load: 1, rate: 2, shards: 1 };
+
+	test("carries the bundle and every field of the plan beside it, the riders left behind", async () => {
+		const plan = { partitions: [], everywhere: false, stage: "miss", builtAt: "1790419993", printed: "miss" };
+		const stub = { scryfallNamedFuzzyRouted: async () => ({ bundle, plan, ...riders }) };
+		const got = await new RemoteEngine(stub as never, "wnam").scryfallNamedFuzzyRouted("x", ["x"], 2, "https://x");
+		expect(got).toEqual({ bundle, plan } as never);
+	});
+
+	test("a ranked bundle comes back with no plan", async () => {
+		const stub = { scryfallNamedFuzzyRouted: async () => ({ bundle, plan: null, ...riders }) };
+		const got = await new RemoteEngine(stub as never, "wnam").scryfallNamedFuzzyRouted("x", ["x"], 2, "https://x");
+		expect(got).toEqual({ bundle, plan: null });
+	});
+
+	test("an object on the build before it fails the call, for the router to ask as it did", async () => {
+		const stub = {
+			scryfallNamedFuzzyRouted: async () => {
+				throw new Error('The RPC receiver does not implement the method "scryfallNamedFuzzyRouted".');
+			},
+		};
+		await expect(
+			new RemoteEngine(stub as never, "wnam").scryfallNamedFuzzyRouted("x", ["x"], 2, "https://x"),
+		).rejects.toThrow("does not implement");
+	});
+});
