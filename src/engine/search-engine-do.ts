@@ -73,8 +73,9 @@ import {
 	runTwoPhase,
 	type SearchKeysReply,
 } from "./gather";
+import { gatherHealthOf, type SiblingCallTiming, SLOW_GATHER_LOG_MS, slowGatherLine, stallOf } from "./gather-health";
 import { probePlacement } from "./placement";
-import { siblingCall } from "./remote-engine";
+import { ENGINE_SHED_ERROR, siblingCall } from "./remote-engine";
 import { foldWidthAnnouncement } from "./shard-controller";
 import { SiblingLimiter, type SiblingLoad } from "./sibling-limit";
 import {
@@ -165,6 +166,11 @@ const WIDTH_TTL_MS = 60_000;
  * seconds, since each bucket holds exactly one. */
 const RATE_BUCKETS = 10;
 
+/** When this isolate ran its first gather: the age a slow gather's log line reports (x45 — both
+ * stalling coordinators were single isolates, 111 and 135 minutes old when replaced). Not read at
+ * module scope, where a Worker's clock does not run. */
+let isolateFirstGatherAt = 0;
+
 function rethrowForRpc(err: unknown): never {
 	if (err instanceof EngineUnavailableError) {
 		throw new Error(`${ENGINE_UNAVAILABLE_MARKER}:${err.message}`);
@@ -190,6 +196,8 @@ export class SearchEngine extends DurableObject<Env> {
 	/** Sibling calls open and queued across every gather this object is running — read only by the
 	 * "failed transiently" line, to say what the object was doing when a call died (x44). */
 	private readonly siblingLoad: SiblingLoad = { open: 0, queued: 0 };
+	/** Gathers awaiting their siblings here, for the slow-gather line only (never a load signal). */
+	private inFlightGathers = 0;
 	/** Arrivals per second, for the request-RATE the shard controller gates
 	 * expansion on. Rate is the cause-side measurement: latency rises for
 	 * reasons sharding cannot fix (KV slowness, network, a noisy neighbour),
@@ -383,9 +391,27 @@ export class SearchEngine extends DurableObject<Env> {
 			pinnedPartitionCount?: number;
 			/** The previous build's pin (`{ layout }`), honoured through a rolling deploy. */
 			pinned?: { layout?: unknown };
+			/**
+			 * x45: the caller has a neighbour region to ask instead, so a coordinator whose sibling
+			 * calls are stalling may refuse this gather (gather-health.ts). Never set on the hedged or
+			 * failed-over copy of a call, nor on the caller's last attempt — those are always answered.
+			 */
+			sheddable?: boolean;
 		};
 		if (body.call !== "cards" && body.call !== "cards2") {
 			return new Response(`unsupported engine call: ${String(body.call)}`, { status: 400 });
+		}
+		if (body.call === "cards2" && body.sheddable === true) {
+			const health = gatherHealthOf(this.label);
+			const now = Date.now();
+			if (health.shedding(now)) {
+				health.shed += 1;
+				return new Response(
+					`${this.label} is not coordinating gathers for another ${health.shedUntil - now}ms: ` +
+						`its calls to its sibling partitions are being delivered late`,
+					{ status: 503, headers: { "x-engine-error": ENGINE_SHED_ERROR } },
+				);
+			}
 		}
 		let result: EngineSerializedResult & SearchTelemetry & { gathered?: number };
 		try {
@@ -882,7 +908,27 @@ export class SearchEngine extends DurableObject<Env> {
 	/** One client per partition: this object's own store served locally, every
 	 * sibling over RPC. Names derive from THIS object's label (siblingStub), so
 	 * a gather can only ever fan out within its own region and replica. */
-	private partitionClients(count: number): PartitionClient[] {
+	private partitionClients(count: number, trace: SiblingCallTiming[]): PartitionClient[] {
+		/** Time one sibling call for the gather's stall verdict (gather-health.ts), from the moment it
+		 * is SENT — inside its limiter slot (x44), so a call's wait for a slot is not counted as the
+		 * call being late. The clock moves across the call's I/O, which is exactly what is measured,
+		 * and `call` starts synchronously, as the limiter's own contract requires. */
+		const timed = async <R>(
+			partition: number,
+			method: SiblingCallTiming["method"],
+			call: () => Promise<R>,
+			acquireMsOf: (reply: R) => number,
+		): Promise<R> => {
+			const started = Date.now();
+			try {
+				const reply = await call();
+				trace.push({ partition, method, ms: Date.now() - started, acquireMs: acquireMsOf(reply), failed: false });
+				return reply;
+			} catch (err) {
+				trace.push({ partition, method, ms: Date.now() - started, acquireMs: 0, failed: true });
+				throw err;
+			}
+		};
 		const own = parseEngineName(this.label)?.partition;
 		// x44: at most six sibling calls outstanding per gather — see sibling-limit.ts. One limiter
 		// for both phases of the gather these clients serve.
@@ -922,15 +968,32 @@ export class SearchEngine extends DurableObject<Env> {
 			return {
 				searchKeys: (opts: EngineSearchOptions, inlineRows: number, shaping: RowShaping) =>
 					limiter.run(() =>
-						siblingCall(`partition-${p} searchKeys`, connect, (s) => s.searchKeys(opts, inlineRows, shaping), where),
+						timed(
+							p,
+							"searchKeys",
+							() =>
+								siblingCall(
+									`partition-${p} searchKeys`,
+									connect,
+									(s) => s.searchKeys(opts, inlineRows, shaping),
+									where,
+								),
+							(reply) => reply.acquireMs ?? 0,
+						),
 					),
 				fetchRows: (vpids: number[], fields: string[], storeKey: string, shaping: RowShaping) =>
 					limiter.run(() =>
-						siblingCall(
-							`partition-${p} fetchRows`,
-							connect,
-							(s) => s.fetchRows(vpids, fields, storeKey, shaping),
-							where,
+						timed(
+							p,
+							"fetchRows",
+							() =>
+								siblingCall(
+									`partition-${p} fetchRows`,
+									connect,
+									(s) => s.fetchRows(vpids, fields, storeKey, shaping),
+									where,
+								),
+							() => 0,
 						),
 					),
 				refresh: async () => {
@@ -961,16 +1024,67 @@ export class SearchEngine extends DurableObject<Env> {
 		listedOpts: EngineSearchOptions,
 		shaping: GatherShaping,
 	): Promise<GatheredPage & { gathered: number }> {
-		const listed = await this.gatherListed(listedOpts, shaping);
+		const trace: SiblingCallTiming[] = [];
+		const started = Date.now();
+		if (isolateFirstGatherAt === 0) isolateFirstGatherAt = started;
+		this.inFlightGathers += 1;
+		try {
+			return await this.gatherPasses(listedOpts, shaping, trace);
+		} finally {
+			this.inFlightGathers -= 1;
+			this.noteGather(trace, started);
+		}
+	}
+
+	/**
+	 * x45: judge the gather that just ended by its sibling calls, and say so when it was slow.
+	 *
+	 * A gather whose sibling calls STALLED — some delivered a second or three late while the rest
+	 * took milliseconds — counts against this object; two in a row and it stops coordinating
+	 * sheddable gathers for a period (fetch, above), so callers reach the neighbour region through
+	 * their failover in milliseconds rather than through the hedge after ENGINE_HEDGE_MS. A failed
+	 * gather is judged like any other: what its calls took is the evidence either way.
+	 */
+	private noteGather(trace: SiblingCallTiming[], started: number): void {
+		const now = Date.now();
+		const totalMs = now - started;
+		const verdict = stallOf(trace);
+		const health = gatherHealthOf(this.label);
+		const refused = health.shed;
+		const period = health.note(verdict.stalled, now);
+		if (period !== null) {
+			console.warn(
+				`[${this.label}] shedding gathers for ${period}ms: ${health.streak} gathers in a row had sibling calls ` +
+					`delivered late (period ${health.periods}${refused ? `, ${refused} refused in the last one` : ""}); ` +
+					`callers fail over to their neighbour region`,
+			);
+		}
+		if (verdict.stalled === true || totalMs >= SLOW_GATHER_LOG_MS) {
+			console.warn(
+				slowGatherLine(this.label, totalMs, trace, verdict, health, now, {
+					inFlight: this.inFlightGathers,
+					isolateAgeMs: now - isolateFirstGatherAt,
+				}),
+			);
+		}
+	}
+
+	/** The gather itself: listed, named, or every partition — see gatherRun. */
+	private async gatherPasses(
+		listedOpts: EngineSearchOptions,
+		shaping: GatherShaping,
+		trace: SiblingCallTiming[],
+	): Promise<GatheredPage & { gathered: number }> {
+		const listed = await this.gatherListed(listedOpts, shaping, trace);
 		if (listed !== null) return listed;
 		const { gatherPartitions: _, ...opts } = listedOpts;
-		const named = await this.gatherNamed(opts, shaping);
+		const named = await this.gatherNamed(opts, shaping, trace);
 		if (named !== null) return named;
 		const { width, manifest } = await this.gatherWidth();
 		// Nothing awaits between this and the fan-out below: the growth must land before any
 		// sibling call is issued, not merely before the load (see reserveOwnStore).
 		if (manifest) this.reserveOwnStore(manifest, width);
-		let page = await runTwoPhase(this.partitionClients(width), opts, shaping);
+		let page = await runTwoPhase(this.partitionClients(width, trace), opts, shaping);
 		// Free when the fan-out included this partition, which it always does at a correct width.
 		await this.engine();
 		const loaded = currentManifest(this.label);
@@ -988,7 +1102,7 @@ export class SearchEngine extends DurableObject<Env> {
 			console.warn(
 				`[${this.label}] gathered across ${width} partitions but loaded a ${loadedWidth}-wide store; re-running`,
 			);
-			const again = await runTwoPhase(this.partitionClients(loadedWidth), opts, shaping);
+			const again = await runTwoPhase(this.partitionClients(loadedWidth, trace), opts, shaping);
 			page = { ...again, acquireMs: Math.max(page.acquireMs, again.acquireMs) };
 			return { ...page, gathered: loadedWidth };
 		}
@@ -1008,6 +1122,7 @@ export class SearchEngine extends DurableObject<Env> {
 	private async gatherListed(
 		opts: EngineSearchOptions,
 		shaping: GatherShaping,
+		trace: SiblingCallTiming[],
 	): Promise<(GatheredPage & { gathered: number }) | null> {
 		const list = opts.gatherPartitions;
 		if (list === undefined) return null;
@@ -1023,7 +1138,7 @@ export class SearchEngine extends DurableObject<Env> {
 		if (loaded && String(loaded.built_at ?? "") !== list.build) return null;
 		const { width, manifest } = await this.gatherWidth();
 		if ((partitions[partitions.length - 1] as number) >= width) return null;
-		const clients = this.partitionClients(width);
+		const clients = this.partitionClients(width, trace);
 		// x23, as in gatherRun: a cold coordinator that is one of the listed partitions grows its
 		// memory for its own store BEFORE the fan-out, so no sibling call is still connecting when
 		// the load allocates. Nothing awaits between this and runTwoPhase.
@@ -1066,6 +1181,7 @@ export class SearchEngine extends DurableObject<Env> {
 	private async gatherNamed(
 		opts: EngineSearchOptions,
 		shaping: GatherShaping,
+		trace: SiblingCallTiming[],
 	): Promise<(GatheredPage & { gathered: number }) | null> {
 		const builtAt = opts.namesBuild;
 		// Plainly not a name query: gather at once, never waiting on this object's own store first.
@@ -1091,7 +1207,7 @@ export class SearchEngine extends DurableObject<Env> {
 				gathered: 0,
 			};
 		}
-		const clients = this.partitionClients(width);
+		const clients = this.partitionClients(width, trace);
 		const page = await runTwoPhase(
 			partitions.map((p) => clients[p] as PartitionClient),
 			opts,

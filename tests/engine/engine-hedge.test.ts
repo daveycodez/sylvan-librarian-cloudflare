@@ -13,10 +13,13 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { effectiveRegion, type Hint, hedgeRegionFor, type PlacementBlock } from "../../src/engine/placement-policy";
 import { REGION_HINTS } from "../../src/engine/region";
 import {
+	ENGINE_SHED_ERROR,
 	EngineCallTimeoutError,
 	type EngineHedge,
 	RemoteEngine,
+	resetEngineCoolingForTests,
 	setEngineCallDeadlineForTests,
+	setEngineCoolingForTests,
 	setEngineHedgeForTests,
 } from "../../src/engine/remote-engine";
 import { EngineQueryError, StaleModulusError } from "../../src/engine/types";
@@ -47,10 +50,14 @@ function neighbour(stub: Record<string, unknown>, region = "enam") {
 beforeEach(() => {
 	setEngineHedgeForTests(HEDGE_MS);
 	setEngineCallDeadlineForTests(400);
+	// Every test here starts with no object cooling: the strikes live in module state (x45).
+	resetEngineCoolingForTests();
 });
 afterEach(() => {
 	setEngineHedgeForTests(4_000);
 	setEngineCallDeadlineForTests(35_000);
+	setEngineCoolingForTests(120_000);
+	resetEngineCoolingForTests();
 });
 
 describe("the RPC transport", () => {
@@ -572,6 +579,261 @@ describe("the page transport (the /cards/search and /search gathers)", () => {
 		expect(await res.text()).toBe('{"from":"own"}');
 		await after(HEDGE_MS * 2, () => {});
 		expect(seen.connects).toBe(0);
+	});
+});
+
+describe("an object that keeps going unanswered is asked second for a while (x45)", () => {
+	// DeckGen 2026-09-29 20:42–21:49: 40 pages in a row waited out the 4s hedge delay behind
+	// engine-wnam-p9, and enam answered every one within 100–450ms of being asked. The hedge
+	// remembered nothing, so the slow object was asked first every single time.
+
+	/** A home object whose next answers are scripted: "hang", or a delay in ms. */
+	function home(script: ("hang" | number)[]) {
+		const seen = { calls: 0 };
+		const stub = byId({
+			scryfallCardById: () => {
+				seen.calls++;
+				const next = script.shift() ?? 0;
+				return next === "hang" ? never() : after(next, () => card("own"));
+			},
+		});
+		return { stub, seen };
+	}
+	const ask = async (engine: RemoteEngine) => {
+		const started = Date.now();
+		const answer = (await engine.scryfallCardById("x", "https://x")) as { name: string };
+		return { from: answer.name, took: Date.now() - started };
+	};
+	const engineOf = (stub: Stub, hedge: EngineHedge) => new RemoteEngine(stub, "wnam", "SJC", undefined, false, hedge);
+
+	test("two unanswered calls in a row: the third asks the neighbour FIRST and never waits the hedge delay", async () => {
+		setEngineHedgeForTests(60);
+		const lines: string[] = [];
+		const warn = console.warn;
+		console.warn = (...args: unknown[]) => lines.push(args.join(" "));
+		try {
+			const own = home(["hang", "hang", "hang"]);
+			const { hedge, seen } = neighbour({ scryfallCardById: async () => card("neighbour") });
+			const engine = engineOf(own.stub, hedge);
+			expect((await ask(engine)).took).toBeGreaterThanOrEqual(58);
+			expect((await ask(engine)).took).toBeGreaterThanOrEqual(58);
+			const third = await ask(engine);
+			expect(third.from).toBe("neighbour");
+			expect(third.took).toBeLessThan(40);
+			// The home object was not asked at all the third time: no extra call while it is cooling.
+			expect([own.seen.calls, seen.connects]).toEqual([2, 3]);
+		} finally {
+			console.warn = warn;
+		}
+		expect(
+			lines.filter((l) =>
+				/^\[wnam\] engine cooling p3: 2 calls in a row went 60ms unanswered \(last: scryfallCardById\); asking enam first for 120000ms$/.test(
+					l,
+				),
+			),
+		).toHaveLength(1);
+	});
+
+	test("one unanswered call is the eviction hang the hedge is for: nothing changes", async () => {
+		setEngineHedgeForTests(60);
+		const own = home(["hang", 0, "hang"]);
+		const { hedge } = neighbour({ scryfallCardById: async () => card("neighbour") });
+		const engine = engineOf(own.stub, hedge);
+		expect((await ask(engine)).from).toBe("neighbour");
+		expect((await ask(engine)).from).toBe("own"); // a prompt answer clears the count
+		const third = await ask(engine);
+		expect(third.took).toBeGreaterThanOrEqual(58); // asked first again, and waited for
+		expect(own.seen.calls).toBe(3);
+	});
+
+	test("an answer that only just beat the hedge delay does not clear the count", async () => {
+		// The stalled coordinators answered many pages in 3.2–3.5s between the hedged ones.
+		setEngineHedgeForTests(60);
+		const own = home(["hang", 45, "hang", "hang"]);
+		const { hedge } = neighbour({ scryfallCardById: async () => card("neighbour") });
+		const engine = engineOf(own.stub, hedge);
+		await ask(engine);
+		expect((await ask(engine)).from).toBe("own");
+		await ask(engine);
+		const fourth = await ask(engine);
+		expect(fourth.from).toBe("neighbour");
+		expect(fourth.took).toBeLessThan(40);
+		expect(own.seen.calls).toBe(3);
+	});
+
+	test("a failover is a fast failure and never counts", async () => {
+		setEngineHedgeForTests(60);
+		const seenOwn = { calls: 0 };
+		const failing = byId({
+			scryfallCardById: async () => {
+				seenOwn.calls++;
+				throw new Error("Network connection lost.");
+			},
+		});
+		const { hedge } = neighbour({ scryfallCardById: async () => card("neighbour") });
+		const engine = engineOf(failing, hedge);
+		for (let i = 0; i < 4; i++) expect((await ask(engine)).from).toBe("neighbour");
+		expect(seenOwn.calls).toBe(4); // still asked first every time
+	});
+
+	test("while cooling, a silent neighbour falls back to the home object", async () => {
+		setEngineHedgeForTests(40);
+		const own = home(["hang", "hang", 0]);
+		let neighbourAnswers = true;
+		const { hedge } = neighbour({
+			scryfallCardById: () => (neighbourAnswers ? Promise.resolve(card("neighbour")) : never()),
+		});
+		const engine = engineOf(own.stub, hedge);
+		await ask(engine);
+		await ask(engine);
+		neighbourAnswers = false;
+		const third = await ask(engine);
+		expect(third.from).toBe("own");
+		expect(third.took).toBeGreaterThanOrEqual(38); // the neighbour went first and was waited for
+	});
+
+	test("while cooling, a neighbour that fails is failed over to the home object at once", async () => {
+		setEngineHedgeForTests(40);
+		const own = home(["hang", "hang", 0]);
+		let neighbourFails = false;
+		const { hedge } = neighbour({
+			scryfallCardById: async () => {
+				if (neighbourFails) throw new Error("Durable Object is overloaded");
+				return card("neighbour");
+			},
+		});
+		const engine = engineOf(own.stub, hedge);
+		await ask(engine);
+		await ask(engine);
+		neighbourFails = true;
+		const third = await ask(engine);
+		expect(third.from).toBe("own");
+		expect(third.took).toBeLessThan(30);
+	});
+
+	test("when the period ends the object is asked first again, and ONE more silence re-arms it", async () => {
+		setEngineHedgeForTests(40);
+		setEngineCoolingForTests(80);
+		const own = home(["hang", "hang", "hang", "hang"]);
+		const { hedge } = neighbour({ scryfallCardById: async () => card("neighbour") });
+		const engine = engineOf(own.stub, hedge);
+		await ask(engine);
+		await ask(engine); // cooling starts
+		expect((await ask(engine)).took).toBeLessThan(30);
+		await after(90, () => {});
+		expect((await ask(engine)).took).toBeGreaterThanOrEqual(38); // the probe: asked first, silent
+		expect((await ask(engine)).took).toBeLessThan(30); // cooling again after that one call
+		expect(own.seen.calls).toBe(3);
+	});
+
+	test("cooling is per object: another partition of the region is still asked first", async () => {
+		setEngineHedgeForTests(40);
+		const own = home(["hang", "hang"]);
+		const { hedge } = neighbour({ scryfallCardById: async () => card("neighbour") });
+		const engine = engineOf(own.stub, hedge);
+		await ask(engine);
+		await ask(engine);
+		const other = home([0]);
+		const elsewhere = engineOf(other.stub, { ...hedge, partition: 4 });
+		expect((await ask(elsewhere)).from).toBe("own");
+	});
+});
+
+describe("a coordinator that sheds its gathers (x45)", () => {
+	const page = (label: string) =>
+		new Response(`{"from":"${label}"}`, { status: 200, headers: { "content-type": "application/json" } });
+	const shedding = () =>
+		new Response("engine-wnam-p3 is not coordinating gathers for another 29000ms", {
+			status: 503,
+			headers: { "x-engine-error": ENGINE_SHED_ERROR },
+		});
+
+	test("the refusal is failed over to the neighbour at once: one call each, no retry, no hedge delay", async () => {
+		setEngineHedgeForTests(60_000);
+		const ours: string[] = [];
+		const theirs: string[] = [];
+		const { hedge } = neighbour({
+			fetch: async (req: Request) => {
+				theirs.push(await req.text());
+				return page("neighbour");
+			},
+		});
+		const engine = new RemoteEngine(
+			byId({
+				fetch: async (req: Request) => {
+					ours.push(await req.text());
+					return shedding();
+				},
+			}),
+			"wnam",
+			"SJC",
+			() => {
+				throw new Error("a shed gather must not be retried on a fresh stub");
+			},
+			false,
+			hedge,
+		);
+		const started = Date.now();
+		const res = await engine.scryfallSearchPage({ limit: 10 } as never, "https://x", envelope, {}, "cards2");
+		expect(await res.text()).toBe('{"from":"neighbour"}');
+		expect(Date.now() - started).toBeLessThan(200);
+		expect([ours.length, theirs.length]).toEqual([1, 1]);
+		// Only the home coordinator is given leave to refuse; the neighbour's copy must answer.
+		expect(JSON.parse(ours[0] ?? "{}").sheddable).toBe(true);
+		expect("sheddable" in JSON.parse(theirs[0] ?? "{}")).toBe(false);
+	});
+
+	test("shed here and no answer from the neighbour: the home coordinator is asked again, with no leave to refuse", async () => {
+		setEngineHedgeForTests(60_000);
+		const ours: string[] = [];
+		const { hedge } = neighbour({
+			fetch: async () => new Response("enam is down", { status: 503, headers: { "x-engine-error": "Error" } }),
+		});
+		const engine = new RemoteEngine(
+			byId({
+				fetch: async (req: Request) => {
+					const body = await req.text();
+					ours.push(body);
+					return JSON.parse(body).sheddable === true ? shedding() : page("own");
+				},
+			}),
+			"wnam",
+			"SJC",
+			undefined,
+			false,
+			hedge,
+		);
+		const res = await engine.scryfallSearchPage({ limit: 10 } as never, "https://x", envelope, {}, "cards2");
+		expect(await res.text()).toBe('{"from":"own"}');
+		expect(ours).toHaveLength(2);
+		expect("sheddable" in JSON.parse(ours[1] ?? "{}")).toBe(false);
+	});
+
+	test("only a gather with a neighbour to go to may be refused", async () => {
+		const bodies: string[] = [];
+		const stub = byId({
+			fetch: async (req: Request) => {
+				bodies.push(await req.text());
+				return page("own");
+			},
+		});
+		const { hedge } = neighbour({ fetch: async () => page("neighbour") });
+		// A pinned "cards" call is one object's own answer: nothing to shed.
+		await new RemoteEngine(stub, "wnam", "SJC", undefined, false, hedge).scryfallSearchPage(
+			{ limit: 10 } as never,
+			"https://x",
+			envelope,
+			{},
+		);
+		// A gather with no hedge region has nowhere else to go.
+		await new RemoteEngine(stub, "wnam").scryfallSearchPage(
+			{ limit: 10 } as never,
+			"https://x",
+			envelope,
+			{},
+			"cards2",
+		);
+		expect(bodies.map((b) => "sheddable" in JSON.parse(b))).toEqual([false, false]);
 	});
 });
 

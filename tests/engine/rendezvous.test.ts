@@ -148,6 +148,7 @@ mock.module("../../src/engine/placement", () => ({
 
 const { SearchEngine } = await import("../../src/engine/search-engine-do");
 const { encodeKeyPacket, encodeRowPacket } = await import("../../src/engine/gather");
+const { resetGatherHealthForTests } = await import("../../src/engine/gather-health");
 
 type Do = {
 	searchCardsAsObjects: (opts: unknown, reported?: number) => Promise<{ shards: number; rate: number }>;
@@ -999,5 +1000,201 @@ describe("a full gather keeps at most six sibling calls outstanding (x44)", () =
 		expect(seen.peak).toBe(12);
 		expect(new TextDecoder().decode(a.cardsBytes)).toBe(WHOLE_PAGE);
 		expect(new TextDecoder().decode(b.cardsBytes)).toBe(WHOLE_PAGE);
+	});
+});
+
+describe("a coordinator whose sibling calls arrive late stops coordinating (x45)", () => {
+	// DeckGen 2026-09-29 20:42–21:49, engine-wnam-p9: every gather took 3.2s or 6.3s for the life of
+	// one isolate, on ~40ms of CPU, because some of its calls reached their sibling ~1s or ~3.1s
+	// late; the siblings ran them in milliseconds and four other coordinators were unaffected.
+	const WIDE = {
+		store_key: "card-store-v1-7.store",
+		store_bytes: 40,
+		built_at: "7",
+		card_count: 4,
+		partition_count: 4,
+		format_version: ARCHIVE_FORMAT_VERSION,
+		partitions: [0, 1, 2, 3].map((p) => ({
+			store_key: `card-store-v1-7-p${p}.store`,
+			store_bytes: 10,
+			chunk_count: 1,
+			card_count: 1,
+		})),
+	};
+	const row = (p: number) => new TextEncoder().encode(`{"name":"p${p}"}`);
+	const packet = (p: number, inline: number) =>
+		encodeKeyPacket({
+			total: 1,
+			entries: [{ key: new Uint8Array([p + 1]), vpid: 0 }],
+			inlineRows: inline > 0 ? [row(p)] : [],
+		});
+	const OPTS = { filterTreeJson: "{}", unique: "printing", orderby: "name", limit: 4, offset: 0, fields: ["name"] };
+
+	/** A warm coordinator `engine-oc-p0` with three siblings; `late` is how long the fake clock runs
+	 * while each sibling's call is on its way (set per test, read per call). */
+	function coordinator() {
+		const late: Record<number, number> = {};
+		const asked: number[] = [];
+		gatherStore = {
+			ownLoad: Promise.resolve(),
+			loaded: true,
+			ownLoadMs: 0,
+			events: [],
+			manifest: WIDE,
+			ops: {
+				storeKey: "card-store-v1-7-p0.store",
+				sortKeyVersion: () => 1,
+				queryKeys: () => packet(0, 0),
+				fetchRows: () => encodeRowPacket([row(0)]),
+			},
+		};
+		const sibling = (p: number) => ({
+			async searchKeys(_opts: unknown, inline: number, shaping: { shape: string }) {
+				asked.push(p);
+				if (late[p]) {
+					// The quick siblings answer (and are timed) first; only then does the clock run on
+					// for the late one — as in production, where the others had long since replied.
+					await new Promise((resolve) => setTimeout(resolve, 1));
+					clock += late[p] as number;
+				}
+				return {
+					packed: packet(p, inline),
+					storeKey: `card-store-v1-7-p${p}.store`,
+					sortKeyVersion: 1,
+					shape: shaping.shape,
+					acquireMs: 0,
+				};
+			},
+			async fetchRows() {
+				return { rowsBytes: encodeRowPacket([row(p)]), shape: "cards" };
+			},
+		});
+		const env = {
+			SEARCH_ENGINE: {
+				idFromName: (name: string) => name,
+				get: (name: string) => sibling(Number(name.slice("engine-oc-p".length))),
+			},
+		};
+		const storage = { sql: { exec: () => ({ toArray: () => [] }) } };
+		const engine = new SearchEngine(
+			{ waitUntil: () => {}, storage, id: { name: "engine-oc-p0" } } as never,
+			env as never,
+		) as unknown as { fetch(request: Request): Promise<Response> };
+		const gather = (sheddable: boolean) =>
+			engine.fetch(
+				new Request("https://engine/engine/payload", {
+					method: "POST",
+					body: JSON.stringify({
+						call: "cards2",
+						opts: OPTS,
+						baseUrl: "https://x",
+						...(sheddable ? { sheddable } : {}),
+					}),
+				}),
+			);
+		return { late, asked, gather };
+	}
+
+	let lines: string[] = [];
+	const realWarn = console.warn;
+	beforeEach(() => {
+		resetGatherHealthForTests();
+		lines = [];
+		console.warn = (...args: unknown[]) => lines.push(args.join(" "));
+	});
+	afterEach(() => {
+		console.warn = realWarn;
+		gatherStore = null;
+		resetGatherHealthForTests();
+	});
+
+	test("two stalled gathers in a row: the next sheddable gather is refused at once, asking no sibling", async () => {
+		const { late, asked, gather } = coordinator();
+		late[2] = 3_100;
+		expect((await gather(true)).status).toBe(200);
+		expect(lines.filter((l) => l.includes("shedding gathers"))).toEqual([]);
+		expect((await gather(true)).status).toBe(200);
+		expect(lines.filter((l) => l.includes("shedding gathers"))).toEqual([
+			"[engine-oc-p0] shedding gathers for 30000ms: 2 gathers in a row had sibling calls delivered late " +
+				"(period 1); callers fail over to their neighbour region",
+		]);
+		asked.length = 0;
+		const refused = await gather(true);
+		expect(refused.status).toBe(503);
+		expect(refused.headers.get("x-engine-error")).toBe("EngineShedError");
+		expect(await refused.text()).toContain("engine-oc-p0 is not coordinating gathers for another 30000ms");
+		expect(asked).toEqual([]);
+	});
+
+	test("each stalled gather logs one line naming the late call", async () => {
+		const { late, gather } = coordinator();
+		late[2] = 3_100;
+		await gather(true);
+		expect(lines).toHaveLength(1);
+		expect(lines[0]?.replace(/isolate=\d+s$/, "isolate=Ns")).toBe(
+			"[engine-oc-p0] slow gather: 3100ms, 3 sibling calls, median 0ms; searchKeys worst p2 3100ms, median 0ms; " +
+				"fetchRows none; late: p2 searchKeys 3100ms; stalled=yes streak=1 shedding=no inflight=0 isolate=Ns",
+		);
+	});
+
+	test("a healthy gather logs nothing and is never refused", async () => {
+		const { gather } = coordinator();
+		for (let i = 0; i < 4; i++) expect((await gather(true)).status).toBe(200);
+		expect(lines).toEqual([]);
+	});
+
+	test("the answer is the same bytes whether or not the gather may be shed", async () => {
+		const { gather } = coordinator();
+		const plain = new Uint8Array(await (await gather(false)).arrayBuffer());
+		const sheddable = new Uint8Array(await (await gather(true)).arrayBuffer());
+		expect(sheddable).toEqual(plain);
+		expect(plain.byteLength).toBeGreaterThan(0);
+	});
+
+	test("a gather with no leave to refuse (a neighbour's hedge, a caller's last attempt) is always answered", async () => {
+		const { late, gather } = coordinator();
+		late[1] = 3_100;
+		await gather(true);
+		await gather(true);
+		expect((await gather(true)).status).toBe(503);
+		expect((await gather(false)).status).toBe(200);
+	});
+
+	test("a clean gather during the period ends it", async () => {
+		const { late, gather } = coordinator();
+		late[1] = 3_100;
+		await gather(true);
+		await gather(true);
+		expect((await gather(true)).status).toBe(503);
+		late[1] = 0;
+		expect((await gather(false)).status).toBe(200); // not sheddable, so it ran — and ran clean
+		expect((await gather(true)).status).toBe(200);
+	});
+
+	test("when the period runs out one gather is let through; still stalling, the next period is twice as long", async () => {
+		const { late, gather } = coordinator();
+		late[3] = 1_050;
+		await gather(true);
+		await gather(true);
+		clock += 29_000;
+		expect((await gather(true)).status).toBe(503);
+		clock += 1_000;
+		expect((await gather(true)).status).toBe(200); // the probe
+		expect(lines.filter((l) => l.includes("shedding gathers")).at(-1)).toBe(
+			"[engine-oc-p0] shedding gathers for 60000ms: 3 gathers in a row had sibling calls delivered late " +
+				"(period 2, 1 refused in the last one); callers fail over to their neighbour region",
+		);
+		clock += 59_000;
+		expect((await gather(true)).status).toBe(503);
+	});
+
+	test("a query that is slow in every partition is not a stall", async () => {
+		const { late, gather } = coordinator();
+		late[1] = late[2] = late[3] = 1_200;
+		for (let i = 0; i < 3; i++) expect((await gather(true)).status).toBe(200);
+		expect(lines.filter((l) => l.includes("shedding gathers"))).toEqual([]);
+		// Slow enough to be worth a line, and the line says it did not stall.
+		expect(lines.every((l) => l.includes("slow gather") && l.includes("stalled=no"))).toBe(true);
+		expect(lines).toHaveLength(3);
 	});
 });

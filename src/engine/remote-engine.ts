@@ -214,7 +214,8 @@ export function isTransientEngineFailure(err: unknown): boolean {
 		err instanceof EngineUnavailableError ||
 		err instanceof EngineQueryError ||
 		err instanceof StaleModulusError ||
-		err instanceof EngineCallTimeoutError
+		err instanceof EngineCallTimeoutError ||
+		err instanceof EngineShedError
 	) {
 		return false;
 	}
@@ -245,6 +246,21 @@ export class EngineCallTimeoutError extends Error {
 	constructor(message: string) {
 		super(message);
 		this.name = "EngineCallTimeoutError";
+	}
+}
+
+/** The `x-engine-error` name a coordinator answers a gather it is shedding with (search-engine-do.ts fetch). */
+export const ENGINE_SHED_ERROR = "EngineShedError";
+
+/**
+ * A gather coordinator refused to coordinate: its own calls to its siblings are being delivered
+ * seconds late (gather-health.ts), so the neighbour region's coordinator should answer instead.
+ * Never retried on the same object — it would refuse again — and failed over like any other failure.
+ */
+export class EngineShedError extends Error {
+	constructor(message: string) {
+		super(message);
+		this.name = ENGINE_SHED_ERROR;
 	}
 }
 
@@ -400,6 +416,100 @@ function hedgedCall<T>(
 	if (hedge === null || !Number.isFinite(ENGINE_HEDGE_MS)) {
 		return primary(() => false).then((value) => ({ value, from: "primary" as const }));
 	}
+	const key = `${describe.region}/p${describe.partition}`;
+	if (Date.now() < (engineCooling.get(key)?.coolUntil ?? 0)) {
+		// COOLING: the neighbour is asked first, and this region's object is its hedge — the same
+		// race with the roles exchanged, so a neighbour that is silent or failing still falls back
+		// here. The neighbour's call gets the deadline `primary` carries for itself.
+		return raceNeighbour(
+			() => withDeadline(hedge(), ENGINE_CALL_DEADLINE_MS, `${describe.method} (asked first)`),
+			() => primary(() => false),
+			{ ...describe, region: describe.hedgeRegion, hedgeRegion: describe.region },
+			dispose,
+		).then(({ value, from }) => ({ value, from: from === "primary" ? ("hedge" as const) : ("primary" as const) }));
+	}
+	const started = Date.now();
+	let asked: "hedge" | "failover" | null = null;
+	return raceNeighbour(primary, hedge, describe, dispose, (kind) => {
+		asked = kind;
+	}).then(
+		(won) => {
+			noteHedgeOutcome(key, describe, asked ?? (Date.now() - started < ENGINE_HEDGE_MS / 2 ? "prompt" : "slow"));
+			return won;
+		},
+		(err) => {
+			if (asked !== null) noteHedgeOutcome(key, describe, asked);
+			throw err;
+		},
+	);
+}
+
+/**
+ * How many calls in a row to one object must go ENGINE_HEDGE_MS unanswered before this isolate asks
+ * the neighbour FIRST, and for how long it then does.
+ *
+ * WHY (x45): the hedge remembers nothing, so an object that stays slow is asked first every time
+ * and every caller waits out the hedge delay again — 40 pages at 4.1–4.5s behind engine-wnam-p9 on
+ * 2026-09-29 20:42–21:49, 36 behind engine-wnam-p10 on 10-01 23:51–00:41, every one of them
+ * answered by enam within 100–450ms of being asked. Two in a row rather than one: a lone hedge is
+ * the eviction hang the hedge exists for (10–36s, then over). When the period ends the object is
+ * asked first again; if it is still silent, that ONE call re-arms the period (the count is only
+ * cleared by an answer inside HALF the hedge delay), so a wedged object costs one slow call per period.
+ *
+ * Per isolate, so it is a floor, not the cure: the incident's pages arrived through five colos.
+ * The coordinator's own verdict (gather-health.ts) is what reaches every isolate at once.
+ */
+export const ENGINE_COOLING_STRIKES = 2;
+export let ENGINE_COOLING_MS = 120_000;
+
+/** For tests: shorten the cooling period. */
+export function setEngineCoolingForTests(ms: number): void {
+	ENGINE_COOLING_MS = ms;
+}
+
+/** Per `region/p<partition>`: unanswered calls in a row, and until when the neighbour goes first. */
+const engineCooling = new Map<string, { strikes: number; coolUntil: number }>();
+
+/** For tests: forget every object's strikes. */
+export function resetEngineCoolingForTests(): void {
+	engineCooling.clear();
+}
+
+/** Record how a normally-ordered call ended: answered in time, hedged for silence, or failed over. */
+function noteHedgeOutcome(
+	key: string,
+	describe: { region: string; hedgeRegion: string; partition: number; method: string },
+	/** "prompt": the object answered within half the hedge delay. "slow": it answered, but only just
+	 * inside the delay — the stalled coordinators answered many pages in 3.2–3.5s between the ones
+	 * that were hedged, and those must not clear the count. */
+	outcome: "hedge" | "failover" | "prompt" | "slow",
+): void {
+	if (outcome === "prompt") {
+		engineCooling.delete(key);
+		return;
+	}
+	// A failover is a FAST failure: it costs milliseconds, and the neighbour is asked at once anyway.
+	if (outcome !== "hedge") return;
+	const health = engineCooling.get(key) ?? { strikes: 0, coolUntil: 0 };
+	engineCooling.set(key, health);
+	health.strikes += 1;
+	if (health.strikes < ENGINE_COOLING_STRIKES) return;
+	health.coolUntil = Date.now() + ENGINE_COOLING_MS;
+	console.warn(
+		`[${describe.region}] engine cooling p${describe.partition}: ${health.strikes} calls in a row went ` +
+			`${ENGINE_HEDGE_MS}ms unanswered (last: ${describe.method}); asking ${describe.hedgeRegion} first for ${ENGINE_COOLING_MS}ms`,
+	);
+}
+
+/** The race hedgedCall describes, between `primary` and one call to the neighbour. `onAsked` hears
+ * why the neighbour was asked, when it was. */
+function raceNeighbour<T>(
+	primary: (abandoned: () => boolean) => Promise<T>,
+	hedge: () => Promise<T>,
+	describe: { region: string; hedgeRegion: string; partition: number; method: string },
+	dispose?: (loser: T) => void,
+	onAsked?: (kind: "hedge" | "failover") => void,
+): Promise<{ value: T; from: HedgeWinner }> {
 	const started = Date.now();
 	const at = `p${describe.partition} ${describe.method}`;
 	return new Promise((resolve, reject) => {
@@ -431,6 +541,7 @@ function hedgedCall<T>(
 			if (timer !== undefined) clearTimeout(timer);
 			timer = undefined;
 			hedgeState = "running";
+			onAsked?.(kind);
 			const where = `[${describe.region}] engine ${kind} ${at}`;
 			const remaining = Math.max(1, ENGINE_CALL_DEADLINE_MS - (Date.now() - started));
 			console.warn(
@@ -689,6 +800,7 @@ async function pageAttempt(stub: SearchEngineStub, body: string, ms: number): Pr
 	const message = await answer.text();
 	if (kind === "EngineUnavailableError") throw new EngineUnavailableError(message);
 	if (kind === "StaleModulusError") throw new StaleModulusError(message);
+	if (kind === ENGINE_SHED_ERROR) throw new EngineShedError(message);
 	// The object's `instrumented` wrapper may already have turned the error into the RPC path's
 	// marker string (rethrowForRpc), which then arrives here as a plain "Error" 503 — so the
 	// markers are decoded from the message too, as `unwrap` does for RPC. Without this, the
@@ -859,7 +971,7 @@ export class RemoteEngine implements Engine {
 	): Promise<Response> {
 		// The hedge's body reports NO width, for the reason `read` gives: this region's fan-out must not
 		// be folded into the neighbour's rendezvous.
-		const bodyWith = (shards: number | undefined) =>
+		const bodyWith = (shards: number | undefined, sheddable = false) =>
 			JSON.stringify({
 				call,
 				opts,
@@ -868,10 +980,17 @@ export class RemoteEngine implements Engine {
 				cache,
 				shards,
 				...(pinnedPartitionCount === undefined ? {} : { pinnedPartitionCount }),
+				...(sheddable ? { sheddable: true } : {}),
 			});
-		const body = bodyWith(currentShardWidth(this.region));
 		const hedge = this.hedge;
+		// x45: a gather with a neighbour to fall back on tells its coordinator it may be refused when
+		// that coordinator's sibling calls are stalling (gather-health.ts) — the refusal comes back in
+		// milliseconds and the failover below asks the neighbour's coordinator. The neighbour's copy
+		// never carries the flag, and neither does the last attempt after it.
+		const width = currentShardWidth(this.region);
+		const body = bodyWith(width, call === "cards2" && hedge !== undefined);
 		let rpcStart = Date.now();
+		let shed = false;
 		const { value: res, from } = await hedgedCall(
 			async (abandoned) => {
 				// The same deadline and single retry the RPC transport has (withRetry): a deploy resets every
@@ -881,6 +1000,7 @@ export class RemoteEngine implements Engine {
 					try {
 						return await pageAttempt(this.stub, body, ENGINE_CALL_DEADLINE_MS);
 					} catch (err) {
+						if (err instanceof EngineShedError) shed = true;
 						if (attempt >= ENGINE_CALL_ATTEMPTS - 1 || !isTransientEngineFailure(err) || abandoned()) throw err;
 						console.warn(`retryable engine page failure (attempt ${attempt + 1}): ${err}`);
 						this.reconnect(); // a dead connection fails the retry identically (withRetry)
@@ -902,7 +1022,19 @@ export class RemoteEngine implements Engine {
 			(loser) => {
 				loser.body?.cancel().catch(() => {});
 			},
-		);
+		).catch(async (err) => {
+			// The coordinator shed this gather and the neighbour did not answer either: the coordinator
+			// is slow, not dead, so it is asked once more with no leave to refuse. A slow page, not a 500.
+			if (!shed) throw err;
+			console.warn(
+				`[${this.region}] engine shed p${hedge?.partition ?? -1} page-gather: no answer elsewhere (${err}); asking ${this.region} again`,
+			);
+			rpcStart = Date.now();
+			return {
+				value: await pageAttempt(this.stub, bodyWith(width), ENGINE_CALL_DEADLINE_MS),
+				from: "primary" as const,
+			};
+		});
 		const num = (name: string): number | undefined => {
 			const raw = res.headers.get(name);
 			return raw === null ? undefined : Number(raw);

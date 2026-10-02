@@ -44,7 +44,9 @@ mock.module("../../src/engine/shard-controller", () => ({
 	foldWidthAnnouncement: realController.foldWidthAnnouncement,
 }));
 
-const { RemoteEngine, setEngineHedgeForTests } = await import("../../src/engine/remote-engine");
+const { RemoteEngine, resetEngineCoolingForTests, setEngineHedgeForTests } = await import(
+	"../../src/engine/remote-engine"
+);
 
 type Stub = ConstructorParameters<typeof RemoteEngine>[0];
 
@@ -212,7 +214,10 @@ describe("a HEDGED answer feeds nothing", () => {
 		partition: 0,
 		connect: () => stub as unknown as Stub,
 	});
-	beforeEach(() => setEngineHedgeForTests(10));
+	beforeEach(() => {
+		setEngineHedgeForTests(10);
+		resetEngineCoolingForTests();
+	});
 	afterEach(() => setEngineHedgeForTests(4_000));
 
 	test("the RPC transport: the neighbour's answer is returned, its riders reach no report", async () => {
