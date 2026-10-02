@@ -1144,6 +1144,24 @@ export async function cardsRandomHandler(
 
 // ─── POST /cards/collection ──────────────────────────────────────────────────
 
+/**
+ * A fingerprint of everything that decides a collection response's bytes: the identifiers IN THE
+ * ORDER SENT (`data` follows it), the `?q=` scope and `pretty`. 64 bits as two 32-bit hashes, so a
+ * day's ~16k batches do not collide. Logged, not used: it is how Y2 learns whether identical
+ * batches repeat often enough to cache.
+ */
+export function collectionBodyKey(identifiers: unknown[], q: string | undefined, pretty: boolean): string {
+	const text = `${JSON.stringify(identifiers)}\n${q ?? ""}\n${pretty ? 1 : 0}`;
+	let a = 0x811c9dc5;
+	let b = 0x01000193;
+	for (let i = 0; i < text.length; i++) {
+		const c = text.charCodeAt(i);
+		a = Math.imul(a ^ c, 0x01000193);
+		b = Math.imul(b ^ c, 0x85ebca6b) ^ (b >>> 13);
+	}
+	return (a >>> 0).toString(16).padStart(8, "0") + (b >>> 0).toString(16).padStart(8, "0");
+}
+
 export async function cardsCollectionHandler(
 	ctx: RouteContext,
 	_positionalArgs: string[],
@@ -1230,7 +1248,10 @@ export async function cardsCollectionHandler(
 		// K identifiers of that kind asked again (`-` for one round) — and `located=` how many routed
 		// names their partition did not settle but the names index beside it located, so the repair
 		// asked their holders only: nobody, for a name no card carries (PartitionedEngine
-		// .collectionRepair, .collectionLocated). Grep "collection batch:".
+		// .collectionRepair, .collectionLocated). Grep "collection batch:". Last, `body=` is Y2's
+		// measurement: a POST is never cached, and whether caching it by body would pay depends on
+		// how often the SAME request repeats — count distinct `body=` values against lines over a
+		// day (collectionBodyKey).
 		const {
 			partitionCalls: calls = -1,
 			collectionRounds: rounds = -1,
@@ -1243,7 +1264,7 @@ export async function cardsCollectionHandler(
 			collectionLocated?: number | null;
 		};
 		console.log(
-			`collection batch: n=${identifiers.length} id=${kinds.id} key=${kinds.key} pair=${kinds.pair} name=${kinds.name} name+set=${kinds.nameSet} q=${scope ? 1 : 0} calls=${calls} rounds=${rounds} found=${found.length} repair=${repair ?? "-"} located=${located ?? "-"}`,
+			`collection batch: n=${identifiers.length} id=${kinds.id} key=${kinds.key} pair=${kinds.pair} name=${kinds.name} name+set=${kinds.nameSet} q=${scope ? 1 : 0} calls=${calls} rounds=${rounds} found=${found.length} repair=${repair ?? "-"} located=${located ?? "-"} body=${collectionBodyKey(identifiers, params.q, pretty)}`,
 		);
 		return scryfallCollectionJson(found, notFound, warnings, pretty, COLLECTION_CACHE);
 	} catch (err) {

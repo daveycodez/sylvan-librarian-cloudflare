@@ -27,7 +27,7 @@ import { setParserForTests } from "../../src/routes/parser-bridge";
 import type { RouteContext } from "../../src/routes/registry";
 import { toScryfallCard } from "../../src/routes/scryfall-compat/objects";
 import { stringifyScryfall } from "../../src/routes/scryfall-compat/respond";
-import { rulingsOracleIdOf } from "../../src/routes/scryfall-compat/routes";
+import { collectionBodyKey, rulingsOracleIdOf } from "../../src/routes/scryfall-compat/routes";
 import { FakeEngine, FakeKV, FIXTURE_CARDS, fakeParse, json, makeCtx, testDispatch } from "./harness";
 
 const ctx = makeCtx();
@@ -1109,13 +1109,26 @@ describe("POST /cards/collection", () => {
 		);
 		expect(lines.length).toBe(1);
 		expect(lines[0]).toMatch(
-			/^collection batch: n=2 id=0 key=0 pair=0 name=2 name\+set=0 q=1 calls=10 rounds=1 found=\d+ repair=- located=-$/,
+			/^collection batch: n=2 id=0 key=0 pair=0 name=2 name\+set=0 q=1 calls=10 rounds=1 found=\d+ repair=- located=- body=[0-9a-f]{16}$/,
 		);
 		// An engine that counts nothing says so rather than claiming zero.
 		const unmetered = await loggedLines("collection batch: ", () =>
 			testDispatch(postCtx({ identifiers: [{ name: "Llanowar Elves" }] }), "/cards/collection", "POST"),
 		);
-		expect(unmetered[0]).toMatch(/ q=0 calls=-1 rounds=-1 found=\d+ repair=- located=-$/);
+		expect(unmetered[0]).toMatch(/ q=0 calls=-1 rounds=-1 found=\d+ repair=- located=- body=[0-9a-f]{16}$/);
+		// `body=` (Y2): the same request reads the same, and anything that changes the response's
+		// bytes changes it — the identifiers, their order, the scope, pretty.
+		const sent = [{ name: "Llanowar Elves" }, { name: "Nope" }];
+		const key = collectionBodyKey(sent, undefined, false);
+		expect(collectionBodyKey([{ name: "Llanowar Elves" }, { name: "Nope" }], undefined, false)).toBe(key);
+		expect(lines[0]).toEndWith(` body=${collectionBodyKey(sent, "is:commander", false)}`);
+		const others = [
+			collectionBodyKey([...sent].reverse(), undefined, false),
+			collectionBodyKey(sent, "is:commander", false),
+			collectionBodyKey(sent, undefined, true),
+			collectionBodyKey([{ name: "Llanowar Elves" }], undefined, false),
+		];
+		expect(new Set([key, ...others]).size).toBe(5);
 	});
 
 	test("resolves identifiers and reports the ones that matched nothing", async () => {
