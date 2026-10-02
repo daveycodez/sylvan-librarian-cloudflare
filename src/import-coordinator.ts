@@ -231,6 +231,8 @@ import {
 	projectCachePool,
 	projectedGbSeconds,
 	REORDER_SLICE_ROWS,
+	ResetUnderAlarmError,
+	resetUnderAlarm,
 	STAGING_PEAK_BYTES_2026_09_25,
 	stagingBytesOf,
 } from "./import-budget";
@@ -1207,6 +1209,11 @@ export class ImportCoordinator extends DurableObject<Env> {
 		try {
 			await this.runAlarm(alarmInfo);
 		} catch (err) {
+			// The object was reset under the slice: the platform re-delivers the alarm (x49).
+			if (err instanceof ResetUnderAlarmError) {
+				console.warn(err.message);
+				return;
+			}
 			// The alarm's own bookkeeping failed — reading the run record, the
 			// budget counters, the schema. The overwhelmingly likely cause is the
 			// storage API refusing everything because the daily row allowance is
@@ -1472,17 +1479,24 @@ export class ImportCoordinator extends DurableObject<Env> {
 			if (retries <= MAX_RETRIES) {
 				const backoffMs = Math.min(60_000, 1000 * 2 ** retries);
 				console.warn(`Import phase ${phase} failed (retry ${retries}/${MAX_RETRIES} in ${backoffMs}ms): ${err}`);
-				this.metaSet("retries", String(retries));
-				// A failed slice in a wasm-state-coupled phase leaves the wasm heap
-				// ahead of the (rolled-back) SQLite progress — e.g. rows staged in
-				// the interners that the retry would stage again. Marking the wasm
-				// group dirty makes ensureWasmContinuity rebuild it from SQLite
-				// before the retry, exactly like an eviction.
-				if (phase === "agg" || phase === "finalize" || phase === "reorder" || phase === "build") {
-					this.metaSet("tags_nonce", "dirty");
+				try {
+					this.metaSet("retries", String(retries));
+					// A failed slice in a wasm-state-coupled phase leaves the wasm heap
+					// ahead of the (rolled-back) SQLite progress — e.g. rows staged in
+					// the interners that the retry would stage again. Marking the wasm
+					// group dirty makes ensureWasmContinuity rebuild it from SQLite
+					// before the retry, exactly like an eviction.
+					if (phase === "agg" || phase === "finalize" || phase === "reorder" || phase === "build") {
+						this.metaSet("tags_nonce", "dirty");
+					}
+					this.nextDueMs = Date.now() + backoffMs;
+					await this.armAlarm(this.nextDueMs);
+				} catch (stateErr) {
+					// The retry could not be recorded. When the slice died of a reset, that is the same
+					// reset seen twice (resetUnderAlarm) and not this alarm losing its state.
+					const absorbed = resetUnderAlarm(phase, err, stateErr);
+					throw absorbed ? new ResetUnderAlarmError(absorbed) : stateErr;
 				}
-				this.nextDueMs = Date.now() + backoffMs;
-				await this.armAlarm(this.nextDueMs);
 				return;
 			}
 			if (retiring) {

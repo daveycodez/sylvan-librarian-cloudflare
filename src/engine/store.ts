@@ -228,9 +228,14 @@ function startLoad(
 	const deadline = new Promise<never>((_, reject) => {
 		timer = setTimeout(() => {
 			fence.abandoned = true;
-			console.error(
-				`[${fence.label}] store load did not finish within ${loadDeadlineMs}ms; abandoning it so the next ` +
-					`request starts a fresh one`,
+			// WARN, not error (x51): 6 of these in 4 days on DeckGen (2026-09-28 → 10-02), all apac
+			// objects reading a new build from KV — 6 of 172 such loads there, 0 of 264 elsewhere — and
+			// none failed a request: the caller had hedged to the neighbour region at 4s, and this
+			// call's own rejection is retryable (remote-engine.ts TRANSIENT_PLATFORM_FAILURE).
+			console.warn(
+				`[${fence.label}] store load did not finish within ${loadDeadlineMs}ms and was abandoned — absorbed: ` +
+					"this call fails retryable (its caller retries, or has already hedged to the neighbour region) " +
+					"and the next request starts a fresh load",
 			);
 			reject(
 				new StoreLoadStalledError(`[${fence.label}] store load stalled for ${loadDeadlineMs}ms and was abandoned`),

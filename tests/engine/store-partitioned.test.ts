@@ -1206,9 +1206,25 @@ describe("a store load that stalls", () => {
 			return realGet(key, opts);
 		};
 		store.setLoadDeadlineForTests(50);
+		// The abandonment is logged at WARN and says it was absorbed (x51): the caller retries this
+		// rejection or has already hedged, so an error line here only buried the real ones.
+		const warned: string[] = [];
+		const errored: string[] = [];
+		const realWarn = console.warn;
+		const realError = console.error;
+		console.warn = ((...args: unknown[]) => void warned.push(args.join(" "))) as typeof console.warn;
+		console.error = ((...args: unknown[]) => void errored.push(args.join(" "))) as typeof console.error;
 		try {
 			const label = "engine-stall-p0";
-			await expect(store.getEngine(env, ctxFor(label, 0))).rejects.toBeInstanceOf(store.StoreLoadStalledError);
+			const stalled = await store.getEngine(env, ctxFor(label, 0)).catch((err: unknown) => err);
+			console.warn = realWarn;
+			console.error = realError;
+			expect(stalled).toBeInstanceOf(store.StoreLoadStalledError);
+			// The text remote-engine.ts retries on (engine-deadlines.test.ts pins that side).
+			expect(String(stalled)).toContain("store load stalled");
+			expect(errored).toEqual([]);
+			expect(warned.filter((line) => line.includes("store load did not finish within 50ms"))).toHaveLength(1);
+			expect(warned.join("\n")).toContain("absorbed");
 			// No backoff after a stall: the very next request starts a fresh load, and it succeeds.
 			const engine = await store.getEngine(env, ctxFor(label, 0));
 			expect(await engine.cardCount()).toBe(7);
@@ -1218,6 +1234,8 @@ describe("a store load that stalls", () => {
 			expect(store.tryGetLoadedEngine(label)).toBe(engine);
 			expect(await engine.cardCount()).toBe(7);
 		} finally {
+			console.warn = realWarn;
+			console.error = realError;
 			store.setLoadDeadlineForTests(20_000);
 		}
 	});

@@ -471,6 +471,49 @@ export function adjustPace(paceBps: number, lagMs: number, churnBytes: number): 
 	return Math.min(PACE_MAX_BPS, Math.max(PACE_MIN_BPS, current));
 }
 
+// ─── a reset under a running alarm ───────────────────────────────────────────
+
+/** The runtime's "this object's instance is gone" failures, by message. */
+const OBJECT_RESET = /reset because its code was updated|caused object to be reset|instance is no longer active/i;
+
+/**
+ * A slice failed AND the alarm could not then record the retry: was that the object being reset
+ * under the alarm, which the platform absorbs, or the alarm really losing its own state?
+ *
+ * MEASURED 2026-09-28 → 10-01, DeckGen: every nightly logged one "Durable Object reset because its
+ * code was updated" 3–4 s into a partition's publish slice (p6, p2, p6; 11:33–11:37 UTC) with no
+ * deploy — the script version id is the same on every line and the account's deployment list is
+ * empty from 09-26 to 10-01. The slice's own failure carries that message; the retry bookkeeping
+ * that follows (metaSet "retries") then throws because the instance's storage went with it, and
+ * that second throw is what reached alarm()'s catch as an ERROR, "could not manage its own state
+ * (storage unavailable?)". Nothing was lost: the alarm was never acknowledged, so it fired again
+ * on the fresh instance 7–22 s later (not flagged as a retry) and the slice ran again — a publish
+ * slice re-puts the same chunk key with the same bytes, and its cursor only moves after the put.
+ *
+ * Both halves are required. The slice's error alone is not proof: a notify slice can be handed the
+ * same message by an ENGINE object a deploy reset, with this object's storage intact — and then
+ * the bookkeeping succeeds and this is never asked. A quota refusal is never a reset.
+ *
+ * Returns the line to log at WARN, or null when it is the real thing.
+ */
+export function resetUnderAlarm(phase: string, sliceErr: unknown, stateErr: unknown): string | null {
+	if (!OBJECT_RESET.test(String(sliceErr))) return null;
+	if (/daily limit|exceeded your|too many writes|quota/i.test(String(stateErr))) return null;
+	return (
+		`Import phase ${phase}: the object was reset under this slice (${sliceErr}) and took its storage with it — ` +
+		"absorbed: nothing was written after the reset, the unacknowledged alarm fires again on the fresh " +
+		"instance and repeats the slice; the watchdog kicks the run if it does not"
+	);
+}
+
+/** Thrown out of the alarm body for a reset `resetUnderAlarm` recognised; alarm() logs it at WARN. */
+export class ResetUnderAlarmError extends Error {
+	constructor(message: string) {
+		super(message);
+		this.name = "ResetUnderAlarmError";
+	}
+}
+
 /** The shape of a corpus, as the cost model needs to see it. */
 export interface RunShape {
 	/**
