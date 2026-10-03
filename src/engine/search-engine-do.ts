@@ -41,6 +41,7 @@
 // arithmetic.
 
 import { DurableObject } from "cloudflare:workers";
+import { BUILD_COMMIT } from "../build-info.gen";
 import {
 	CARD_OBJECT_FIELDS,
 	cardList,
@@ -112,6 +113,7 @@ import type {
 	CollectionBatch,
 	CollectionLocated,
 	CollectionScope,
+	CollectionSource,
 	Engine,
 	EngineSearchOptions,
 	EngineSearchResult,
@@ -864,9 +866,16 @@ export class SearchEngine extends DurableObject<Env> {
 		baseUrl: string,
 		scope: CollectionScope | null,
 		reportedShards?: number,
-	): Promise<{ packet: Uint8Array; located?: CollectionLocated } & SearchTelemetry> {
+	): Promise<{ packet: Uint8Array; located?: CollectionLocated; answeredFrom: CollectionSource } & SearchTelemetry> {
 		return this.instrumented(reportedShards, async (engine) => {
 			const packet = collectionPacketOf(engine, batch, baseUrl, scope);
+			// x58: which store and code wrote the packet, read in the packet's own turn — nothing is
+			// awaited between the two, so a swap cannot name a build the packet was not read from.
+			// The route keeps the answer in the colo's cache only if this is the build it is pinned to.
+			const answeredFrom: CollectionSource = {
+				build: String(currentManifest(this.label)?.built_at ?? ""),
+				commit: BUILD_COMMIT,
+			};
 			// The packet is the answer; where a name lives is a hint for the router's next round, and
 			// must never cost the batch its reply.
 			let located: CollectionLocated | null = null;
@@ -875,7 +884,7 @@ export class SearchEngine extends DurableObject<Env> {
 			} catch (err) {
 				console.warn(`[${this.label}] routed names not located (the router asks every partition): ${err}`);
 			}
-			return located === null ? { packet } : { packet, located };
+			return located === null ? { packet, answeredFrom } : { packet, located, answeredFrom };
 		});
 	}
 

@@ -240,6 +240,8 @@ function fakeRemote(partition: number, calls: string[], answers: Record<string, 
 							},
 						}
 					: {}),
+				// x58: `answeredFrom` is what this object says wrote its reply; absent, it says nothing.
+				...(answers.answeredFrom ? { answeredFrom: answers.answeredFrom } : {}),
 			};
 		},
 	} as unknown as RemoteEngine;
@@ -728,6 +730,43 @@ describe("a collection batch is ONE round of at most N calls", () => {
 	test("the engine names the build it is pinned to: what the route keys a kept answer on (x58)", () => {
 		const { engine } = build({});
 		expect(engine.storeBuild).toBe("100");
+	});
+
+	test("it collects what wrote each reply — every round's, and silence as silence (x58)", async () => {
+		const from = (build: string, commit = "c1") => ({ answeredFrom: { build, commit } });
+		const said = (engine: { collectionBuilds: Set<string>; collectionCommits: Set<string> }) => ({
+			builds: [...engine.collectionBuilds].sort(),
+			commits: [...engine.collectionCommits].sort(),
+		});
+		const everyone = { keys: [sid("u")], trees: [], names: names("x") };
+
+		// Four partitions on the pinned build and one commit: one value each.
+		const settled = build({ 0: from("100"), 1: from("100"), 2: from("100"), 3: from("100") });
+		await settled.engine.scryfallCollectionBatch(everyone, "https://x");
+		expect(said(settled.engine)).toEqual({ builds: ["100"], commits: ["c1"] });
+
+		// One object has not swapped yet, another runs the previous commit, a third says nothing
+		// (the code before x58): each is seen, and the silent one is "" in both.
+		const mixed = build({ 0: from("100"), 1: from("99"), 2: from("100", "c0"), 3: {} });
+		await mixed.engine.scryfallCollectionBatch(everyone, "https://x");
+		expect(said(mixed.engine)).toEqual({ builds: ["", "100", "99"], commits: ["", "c0", "c1"] });
+
+		// A REPAIR round's replies count: the hinted partition misses, and the card comes from an
+		// object asked only in round two, which is the one still on the old build.
+		const routing = filterOf([{ key: scryfallIdKey("a"), partition: 0 }]);
+		const repaired = build(
+			{ 0: from("100"), 1: from("100"), 2: { ...from("99"), byKey: { a: { id: "a" } } }, 3: from("100") },
+			undefined,
+			routing,
+		);
+		const got = await repaired.engine.scryfallCollectionBatch({ keys: [sid("a")], trees: [], names: [] }, "https://x");
+		expect(answer(got).keys).toEqual([{ id: "a" }]);
+		expect(repaired.engine.collectionRounds).toBe(2);
+		expect(said(repaired.engine)).toEqual({ builds: ["100", "99"], commits: ["c1"] });
+
+		// Per batch, not per engine: the next batch starts from nothing.
+		await mixed.engine.scryfallCollectionBatch({ keys: [], trees: [], names: [] }, "https://x");
+		expect(said(mixed.engine)).toEqual({ builds: [], commits: [] });
 	});
 
 	test("every kind at once: N calls, each partition asked once, every key riding along", async () => {

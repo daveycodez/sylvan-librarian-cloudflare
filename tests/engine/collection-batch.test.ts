@@ -138,6 +138,50 @@ describe("RemoteEngine's batch carries where unsettled routed names live (x47)",
 	});
 });
 
+describe("RemoteEngine's batch carries what wrote it (x58), and pairs with the code on either side of it", () => {
+	const batch: CollectionBatch = { keys: [{ kind: "scryfall_id", id: "a" }], trees: [], names: [] };
+	const packet = packetOf([], ['{"k":"a"}']);
+	const answeredFrom = { build: "1791026526", commit: "40e6ab09" };
+	const ask = (reply: Record<string, unknown>) =>
+		new RemoteEngine({ scryfallCollectionBatch: async () => reply } as never, "wnam").scryfallCollectionBatch(
+			batch,
+			"https://x",
+		);
+
+	test("the object's build and commit come through beside the cards", async () => {
+		const got = await ask({ packet, answeredFrom });
+		expect(got.answeredFrom).toEqual(answeredFrom);
+		expect(got.keys.map((b) => (b === null ? null : text.decode(b)))).toEqual(['{"k":"a"}']);
+	});
+
+	test("NEW ISOLATE, OLD OBJECT: a reply without the field is the same cards and no claim", async () => {
+		// The object on the code before x58 returns `{ packet }`. The answer decodes as it always
+		// did and says nothing about what wrote it — which the route reads as "do not keep".
+		const got = await ask({ packet });
+		expect("answeredFrom" in got).toBe(false);
+		expect(got.keys.map((b) => (b === null ? null : text.decode(b)))).toEqual(['{"k":"a"}']);
+		// Half a claim is no claim: neither field is taken without the other, nor a non-string.
+		for (const half of [{ build: "1791026526" }, { commit: "40e6ab09" }, { build: 1791026526, commit: "x" }, null]) {
+			expect("answeredFrom" in (await ask({ packet, answeredFrom: half }))).toBe(false);
+		}
+	});
+
+	test("OLD ISOLATE, NEW OBJECT: the code before x58 reads the packet and `located`, and they are unchanged", async () => {
+		// What the previous RemoteEngine did with a reply, verbatim: destructure the two fields it
+		// knew and decode. A trailing field it never names cannot reach it.
+		const located = { builtAt: "1791026526", names: [], holders: [] };
+		const previous = (reply: { packet: Uint8Array; located?: unknown }) => {
+			const { packet: bytes, located: where } = reply;
+			return { answer: decodeCollectionPacket(bytes, batch), where };
+		};
+		const before = previous({ packet, located });
+		const after = previous({ packet, located, answeredFrom } as never);
+		expect(after.answer).toEqual(before.answer);
+		expect(after.where).toBe(before.where);
+		expect("answeredFrom" in after.answer).toBe(false);
+	});
+});
+
 describe("the collection response, spliced from card bytes", () => {
 	// Decimal-typed fields, a nested object and a non-ASCII name: the parts of a card object where a
 	// splice and a stringify could disagree.

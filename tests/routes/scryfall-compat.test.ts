@@ -11,6 +11,7 @@ import {
 	oracleIndexBucketOf,
 	uuidBytes,
 } from "../../src/engine/oracle-index";
+import { PartitionedEngine } from "../../src/engine/partitioned-engine";
 import {
 	encodeRulingsBucket,
 	RULINGS_BUCKET_COUNT,
@@ -22,16 +23,17 @@ import {
 	rulingsBucketKey,
 	rulingsBucketOf,
 } from "../../src/engine/rulings-kv";
+import type { CollectionBatch, CollectionSource, Engine, StoreManifest } from "../../src/engine/types";
 import { canonicalStringify, parseScryfallQueryWithDirectives } from "../../src/parser";
 import { setParserForTests } from "../../src/routes/parser-bridge";
 import type { RouteContext } from "../../src/routes/registry";
 import { toScryfallCard } from "../../src/routes/scryfall-compat/objects";
 import { stringifyScryfall } from "../../src/routes/scryfall-compat/respond";
 import {
-	COLLECTION_EDGE_SETTLE_MS,
 	COLLECTION_EDGE_TTL_S,
 	collectionBodyKey,
 	collectionCacheUrl,
+	collectionUnpinned,
 	rulingsOracleIdOf,
 	setCollectionCodeVersionForTests,
 } from "../../src/routes/scryfall-compat/routes";
@@ -1116,13 +1118,15 @@ describe("POST /cards/collection", () => {
 		);
 		expect(lines.length).toBe(1);
 		expect(lines[0]).toMatch(
-			/^collection batch: n=2 id=0 key=0 pair=0 name=2 name\+set=0 q=1 calls=10 rounds=1 found=\d+ repair=- located=- cache=skip body=[0-9a-f]{16}$/,
+			/^collection batch: n=2 id=0 key=0 pair=0 name=2 name\+set=0 q=1 calls=10 rounds=1 found=\d+ repair=- located=- cache=skip:nocache body=[0-9a-f]{16}$/,
 		);
 		// An engine that counts nothing says so rather than claiming zero.
 		const unmetered = await loggedLines("collection batch: ", () =>
 			testDispatch(postCtx({ identifiers: [{ name: "Llanowar Elves" }] }), "/cards/collection", "POST"),
 		);
-		expect(unmetered[0]).toMatch(/ q=0 calls=-1 rounds=-1 found=\d+ repair=- located=- cache=skip body=[0-9a-f]{16}$/);
+		expect(unmetered[0]).toMatch(
+			/ q=0 calls=-1 rounds=-1 found=\d+ repair=- located=- cache=skip:nocache body=[0-9a-f]{16}$/,
+		);
 		// `body=` (Y2): the same request reads the same, and anything that changes the response's
 		// bytes changes it — the identifiers, their order, the scope, pretty.
 		const sent = [{ name: "Llanowar Elves" }, { name: "Nope" }];
@@ -1589,8 +1593,9 @@ describe("POST /cards/collection", () => {
 
 describe("POST /cards/collection: a repeated batch is answered from the colo's cache (x58)", () => {
 	const g = globalThis as { caches?: unknown };
-	/** A store build old enough to be kept: twice the settle window. */
-	const BUILD = String(Math.floor((Date.now() - 2 * COLLECTION_EDGE_SETTLE_MS) / 1000));
+	/** The build the requests are pinned to, and the one it replaced. */
+	const BUILD = "1791026526";
+	const PREVIOUS = "1790975087";
 	const KNOWN = "aaaaaaaa-0000-4000-8000-000000000001";
 	const UNKNOWN = "bbbbbbbb-0000-4000-8000-000000000009";
 	/** Found and missed, by name and by id, with a duplicate: every part of the List is in play. */
@@ -1632,9 +1637,26 @@ describe("POST /cards/collection: a repeated batch is answered from the colo's c
 		return { entries, lifetimes, state };
 	}
 
-	/** An engine that says which build it is pinned to and counts the batches it is asked. */
-	function countingEngine(storeBuild: string | undefined = BUILD) {
-		const engine = Object.assign(new FakeEngine(), { storeBuild, partitionCalls: 10, collectionRounds: 1, asked: 0 });
+	/**
+	 * An engine that says which build it is pinned to, what wrote its answer (by default that build
+	 * and `commit-a`; null for an engine that does not say), and counts the batches it is asked.
+	 */
+	function countingEngine(
+		storeBuild: string | undefined = BUILD,
+		wrote: { builds?: string[]; commits?: string[] } | null = {},
+	) {
+		const engine = Object.assign(new FakeEngine(), {
+			storeBuild,
+			partitionCalls: 10,
+			collectionRounds: 1,
+			asked: 0,
+			...(wrote === null
+				? {}
+				: {
+						collectionBuilds: new Set(wrote.builds ?? [storeBuild ?? ""]),
+						collectionCommits: new Set(wrote.commits ?? ["commit-a"]),
+					}),
+		});
 		const real = engine.scryfallCollectionBatch.bind(engine);
 		engine.scryfallCollectionBatch = (...args) => {
 			engine.asked++;
@@ -1645,7 +1667,7 @@ describe("POST /cards/collection: a repeated batch is answered from the colo's c
 
 	/** One POST: its response, its body's bytes, its log line, and how many puts it deferred. */
 	async function post(
-		engine: FakeEngine,
+		engine: Engine,
 		identifiers: unknown,
 		{ url = "/cards/collection", host, raw }: { url?: string; host?: string; raw?: string } = {},
 	) {
@@ -1677,7 +1699,7 @@ describe("POST /cards/collection: a repeated batch is answered from the colo's c
 		// What the answer is with no cache at all: the bytes both of the others must equal.
 		setCollectionCodeVersionForTests("commit-a");
 		const plain = await post(countingEngine(), DECK);
-		expect(plain.line).toContain(" cache=skip ");
+		expect(plain.line).toContain(" cache=skip:nocache ");
 
 		const cache = installColoCache();
 		const engine = countingEngine();
@@ -1762,7 +1784,7 @@ describe("POST /cards/collection: a repeated batch is answered from the colo's c
 				"code version",
 				() => {
 					setCollectionCodeVersionForTests("commit-b");
-					return post(engine, DECK);
+					return post(countingEngine(BUILD, { commits: ["commit-b"] }), DECK);
 				},
 			],
 		];
@@ -1773,8 +1795,9 @@ describe("POST /cards/collection: a repeated batch is answered from the colo's c
 			expect(cache.entries.size).toBe(before + 1);
 		}
 		// A host's entry holds that host's URIs, which is why the host is in the key.
-		const hosted = await post(engine, DECK, { host: "sylvan.mtgseeker.com" });
 		setCollectionCodeVersionForTests("commit-a");
+		const hosted = await post(engine, DECK, { host: "sylvan.mtgseeker.com" });
+		expect(hosted.line).toContain(" cache=hit ");
 		expect(new TextDecoder().decode(hosted.bytes)).toContain("https://sylvan.mtgseeker.com/");
 		expect(new TextDecoder().decode((await post(engine, DECK)).bytes)).not.toContain("sylvan.mtgseeker.com");
 
@@ -1790,15 +1813,19 @@ describe("POST /cards/collection: a repeated batch is answered from the colo's c
 		installColoCache();
 		const base = "https://sylvan-librarian.com";
 		const text = JSON.stringify(DECK);
-		const url = (over: Partial<{ ids: unknown[]; q: string; pretty: boolean; base: string; build: string }> = {}) =>
-			collectionCacheUrl(
-				over.ids ?? DECK,
-				over.ids ? JSON.stringify(over.ids) : text,
-				over.q,
-				over.pretty ?? false,
-				over.base ?? base,
-				over.build ?? BUILD,
-			);
+		const url = async (
+			over: Partial<{ ids: unknown[]; q: string; pretty: boolean; base: string; build: string }> = {},
+		) =>
+			(
+				await collectionCacheUrl(
+					over.ids ?? DECK,
+					over.ids ? JSON.stringify(over.ids) : text,
+					over.q,
+					over.pretty ?? false,
+					over.base ?? base,
+					over.build ?? BUILD,
+				)
+			).url;
 		const key = await url();
 		expect(key).toMatch(/^https:\/\/edge-cache\.sylvan-librarian\.internal\/collection%3A[0-9a-f]{64}$/);
 		expect(await url()).toBe(key);
@@ -1901,38 +1928,150 @@ describe("POST /cards/collection: a repeated batch is answered from the colo's c
 		expect(cache.entries.size).toBe(1);
 	});
 
-	test("what is never cached: an unsettled build, an unknown code version, an engine that names no build", async () => {
+	test("what is never looked up, and the reason the line gives for each", async () => {
 		const cache = installColoCache();
-		const skipped = async (engine: FakeEngine, identifiers: unknown = DECK, raw?: string) => {
+		const skipped = async (reason: string, engine: FakeEngine, identifiers: unknown = DECK, raw?: string) => {
 			const answer = await post(engine, identifiers, { raw });
 			expect(answer.res.status).toBe(200);
-			expect(answer.line).toContain(" cache=skip ");
+			expect(answer.line).toContain(` cache=skip:${reason} body=`);
 			expect(answer.deferred).toBe(0);
 		};
 		setCollectionCodeVersionForTests("commit-a");
-		// Published ten minutes ago: the engine objects may still be answering from the build before.
-		await skipped(countingEngine(String(Math.floor(Date.now() / 1000) - 600)));
-		await skipped(countingEngine(""));
-		await skipped(countingEngine("not-a-build"));
-		await skipped(new FakeEngine());
+		await skipped("nobuild", countingEngine(""));
+		await skipped("nobuild", new FakeEngine());
 		// A number past the double range parses to Infinity and serialises as `null`: this request
 		// and `{"name": null}` would read the same, so neither a lookup nor an entry is made for it.
-		await skipped(countingEngine(), undefined, '{"identifiers":[{"name":1e999}]}');
+		await skipped("number", countingEngine(), undefined, '{"identifiers":[{"name":1e999}]}');
 		setCollectionCodeVersionForTests("unknown");
-		await skipped(countingEngine());
+		await skipped("nocommit", countingEngine());
 		expect(cache.state.reads).toBe(0);
 		expect(cache.entries.size).toBe(0);
-
-		// The settle window is measured from `built_at`, and its far side is cached.
-		const now = Date.now();
-		const built = String(Math.floor(now / 1000));
 		setCollectionCodeVersionForTests("commit-a");
-		const at = (ms: number) => collectionCacheUrl(DECK, JSON.stringify(DECK), undefined, false, "https://h", built, ms);
-		expect(await at(now + COLLECTION_EDGE_SETTLE_MS - 2000)).toBeNull();
-		expect(await at(now + COLLECTION_EDGE_SETTLE_MS)).not.toBeNull();
+		delete g.caches;
+		await skipped("nocache", countingEngine());
+
 		// A literal `null` is not a non-finite number: that request is cached like any other.
+		installColoCache();
 		const nulls = [{ name: "Llanowar Elves", set: null }];
-		expect(await collectionCacheUrl(nulls, JSON.stringify(nulls), undefined, false, "https://h", BUILD)).not.toBeNull();
+		const keyed = await collectionCacheUrl(nulls, JSON.stringify(nulls), undefined, false, "https://h", BUILD);
+		expect(keyed.skip).toBeNull();
+		expect(keyed.url).not.toBeNull();
+	});
+
+	test("an answer is kept only when every partition wrote it from the pinned build with this code", async () => {
+		setCollectionCodeVersionForTests("commit-a");
+		const plain = await post(countingEngine(), DECK);
+		const cache = installColoCache();
+		const cases: [string, { builds?: string[]; commits?: string[] } | null][] = [
+			// A publish in progress: the manifest names the new build, one object still serves the old.
+			["build", { builds: [BUILD, PREVIOUS] }],
+			["build", { builds: [PREVIOUS] }],
+			// A deploy in progress: one object still runs the previous commit.
+			["code", { commits: ["commit-a", "commit-0"] }],
+			// An object on the code before x58 says nothing; so does an engine that never collects it.
+			["unsaid", { builds: [BUILD, ""], commits: ["commit-a", ""] }],
+			["unsaid", null],
+		];
+		for (const [reason, wrote] of cases) {
+			const engine = countingEngine(BUILD, wrote);
+			for (const attempt of [1, 2]) {
+				const answer = await post(engine, DECK);
+				// The response is the one the route gives anyway; only the keeping differs.
+				expect(answer.res.status).toBe(200);
+				expect(answer.bytes).toEqual(plain.bytes);
+				expect(answer.line).toMatch(new RegExp(` calls=10 rounds=1 found=3 .* cache=skip:${reason} body=`));
+				expect(answer.deferred).toBe(0);
+				expect(engine.asked).toBe(attempt);
+			}
+		}
+		// Every one of them was looked up — the key is this isolate's — and none left an entry.
+		expect(cache.state.reads).toBe(cases.length * 2);
+		expect(cache.entries.size).toBe(0);
+
+		// Once the objects have swapped, the same request is kept, and then answered from the copy.
+		const settled = countingEngine();
+		expect((await post(settled, DECK)).line).toContain(" cache=miss ");
+		expect(cache.entries.size).toBe(1);
+		const hit = await post(settled, DECK);
+		expect(hit.line).toContain(" cache=hit ");
+		expect(hit.bytes).toEqual(plain.bytes);
+		expect(settled.asked).toBe(1);
+
+		expect(collectionUnpinned(countingEngine(), BUILD)).toBeNull();
+		expect(collectionUnpinned(countingEngine(), PREVIOUS)).toBe("build");
+		expect(collectionUnpinned({}, BUILD)).toBe("unsaid");
+		// An answer no partition vouched for is not kept either.
+		expect(collectionUnpinned({ collectionBuilds: new Set(), collectionCommits: new Set() }, BUILD)).toBe("unsaid");
+	});
+
+	test("through the real partitioned engine: one partition answering from the previous build keeps nothing", async () => {
+		// The route's verdict is read off PartitionedEngine itself here, not a stand-in for it: two
+		// partitions, each reply carrying what wrote it, as RemoteEngine hands it over.
+		setCollectionCodeVersionForTests("commit-a");
+		const cache = installColoCache();
+		const manifest = {
+			store_key: `card-store-v1-${BUILD}.store`,
+			built_at: BUILD,
+			card_count: 2,
+			printing_count: 2,
+			upstream_commit: "abc",
+			format_version: 1,
+			store_bytes: 1000,
+			chunk_count: 2,
+			partition_count: 2,
+			partition_hash: "fnv1a64/oracle_id/v1",
+			partitions: [0, 1].map((k) => ({
+				store_key: `card-store-v1-${BUILD}-p${k}.store`,
+				store_bytes: 500,
+				chunk_count: 1,
+				card_count: 1,
+				printing_count: 1,
+			})),
+		} as StoreManifest;
+		const card = (name: string) => new TextEncoder().encode(JSON.stringify({ object: "card", name }));
+		const pinned: CollectionSource = { build: BUILD, commit: "commit-a" };
+		// Partition 0 holds the name, partition 1 the id; `sources[p]` is what partition p says wrote
+		// its reply (undefined: an object on the code before x58, which says nothing).
+		const engineOf = (sources: (CollectionSource | undefined)[]) =>
+			new PartitionedEngine(
+				(p) =>
+					({
+						scryfallCollectionBatch: async (sub: CollectionBatch) => ({
+							keys: sub.keys.map(() => (p === 1 ? card("By Id") : null)),
+							trees: [],
+							names: sub.names.map((n) => (p === 0 && n.folded === "llanowar elves" ? card("By Name") : null)),
+							nameRanks: sub.names.map((n) =>
+								p === 0 && n.folded === "llanowar elves" ? [3, "llanowarelves", 1, "", 0.9] : null,
+							),
+							...(sources[p] ? { answeredFrom: sources[p] } : {}),
+						}),
+					}) as never,
+				manifest,
+				async () => manifest,
+				null,
+			);
+		const deck = [{ name: "Llanowar Elves" }, { id: KNOWN }, { name: "Nope" }];
+
+		const swapping = await post(engineOf([pinned, { build: PREVIOUS, commit: "commit-a" }]), deck);
+		expect(swapping.line).toMatch(/ calls=2 rounds=1 found=2 .* cache=skip:build body=/);
+		const deploying = await post(engineOf([{ build: BUILD, commit: "commit-0" }, pinned]), deck);
+		expect(deploying.line).toContain(" cache=skip:code ");
+		const silent = await post(engineOf([pinned, undefined]), deck);
+		expect(silent.line).toContain(" cache=skip:unsaid ");
+		expect(cache.entries.size).toBe(0);
+		expect([swapping, deploying, silent].map((a) => a.deferred)).toEqual([0, 0, 0]);
+
+		const settled = await post(engineOf([pinned, pinned]), deck);
+		expect(settled.line).toMatch(/ calls=2 rounds=1 found=2 .* cache=miss body=/);
+		expect(settled.deferred).toBe(1);
+		expect(cache.entries.size).toBe(1);
+		// The same four bodies: what a partition says about itself never reaches the response.
+		for (const other of [swapping, deploying, silent]) expect(other.bytes).toEqual(settled.bytes);
+
+		// A hit asks no partition at all, so it is the same hit whatever the objects would say now.
+		const again = await post(engineOf([pinned, { build: PREVIOUS, commit: "commit-a" }]), deck);
+		expect(again.line).toMatch(/ calls=0 rounds=0 found=2 .* cache=hit body=/);
+		expect(again.bytes).toEqual(settled.bytes);
 	});
 });
 

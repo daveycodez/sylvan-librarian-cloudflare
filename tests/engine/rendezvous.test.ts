@@ -14,6 +14,7 @@
 // reports cannot keep a higher value alive.
 
 import { afterEach, beforeEach, describe, expect, mock, spyOn, test } from "bun:test";
+import { BUILD_COMMIT } from "../../src/build-info.gen";
 import { resetSiblingMemoryForTests, setSiblingHedgeForTests } from "../../src/engine/sibling-hedge";
 import { ARCHIVE_FORMAT_VERSION } from "../../src/engine/store-kv";
 
@@ -1572,7 +1573,11 @@ describe("a collection batch's route says where the names it did not settle live
 			baseUrl: string,
 			scope: null,
 			reportedShards?: number,
-		): Promise<{ packet: Uint8Array; located?: { builtAt: string; names: number[]; holders: number[][] } }>;
+		): Promise<{
+			packet: Uint8Array;
+			located?: { builtAt: string; names: number[]; holders: number[][] };
+			answeredFrom?: { build: string; commit: string };
+		}>;
 	};
 	const batchDo = () => makeDo() as unknown as BatchDo;
 	/** A packet as engine/wasm's `collection_batch` writes it: the header, then one empty slot per name. */
@@ -1589,6 +1594,33 @@ describe("a collection batch's route says where the names it did not settle live
 		collectionPacket = new Uint8Array();
 		holdersAnswer = null;
 		holdersAsked.length = 0;
+		gatherStore = null;
+	});
+
+	test("x58: the reply says which store build and which commit wrote the packet, and nothing else moved", async () => {
+		collectionPacket = packetOf([null], 1);
+		const batch = { keys: [], trees: [], names: names("nope") };
+		// The object's loaded store is build 1791026526: that, and this code's commit, ride beside
+		// the packet — what the route compares with the build and commit it keys a kept answer on.
+		gatherStore = {
+			ownLoad: Promise.resolve(),
+			loaded: true,
+			ownLoadMs: 0,
+			events: [],
+			manifest: { built_at: "1791026526" },
+			ops: null,
+		};
+		const reply = await batchDo().scryfallCollectionBatch(batch, "https://x", null, 1);
+		expect(reply.answeredFrom).toEqual({ build: "1791026526", commit: BUILD_COMMIT });
+		// An isolate on the code before x58 reads `packet` and `located` and the telemetry riders:
+		// the same object, the same keys, one trailing key more.
+		expect(reply.packet).toBe(collectionPacket);
+		expect(Object.keys(reply).sort()).toEqual(["acquireMs", "answeredFrom", "load", "packet", "rate", "shards"]);
+
+		// An object that cannot name its store names none, which is never the build a route is pinned to.
+		gatherStore = null;
+		const unnamed = await batchDo().scryfallCollectionBatch(batch, "https://x", null, 1);
+		expect(unnamed.answeredFrom).toEqual({ build: "", commit: BUILD_COMMIT });
 	});
 
 	test("an unsettled routed name comes back with its holders — none, for a name no card carries", async () => {

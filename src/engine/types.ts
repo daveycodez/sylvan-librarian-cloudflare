@@ -426,6 +426,19 @@ export interface CollectionBatchAnswer {
 	namePresent?: boolean[];
 	/** x47: where the routed names this store did not settle live, when it was asked and could say. */
 	nameHolders?: CollectionNameHolders;
+	/** x58: which store and code wrote this answer; absent from an object on the code before it. */
+	answeredFrom?: CollectionSource;
+}
+
+/**
+ * x58: what a store's collection answer was written from — the build it was read out of
+ * (`manifest.built_at`) and the commit of the code that built the card objects. The route keeps an
+ * answer in the colo's cache under its OWN build and commit, so it keeps one only when every
+ * partition that answered names both as the same (routes.ts `collectionUnpinned`).
+ */
+export interface CollectionSource {
+	build: string;
+	commit: string;
 }
 
 /**

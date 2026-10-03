@@ -1187,7 +1187,8 @@ function collectionBodyKeyOf(identifiersJson: string, q: string | undefined, pre
 // The range is the colo join's: the low end counts only repeats certainly at the colo of the batch
 // they repeat, the high end every repeat not certainly elsewhere. Only the long lifetime pays, so
 // entries live sixteen hours — the `/cards/*` tier — and are safe at that age because of what the
-// key holds, not because of the clock. The table assumes the colo keeps an entry that long.
+// key holds and of who wrote the answer, not because of the clock. The table assumes the colo
+// keeps an entry that long.
 //
 // THE KEY is SHA-256 over everything that decides the response's bytes: the code version, the
 // store build, the base URL every `*_uri` hangs off (scheme and host), `pretty`, the `?q=` scope
@@ -1195,16 +1196,37 @@ function collectionBodyKeyOf(identifiersJson: string, q: string | undefined, pre
 // before it; nothing has to purge them (`ctx.cache.purge` does not reach the Cache API), they age
 // out. The 64-bit `body=` fingerprint stays a log field: it is too short to share an answer on.
 //
-// WHAT IS NOT KEPT. Anything but the 200. A request whose identifiers do not survive
-// `JSON.stringify` (a number past the double range parses to Infinity and writes as `null`, so two
-// different requests would read the same). A Worker with no recorded commit (`wrangler dev`, a
-// manual deploy), which could not tell its entries from the previous code's. And a build younger
-// than COLLECTION_EDGE_SETTLE_MS: the manifest is published before the engine objects swap to it
-// (on DeckGen's 10-03 nightly an isolate read the new manifest 10 s before the objects swapped,
-// 20 min after `built_at`; hours when a coordinator wedges), and an answer the old store gave in
-// that gap would be kept under the new build's key — the gap the GET tier closes by purging after
-// the swap is acknowledged. The window is a margin, not a proof: an object reports no build with
-// its collection answer, so a swap later than the window is not seen from here.
+// WHAT IS NOT KEPT, and the `cache=skip:<reason>` the log line gives each. Anything but the 200
+// (no line at all: a 400 returns before the log, a 500 after it failed).
+//
+//   nocache   the runtime has no Cache API (bun)
+//   nocommit  a Worker with no recorded commit (`wrangler dev`, a manual deploy), which could not
+//             tell its entries from the previous code's
+//   nobuild   the engine names no pinned build
+//   number    identifiers that do not survive `JSON.stringify`: a number past the double range
+//             parses to Infinity and writes as `null`, so two different requests would read the same
+//   unsaid    a partition's reply did not say what wrote it — an object still on the code before
+//             this, during the deploy that ships it
+//   build     a partition answered from another store build than the one this request is pinned to
+//   code      a partition answered with another commit's code
+//
+// The first four are known before the lookup, and then there is none. The last three are known
+// only from the replies: the request was looked up, missed, and its answer is not kept.
+//
+// WHY THE REPLIES ARE ASKED. The key names this isolate's build and commit, but the BYTES are
+// written by the engine objects, and the two disagree at every publish and every deploy. A
+// publish writes the manifest before the objects swap to it (on DeckGen's 10-03 nightly an
+// isolate read the new manifest at 11:42:27 and the objects committed at 11:42:35–37; hours, when
+// a coordinator wedges), and a deploy replaces isolates and objects separately. An answer the old store or the old code wrote
+// for an isolate already on the new one would be kept under the new key for sixteen hours — the
+// gap the GET tier closes by purging once the swap is acknowledged, which the Cache API has no
+// equivalent of. So each object says, beside its packet, which build it read the packet from and
+// which commit it runs (`CollectionSource`, read in the packet's own turn), and an answer is kept
+// only when EVERY reply names this request's own. The same rule covers the other direction: an
+// isolate still on the old manifest keeps nothing the new store wrote. This replaced a one-hour
+// wait after `built_at`, which was a margin rather than a check — a wedged coordinator outlasts
+// it — and cost the hour after every publish: 711 batches skipped and 130 of 1,915 hits in the
+// measured day, exactly when the emptied cache refills.
 //
 // Validation runs first, so a malformed batch is still Scryfall's 400 and never a lookup; the
 // rate limiter runs before any handler (index.ts), so a hit is limited like a miss. A cache read
@@ -1213,8 +1235,6 @@ function collectionBodyKeyOf(identifiersJson: string, q: string | undefined, pre
 
 /** How long a kept collection answer lives: the `/cards/*` tier. Its key ends it sooner. */
 export const COLLECTION_EDGE_TTL_S = 57_600;
-/** A store build's answers are kept only once it is this old — see "WHAT IS NOT KEPT" above. */
-export const COLLECTION_EDGE_SETTLE_MS = 3_600_000;
 /** Bumped when the kept bytes' framing changes (today: one byte, `found`, then the body). */
 const COLLECTION_EDGE_SCHEMA = 1;
 
@@ -1240,9 +1260,9 @@ function holdsNonFiniteNumber(root: unknown): boolean {
 }
 
 /**
- * The colo cache key of a collection answer, or null when this request's answer is neither read
- * from the cache nor kept in it (the block above says which). `identifiersJson` is
- * `JSON.stringify(identifiers)`; `storeBuild` the pinned manifest's `built_at`, epoch seconds.
+ * The colo cache key of a collection answer — or, when this request is neither looked up nor kept,
+ * the reason (the block above lists them). `identifiersJson` is `JSON.stringify(identifiers)`;
+ * `storeBuild` the pinned manifest's `built_at`.
  */
 export async function collectionCacheUrl(
 	identifiers: unknown[],
@@ -1251,20 +1271,36 @@ export async function collectionCacheUrl(
 	pretty: boolean,
 	baseUrl: string,
 	storeBuild: string | undefined,
-	now: number = Date.now(),
-): Promise<string | null> {
-	if (!hasEdgeCache() || collectionCodeVersion === "unknown" || !storeBuild) return null;
-	const builtMs = Number(storeBuild) * 1000;
-	if (!Number.isFinite(builtMs) || now - builtMs < COLLECTION_EDGE_SETTLE_MS) return null;
+): Promise<{ url: string; skip: null } | { url: null; skip: string }> {
+	if (!hasEdgeCache()) return { url: null, skip: "nocache" };
+	if (collectionCodeVersion === "unknown") return { url: null, skip: "nocommit" };
+	if (!storeBuild) return { url: null, skip: "nobuild" };
 	// `null` is the only spelling a non-finite number can take, so most batches skip the walk.
-	if (identifiersJson.includes("null") && holdsNonFiniteNumber(identifiers)) return null;
+	if (identifiersJson.includes("null") && holdsNonFiniteNumber(identifiers)) return { url: null, skip: "number" };
 	// One JSON line of the fixed fields, then the identifiers: JSON writes no raw newline, so the
 	// first one is the separator and no two requests share a text.
 	const head = JSON.stringify([COLLECTION_EDGE_SCHEMA, collectionCodeVersion, storeBuild, baseUrl, pretty, q ?? ""]);
 	const digest = new Uint8Array(await crypto.subtle.digest("SHA-256", encodeUtf8(`${head}\n${identifiersJson}`)));
 	let hex = "";
 	for (const byte of digest) hex += byte.toString(16).padStart(2, "0");
-	return edgeCacheUrl(`collection:${hex}`);
+	return { url: edgeCacheUrl(`collection:${hex}`), skip: null };
+}
+
+/**
+ * Why an answer the engine just gave must NOT be kept under this request's key, or null when every
+ * partition that answered read `storeBuild` with this Worker's own code (PartitionedEngine
+ * `.collectionBuilds`, `.collectionCommits`). An engine that does not say is not trusted to match,
+ * and neither is an answer no partition vouched for.
+ */
+export function collectionUnpinned(engine: unknown, storeBuild: string): string | null {
+	const { collectionBuilds: builds, collectionCommits: commits } = engine as {
+		collectionBuilds?: ReadonlySet<string>;
+		collectionCommits?: ReadonlySet<string>;
+	};
+	if (!builds?.size || !commits?.size || builds.has("") || commits.has("")) return "unsaid";
+	for (const build of builds) if (build !== storeBuild) return "build";
+	for (const commit of commits) if (commit !== collectionCodeVersion) return "code";
+	return null;
 }
 
 export async function cardsCollectionHandler(
@@ -1344,7 +1380,8 @@ export async function cardsCollectionHandler(
 		// .collectionRepair, .collectionLocated). Grep "collection batch:". x58's `cache=`: `hit` the
 		// colo's cache answered and no partition was asked, so the line says calls=0 rounds=0 and
 		// calls-per-batch over a day stays what the batches cost; `miss` the engine answered and the
-		// answer was kept; `skip` this request is not cached at all (`collectionCacheUrl`). Last,
+		// answer was kept; `skip:<reason>` the engine answered and it was not (the reasons are listed
+		// above `collectionCacheUrl`), so a day of lines says how often each one fires. Last,
 		// `body=` is Y2's 64-bit fingerprint of the request (collectionBodyKey): distinct values
 		// against lines over a day is how often the SAME batch repeats, in any colo.
 		const line = (calls: number, rounds: number, found: number, repair: string, located: string, cache: string) =>
@@ -1352,17 +1389,11 @@ export async function cardsCollectionHandler(
 				`collection batch: n=${identifiers.length} id=${kinds.id} key=${kinds.key} pair=${kinds.pair} name=${kinds.name} name+set=${kinds.nameSet} q=${scope ? 1 : 0} calls=${calls} rounds=${rounds} found=${found} repair=${repair} located=${located} cache=${cache} body=${collectionBodyKeyOf(identifiersJson, params.q, pretty)}`,
 			);
 
-		const cacheUrl = await collectionCacheUrl(
-			identifiers,
-			identifiersJson,
-			params.q,
-			pretty,
-			baseUrl,
-			(engine as { storeBuild?: string }).storeBuild,
-		);
-		if (cacheUrl !== null) {
+		const storeBuild = (engine as { storeBuild?: string }).storeBuild;
+		const cache = await collectionCacheUrl(identifiers, identifiersJson, params.q, pretty, baseUrl, storeBuild);
+		if (cache.url !== null) {
 			// The kept bytes are one byte of `found` (at most 75) and then the body.
-			const kept = await matchEdgeCache(cacheUrl);
+			const kept = await matchEdgeCache(cache.url);
 			if (kept !== null && kept.length > 1) {
 				line(0, 0, kept[0] as number, "-", "-", "hit");
 				return scryfallCollectionResponse(kept.subarray(1), COLLECTION_CACHE);
@@ -1394,11 +1425,14 @@ export async function cardsCollectionHandler(
 			collectionRepair?: string | null;
 			collectionLocated?: number | null;
 		};
-		line(calls, rounds, found.length, repair ?? "-", String(located ?? "-"), cacheUrl === null ? "skip" : "miss");
+		// Looked up and missed: kept only if every partition wrote it from this request's own build
+		// and code. The response is the same either way.
+		const skip = cache.url === null ? cache.skip : collectionUnpinned(engine, storeBuild as string);
+		line(calls, rounds, found.length, repair ?? "-", String(located ?? "-"), skip === null ? "miss" : `skip:${skip}`);
 		const body = scryfallCollectionBytes(found, notFound, warnings, pretty);
-		if (cacheUrl !== null) {
+		if (cache.url !== null && skip === null) {
 			// Off the request's path: the client's answer does not wait for the colo to store it.
-			await putEdgeCache(cacheUrl, concatBytes([Uint8Array.of(found.length), body]), COLLECTION_EDGE_TTL_S, (p) =>
+			await putEdgeCache(cache.url, concatBytes([Uint8Array.of(found.length), body]), COLLECTION_EDGE_TTL_S, (p) =>
 				ctx.waitUntil(p),
 			);
 		}

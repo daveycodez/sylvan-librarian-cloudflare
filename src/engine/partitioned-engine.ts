@@ -1441,6 +1441,15 @@ export class PartitionedEngine implements Engine {
 	collectionLocated = 0;
 
 	/**
+	 * x58: what wrote this request's collection answer — over every partition reply, the distinct
+	 * store builds they were read from and the distinct commits of the code that wrote them, `""`
+	 * for a reply that did not say (an object on the code before x58). The route keeps the answer
+	 * in the colo's cache only when each set holds exactly its own build and its own commit.
+	 */
+	collectionBuilds = new Set<string>();
+	collectionCommits = new Set<string>();
+
+	/**
 	 * A whole collection batch in ONE round of at most N calls — see Engine.scryfallCollectionBatch.
 	 * The per-kind methods it replaced (b9bc501) spent up to 2N on the names (rank, then materialize
 	 * the winners), N on the `{set, collector_number}` trees and up to N on the keys, each its own
@@ -1531,6 +1540,8 @@ export class PartitionedEngine implements Engine {
 		const builtAt = String(this.manifest.built_at ?? "");
 		this.collectionRepair = null;
 		this.collectionLocated = 0;
+		this.collectionBuilds.clear();
+		this.collectionCommits.clear();
 		// A SERVED-routed name rides every round-1 call when its route can MISS: under a scope FILTER
 		// or a set, the served partition may hold no printing that passes, and its miss proves nothing
 		// about the extras-only cards of the name the other partitions hold (`nameReplySettles`) — so
@@ -1569,7 +1580,10 @@ export class PartitionedEngine implements Engine {
 						if (locate.length > 0) sub.locate = locate;
 					}
 					for (const i of nameAt) nameAsked[i]?.add(p);
-					return { p, keyAt, treeAt, nameAt, answer: await this.at(p).scryfallCollectionBatch(sub, baseUrl, scope) };
+					const answer = await this.at(p).scryfallCollectionBatch(sub, baseUrl, scope);
+					this.collectionBuilds.add(answer.answeredFrom?.build ?? "");
+					this.collectionCommits.add(answer.answeredFrom?.commit ?? "");
+					return { p, keyAt, treeAt, nameAt, answer };
 				}),
 			);
 		};

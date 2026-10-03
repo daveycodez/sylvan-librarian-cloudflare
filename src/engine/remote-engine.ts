@@ -14,6 +14,7 @@ import type {
 	CollectionBatchAnswer,
 	CollectionLocated,
 	CollectionScope,
+	CollectionSource,
 	Engine,
 	EngineSearchOptions,
 	EngineSearchResult,
@@ -167,7 +168,7 @@ interface SearchEngineStub {
 		baseUrl: string,
 		scope: CollectionScope | null,
 		reportedShards?: number,
-	): Promise<{ packet: Uint8Array; located?: CollectionLocated } & Telemetry>;
+	): Promise<{ packet: Uint8Array; located?: CollectionLocated; answeredFrom?: CollectionSource } & Telemetry>;
 	scryfallNamesContaining(
 		words: string[],
 		setCode: string,
@@ -1322,10 +1323,15 @@ export class RemoteEngine implements Engine {
 		baseUrl: string,
 		scope?: CollectionScope | null,
 	): Promise<CollectionBatchAnswer> {
-		const { packet, located } = await this.searchRpc("scryfallCollectionBatch", (stub, shards) =>
+		const { packet, located, answeredFrom } = await this.searchRpc("scryfallCollectionBatch", (stub, shards) =>
 			stub.scryfallCollectionBatch(batch, baseUrl, scope ?? null, shards),
 		);
 		const answer = decodeCollectionPacket(packet, batch);
+		// x58: the store and code that wrote the packet — of whichever object answered, the hedge's
+		// included. Absent from an object on the code before it, and then the answer is not kept.
+		if (typeof answeredFrom?.build === "string" && typeof answeredFrom.commit === "string") {
+			answer.answeredFrom = { build: answeredFrom.build, commit: answeredFrom.commit };
+		}
 		// x47: where the routed names the store did not settle live, spread back over the batch's
 		// names (null where it did not look). Absent from a store on the build before it.
 		if (located !== undefined) {
