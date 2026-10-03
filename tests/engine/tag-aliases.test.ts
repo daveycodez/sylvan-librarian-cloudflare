@@ -10,6 +10,7 @@ import {
 	liveTagAliases,
 	parseTagAliasTables,
 	readTagAliases,
+	setAliasJoinForTests,
 	tagAliasesKey,
 	tagAliasesKeyFor,
 	writeTagAliases,
@@ -27,7 +28,36 @@ function envOf(kv: FakeKV): Env {
 	return { STORE_KV: kv } as unknown as Env;
 }
 
-afterEach(() => forgetLiveTagAliases());
+afterEach(() => {
+	forgetLiveTagAliases();
+	setAliasJoinForTests(500);
+});
+
+/** A KV whose alias reads answer what `plan` says, in order: "never" is a read whose request was
+ * cancelled (it never settles), "late" one that answers only when `release()` is called. */
+function plannedKv(plan: ("ok" | "never" | "late")[]) {
+	const kv = new FakeKV();
+	kv.put("store:card-aliases-v5-1000.store:0", VALUE);
+	let reads = 0;
+	let release: () => void = () => {};
+	const planned = new Proxy(kv, {
+		get(target, prop, receiver) {
+			if (prop !== "get") return Reflect.get(target, prop, receiver);
+			return (...args: unknown[]) => {
+				const how = plan[reads++] ?? "ok";
+				const answer = () => (target.get as (...a: unknown[]) => Promise<unknown>).apply(target, args);
+				if (how === "never") return new Promise(() => {});
+				if (how === "late") {
+					return new Promise((resolve) => {
+						release = () => resolve(answer());
+					});
+				}
+				return answer();
+			};
+		},
+	});
+	return { env: envOf(planned as unknown as FakeKV), reads: () => reads, release: () => release() };
+}
 
 describe("the key", () => {
 	test("is shaped like the routing filter's and named by the build", () => {
@@ -157,6 +187,59 @@ describe("the isolate loader", () => {
 		expect((await liveTagAliases(env, manifestOf("1000"))).oracle.size).toBe(0);
 		kv.failOn.clear();
 		expect((await liveTagAliases(env, manifestOf("1000"))).oracle.get("reanimate-copy")).toBe("copy-from-graveyard");
+	});
+
+	// x57. DeckGen 2026-10-03: two /cards/search requests waited 100s each on this load, then the edge
+	// answered 524 — the request that began the read had been cancelled, so the read never settled,
+	// its `finally` never cleared the slot, and every later request in the isolate joined it.
+	test("a read whose request was cancelled does not hold the next request: it reads for itself", async () => {
+		setAliasJoinForTests(20);
+		const { env, reads } = plannedKv(["never"]);
+		// The cancelled request's call: nothing will ever come of it.
+		void liveTagAliases(env, manifestOf("1000"));
+		const started = Date.now();
+		const tables = await liveTagAliases(env, manifestOf("1000"));
+		expect(tables.oracle.get("reanimate-copy")).toBe("copy-from-graveyard");
+		expect(Date.now() - started).toBeLessThan(1_000);
+		expect(reads()).toBe(2);
+		// And the isolate is whole again: the next request reads nothing and waits on nothing.
+		const again = Date.now();
+		expect(await liveTagAliases(env, manifestOf("1000"))).toBe(tables);
+		expect(Date.now() - again).toBeLessThan(15);
+		expect(reads()).toBe(2);
+	});
+
+	test("the request that takes a lost read over owns the slot: later joiners wait on the live read", async () => {
+		setAliasJoinForTests(20);
+		const { env, reads, release } = plannedKv(["never", "late"]);
+		void liveTagAliases(env, manifestOf("1000"));
+		// Takes over after 20ms; its own read is slow but alive.
+		const second = liveTagAliases(env, manifestOf("1000"));
+		await new Promise((resolve) => setTimeout(resolve, 40));
+		expect(reads()).toBe(2);
+		// Joins the SECOND read, not the lost one — so it is answered when that read is, with no third.
+		setAliasJoinForTests(5_000);
+		const third = liveTagAliases(env, manifestOf("1000"));
+		release();
+		expect((await second).oracle.get("reanimate-copy")).toBe("copy-from-graveyard");
+		expect(await third).toBe(await second);
+		expect(reads()).toBe(2);
+	});
+
+	test("a read given up on that answers late after all still fills the isolate's table", async () => {
+		setAliasJoinForTests(20);
+		const { env, reads, release } = plannedKv(["late", "never"]);
+		const first = liveTagAliases(env, manifestOf("1000"));
+		// Gives up on the first read at 20ms and starts a second, which never answers.
+		const second = liveTagAliases(env, manifestOf("1000"));
+		await new Promise((resolve) => setTimeout(resolve, 40));
+		expect(reads()).toBe(2);
+		// The first read answers after all: its table is the isolate's, for everyone.
+		release();
+		expect((await first).oracle.get("reanimate-copy")).toBe("copy-from-graveyard");
+		expect(await liveTagAliases(env, manifestOf("1000"))).toBe(await first);
+		expect(reads()).toBe(2);
+		void second;
 	});
 
 	test("a manifest without a built_at gets the empty tables without touching KV", async () => {

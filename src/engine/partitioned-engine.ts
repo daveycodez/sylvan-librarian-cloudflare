@@ -122,6 +122,7 @@ import {
 	RoutingFilter,
 	scryfallIdKey,
 } from "./routing-filter";
+import { settledWithin } from "./shared-load";
 import {
 	ARCHIVE_FORMAT_VERSION,
 	formatManifestKey,
@@ -631,9 +632,21 @@ export interface CatalogTables {
  * The in-flight PROMISE is what is memoized, so concurrent first requests share one read, and a
  * rejected one is forgotten rather than remembered as an empty catalog — which would silently
  * turn the extras auto-enable off for the life of the isolate.
+ *
+ * A read still in flight is another REQUEST's, and is waited on for CATALOG_JOIN_MS at most
+ * (shared-load.ts): were that request cancelled mid-read, the promise would never settle and every
+ * set-scoped search in the isolate would wait on it for as long as its client did.
  */
-const CATALOG_TABLES = new Map<string, Promise<CatalogTables>>();
+const CATALOG_TABLES = new Map<string, { pending: Promise<CatalogTables>; settled: boolean }>();
 const CATALOG_EDGE_TTL_S = 86_400;
+/** Above a healthy fan-out (engine p999 1.1–2.6s), so a live read is rarely duplicated; a cold
+ * region's can run longer, and then costs one more fan-out. */
+export let CATALOG_JOIN_MS = 3_000;
+
+/** For tests: shorten the wait on another request's catalog read. */
+export function setCatalogJoinForTests(ms: number): void {
+	CATALOG_JOIN_MS = ms;
+}
 const catalogText = { decoder: new TextDecoder(), encoder: new TextEncoder() };
 
 /** Clears the isolate memo so a test can drive the cache and fan-out tiers deliberately. */
@@ -1129,10 +1142,20 @@ export class PartitionedEngine implements Engine {
 	}
 
 	/** See CATALOG_TABLES for the tiers. */
-	private catalogTables(): Promise<CatalogTables> {
+	private async catalogTables(): Promise<CatalogTables> {
 		const key = this.manifest.store_key;
 		const cached = CATALOG_TABLES.get(key);
-		if (cached) return cached;
+		if (cached?.settled) return cached.pending;
+		if (cached) {
+			const joined = await settledWithin(cached.pending, CATALOG_JOIN_MS);
+			if (joined !== null) return joined.value;
+			// Another waiter may have taken the read over already: join that one instead.
+			if (CATALOG_TABLES.get(key) !== cached) return this.catalogTables();
+			console.warn(
+				`catalog tables for ${key}: the read another request began has not settled in ${CATALOG_JOIN_MS}ms ` +
+					"(a cancelled request's reads never do); reading again for this request",
+			);
+		}
 		const fanOut = async (): Promise<CatalogTables> => {
 			const parts = await this.all(async (e) => ({
 				types: await e.cardTypeCounts(),
@@ -1145,7 +1168,7 @@ export class PartitionedEngine implements Engine {
 				setsWithExtras: [...new Set(parts.flatMap((p) => p.setsWithExtras))].sort(),
 			};
 		};
-		const pending = (async (): Promise<CatalogTables> => {
+		const read = async (): Promise<CatalogTables> => {
 			let fromFanOut: CatalogTables | null = null;
 			const bytes = await readThroughEdgeCache(edgeCacheUrl(`catalog:${key}`), CATALOG_EDGE_TTL_S, async () => {
 				fromFanOut = await fanOut();
@@ -1154,12 +1177,21 @@ export class PartitionedEngine implements Engine {
 			if (fromFanOut) return fromFanOut;
 			// A colo entry that is not the shape (or is unreadable) is a miss: ask the partitions.
 			return (bytes && parseCatalogTables(bytes)) ?? (await fanOut());
-		})().catch((err) => {
-			CATALOG_TABLES.delete(key);
-			throw err;
-		});
-		CATALOG_TABLES.set(key, pending);
-		return pending;
+		};
+		const entry = { pending: Promise.resolve(null as unknown as CatalogTables), settled: false };
+		entry.pending = read().then(
+			(tables) => {
+				entry.settled = true;
+				return tables;
+			},
+			(err) => {
+				// Only its OWN entry: a read given up on that fails late must not forget its successor's.
+				if (CATALOG_TABLES.get(key) === entry) CATALOG_TABLES.delete(key);
+				throw err;
+			},
+		);
+		CATALOG_TABLES.set(key, entry);
+		return entry.pending;
 	}
 
 	async cardCount(): Promise<number> {

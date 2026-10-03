@@ -18,6 +18,7 @@ import {
 	PartitionedEngine,
 	raceFuzzyCandidates,
 	resetCatalogMemoForTests,
+	setCatalogJoinForTests,
 	sumCounts,
 } from "../../src/engine/partitioned-engine";
 import { EngineCallTimeoutError, type RemoteEngine } from "../../src/engine/remote-engine";
@@ -1078,6 +1079,48 @@ describe("batches and catalogs", () => {
 		expect(engine.cardTypeCounts()).rejects.toThrow(/partition down/);
 		fail = false;
 		expect(await engine.cardTypeCounts()).toEqual({ creature: 4 });
+	});
+
+	// x57: the memo holds the in-flight PROMISE, which is the request's that began it. Were that
+	// request cancelled mid-read the promise would never settle, and every set-scoped search in the
+	// isolate (the extras gate asks for setsWithExtras) would wait on it for as long as its client did.
+	test("catalog: a read whose request was cancelled does not hold the next request", async () => {
+		setCatalogJoinForTests(20);
+		try {
+			const manifest = manifestOf(N);
+			const calls: string[] = [];
+			// The cancelled request's engine: its partitions never answer.
+			const lost = new PartitionedEngine(
+				(p) =>
+					({ ...fakeRemote(p, calls), cardTypeCounts: () => new Promise<never>(() => {}) }) as unknown as RemoteEngine,
+				manifest,
+				async () => manifest,
+				null,
+			);
+			void lost.cardTypeCounts();
+			const next = new PartitionedEngine(
+				(p) => fakeRemote(p, calls),
+				manifest,
+				async () => manifest,
+				null,
+			);
+			const started = Date.now();
+			expect(await next.setsWithExtras()).toEqual(["lea"]);
+			expect(Date.now() - started).toBeLessThan(1_000);
+			expect(calls.filter((c) => c.startsWith("cardTypeCounts:")).length).toBe(N);
+			// The isolate is whole again: the read that answered is the memo, and nothing fans out twice.
+			expect(await next.cardTypeCounts()).toEqual({ creature: 4 });
+			const third = new PartitionedEngine(
+				(p) => fakeRemote(p, calls),
+				manifest,
+				async () => manifest,
+				null,
+			);
+			expect(await third.cardKeywordCounts()).toEqual({ flying: 8 });
+			expect(calls.filter((c) => c.startsWith("cardTypeCounts:")).length).toBe(N);
+		} finally {
+			setCatalogJoinForTests(3_000);
+		}
 	});
 
 	describe("catalog: the colo's copy", () => {

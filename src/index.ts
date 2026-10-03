@@ -31,6 +31,7 @@ import { adminUnauthorized, isAdminPath } from "./routes/admin";
 import { httpError, optionsResponse, securityHeaders } from "./routes/http";
 import { resolveProxyOrigin } from "./routes/proxy-origin";
 import { enforceRateLimit, isRateLimitedRoute, isTrustedRequest, RateLimiter } from "./routes/rate-limit";
+import { answerInTime } from "./routes/request-deadline";
 import { prepareScryfallQueryParams } from "./routes/scryfall-compat/query-input";
 import { scryfallHttpError } from "./routes/scryfall-compat/respond";
 import { NOT_FOUND_DETAILS } from "./routes/scryfall-compat/routes";
@@ -317,20 +318,30 @@ async function handle(request: Request, env: Env, ctx: ExecutionContext): Promis
 			if (limited) return finish(limited);
 		}
 
-		const response = await entry.handler(
-			{
-				env,
-				getEngine: () => resolveEngine(request, env, ctx, engineSource),
-				// The same manifest the engine is pinned to (isolate-cached for 60s), so the parse
-				// resolves aliases against the build that will answer it.
-				tagAliases: () => livePartitionedManifest(env).then((manifest) => liveTagAliases(env, manifest)),
-				request,
-				requestHost,
-				requestScheme,
-				waitUntil: (p) => ctx.waitUntil(p),
-			},
-			resolved.positionalArgs,
-			params,
+		// ONE CLOCK OVER THE WHOLE HANDLER (request-deadline.ts, x57). The engine calls carry their own
+		// deadlines; the reads in front of them carried none, and two requests waited on one until the
+		// edge answered 524 for us at 100s. `stages` is what the deadline's log line names: the
+		// manifest read, the alias read, and every engine call, each open until it settles.
+		const response = await answerInTime({ method: request.method, key: resolved.key, scryfallSurface }, (stages) =>
+			entry.handler(
+				{
+					env,
+					getEngine: () =>
+						stages.track("manifest", () => resolveEngine(request, env, ctx, engineSource)).then((e) => stages.watch(e)),
+					// The same manifest the engine is pinned to (isolate-cached for 60s), so the parse
+					// resolves aliases against the build that will answer it.
+					tagAliases: () =>
+						stages.track("tag-aliases", () =>
+							livePartitionedManifest(env).then((manifest) => liveTagAliases(env, manifest)),
+						),
+					request,
+					requestHost,
+					requestScheme,
+					waitUntil: (p) => ctx.waitUntil(p),
+				},
+				resolved.positionalArgs,
+				params,
+			),
 		);
 		return finish(response);
 	} catch (err) {

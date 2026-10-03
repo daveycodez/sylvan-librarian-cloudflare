@@ -32,6 +32,7 @@
 import { EMPTY_TAG_ALIASES, type TagAliasTables } from "../parser/card-query-nodes";
 import { edgeCacheUrl, readThroughEdgeCache } from "./edge-cache";
 import { kvBytesMetadata } from "./kv-retention";
+import { settledWithin } from "./shared-load";
 import { KV_VALUE_CAP_BYTES } from "./store-kv";
 import type { Env, StoreManifest } from "./types";
 
@@ -130,45 +131,82 @@ let aliasCache: { builtAt: string; tables: TagAliasTables; missAt: number | null
 let aliasLoad: { builtAt: string; done: Promise<TagAliasTables> } | null = null;
 
 /**
- * The alias tables for this request's pinned build. Awaited: see the header for why a miss here
- * is a wrong answer rather than a slower one. Never throws — a KV fault costs THIS request its
- * alias resolution (the parser falls back to the spelling as typed) and is retried by the next,
- * because a failed read must not pin an isolate to an empty map.
+ * How long a request waits on an alias read ANOTHER request began before reading for itself
+ * (shared-load.ts: the owner's request may have been cancelled, and then its read never settles).
+ * A healthy read is the colo's copy in 3–10ms, or one ~70KB KV value; past this the cost of not
+ * waiting is one more read of either, and the cost of waiting was the whole request (x57).
  */
-export async function liveTagAliases(env: Env, manifest: StoreManifest): Promise<TagAliasTables> {
-	const builtAt = String(manifest.built_at ?? "");
-	if (!builtAt) return EMPTY_TAG_ALIASES;
+export let ALIAS_JOIN_MS = 500;
+
+/** For tests: shorten the wait on another request's alias read. */
+export function setAliasJoinForTests(ms: number): void {
+	ALIAS_JOIN_MS = ms;
+}
+
+/** Whether the isolate's copy answers for `builtAt` right now. */
+function cachedAliases(builtAt: string): TagAliasTables | null {
 	const cached = aliasCache;
 	// A published table is the build's for the isolate's life; an unpublished one is re-asked after
 	// ALIAS_MISS_RETRY_MS, since a late publish is exactly what the miss can be hiding.
 	if (cached?.builtAt === builtAt && (cached.missAt === null || Date.now() - cached.missAt < ALIAS_MISS_RETRY_MS)) {
 		return cached.tables;
 	}
-	if (aliasLoad?.builtAt !== builtAt) {
-		const done = (async (): Promise<TagAliasTables> => {
-			try {
-				const tables = await readTagAliases(env, manifest);
-				if (tables === null) {
-					console.warn(
-						`tag aliases for build ${builtAt} are not published (${tagAliasesKeyFor(manifest)}); ` +
-							"alias spellings (otag:reanimate-copy for copy-from-graveyard) match nothing until a publisher writes them",
-					);
-					aliasCache = { builtAt, tables: EMPTY_TAG_ALIASES, missAt: Date.now() };
-					return EMPTY_TAG_ALIASES;
-				}
-				aliasCache = { builtAt, tables, missAt: null };
-				console.log(`tag aliases loaded for build ${builtAt}: ${tables.oracle.size} oracle, ${tables.art.size} art`);
-				return tables;
-			} catch (err) {
-				console.warn(`tag aliases for build ${builtAt} could not be read (${err}); this request resolves none`);
-				return EMPTY_TAG_ALIASES;
-			} finally {
-				if (aliasLoad?.builtAt === builtAt) aliasLoad = null;
-			}
-		})();
-		aliasLoad = { builtAt, done };
+	return null;
+}
+
+/**
+ * The alias tables for this request's pinned build. Awaited: see the header for why a miss here
+ * is a wrong answer rather than a slower one. Never throws — a KV fault costs THIS request its
+ * alias resolution (the parser falls back to the spelling as typed) and is retried by the next,
+ * because a failed read must not pin an isolate to an empty map.
+ *
+ * Concurrent first requests share one read, for ALIAS_JOIN_MS at most: a read that has not settled
+ * by then is treated as lost with the request that began it, and this request reads for itself —
+ * taking over the slot, so whoever comes next joins a read that is alive.
+ */
+export async function liveTagAliases(env: Env, manifest: StoreManifest): Promise<TagAliasTables> {
+	const builtAt = String(manifest.built_at ?? "");
+	if (!builtAt) return EMPTY_TAG_ALIASES;
+	const cached = cachedAliases(builtAt);
+	if (cached !== null) return cached;
+	const shared = aliasLoad;
+	if (shared?.builtAt === builtAt) {
+		const joined = await settledWithin(shared.done, ALIAS_JOIN_MS);
+		if (joined !== null) return joined.value;
+		// Someone else may have finished, or taken the slot over, while this request waited.
+		const since = cachedAliases(builtAt);
+		if (since !== null) return since;
+		if (aliasLoad !== shared && aliasLoad?.builtAt === builtAt) return liveTagAliases(env, manifest);
+		console.warn(
+			`tag aliases for build ${builtAt}: the read another request began has not settled in ${ALIAS_JOIN_MS}ms ` +
+				"(a cancelled request's reads never do); reading again for this request",
+		);
 	}
-	return aliasLoad.done;
+	const load = { builtAt, done: Promise.resolve(EMPTY_TAG_ALIASES) };
+	load.done = (async (): Promise<TagAliasTables> => {
+		try {
+			const tables = await readTagAliases(env, manifest);
+			if (tables === null) {
+				console.warn(
+					`tag aliases for build ${builtAt} are not published (${tagAliasesKeyFor(manifest)}); ` +
+						"alias spellings (otag:reanimate-copy for copy-from-graveyard) match nothing until a publisher writes them",
+				);
+				aliasCache = { builtAt, tables: EMPTY_TAG_ALIASES, missAt: Date.now() };
+				return EMPTY_TAG_ALIASES;
+			}
+			aliasCache = { builtAt, tables, missAt: null };
+			console.log(`tag aliases loaded for build ${builtAt}: ${tables.oracle.size} oracle, ${tables.art.size} art`);
+			return tables;
+		} catch (err) {
+			console.warn(`tag aliases for build ${builtAt} could not be read (${err}); this request resolves none`);
+			return EMPTY_TAG_ALIASES;
+		} finally {
+			// Only its OWN slot: a read that was given up on and settles late must not clear its successor's.
+			if (aliasLoad === load) aliasLoad = null;
+		}
+	})();
+	aliasLoad = load;
+	return load.done;
 }
 
 /** Test hook: forget the isolate's cached alias map. */
