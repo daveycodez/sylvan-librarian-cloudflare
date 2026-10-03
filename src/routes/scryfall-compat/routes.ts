@@ -22,7 +22,9 @@
 // assembles ~70 keys per card, up to 175 of them for a page, and the DO meters against 30s where
 // this isolate meters against 10ms.
 
-import { encodeUtf8 } from "../../engine/bytes";
+import { BUILD_COMMIT } from "../../build-info.gen";
+import { concatBytes, encodeUtf8 } from "../../engine/bytes";
+import { edgeCacheUrl, hasEdgeCache, matchEdgeCache, putEdgeCache } from "../../engine/edge-cache";
 import { readKvBytesMemo } from "../../engine/kv-memo";
 import { resolveNamedFuzzyStaged } from "../../engine/named-fuzzy";
 import {
@@ -85,7 +87,7 @@ import {
 	scryfallTermPolicy,
 	TOO_MANY_REGEX_DETAILS,
 } from "./query-terms";
-import { asBool, scryfallCollectionJson, scryfallJson, scryfallListJson } from "./respond";
+import { asBool, scryfallCollectionBytes, scryfallCollectionResponse, scryfallJson, scryfallListJson } from "./respond";
 import { setAndCollectorNumber, TRUE_TREE } from "./trees";
 
 /** Path segments that name an external id namespace rather than a set code. */
@@ -1151,7 +1153,12 @@ export async function cardsRandomHandler(
  * batches repeat often enough to cache.
  */
 export function collectionBodyKey(identifiers: unknown[], q: string | undefined, pretty: boolean): string {
-	const text = `${JSON.stringify(identifiers)}\n${q ?? ""}\n${pretty ? 1 : 0}`;
+	return collectionBodyKeyOf(JSON.stringify(identifiers), q, pretty);
+}
+
+/** `collectionBodyKey` over identifiers already serialised — the route serialises them once. */
+function collectionBodyKeyOf(identifiersJson: string, q: string | undefined, pretty: boolean): string {
+	const text = `${identifiersJson}\n${q ?? ""}\n${pretty ? 1 : 0}`;
 	let a = 0x811c9dc5;
 	let b = 0x01000193;
 	for (let i = 0; i < text.length; i++) {
@@ -1160,6 +1167,104 @@ export function collectionBodyKey(identifiers: unknown[], q: string | undefined,
 		b = Math.imul(b ^ c, 0x85ebca6b) ^ (b >>> 13);
 	}
 	return (a >>> 0).toString(16).padStart(8, "0") + (b >>> 0).toString(16).padStart(8, "0");
+}
+
+// x58: A REPEATED BATCH IS ANSWERED FROM THE COLO'S CACHE.
+//
+// A POST is never edge-cached, and mtg-seeker sends the same deck list again: on DeckGen, 24 h to
+// 22:40 UTC 2026-10-03, 12,496 batches cost 85,070 partition calls and 6,060 of them repeated an
+// earlier body. The Cache API is per colo, and the repeats are not: joined to the zone's per-second
+// colo counts, about half of them arrived at another data center than the batch they repeat (of
+// the 5,212 within 16 h: 2,192 certainly elsewhere, 1,627 at the same one, 1,393 undecidable).
+// What one colo's cache can answer, keyed as below and emptied by the day's deploy and publish:
+//
+//   lifetime    batches answered    partition calls saved
+//   5 min        2.5%  (1.3–3.6)     1,536
+//   1 h          6.7%  (3.7–9.6)     4,559
+//   6 h         12.9%  (7.5–18.2)    9,197
+//   16 h        15.4%  (9.0–21.6)   10,953     (one cache for every colo would be 31.3%)
+//
+// The range is the colo join's: the low end counts only repeats certainly at the colo of the batch
+// they repeat, the high end every repeat not certainly elsewhere. Only the long lifetime pays, so
+// entries live sixteen hours — the `/cards/*` tier — and are safe at that age because of what the
+// key holds, not because of the clock. The table assumes the colo keeps an entry that long.
+//
+// THE KEY is SHA-256 over everything that decides the response's bytes: the code version, the
+// store build, the base URL every `*_uri` hangs off (scheme and host), `pretty`, the `?q=` scope
+// and the identifiers as sent, in order. A deploy or a publish therefore reads none of the entries
+// before it; nothing has to purge them (`ctx.cache.purge` does not reach the Cache API), they age
+// out. The 64-bit `body=` fingerprint stays a log field: it is too short to share an answer on.
+//
+// WHAT IS NOT KEPT. Anything but the 200. A request whose identifiers do not survive
+// `JSON.stringify` (a number past the double range parses to Infinity and writes as `null`, so two
+// different requests would read the same). A Worker with no recorded commit (`wrangler dev`, a
+// manual deploy), which could not tell its entries from the previous code's. And a build younger
+// than COLLECTION_EDGE_SETTLE_MS: the manifest is published before the engine objects swap to it
+// (on DeckGen's 10-03 nightly an isolate read the new manifest 10 s before the objects swapped,
+// 20 min after `built_at`; hours when a coordinator wedges), and an answer the old store gave in
+// that gap would be kept under the new build's key — the gap the GET tier closes by purging after
+// the swap is acknowledged. The window is a margin, not a proof: an object reports no build with
+// its collection answer, so a swap later than the window is not seen from here.
+//
+// Validation runs first, so a malformed batch is still Scryfall's 400 and never a lookup; the
+// rate limiter runs before any handler (index.ts), so a hit is limited like a miss. A cache read
+// or write that fails is a warning and the live path (edge-cache.ts). The client's headers do not
+// change: the kept copy carries its own lifetime, the response the route's `max-age=0, private`.
+
+/** How long a kept collection answer lives: the `/cards/*` tier. Its key ends it sooner. */
+export const COLLECTION_EDGE_TTL_S = 57_600;
+/** A store build's answers are kept only once it is this old — see "WHAT IS NOT KEPT" above. */
+export const COLLECTION_EDGE_SETTLE_MS = 3_600_000;
+/** Bumped when the kept bytes' framing changes (today: one byte, `found`, then the body). */
+const COLLECTION_EDGE_SCHEMA = 1;
+
+let collectionCodeVersion: string = BUILD_COMMIT;
+
+/** Tests have no build commit; null restores the real one. */
+export function setCollectionCodeVersionForTests(version: string | null): void {
+	collectionCodeVersion = version ?? BUILD_COMMIT;
+}
+
+/** Whether a parsed JSON value holds a number `JSON.stringify` would write as `null`. */
+function holdsNonFiniteNumber(root: unknown): boolean {
+	const pending: unknown[] = [root];
+	while (pending.length > 0) {
+		const value = pending.pop();
+		if (typeof value === "number") {
+			if (!Number.isFinite(value)) return true;
+		} else if (typeof value === "object" && value !== null) {
+			for (const child of Array.isArray(value) ? value : Object.values(value)) pending.push(child);
+		}
+	}
+	return false;
+}
+
+/**
+ * The colo cache key of a collection answer, or null when this request's answer is neither read
+ * from the cache nor kept in it (the block above says which). `identifiersJson` is
+ * `JSON.stringify(identifiers)`; `storeBuild` the pinned manifest's `built_at`, epoch seconds.
+ */
+export async function collectionCacheUrl(
+	identifiers: unknown[],
+	identifiersJson: string,
+	q: string | undefined,
+	pretty: boolean,
+	baseUrl: string,
+	storeBuild: string | undefined,
+	now: number = Date.now(),
+): Promise<string | null> {
+	if (!hasEdgeCache() || collectionCodeVersion === "unknown" || !storeBuild) return null;
+	const builtMs = Number(storeBuild) * 1000;
+	if (!Number.isFinite(builtMs) || now - builtMs < COLLECTION_EDGE_SETTLE_MS) return null;
+	// `null` is the only spelling a non-finite number can take, so most batches skip the walk.
+	if (identifiersJson.includes("null") && holdsNonFiniteNumber(identifiers)) return null;
+	// One JSON line of the fixed fields, then the identifiers: JSON writes no raw newline, so the
+	// first one is the separator and no two requests share a text.
+	const head = JSON.stringify([COLLECTION_EDGE_SCHEMA, collectionCodeVersion, storeBuild, baseUrl, pretty, q ?? ""]);
+	const digest = new Uint8Array(await crypto.subtle.digest("SHA-256", encodeUtf8(`${head}\n${identifiersJson}`)));
+	let hex = "";
+	for (const byte of digest) hex += byte.toString(16).padStart(2, "0");
+	return edgeCacheUrl(`collection:${hex}`);
 }
 
 export async function cardsCollectionHandler(
@@ -1224,7 +1329,47 @@ export async function cardsCollectionHandler(
 	const baseUrl = apiBaseUrl(ctx);
 	try {
 		const kinds: IdentifierKindTally = { id: 0, key: 0, pair: 0, name: 0, nameSet: 0 };
-		const resolved = await resolveIdentifiers(engine, identifiers, baseUrl, scope, kinds);
+		const plan = planIdentifiers(identifiers, kinds);
+		const identifiersJson = JSON.stringify(identifiers);
+		// ONE LINE PER BATCH, the only per-request record of this route now that invocation logs
+		// are off: how big mtg-seeker's batches are, which identifier kinds they carry, and how many
+		// partition RPCs each one cost. `calls` is PartitionedEngine's count before RemoteEngine's
+		// transient retry and its hedge (together 12 sends per 8,374 batches on DeckGen, 09-25), and
+		// `rounds` how many sequential waits they took: 1 is the design, 2 a repair round (a routed
+		// name its partition did not settle, a routed key that missed). x47's two, after `found`:
+		// `repair=` WHY a round followed the first — `name:K`, `key:K`, `pair:K`, `oracle:K`, `+`-joined,
+		// K identifiers of that kind asked again (`-` for one round) — and `located=` how many routed
+		// names their partition did not settle but the names index beside it located, so the repair
+		// asked their holders only: nobody, for a name no card carries (PartitionedEngine
+		// .collectionRepair, .collectionLocated). Grep "collection batch:". x58's `cache=`: `hit` the
+		// colo's cache answered and no partition was asked, so the line says calls=0 rounds=0 and
+		// calls-per-batch over a day stays what the batches cost; `miss` the engine answered and the
+		// answer was kept; `skip` this request is not cached at all (`collectionCacheUrl`). Last,
+		// `body=` is Y2's 64-bit fingerprint of the request (collectionBodyKey): distinct values
+		// against lines over a day is how often the SAME batch repeats, in any colo.
+		const line = (calls: number, rounds: number, found: number, repair: string, located: string, cache: string) =>
+			console.log(
+				`collection batch: n=${identifiers.length} id=${kinds.id} key=${kinds.key} pair=${kinds.pair} name=${kinds.name} name+set=${kinds.nameSet} q=${scope ? 1 : 0} calls=${calls} rounds=${rounds} found=${found} repair=${repair} located=${located} cache=${cache} body=${collectionBodyKeyOf(identifiersJson, params.q, pretty)}`,
+			);
+
+		const cacheUrl = await collectionCacheUrl(
+			identifiers,
+			identifiersJson,
+			params.q,
+			pretty,
+			baseUrl,
+			(engine as { storeBuild?: string }).storeBuild,
+		);
+		if (cacheUrl !== null) {
+			// The kept bytes are one byte of `found` (at most 75) and then the body.
+			const kept = await matchEdgeCache(cacheUrl);
+			if (kept !== null && kept.length > 1) {
+				line(0, 0, kept[0] as number, "-", "-", "hit");
+				return scryfallCollectionResponse(kept.subarray(1), COLLECTION_CACHE);
+			}
+		}
+
+		const resolved = await resolveIdentifiers(engine, plan, baseUrl, scope);
 		const found: Uint8Array[] = [];
 		const notFound: unknown[] = [];
 		for (let at = 0; at < identifiers.length; at++) {
@@ -1238,20 +1383,6 @@ export async function cardsCollectionHandler(
 			if (card) found.push(card);
 			else notFound.push(identifiers[at]);
 		}
-		// ONE LINE PER BATCH, the only per-request record of this route now that invocation logs
-		// are off: how big mtg-seeker's batches are, which identifier kinds they carry, and how many
-		// partition RPCs each one cost. `calls` is PartitionedEngine's count before RemoteEngine's
-		// transient retry and its hedge (together 12 sends per 8,374 batches on DeckGen, 09-25), and
-		// `rounds` how many sequential waits they took: 1 is the design, 2 a repair round (a routed
-		// name its partition did not settle, a routed key that missed). x47's two, after `found`:
-		// `repair=` WHY a round followed the first — `name:K`, `key:K`, `pair:K`, `oracle:K`, `+`-joined,
-		// K identifiers of that kind asked again (`-` for one round) — and `located=` how many routed
-		// names their partition did not settle but the names index beside it located, so the repair
-		// asked their holders only: nobody, for a name no card carries (PartitionedEngine
-		// .collectionRepair, .collectionLocated). Grep "collection batch:". Last, `body=` is Y2's
-		// measurement: a POST is never cached, and whether caching it by body would pay depends on
-		// how often the SAME request repeats — count distinct `body=` values against lines over a
-		// day (collectionBodyKey).
 		const {
 			partitionCalls: calls = -1,
 			collectionRounds: rounds = -1,
@@ -1263,10 +1394,15 @@ export async function cardsCollectionHandler(
 			collectionRepair?: string | null;
 			collectionLocated?: number | null;
 		};
-		console.log(
-			`collection batch: n=${identifiers.length} id=${kinds.id} key=${kinds.key} pair=${kinds.pair} name=${kinds.name} name+set=${kinds.nameSet} q=${scope ? 1 : 0} calls=${calls} rounds=${rounds} found=${found.length} repair=${repair ?? "-"} located=${located ?? "-"} body=${collectionBodyKey(identifiers, params.q, pretty)}`,
-		);
-		return scryfallCollectionJson(found, notFound, warnings, pretty, COLLECTION_CACHE);
+		line(calls, rounds, found.length, repair ?? "-", String(located ?? "-"), cacheUrl === null ? "skip" : "miss");
+		const body = scryfallCollectionBytes(found, notFound, warnings, pretty);
+		if (cacheUrl !== null) {
+			// Off the request's path: the client's answer does not wait for the colo to store it.
+			await putEdgeCache(cacheUrl, concatBytes([Uint8Array.of(found.length), body]), COLLECTION_EDGE_TTL_S, (p) =>
+				ctx.waitUntil(p),
+			);
+		}
+		return scryfallCollectionResponse(body, COLLECTION_CACHE);
 	} catch (err) {
 		return engineFailure(err, pretty);
 	}
@@ -1375,14 +1511,32 @@ interface IdentifierKindTally {
  */
 async function resolveIdentifiers(
 	engine: Engine,
-	identifiers: unknown[],
+	{ batch, slots }: IdentifierPlan,
 	baseUrl: string,
 	scope: CollectionScope | null,
-	kinds: IdentifierKindTally,
 ): Promise<(Uint8Array | null)[]> {
+	const answer = await engine.scryfallCollectionBatch(batch, baseUrl, scope);
+	return slots.map((slot) => {
+		if (slot === null) return null;
+		if (slot.list === "trees") return answer.trees[slot.at] ?? answer.trees[slot.at + 1] ?? null;
+		return answer[slot.list][slot.at] ?? null;
+	});
+}
+
+/** A batch's identifiers as the engine's one call, and where each identifier's answer lands in it. */
+interface IdentifierPlan {
+	batch: CollectionBatch;
+	/** Per identifier: a slot in one of the batch's three lists, or nowhere. */
+	slots: ({ list: "keys" | "trees" | "names"; at: number } | null)[];
+}
+
+/**
+ * Sort the identifiers into `resolveIdentifiers`' batch and tally their kinds. No engine call: the
+ * route plans before it asks the colo's cache, because the log line counts kinds on a hit too.
+ */
+function planIdentifiers(identifiers: unknown[], kinds: IdentifierKindTally): IdentifierPlan {
 	const batch: CollectionBatch = { keys: [], trees: [], treeAddresses: [], names: [] };
-	// Where each identifier's answer lands: a slot in one of the batch's three lists, or nowhere.
-	const slots: ({ list: "keys" | "trees" | "names"; at: number } | null)[] = [];
+	const slots: IdentifierPlan["slots"] = [];
 	const key = (k: CollectionBatchKey) => slots.push({ list: "keys", at: batch.keys.push(k) - 1 });
 
 	for (const ident of identifiers) {
@@ -1434,13 +1588,7 @@ async function resolveIdentifiers(
 			slots.push(null);
 		}
 	}
-
-	const answer = await engine.scryfallCollectionBatch(batch, baseUrl, scope);
-	return slots.map((slot) => {
-		if (slot === null) return null;
-		if (slot.list === "trees") return answer.trees[slot.at] ?? answer.trees[slot.at + 1] ?? null;
-		return answer[slot.list][slot.at] ?? null;
-	});
+	return { batch, slots };
 }
 
 // ─── GET /cards and /cards/... ───────────────────────────────────────────────

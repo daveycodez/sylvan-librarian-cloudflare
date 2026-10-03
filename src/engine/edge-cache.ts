@@ -31,6 +31,11 @@ function edgeCache(): Cache | null {
 	return typeof caches === "undefined" ? null : caches.default;
 }
 
+/** Whether this runtime has a colo cache at all — false in bun, where every reader reads through. */
+export function hasEdgeCache(): boolean {
+	return edgeCache() !== null;
+}
+
 /**
  * The bytes at `url` from this colo's cache ONLY — null on a miss, where Cache API is absent, or on
  * any cache error. Never reads KV: for a caller that may wait on the colo copy but must not wait on

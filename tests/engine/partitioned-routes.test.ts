@@ -725,6 +725,11 @@ describe("a collection batch is ONE round of at most N calls", () => {
 		names: a.names.map(cardOf),
 	});
 
+	test("the engine names the build it is pinned to: what the route keys a kept answer on (x58)", () => {
+		const { engine } = build({});
+		expect(engine.storeBuild).toBe("100");
+	});
+
 	test("every kind at once: N calls, each partition asked once, every key riding along", async () => {
 		const routing = filterOf([
 			{ key: scryfallIdKey("a"), partition: 1 },

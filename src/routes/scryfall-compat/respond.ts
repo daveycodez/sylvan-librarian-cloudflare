@@ -8,7 +8,7 @@
 // Upstream split the same plumbing out for the same reason when its second surface arrived
 // (api/scryfall_compat/responder.py, #922).
 
-import { encodeUtf8, jsonBytesResponse } from "../../engine/bytes";
+import { concatBytes, encodeUtf8, jsonBytesResponse } from "../../engine/bytes";
 import type { SearchPageEnvelope } from "../../engine/types";
 import { CSV_CONTENT_DISPOSITION, CSV_CONTENT_TYPE, CSV_HAS_MORE_HEADER, cardsToCsv } from "./csv";
 import { cardList, catalogObject, collectionList, errorObject } from "./objects";
@@ -251,17 +251,20 @@ const utf8 = new TextDecoder();
  *
  * `pretty` parses them back: Scryfall indents the cards too, not just the envelope, and pretty is
  * a debugging spelling nobody's client sends.
+ *
+ * x58: the BYTES apart from the Response around them, because the route keeps a copy in the colo's
+ * cache and answers a repeat of the same batch from it (routes.ts `collectionCacheUrl`). One writer
+ * and one Response constructor for the fresh answer and the kept one, so they cannot differ.
  */
-export function scryfallCollectionJson(
+export function scryfallCollectionBytes(
 	found: readonly Uint8Array[],
 	notFound: unknown[],
 	warnings: string[] | undefined,
 	pretty: boolean,
-	cache: Record<string, string>,
-): Response {
+): Uint8Array {
 	if (pretty) {
 		const cards = found.map((bytes) => JSON.parse(utf8.decode(bytes)) as unknown);
-		return scryfallJson(collectionList(cards, notFound, warnings), true, cache);
+		return encodeUtf8(stringifyScryfall(collectionList(cards, notFound, warnings), true));
 	}
 	const { head, tail } = spliceMarkers(collectionList([], notFound, warnings), false);
 	const parts: Uint8Array[] = [head, OPEN];
@@ -270,7 +273,23 @@ export function scryfallCollectionJson(
 		parts.push(card);
 	}
 	parts.push(CLOSE, tail);
-	return jsonBytesResponse(parts, { "content-type": JSON_CONTENT_TYPE, ...cache });
+	return concatBytes(parts);
+}
+
+/** A collection List's bytes as the route's 200. */
+export function scryfallCollectionResponse(body: Uint8Array, cache: Record<string, string>): Response {
+	return new Response(body, { headers: { "content-type": JSON_CONTENT_TYPE, ...cache } });
+}
+
+/** `scryfallCollectionBytes` as that Response. */
+export function scryfallCollectionJson(
+	found: readonly Uint8Array[],
+	notFound: unknown[],
+	warnings: string[] | undefined,
+	pretty: boolean,
+	cache: Record<string, string>,
+): Response {
+	return scryfallCollectionResponse(scryfallCollectionBytes(found, notFound, warnings, pretty), cache);
 }
 
 /**

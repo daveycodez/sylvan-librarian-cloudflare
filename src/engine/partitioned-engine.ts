@@ -783,6 +783,14 @@ export class PartitionedEngine implements Engine {
 		private awaitRouting: (() => Promise<RoutingFilter | null>) | null = null,
 	) {}
 
+	/**
+	 * The store build this request is pinned to (`manifest.built_at`, epoch seconds). x58: what a
+	 * collection answer kept in the colo's cache is keyed on, so none is read under another build.
+	 */
+	get storeBuild(): string {
+		return String(this.manifest.built_at ?? "");
+	}
+
 	/** Before a routed lookup: take the filter from the colo if this request can still get it. */
 	private async routed(): Promise<void> {
 		if (this.routing !== null || this.awaitRouting === null) return;
