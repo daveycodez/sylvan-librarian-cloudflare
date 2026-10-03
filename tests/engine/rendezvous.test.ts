@@ -85,8 +85,12 @@ let collectionPacket = new Uint8Array();
 let holdersAnswer: Record<string, number[]> | null = null;
 const holdersAsked: string[][] = [];
 
+/** x56: the engine labels the fake isolate holds — the `holds=` of a slow gather's line. */
+let residentLabels: string[] = [];
+
 // The real store is wasm-backed; the rendezvous does not touch it.
 mock.module("../../src/engine/store", () => ({
+	residentEngineLabels: () => residentLabels,
 	namesSearchPartitions: async (_env: unknown, _ctx: unknown, _opts: unknown, builtAt: string) => {
 		namesIndexAsked.push(builtAt);
 		return namesIndexAnswer;
@@ -1236,6 +1240,23 @@ describe("a coordinator whose sibling calls arrive late stops coordinating (x45)
 		);
 	});
 
+	test("the line ends with the engine objects its isolate holds (x56)", async () => {
+		// DeckGen 2026-10-02 12:57 UTC: engine-wnam-p8 began stalling the minute its store loaded into
+		// engine-wnam-p10's isolate. Two labels on a stalled line are that finding without a join.
+		const { late, gather } = coordinator();
+		late[2] = 3_100;
+		residentLabels = ["engine-oc-p0", "engine-oc-p3"];
+		try {
+			await gather(true);
+		} finally {
+			residentLabels = [];
+		}
+		expect(lines).toHaveLength(1);
+		expect(lines[0]).toMatch(
+			/stalled=yes streak=1 shedding=no inflight=0 isolate=\d+s holds=engine-oc-p0\+engine-oc-p3$/,
+		);
+	});
+
 	test("a healthy gather logs nothing and is never refused", async () => {
 		const { gather } = coordinator();
 		for (let i = 0; i < 4; i++) expect((await gather(true)).status).toBe(200);
@@ -1695,5 +1716,87 @@ describe("a collection batch's route says where the names it did not settle live
 		holdersAnswer = null;
 		const batch = { keys: [], trees: [], names: names("nope"), locate: [{ at: 0, hint: { sole: 4 } }] };
 		expect((await batchDo().scryfallCollectionBatch(batch, "https://x", null, 1)).located).toBeUndefined();
+	});
+});
+
+describe("an abandoned object gives its storage back only when nobody is calling it (x56)", () => {
+	// ABANDONED_ENGINES (engine-namespace.ts) stops every stub being built for an object the platform
+	// keeps on a bad machine. Its storage is released at a later publish — but an isolate that does
+	// not carry the list yet still calls it, and releasing under that caller would have its next
+	// call re-create the object and load a store from KV in front of a user.
+	const QUIET_MS = 15 * 60 * 1000;
+	type AbandonedDo = {
+		searchCardsAsObjects(opts: unknown, reported?: number): Promise<unknown>;
+		releaseAbandoned(quietMs: number): Promise<{ released: boolean; servedAgoMs: number | null }>;
+	};
+	function abandonedDo(name: string) {
+		let deleted = 0;
+		const storage = {
+			sql: { databaseSize: 41_000_000, exec: () => ({ toArray: () => [] }) },
+			deleteAll: async () => {
+				deleted += 1;
+			},
+		};
+		const engine = new SearchEngine(
+			{ waitUntil: () => {}, storage, id: { name } } as never,
+			{} as never,
+		) as unknown as AbandonedDo;
+		return { engine, deleted: () => deleted };
+	}
+
+	let warned: string[] = [];
+	let logged: string[] = [];
+	const realWarn = console.warn;
+	const realLog = console.log;
+	beforeEach(() => {
+		warned = [];
+		logged = [];
+		console.warn = (...args: unknown[]) => warned.push(args.join(" "));
+		console.log = (...args: unknown[]) => logged.push(args.join(" "));
+	});
+	afterEach(() => {
+		console.warn = realWarn;
+		console.log = realLog;
+	});
+
+	test("an object that served a call a moment ago refuses, and deletes nothing", async () => {
+		const { engine, deleted } = abandonedDo("engine-wnam-p10");
+		await engine.searchCardsAsObjects({ limit: 1 }, 1);
+		clock += 4_000;
+		expect(await engine.releaseAbandoned(QUIET_MS)).toEqual({ released: false, servedAgoMs: 4_000 });
+		expect(deleted()).toBe(0);
+		expect(warned).toEqual([
+			"[engine-wnam-p10] is abandoned but served a call 4000ms ago: keeping its cached archives until a publish " +
+				"finds it unused for 900000ms",
+		]);
+	});
+
+	test("once it has gone the quiet period without a call it releases everything, with deleteAll", async () => {
+		const { engine, deleted } = abandonedDo("engine-wnam-p8");
+		await engine.searchCardsAsObjects({ limit: 1 }, 1);
+		clock += QUIET_MS;
+		expect(await engine.releaseAbandoned(QUIET_MS)).toEqual({ released: true, servedAgoMs: QUIET_MS });
+		expect(deleted()).toBe(1);
+		expect(logged).toEqual(["[engine-wnam-p8] abandoned: released its cached archives (41000000 bytes of storage)"]);
+		// And the record went with the storage: asked again (a retried notify), it releases again.
+		expect(await engine.releaseAbandoned(QUIET_MS)).toEqual({ released: true, servedAgoMs: null });
+		expect(deleted()).toBe(2);
+	});
+
+	test("an object no call has reached in this isolate is released at once", async () => {
+		const { engine, deleted } = abandonedDo("engine-wnam-p9");
+		expect(await engine.releaseAbandoned(QUIET_MS)).toEqual({ released: true, servedAgoMs: null });
+		expect(deleted()).toBe(1);
+	});
+
+	test("the release is the object's own storage, not a call to itself", async () => {
+		// A wrapper that calls itself passes every other test here (wrapper-replacement): pin the body.
+		const src = await Bun.file(new URL("../../src/engine/search-engine-do.ts", import.meta.url)).text();
+		const body = src.slice(src.indexOf("async releaseAbandoned("), src.indexOf("async storageFootprint("));
+		expect(body).toContain("await this.ctx.storage.deleteAll();");
+		expect(body).not.toContain("this.releaseAbandoned(");
+		// And every serving call is what marks the object as in use.
+		const acquire = src.slice(src.indexOf("private async engine(): Promise<Engine> {"));
+		expect(acquire.slice(0, 120)).toContain("lastServedAt.set(this.label, Date.now());");
 	});
 });

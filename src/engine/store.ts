@@ -370,6 +370,18 @@ function noteIsolateLoad(): { text: string; crowded: boolean } {
 	return isolateClause(isolateLoads, now - isolateFirstLoadAt, resident);
 }
 
+/**
+ * The labels of every engine instance this isolate holds, sorted — the `holds=` of a slow gather's
+ * line (gather-health.ts). x56: the one fact that tied engine-wnam-p8's stall to engine-wnam-p10's
+ * was that the two shared an isolate from the minute p8's began, and it took a join against the
+ * "store loaded" lines to see it. A read of a Map in this isolate: no call, no storage.
+ */
+export function residentEngineLabels(): string[] {
+	// Guarded like noteIsolateLoad: a test's stand-in for the wasm module may not provide the gauge.
+	const resident = typeof wasm.residentEngines === "function" ? wasm.residentEngines() : [];
+	return resident.map((r) => r.label || "default").sort();
+}
+
 /** The `catalog()` wasm export's payload, parsed once per loaded store. */
 interface WasmCatalog {
 	card_types: Record<string, number>;

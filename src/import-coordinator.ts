@@ -73,7 +73,15 @@
 
 import { DurableObject } from "cloudflare:workers";
 import { encodeCardNames, ledByPartition, writeCardNames } from "./engine/card-names";
-import { addressAnnouncedEngine, engineName, parseEngineName, replicaGroupOf } from "./engine/engine-namespace";
+import {
+	ABANDONED_QUIET_MS,
+	addressAnnouncedEngine,
+	engineName,
+	parseEngineName,
+	replicaGroupOf,
+	supersededEngine,
+	sweepAbandonedEngines,
+} from "./engine/engine-namespace";
 import {
 	dropGroupWasm,
 	groupWasm,
@@ -4509,7 +4517,29 @@ export class ImportCoordinator extends DurableObject<Env> {
 			if (reason) reasons.set(name, reason);
 		}
 		const retire = [...reasons.keys()];
-		const live = announced.filter((name) => !retire.includes(name));
+		// x56: an object listed in ABANDONED_ENGINES (engine-namespace.ts) — one this deployment stopped
+		// using because of where the platform runs it — gives its storage back here, once it is
+		// ABANDONED_RELEASE_AFTER_MS past its entry and has gone ABANDONED_QUIET_MS without a call
+		// (the object itself checks). Until then it is notified below like any live object, so a
+		// straggler that still reaches it is answered from this build. With the list empty and no
+		// `-e<k>` name announced this is no call at all.
+		const abandoned = await sweepAbandonedEngines(
+			announced.filter((name) => !reasons.has(name)),
+			{
+				superseded: (name) => supersededEngine(this.env, name),
+				release: (name) =>
+					(
+						addressAnnouncedEngine(this.env, name) as unknown as {
+							releaseAbandoned(quietMs: number): Promise<{ released: boolean; servedAgoMs: number | null }>;
+						}
+					).releaseAbandoned(ABANDONED_QUIET_MS),
+				unannounce: (name) => this.env.STORE_KV.delete(`${REGION_LIVE_PREFIX}${name}`),
+				nowMs: Date.now(),
+			},
+		);
+		const live = announced.filter(
+			(name) => !retire.includes(name) && !abandoned.released.includes(name) && !abandoned.failed.includes(name),
+		);
 		if (retire.length > 0) {
 			const gone = await Promise.allSettled(
 				retire.map(async (name) => {

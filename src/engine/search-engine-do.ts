@@ -103,6 +103,7 @@ import {
 	pruneToManifest,
 	refreshNow,
 	reserveStoreBuffer,
+	residentEngineLabels,
 	settleInFlightLoad,
 	swapToStore,
 	tryGetLoadedEngine,
@@ -185,6 +186,14 @@ const RATE_BUCKETS = 10;
  * stalling coordinators were single isolates, 111 and 135 minutes old when replaced). Not read at
  * module scope, where a Worker's clock does not run. */
 let isolateFirstGatherAt = 0;
+
+/**
+ * When each object in this isolate last acquired its engine for a call, by label (x56). Read only by
+ * releaseAbandoned, which will not release an object somebody addressed a moment ago. Module state
+ * for the reason gather-health's is: the instance is evicted after ~10 idle seconds, the isolate
+ * is not.
+ */
+const lastServedAt = new Map<string, number>();
 
 function rethrowForRpc(err: unknown): never {
 	if (err instanceof EngineUnavailableError) {
@@ -1253,6 +1262,7 @@ export class SearchEngine extends DurableObject<Env> {
 				slowGatherLine(this.label, totalMs, trace, verdict, health, now, {
 					inFlight: this.inFlightGathers,
 					isolateAgeMs: now - isolateFirstGatherAt,
+					holds: residentEngineLabels(),
 				}),
 			);
 		}
@@ -1753,6 +1763,35 @@ export class SearchEngine extends DurableObject<Env> {
 	}
 
 	/**
+	 * x56: release for an object listed in ABANDONED_ENGINES (engine-namespace.ts) — `releaseCache`,
+	 * unless this object has served a call within `quietMs`.
+	 *
+	 * Nothing built from the list addresses this object any more, so a call it served a moment ago
+	 * came from an isolate that does not carry the list yet (a rollout still in progress, or an
+	 * entry whose `since` was written long before it shipped). Releasing under such a caller would
+	 * make its next call re-create the object and load a store from KV in front of a user; refusing
+	 * costs nothing, and the next publish asks again. An object whose isolate has gone has no
+	 * record and is released: ten idle seconds evict an instance, and nobody is using an object
+	 * that nobody has kept alive.
+	 */
+	async releaseAbandoned(quietMs: number): Promise<{ released: boolean; servedAgoMs: number | null }> {
+		const served = lastServedAt.get(this.label);
+		const servedAgoMs = served === undefined ? null : Date.now() - served;
+		if (servedAgoMs !== null && servedAgoMs < quietMs) {
+			console.warn(
+				`[${this.label}] is abandoned but served a call ${servedAgoMs}ms ago: keeping its cached archives ` +
+					`until a publish finds it unused for ${quietMs}ms`,
+			);
+			return { released: false, servedAgoMs };
+		}
+		const bytes = this.ctx.storage.sql.databaseSize;
+		await this.ctx.storage.deleteAll();
+		lastServedAt.delete(this.label);
+		console.log(`[${this.label}] abandoned: released its cached archives (${bytes} bytes of storage)`);
+		return { released: true, servedAgoMs };
+	}
+
+	/**
 	 * How many bytes this object's storage holds, changing nothing — the dry run in front of a
 	 * release (src/engine/retired-engine-sweep.ts).
 	 *
@@ -1795,6 +1834,7 @@ export class SearchEngine extends DurableObject<Env> {
 	}
 
 	private async engine(): Promise<Engine> {
+		lastServedAt.set(this.label, Date.now());
 		try {
 			// getEngine is single-flighted and returns immediately when this
 			// isolate already holds the store; otherwise it streams the store in

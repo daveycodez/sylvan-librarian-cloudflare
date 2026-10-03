@@ -179,6 +179,11 @@ export const SLOW_GATHER_LOG_MS = 2_000;
  * `original pending` there means the first call had still not answered when the gather ended. A
  * hedge sent to the neighbour region's copy of the partition (x55) says so in both places:
  * `at 502ms, to enam at 655ms won by hedge to enam 731ms`.
+ *
+ * The line ends with the engine objects this ISOLATE holds (x56), the coordinator's own among them:
+ * `holds=engine-wnam-p10+engine-wnam-p8`. engine-wnam-p8 began stalling the minute its store loaded
+ * into engine-wnam-p10's isolate (2026-10-02 12:57 UTC), which took a join against the "store
+ * loaded" lines to see; two labels on a stalled line are that finding in one query.
  */
 export function slowGatherLine(
 	label: string,
@@ -187,7 +192,7 @@ export function slowGatherLine(
 	verdict: StallVerdict,
 	health: GatherHealth,
 	now: number,
-	extra: { inFlight: number; isolateAgeMs: number },
+	extra: { inFlight: number; isolateAgeMs: number; holds?: readonly string[] },
 ): string {
 	const phase = (method: SiblingCallTiming["method"]) => {
 		const of = calls.filter((c) => c.method === method);
@@ -219,6 +224,7 @@ export function slowGatherLine(
 		`[${label}] slow gather: ${totalMs}ms, ${calls.length} sibling calls, median ${verdict.medianMs}ms; ` +
 		`${phase("searchKeys")}; ${phase("fetchRows")}; late: ${late.length ? late.join(", ") : "none"}; ` +
 		`${hedged.length ? `hedged: ${hedged.join(", ")}; ` : ""}stalled=${stalled} streak=${health.streak} ` +
-		`shedding=${left > 0 ? `${left}ms` : "no"} inflight=${extra.inFlight} isolate=${Math.round(extra.isolateAgeMs / 1000)}s`
+		`shedding=${left > 0 ? `${left}ms` : "no"} inflight=${extra.inFlight} isolate=${Math.round(extra.isolateAgeMs / 1000)}s` +
+		(extra.holds && extra.holds.length > 0 ? ` holds=${extra.holds.join("+")}` : "")
 	);
 }

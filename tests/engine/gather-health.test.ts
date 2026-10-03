@@ -201,6 +201,24 @@ describe("slowGatherLine", () => {
 		expect(line).toContain("fetchRows none; late: none; stalled=no streak=0 shedding=no");
 	});
 
+	test("the line ends with the engine objects its isolate holds, when it is told them (x56)", () => {
+		// engine-wnam-p8 began stalling the minute it shared engine-wnam-p10's isolate (2026-10-02).
+		const calls = phase1(9, { 0: 3_098 });
+		const line = (holds?: string[]) =>
+			slowGatherLine("engine-wnam-p8", 3_120, calls, stallOf(calls), new GatherHealth(), 0, {
+				inFlight: 0,
+				isolateAgeMs: 138_000,
+				...(holds ? { holds } : {}),
+			});
+		expect(line(["engine-wnam-p10", "engine-wnam-p8"])).toEndWith(
+			"inflight=0 isolate=138s holds=engine-wnam-p10+engine-wnam-p8",
+		);
+		expect(line(["engine-wnam-p8"])).toEndWith("isolate=138s holds=engine-wnam-p8");
+		// Untold (or an isolate whose gauge reports nothing), the line is the one it always was.
+		expect(line()).toEndWith("inflight=0 isolate=138s");
+		expect(line([])).toEndWith("inflight=0 isolate=138s");
+	});
+
 	test("a hedged call is named with who won, and a rescued gather says rescued (x53)", () => {
 		const note = { firedAtMs: 502, answered: 8, issued: 10, peerMedianMs: 12 };
 		const calls = phase1(12, { 4: 530, 5: 519 }).map((c) =>

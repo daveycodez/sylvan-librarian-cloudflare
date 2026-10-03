@@ -260,6 +260,114 @@ rename abandons every existing object and its cache on both. It is not revertibl
 commit does not bring the old objects back, it just abandons the new ones too. Confirm before
 pushing.
 
+## 5. Abandoning ONE object (x56, 2026-10-03)
+
+§4 renames every object on both accounts. This is the lever for one object, on one account, that
+is in the right region and still in a bad place: `ABANDONED_ENGINES` in
+`src/engine/engine-namespace.ts`. An object whose **id** is listed there is never addressed again by
+anything that builds a stub from a region and a partition; its name's next **epoch** is —
+`engine-wnam-p10-e1`, a different id and so a different object, created by its first caller.
+
+**What it was built for.** On DeckGen every `engine-wnam-p*` object runs in SEA. From 2026-10-01
+`engine-wnam-p10`, and from 10-02 12:57:25 UTC `engine-wnam-p8` — the second its store loaded into
+p10's isolate — had 1–4 of the ten sibling calls of a third of their gathers delivered 3.1–3.4 s
+late, always to p0, p4, p5, p6 or p7, while the other nine coordinators stalled on 1–2%. The delay
+follows where the object runs, and Cloudflare decides that: the data center is fixed at creation
+([Data location](https://developers.cloudflare.com/durable-objects/reference/data-location/)), and
+within it objects "migrate among healthy servers"
+([What are Durable Objects](https://developers.cloudflare.com/durable-objects/concepts/what-are-durable-objects/))
+when the platform chooses.
+
+**What it cannot promise.** Where the replacement lands. It may be SEA on another machine, SEA on
+the same one, or another data center of the hint — the nightly probes for `wnam` land in SJC, LAX,
+DEN and DFW, and the free account's `engine-wnam-p*` live in DFW, DEN and SJC. In another data center
+every sibling call to and from it pays that round trip, on every gather of the region. And the
+platform that moved p8 onto the bad machine can move a replacement there too. So this is a manual
+re-roll that you check, not a fix, and nothing pulls it automatically.
+
+### Pulling it
+
+1. **Find the object's id.** It is `$workers.durableObjectId` on any of the object's log lines, and
+   `objectId` in GraphQL `durableObjectsInvocationsAdaptiveGroups` (dimensions `name objectId`). 64
+   hex digits; it differs per account for the same name, which is the point — the entry touches one
+   account's object and nothing on the other.
+
+2. **Add an entry and push.**
+
+   ```ts
+   export const ABANDONED_ENGINES: readonly AbandonedEngine[] = [
+   	{
+   		id: "669242d40ff0a82acea97ae47009b9698e2bc39877c89632ea7a7d4fdac88691",
+   		name: "engine-wnam-p10",
+   		since: "2026-10-04T00:00:00Z", // when you push
+   		why: "x56: 1,470 of its 4,073 gathers stalled on 10-03; every other wnam coordinator 44–78",
+   	},
+   ];
+   ```
+
+   From the deploy on, the Worker (`placeEngineStub`) and every coordinator (`siblingStub`) build
+   stubs for `engine-wnam-p10-e1`. The abandoned object is untouched and still holds its store, so an
+   isolate that has not picked the deploy up yet is answered as before: both names work.
+
+3. **Read where it landed.** The replacement's first call loads its partition from KV and logs
+
+   ```
+   [engine-wnam-p10-e1] store loaded from KV: … isolate load #1, holds 1 engine(s) …
+   [engine-wnam-p10-e1] placement: colo=SEA loc=US
+   ```
+
+   `colo` other than its siblings' means cross-data-center sibling calls; `holds 2 engine(s)` naming
+   the object you are running from means it is back in the same isolate.
+
+4. **Judge it by a day of gathers.** Count `] slow gather:` lines with `stalled=yes` or
+   `stalled=rescued` under the new label against the old one's (the label is the first field, and
+   every line now ends `holds=<the engine objects in that isolate>`), and `http` requests per object
+   in `durableObjectsInvocationsAdaptiveGroups` (dimension `type`) for the denominator.
+
+5. **If it is worse, undo or re-roll — both are one more push.** Deleting the entry sends the name
+   back to its original object, which keeps its cache for at least twelve hours after `since`. Listing
+   the replacement's id as well resolves the name to `-e2`.
+
+6. **The old object's storage comes back by itself**, at the first nightly publish at least
+   `ABANDONED_RELEASE_AFTER_MS` (12 h) past `since`: `releaseAbandoned` runs `deleteAll`, and its
+   announcement is deleted with it. The object refuses if it served a call in the last 15 minutes
+   and is asked again the next night. The log says which:
+
+   ```
+   Publish notify: abandoned object(s) — engine-wnam-p10 released (abandoned 2026-10-04T00:00:00Z; now engine-wnam-p10-e1)
+   ```
+
+   The entry stays in the list for as long as the replacement is in use: it is what makes the name
+   resolve to `-e1`. An undone move's replacement is released the same way, the night after.
+
+### What one move costs
+
+Against the free plan's daily allowances, per object moved:
+
+| | per move | free allowance |
+| --- | --- | --- |
+| KV reads | 2 (the manifest, one ~14 MB chunk) | 100,000/day |
+| KV writes | 2 (the new announcement; the old one's delete at release) | 1,000/day |
+| Durable Object rows written | ~17 (14 cache rows, the manifest record, the announcement and placement records) | 100,000/day |
+| Durable Object storage | +~20 MB (a second LZ4 copy of one partition) until the old object is released | 5 GB |
+| requests that wait on a KV load | the first to reach the replacement (204 ms of I/O in `engine-wnam-p8`'s on 10-02) | — |
+
+Each nightly publish before the release also prefetches the new build into the abandoned object
+(one more chunk read, ~15 rows) — normally one night. The pool gate (`cacheGate`) counts replicas,
+not objects, so it does not see the second copy; at ~20 MB against a 5 GB pool that is 0.4% per
+object in transit.
+
+### An automatic rule is not built
+
+The evidence does not make one safe. A coordinator has stalled for hours and recovered untouched
+(p9 on 09-29, p1 on 10-02); a healthy one was moved into the stall by the platform (p8); and a
+replacement that lands in another data center is slower on every gather, not just the stalled ones.
+A rule would have to tell those apart from inside one object. If one is wanted later, its shape is:
+the per-object epoch rides the manifest's `placement` block (written by the nightly, the one writer
+the manifest has, and pushed to every object by the publish), set when one coordinator's stalled
+share of its own gathers exceeds ten times the region's median for two consecutive nights, at most
+one object per region per night, and never again for a name within seven days.
+
 ## See also
 
 - `src/engine/engine-namespace.ts` — the choke point, and the argument for it
@@ -272,3 +380,5 @@ pushing.
 - `src/engine/partitioned-engine.ts` — the fan-out that turns one request into `partition_count`
   stubs, all of them placed through the same choke point
 - `tests/engine/engine-naming.test.ts` — the name grammar, pinned
+- `tests/engine/abandoned-engines.test.ts` — §5's lever: who resolves a name to which object, and
+  when an abandoned one is released

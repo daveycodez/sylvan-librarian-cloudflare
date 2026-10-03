@@ -201,6 +201,60 @@ describe("the region's generation (backlog g1)", () => {
 	});
 });
 
+describe("one object's epoch (x56)", () => {
+	test("epoch 0 is today's name, byte for byte, so no object is abandoned on deploy", () => {
+		expect(engineName("wnam", 0, 10, 0, 0)).toBe("engine-wnam-p10");
+		expect(engineName("wnam", 2, 3, 1, 0)).toBe(engineName("wnam", 2, 3, 1));
+	});
+
+	test("an epoch is the last suffix, after the partition", () => {
+		expect(engineName("wnam", 0, 10, 0, 1)).toBe("engine-wnam-p10-e1");
+		expect(engineName("apac-ne", 2, 0, 12, 3)).toBe("engine-apac-ne-g12-2-p0-e3");
+	});
+
+	test("every hint × generation × shard × partition × epoch round-trips", () => {
+		for (const region of REGION_HINTS) {
+			for (const generation of [0, 2]) {
+				for (const shard of [0, 3]) {
+					for (const partition of [0, 10]) {
+						for (const epoch of [0, 1, 12]) {
+							const name = engineName(region, shard, partition, generation, epoch);
+							expect(parseEngineName(name)).toEqual({
+								region,
+								shard,
+								partition,
+								...(generation === 0 ? {} : { generation }),
+								...(epoch === 0 ? {} : { epoch }),
+							});
+						}
+					}
+				}
+			}
+		}
+	});
+
+	test("the epoch says which object, never what it holds: region, replica and partition are unchanged", () => {
+		// The loader reads its partition out of the label, and the publish fan-out its replica group.
+		expect(parseEngineName("engine-wnam-p10-e1")?.partition).toBe(10);
+		expect(regionOfEngineName("engine-wnam-p10-e1")).toBe("wnam");
+		expect(replicaGroupOf("engine-wnam-2-p10-e1")).toBe("engine-wnam-2");
+		expect(replicaGroupOf("engine-wnam-p10-e1")).toBe(replicaGroupOf("engine-wnam-p10"));
+	});
+
+	test("a sibling's name never inherits the caller's epoch", () => {
+		// engine-wnam-p10-e1 replaced ONE object; its partition-3 sibling is still engine-wnam-p3.
+		expect(siblingEngineName("engine-wnam-p10-e1", 3)).toBe("engine-wnam-p3");
+		expect(siblingEngineName("engine-sam-g1-2-p0-e4", 7)).toBe("engine-sam-g1-2-p7");
+	});
+
+	test("-e0 has no spelling, and an epoch is not mistaken for anything else", () => {
+		for (const bad of ["engine-wnam-p10-e0", "engine-wnam-p10-e01", "engine-wnam-p10-e", "engine-wnam-p10-e1-e2"]) {
+			expect(parseEngineName(bad)).toBeNull();
+		}
+		expect(parseEngineName("engine-wnam-e2")).toEqual({ region: "wnam", shard: 0, epoch: 2 });
+	});
+});
+
 describe("the gather partition spread", () => {
 	test("is deterministic and in range", () => {
 		for (const q of ["t:goblin", "lightning bolt", "", "lang:ja o:draw"]) {
