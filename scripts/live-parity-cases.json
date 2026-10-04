@@ -2020,8 +2020,8 @@
 		{
 			"name": "search-regex-alternation-under-the-complexity-budget",
 			"method": "GET",
-			"path": "/cards/search?q=t%3Ainstant+o%3A%2Fdestroy+target+%28creature%7Cqazxjkvw%7Cqbzxjkvw%7Cqczxjkvw%7Cqdzxjkvw%7Cqezxjkvw%7Cqfzxjkvw%7Cqgzxjkvw%7Cqhzxjkvw%7Cqizxjkvw%7Cqjzxjkvw%7Cqkzxjkvw%7Cqlzxjkvw%7Cqmzxjkvw%7Cqnzxjkvw%7Cqozxjkvw%7Cqpzxjkvw%7Cqqzxjkvw%7Cqrzxjkvw%7Cqszxjkvw%7Cqtzxjkvw%7Cquzxjkvw%7Cqvzxjkvw%29%2F",
-			"note": "x66 R2, the control: 23 alternatives (22 pipes, a 223-character body) score 89 on Scryfall's complexity sum — `.` and `(` 1, `*` `+` `?` `{` 2, `|` 4, refused at 90 — and RUN: 152 instants on api.scryfall.com 2026-10-03."
+			"path": "/cards/search?q=t%3Ainstant+o%3A%2Fdraw+%28three%7Cqazxjkvw%7Cqbzxjkvw%7Cqczxjkvw%7Cqdzxjkvw%7Cqezxjkvw%7Cqfzxjkvw%7Cqgzxjkvw%7Cqhzxjkvw%7Cqizxjkvw%7Cqjzxjkvw%7Cqkzxjkvw%7Cqlzxjkvw%7Cqmzxjkvw%7Cqnzxjkvw%7Cqozxjkvw%7Cqpzxjkvw%7Cqqzxjkvw%7Cqrzxjkvw%7Cqszxjkvw%7Cqtzxjkvw%7Cquzxjkvw%7Cqvzxjkvw%29+cards%2F",
+			"note": "x66 R2, the control: 23 alternatives (22 pipes) score 89 on Scryfall's complexity sum — `.` and `(` 1, `*` `+` `?` `{` 2, `|` 4, refused at 90 — and RUN. (Measured 2026-10-03 on the same shape over `destroy target (creature|…)`: 152 instants. This case asks about `draw (three|…) cards` instead so it does not also measure cleave-bracket text.)"
 		},
 		{
 			"name": "search-regex-alternation-too-complex-beside-a-term",
@@ -2301,8 +2301,8 @@
 		{
 			"name": "search-regex-lazy-quantifier-runs",
 			"method": "GET",
-			"path": "/cards/search?q=o%3A%2Fdestroy%2B%3F+target+creature%5Cb%2F+t%3Ainstant",
-			"note": "The control: a lazy quantifier and a word boundary run."
+			"path": "/cards/search?q=o%3A%2Fdraw%2B%3F+three+cards%5Cb%2F+t%3Ainstant",
+			"note": "The control: a lazy quantifier and a word boundary run (`destroy+? target creature`, `destroy??` and `destroy{1}?` were each 152 on api.scryfall.com 2026-10-03)."
 		}
 	]
 }
