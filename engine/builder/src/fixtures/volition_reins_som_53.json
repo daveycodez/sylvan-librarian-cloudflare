@@ -1,0 +1,135 @@
+{
+ "artist": "Svetlin Velinov",
+ "artist_ids": [
+  "ffd063ae-c097-4f26-b2e6-b1e2137708bc"
+ ],
+ "booster": true,
+ "border_color": "black",
+ "card_back_id": "0aeebaf5-8c7d-4636-9e82-8c27447861f7",
+ "cardmarket_id": 242608,
+ "cmc": 6.0,
+ "collector_number": "53",
+ "color_identity": [
+  "U"
+ ],
+ "colors": [
+  "U"
+ ],
+ "digital": false,
+ "edhrec_rank": 21953,
+ "finishes": [
+  "nonfoil",
+  "foil"
+ ],
+ "flavor_text": "\"Glorifying the will is a mistake. It is simply one more force to be mastered.\"",
+ "foil": true,
+ "frame": "2003",
+ "full_art": false,
+ "game_changer": false,
+ "games": [
+  "paper",
+  "mtgo"
+ ],
+ "highres_image": true,
+ "id": "aa8fa025-56e6-4d24-a615-a51b6be937e9",
+ "illustration_id": "3bd485c3-17b5-4475-8d01-1a5edf0666a6",
+ "image_status": "highres_scan",
+ "image_updated_at": "2026-07-13T11:22:14Z",
+ "image_uris": {
+  "art": "https://cards.scryfall.io/art/front/a/a/aa8fa025-56e6-4d24-a615-a51b6be937e9.webp?1783941734",
+  "art_crop": "https://cards.scryfall.io/art_crop/front/a/a/aa8fa025-56e6-4d24-a615-a51b6be937e9.jpg?1783941734",
+  "border_crop": "https://cards.scryfall.io/border_crop/front/a/a/aa8fa025-56e6-4d24-a615-a51b6be937e9.jpg?1783941734",
+  "crop": "https://cards.scryfall.io/crop/front/a/a/aa8fa025-56e6-4d24-a615-a51b6be937e9.webp?1783941734",
+  "display": "https://cards.scryfall.io/display/front/a/a/aa8fa025-56e6-4d24-a615-a51b6be937e9.webp?1783941734",
+  "grid": "https://cards.scryfall.io/grid/front/a/a/aa8fa025-56e6-4d24-a615-a51b6be937e9.webp?1783941734",
+  "large": "https://cards.scryfall.io/large/front/a/a/aa8fa025-56e6-4d24-a615-a51b6be937e9.jpg?1783941734",
+  "normal": "https://cards.scryfall.io/normal/front/a/a/aa8fa025-56e6-4d24-a615-a51b6be937e9.jpg?1783941734",
+  "png": "https://cards.scryfall.io/png/front/a/a/aa8fa025-56e6-4d24-a615-a51b6be937e9.png?1783941734",
+  "small": "https://cards.scryfall.io/small/front/a/a/aa8fa025-56e6-4d24-a615-a51b6be937e9.jpg?1783941734",
+  "thumb": "https://cards.scryfall.io/thumb/front/a/a/aa8fa025-56e6-4d24-a615-a51b6be937e9.webp?1783941734"
+ },
+ "keywords": [
+  "Enchant"
+ ],
+ "lang": "en",
+ "layout": "normal",
+ "legalities": {
+  "alchemy": "not_legal",
+  "brawl": "not_legal",
+  "commander": "legal",
+  "competitivebrawl": "not_legal",
+  "duel": "legal",
+  "future": "not_legal",
+  "gladiator": "not_legal",
+  "historic": "not_legal",
+  "legacy": "legal",
+  "modern": "legal",
+  "oathbreaker": "legal",
+  "oldschool": "not_legal",
+  "pauper": "not_legal",
+  "paupercommander": "not_legal",
+  "penny": "legal",
+  "pioneer": "not_legal",
+  "predh": "legal",
+  "premodern": "not_legal",
+  "standard": "not_legal",
+  "standardbrawl": "not_legal",
+  "timeless": "not_legal",
+  "tlr": "not_legal",
+  "vintage": "legal"
+ },
+ "mana_cost": "{3}{U}{U}{U}",
+ "mtgo_foil_id": 38228,
+ "mtgo_id": 38227,
+ "multiverse_ids": [
+  209001
+ ],
+ "name": "Volition Reins",
+ "nonfoil": true,
+ "object": "card",
+ "oracle_id": "bda496f9-5362-46f2-ad4f-cd96410c3c61",
+ "oracle_text": "Enchant permanent\nWhen this Aura enters, if enchanted permanent is tapped, untap it.\nYou control enchanted permanent.",
+ "oversized": false,
+ "penny_rank": 16384,
+ "prices": {
+  "eur": "0.15",
+  "eur_foil": "0.42",
+  "tix": "0.03",
+  "usd": "0.16",
+  "usd_etched": null,
+  "usd_foil": "0.50"
+ },
+ "prints_search_uri": "https://api.scryfall.com/cards/search?order=released&q=oracleid%3Abda496f9-5362-46f2-ad4f-cd96410c3c61&unique=prints",
+ "promo": false,
+ "purchase_uris": {
+  "cardhoarder": "https://www.cardhoarder.com/cards/38227?affiliate_id=scryfall&ref=card-profile&utm_campaign=affiliate&utm_medium=card&utm_source=scryfall",
+  "cardmarket": "https://www.cardmarket.com/en/Magic/Products?idProduct=242608&referrer=scryfall&utm_campaign=card_prices&utm_medium=text&utm_source=scryfall",
+  "tcgplayer": "https://partner.tcgplayer.com/c/4931599/1830156/21018?subId1=api&u=https%3A%2F%2Fwww.tcgplayer.com%2Fproduct%2F36359%3Fpage%3D1"
+ },
+ "rarity": "uncommon",
+ "related_uris": {
+  "edhrec": "https://edhrec.com/route/?cc=Volition+Reins",
+  "gatherer": "https://gatherer.wizards.com/Pages/Card/Details.aspx?multiverseid=209001&printed=false",
+  "tcgplayer_infinite_articles": "https://partner.tcgplayer.com/c/4931599/1830156/21018?subId1=api&trafcat=tcgplayer.com%2Fsearch%2Farticles&u=https%3A%2F%2Fwww.tcgplayer.com%2Fsearch%2Farticles%3FproductLineName%3Dmagic%26q%3DVolition%2BReins",
+  "tcgplayer_infinite_decks": "https://partner.tcgplayer.com/c/4931599/1830156/21018?subId1=api&trafcat=tcgplayer.com%2Fsearch%2Fdecks&u=https%3A%2F%2Fwww.tcgplayer.com%2Fsearch%2Fdecks%3FproductLineName%3Dmagic%26q%3DVolition%2BReins"
+ },
+ "released_at": "2010-10-01",
+ "reprint": false,
+ "reserved": false,
+ "rulings_uri": "https://api.scryfall.com/cards/aa8fa025-56e6-4d24-a615-a51b6be937e9/rulings",
+ "scryfall_set_uri": "https://scryfall.com/sets/som?utm_source=api",
+ "scryfall_uri": "https://scryfall.com/card/som/53/volition-reins?utm_source=api",
+ "set": "som",
+ "set_id": "8f403072-9b22-4e69-8d59-22dc4c97fd8d",
+ "set_name": "Scars of Mirrodin",
+ "set_search_uri": "https://api.scryfall.com/cards/search?order=set&q=e%3Asom&unique=prints",
+ "set_type": "expansion",
+ "set_uri": "https://api.scryfall.com/sets/8f403072-9b22-4e69-8d59-22dc4c97fd8d",
+ "story_spotlight": false,
+ "tcgplayer_id": 36359,
+ "textless": false,
+ "type_line": "Enchantment — Aura",
+ "uri": "https://api.scryfall.com/cards/aa8fa025-56e6-4d24-a615-a51b6be937e9",
+ "variation": false,
+ "watermark": "mirran"
+}

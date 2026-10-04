@@ -16018,13 +16018,10 @@ fn query_regex_flags_stay_strippable() {
 #[test]
 fn are_word_boundary_escapes_translate() {
     use super::regex_compat::translate_query_escapes;
-    // \y and \Z have exact regex-crate spellings, so these stay linear.
+    // \y has an exact regex-crate spelling, so it stays linear.
     assert_eq!(translate_query_escapes(r"\yizzet\y"), r"\bizzet\b");
-    assert_eq!(translate_query_escapes(r"\Yizzet"), r"\Bizzet");
-    assert_eq!(translate_query_escapes(r"card\Z"), r"card\z");
-    // \m and \M have none, so they become lookaround (and thus backtracking).
+    // \m has none, so it becomes lookaround (and thus backtracking).
     assert_eq!(translate_query_escapes(r"\mdraw"), r"(?<!\w)(?=\w)draw");
-    assert_eq!(translate_query_escapes(r"draw\M"), r"draw(?<=\w)(?!\w)");
     // Untouched: anything that already means the same thing in both dialects.
     assert_eq!(translate_query_escapes(r"\bfoo\d+\s"), r"\bfoo\d+\s");
     assert_eq!(translate_query_escapes(r"\\y"), r"\\y");
@@ -16096,17 +16093,11 @@ fn scryfall_regex_shorthands_expand() {
     assert!(!m(r"\spp", "create a 3/3 green hydra"));
     assert!(m(r"\smm", "target creature gets -1/-1 until end of turn"));
 
-    // THE UPPERCASE CLASS ESCAPES ARE A DELIBERATE NON-REPRODUCTION. Scryfall downcases the whole
-    // pattern before compiling, so `\S` reaches its engine as `\s`: `o:/\Sdraw/` and `o:/\sdraw/`
-    // are BOTH 3,604 there (2026-08-28), which two patterns describing opposite things cannot be
-    // unless one is not being read. Here `\S` keeps its meaning, and `\Sm` is "non-whitespace,
-    // then m" rather than a mana symbol — the shorthands are lowercase-only for the same reason.
-    assert_eq!(translate_query_escapes(r"\Sdraw"), r"\Sdraw", "\\S is passed through, not folded to \\s");
-    assert_eq!(translate_query_escapes(r"\Sm"), r"\Sm", "and it is not the head of a shorthand");
-    assert!(m(r"\Sdraw", "you may redraw your opening hand"));
-    assert!(!m(r"\Sdraw", "draw a card"), "a string start is not non-whitespace");
-    assert!(!m(r"\Sdraw", "target player may draw a card"), "and neither is a space");
-    assert!(m(r"\sdraw", "target player may draw a card"), "which is what the lowercase one is for");
+    // THE SHORTHANDS ARE READ AFTER THE CASE FOLD — see `the_query_pattern_is_lowercased_first`.
+    // `\Sm` is `\sm`, a mana symbol, and `\Sdraw` is whitespace then "draw".
+    assert!(m(r"\Sm", "{t}: add {g}."));
+    assert!(!m(r"\Sm", "draw a card"));
+    assert!(m(r"\sdraw", "target player may draw a card"));
     assert!(!m(r"\smm", "put a +1/+1 counter on it"));
 
     // A quantifier binds to the WHOLE shorthand, which is why each expansion is parenthesized.
@@ -16133,6 +16124,54 @@ fn scryfall_regex_shorthands_expand() {
     // own number — the reason the group is named rather than numbered.
     assert!(m(r"\smr.*\smr", "{u}{u} then later {g}{g}"));
     assert!(m(r"(a)\smr", "a{u}{u}"));
+}
+
+/// Scryfall lowercases the whole query before it parses it, so an uppercase class escape is its
+/// lowercase twin — the NEGATION is lost. Every row is a probe measured on api.scryfall.com
+/// 2026-10-04 against Fierce Retribution's text, with Scryfall's answer.
+#[test]
+fn the_query_pattern_is_lowercased_first() {
+    use super::regex_compat::{fold_query_case, CompiledRegex};
+    let m = |pattern: &str, haystack: &str| CompiledRegex::new(pattern).unwrap().is_match(haystack);
+    let fierce = "cleave {5}{w}\ndestroy target [attacking] creature.";
+
+    assert!(m(r"destroy\starget", fierce));
+    assert!(m(r"destroy\Starget", fierce), r"\S is \s: 1 on Scryfall");
+    assert!(m(r"destroy[\S]target", fierce), r"inside a class too: 1");
+    assert!(!m(r"destroy[^\S]target", fierce), r"[^\S] is [^\s]: 404");
+    assert!(!m(r"destroy\Wtarget", fierce), r"\W is \w, and a space is not a word character: 404");
+    assert!(!m(r"destr\Dy", fierce), r"\D is \d: 404");
+    assert!(!m(r"destro\By", fierce), r"\B is \b, and there is no boundary inside a word: 404");
+    assert!(!m(r"destro\Yy", fierce), r"\Y is \y, the same boundary: 404");
+    assert!(m(r"destroy\y target", fierce));
+    assert!(!m(r"destroy\M target", fierce), r"\M is \m, the START of a word: 404");
+    assert!(!m(r"\Acleave", fierce), r"\A is \a, the BEL character: 404");
+    assert!(m("^cleave", fierce));
+    assert!(m(r"destroy\X20target", fierce), r"\X20 is \x20: 1");
+    assert!(m("destroy[[:SPACE:]]target", fierce), "a POSIX class name folds with the rest: 1");
+    assert!(m("DESTROY TARGET", fierce));
+
+    // THE REPORTED SHAPE. `[\s\S]*` is "any run of whitespace" on Scryfall, so it joins two lines
+    // only when nothing but the line break lies between them.
+    let confiscate = "enchant permanent\nyou control enchanted permanent.";
+    let dream_leash = "enchant permanent\nyou can't choose an untapped permanent as this spell's target as you cast it.\nyou control enchanted permanent.";
+    let across = r"Enchant permanent[\s\S]*You control enchanted";
+    assert!(m(across, confiscate), "adjacent lines: Confiscate is on both sides of R06");
+    assert!(!m(across, dream_leash), "a line between: Scryfall does not answer Dream Leash");
+    assert!(!m(r"enchant (artifact(?! creature)|perm)[\s\S]*you control enchanted", confiscate), "R04: `perm` then a letter");
+    // The lowercase spelling of "anything, across lines" still is.
+    assert!(m(r"enchant permanent(.|\n)*you control enchanted", dream_leash));
+
+    // Nothing to fold borrows; the fold is the whole pattern, not the escapes alone.
+    assert!(matches!(fold_query_case(r"[\s\d]+ draw"), std::borrow::Cow::Borrowed(_)));
+    assert_eq!(fold_query_case(r"Draw \S+ Cards"), r"draw \s+ cards");
+    // Still the linear engine, and the trigram narrow reads the folded literals.
+    let re = CompiledRegex::new(r"Enchant permanent[\s\S]*You control enchanted").unwrap();
+    assert!(!re.is_backtracking());
+    assert_eq!(
+        super::regex_required_factors(re.as_str()),
+        vec!["enchant permanent".to_string(), "you control enchanted".to_string()]
+    );
 }
 
 #[test]

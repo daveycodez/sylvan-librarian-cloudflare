@@ -7,9 +7,10 @@
 //! - **Lookaround.** `(?!…)`, `(?=…)`, `(?<=…)`, `(?<!…)`. The `regex` crate
 //!   omits these by design — they are what costs it its linear-time guarantee.
 //!   Lookahead is on the documented feature list.
-//! - **Word-boundary escapes.** ARE spells them `\y`/`\Y`/`\m`/`\M`, and ARE's
-//!   `\Z` is Rust's `\z`. `\y` and `\Z` have exact `regex`-crate spellings, so
-//!   they are rewritten in place; `\m`/`\M` have none and become lookaround.
+//! - **Word-boundary escapes.** ARE spells them `\y` and `\m`. `\y` has an exact
+//!   `regex`-crate spelling, so it is rewritten in place; `\m` has none and
+//!   becomes lookaround. (Their uppercase twins `\Y`/`\M`/`\Z` cannot be spelled
+//!   in a query: api.scryfall.com lowercases the pattern, and so does `compile`.)
 //!
 //! Both were engine *declines* — a `build_filter` error that
 //! `_search`'s blanket handler turned into a silent PostgreSQL fallback. That
@@ -274,6 +275,54 @@ pub(crate) fn translate_self_reference(pattern: &str, scope: SelfRefScope) -> St
     out
 }
 
+/// Lowercase a query pattern, which is the first thing api.scryfall.com does to it.
+///
+/// SCRYFALL DOWNCASES THE WHOLE QUERY BEFORE IT PARSES ANYTHING — its `next_page` echoes the
+/// lowercased `q` — so a regex reaches its engine with every letter folded, the letter after a
+/// backslash included. For the literals that is invisible (the match is case-insensitive anyway).
+/// For the escapes it is a change of MEANING, because an uppercase class escape is the negation of
+/// its lowercase twin: `\S` becomes `\s`, and "anything, across lines" (`[\s\S]*`) becomes
+/// "whitespace only" (`[\s\s]*`).
+///
+/// MEASURED on api.scryfall.com 2026-10-04, each scoped `!"Fierce Retribution"` ("Cleave {5}{W}",
+/// then "Destroy target [attacking] creature." on the next line), so the answer is 1 or 404:
+///
+/// | pattern                    | if the escape kept its case | Scryfall | reads as      |
+/// |----------------------------|-----------------------------|----------|---------------|
+/// | `destroy\Starget`          | 404 (a space is not `\S`)   | 1        | `\s`          |
+/// | `destroy[\S]target`        | 404                         | 1        | `[\s]`        |
+/// | `destroy[^\S]target`       | 1                           | 404      | `[^\s]`       |
+/// | `destroy\Wtarget`          | 1 (a space is `\W`)         | 404      | `\w`          |
+/// | `destr\Dy`                 | 1 (`o` is `\D`)             | 404      | `\d`          |
+/// | `destro\By`                | 1 (no boundary inside)      | 404      | `\b`          |
+/// | `destro\Yy`                | 1                           | 404      | `\y`          |
+/// | `destroy\M target`         | 1 (end of a word)           | 404      | `\m`          |
+/// | `\Acleave`                 | 1 (start of text)           | 404      | `\a`          |
+/// | `destroy\X20target`        | an error                    | 1        | `\x20`        |
+/// | `destroy[[:SPACE:]]target` | an error                    | 1        | `[[:space:]]` |
+///
+/// The same holds on every regex column (`name:/Fierce\Sretribution/` is 1). This port kept the
+/// escapes' case, on purpose, from 2026-08-28 until mtg-seeker's reports of 2026-10-04: a query
+/// validated here and shipped to Scryfall answered differently wherever it said `[\s\S]*`.
+/// `o:/Enchant permanent[\s\S]*You control enchanted/` reached Dream Leash and Volition Reins
+/// across the line between, where Scryfall's `[\s\s]*` stops at the first letter, and
+/// `o:/(?:a|opponent.s|single) graveyard[\s\S]*copy[\s\S]*you may cast/` answered 9 cards against
+/// a 404. Keeping `\S` "right" is a regex that means one thing here and another where the user
+/// runs it.
+///
+/// `\A` folds to `\a`, the BEL character on both engines, so it matches nothing; `\Z` folds to
+/// `\z`, which Scryfall rejects ("invalid escape \\ sequence", the term ignored with a warning)
+/// and this engine reads as end-of-text.
+///
+/// Borrows when there is nothing to fold, which is the common case.
+pub(crate) fn fold_query_case(pattern: &str) -> std::borrow::Cow<'_, str> {
+    if pattern.chars().any(char::is_uppercase) {
+        std::borrow::Cow::Owned(pattern.to_lowercase())
+    } else {
+        std::borrow::Cow::Borrowed(pattern)
+    }
+}
+
 /// The inline flags every query regex is compiled with, and the exact prefix the two callers that
 /// read a compiled pattern back (`regex_tier`, `regex_required_factors`) strip before parsing it.
 ///
@@ -320,10 +369,12 @@ impl CompiledRegex {
     }
 
     fn compile(pattern: &str, scope: SelfRefScope) -> Result<Self, String> {
+        // Folded FIRST, before the alias or any escape is read — see `fold_query_case`.
+        let folded = fold_query_case(pattern);
         let source = if scope == SelfRefScope::None {
-            pattern.to_string()
+            folded.into_owned()
         } else {
-            translate_self_reference(pattern, scope)
+            translate_self_reference(&folded, scope)
         };
         // The EXPANSION is what matters, not the request: `o:/draw/` asked for expansion and got
         // none, so it must not pay the substitution or lose the narrow.
@@ -542,15 +593,13 @@ const NEGATED_CLASS_NEWLINE: &str = r"[^\n";
 /// | ARE  | meaning              | rewritten to      |
 /// |------|----------------------|-------------------|
 /// | `\y` | word boundary        | `\b`              |
-/// | `\Y` | not a word boundary  | `\B`              |
 /// | `\m` | start of a word      | `(?<!\w)(?=\w)`   |
-/// | `\M` | end of a word        | `(?<=\w)(?!\w)`   |
-/// | `\Z` | end of string        | `\z`              |
 ///
-/// `\y`/`\Y`/`\Z` have exact equivalents, so a pattern using only those stays
-/// on the linear engine. `\m`/`\M` do not, and their lookaround rewrite sends
-/// the pattern to the backtracking engine — correct, and rare enough to be
-/// worth the access path.
+/// `\y` has an exact equivalent, so a pattern using only that stays on the linear engine. `\m`
+/// does not, and its lookaround rewrite sends the pattern to the backtracking engine — correct,
+/// and rare enough to be worth the access path. ARE's three UPPERCASE constraints (`\Y` not a
+/// boundary, `\M` end of a word, `\Z` end of string) have no row because no query can spell them:
+/// the pattern is lowercased before it is translated, see [`fold_query_case`].
 ///
 /// The `\s…` half is [`SCRYFALL_SHORTHANDS`] plus `\smr`, which is the one shorthand no static
 /// expansion can express: "the SAME mana symbol twice" needs a backreference, so it compiles a
@@ -565,26 +614,10 @@ const NEGATED_CLASS_NEWLINE: &str = r"[^\n";
 /// broken the class — and reproducing that particular bug would turn a query that reads
 /// perfectly well ("whitespace or the letter m") into an error.
 ///
-/// THE UPPERCASE CLASS ESCAPES ARE A DELIBERATE NON-REPRODUCTION, and the only place in this
-/// dialect where matching Scryfall was chosen against. Scryfall downcases the WHOLE pattern before
-/// it compiles anything, so `\S` arrives at its engine as `\s` and the negation is simply lost.
-/// Measured 2026-08-28 against api.scryfall.com, with this engine's answer beside it:
-///
-/// | query | Scryfall | here |
-/// |---|---|---|
-/// | `o:/\sdraw/` | 3,604 | 3,604 |
-/// | `o:/\Sdraw/` | 3,604 | 1 |
-/// | `o:/\Wdraw/` | 0 | 3,605 |
-/// | `o:/\Ddraw/` | 0 | 3,605 |
-///
-/// `\S` answering the same 3,604 as `\s` is the whole proof: "non-whitespace then draw" and
-/// "whitespace then draw" cannot both be 3,604 unless one of them is not being read. `\W` and `\D`
-/// are the same fold seen from the other side — downcased to `\w` and `\d`, which no oracle text
-/// satisfies before "draw", they answer nothing at all rather than the thousands they describe.
-///
-/// Reproducing this would mean case-folding the pattern here too, which costs every uppercase
-/// escape a user could write and buys a bug. The shorthands above are lowercase-only for the same
-/// reason the fold is not copied: `\Sm` is "non-whitespace, then m", not a mana symbol.
+/// THE INPUT IS ALREADY LOWERCASE — `compile` folds the pattern first ([`fold_query_case`]), so no
+/// uppercase escape reaches this function from a query: `\S` arrives as `\s`, `\Y` as `\y`, `\M`
+/// as `\m`, `\Z` as `\z`. The shorthands are therefore read after the fold, as Scryfall reads
+/// them: `\Sm` is a mana symbol there and here.
 pub(crate) fn translate_query_escapes(pattern: &str) -> String {
     let chars: Vec<char> = pattern.chars().collect();
     let mut out = String::with_capacity(pattern.len());
@@ -635,10 +668,7 @@ pub(crate) fn translate_query_escapes(pattern: &str) -> String {
             }
             match next {
                 'y' => out.push_str(r"\b"),
-                'Y' => out.push_str(r"\B"),
                 'm' => out.push_str(r"(?<!\w)(?=\w)"),
-                'M' => out.push_str(r"(?<=\w)(?!\w)"),
-                'Z' => out.push_str(r"\z"),
                 other => {
                     out.push('\\');
                     out.push(other);

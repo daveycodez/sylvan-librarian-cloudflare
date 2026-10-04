@@ -1,0 +1,134 @@
+{
+ "artist": "Alex Horley-Orlandelli",
+ "artist_ids": [
+  "1631a2ad-bf03-4ab9-b86c-60da982d58a1"
+ ],
+ "booster": true,
+ "border_color": "black",
+ "card_back_id": "0aeebaf5-8c7d-4636-9e82-8c27447861f7",
+ "cardmarket_id": 13367,
+ "cmc": 5.0,
+ "collector_number": "45",
+ "color_identity": [
+  "U"
+ ],
+ "colors": [
+  "U"
+ ],
+ "digital": false,
+ "edhrec_rank": 23559,
+ "finishes": [
+  "nonfoil",
+  "foil"
+ ],
+ "flavor_text": "The tendrils of sorcery find easy purchase on the soft underbelly of dreams.",
+ "foil": true,
+ "frame": "2003",
+ "full_art": false,
+ "game_changer": false,
+ "games": [
+  "paper",
+  "mtgo"
+ ],
+ "highres_image": true,
+ "id": "0de4fa3d-a144-4918-b032-7495ab2e1c8c",
+ "illustration_id": "42909483-086b-44f7-a7a0-de65f9e0ad8e",
+ "image_status": "highres_scan",
+ "image_updated_at": "2026-07-13T11:54:48Z",
+ "image_uris": {
+  "art": "https://cards.scryfall.io/art/front/0/d/0de4fa3d-a144-4918-b032-7495ab2e1c8c.webp?1783943688",
+  "art_crop": "https://cards.scryfall.io/art_crop/front/0/d/0de4fa3d-a144-4918-b032-7495ab2e1c8c.jpg?1783943688",
+  "border_crop": "https://cards.scryfall.io/border_crop/front/0/d/0de4fa3d-a144-4918-b032-7495ab2e1c8c.jpg?1783943688",
+  "crop": "https://cards.scryfall.io/crop/front/0/d/0de4fa3d-a144-4918-b032-7495ab2e1c8c.webp?1783943688",
+  "display": "https://cards.scryfall.io/display/front/0/d/0de4fa3d-a144-4918-b032-7495ab2e1c8c.webp?1783943688",
+  "grid": "https://cards.scryfall.io/grid/front/0/d/0de4fa3d-a144-4918-b032-7495ab2e1c8c.webp?1783943688",
+  "large": "https://cards.scryfall.io/large/front/0/d/0de4fa3d-a144-4918-b032-7495ab2e1c8c.jpg?1783943688",
+  "normal": "https://cards.scryfall.io/normal/front/0/d/0de4fa3d-a144-4918-b032-7495ab2e1c8c.jpg?1783943688",
+  "png": "https://cards.scryfall.io/png/front/0/d/0de4fa3d-a144-4918-b032-7495ab2e1c8c.png?1783943688",
+  "small": "https://cards.scryfall.io/small/front/0/d/0de4fa3d-a144-4918-b032-7495ab2e1c8c.jpg?1783943688",
+  "thumb": "https://cards.scryfall.io/thumb/front/0/d/0de4fa3d-a144-4918-b032-7495ab2e1c8c.webp?1783943688"
+ },
+ "keywords": [
+  "Enchant"
+ ],
+ "lang": "en",
+ "layout": "normal",
+ "legalities": {
+  "alchemy": "not_legal",
+  "brawl": "not_legal",
+  "commander": "legal",
+  "competitivebrawl": "not_legal",
+  "duel": "legal",
+  "future": "not_legal",
+  "gladiator": "not_legal",
+  "historic": "not_legal",
+  "legacy": "legal",
+  "modern": "legal",
+  "oathbreaker": "legal",
+  "oldschool": "not_legal",
+  "pauper": "not_legal",
+  "paupercommander": "not_legal",
+  "penny": "legal",
+  "pioneer": "not_legal",
+  "predh": "legal",
+  "premodern": "not_legal",
+  "standard": "not_legal",
+  "standardbrawl": "not_legal",
+  "timeless": "not_legal",
+  "tlr": "not_legal",
+  "vintage": "legal"
+ },
+ "mana_cost": "{3}{U}{U}",
+ "mtgo_foil_id": 23305,
+ "mtgo_id": 23304,
+ "multiverse_ids": [
+  88945
+ ],
+ "name": "Dream Leash",
+ "nonfoil": true,
+ "object": "card",
+ "oracle_id": "b7fde102-7b89-48c7-818c-bdf0eb33c2ee",
+ "oracle_text": "Enchant permanent\nYou can't choose an untapped permanent as this spell's target as you cast it.\nYou control enchanted permanent.",
+ "oversized": false,
+ "penny_rank": 7756,
+ "prices": {
+  "eur": "0.21",
+  "eur_foil": "0.89",
+  "tix": "0.02",
+  "usd": "0.36",
+  "usd_etched": null,
+  "usd_foil": "0.72"
+ },
+ "prints_search_uri": "https://api.scryfall.com/cards/search?order=released&q=oracleid%3Ab7fde102-7b89-48c7-818c-bdf0eb33c2ee&unique=prints",
+ "promo": false,
+ "purchase_uris": {
+  "cardhoarder": "https://www.cardhoarder.com/cards/23304?affiliate_id=scryfall&ref=card-profile&utm_campaign=affiliate&utm_medium=card&utm_source=scryfall",
+  "cardmarket": "https://www.cardmarket.com/en/Magic/Products?idProduct=13367&referrer=scryfall&utm_campaign=card_prices&utm_medium=text&utm_source=scryfall",
+  "tcgplayer": "https://partner.tcgplayer.com/c/4931599/1830156/21018?subId1=api&u=https%3A%2F%2Fwww.tcgplayer.com%2Fproduct%2F13264%3Fpage%3D1"
+ },
+ "rarity": "rare",
+ "related_uris": {
+  "edhrec": "https://edhrec.com/route/?cc=Dream+Leash",
+  "gatherer": "https://gatherer.wizards.com/Pages/Card/Details.aspx?multiverseid=88945&printed=false",
+  "tcgplayer_infinite_articles": "https://partner.tcgplayer.com/c/4931599/1830156/21018?subId1=api&trafcat=tcgplayer.com%2Fsearch%2Farticles&u=https%3A%2F%2Fwww.tcgplayer.com%2Fsearch%2Farticles%3FproductLineName%3Dmagic%26q%3DDream%2BLeash",
+  "tcgplayer_infinite_decks": "https://partner.tcgplayer.com/c/4931599/1830156/21018?subId1=api&trafcat=tcgplayer.com%2Fsearch%2Fdecks&u=https%3A%2F%2Fwww.tcgplayer.com%2Fsearch%2Fdecks%3FproductLineName%3Dmagic%26q%3DDream%2BLeash"
+ },
+ "released_at": "2005-10-07",
+ "reprint": false,
+ "reserved": false,
+ "rulings_uri": "https://api.scryfall.com/cards/0de4fa3d-a144-4918-b032-7495ab2e1c8c/rulings",
+ "scryfall_set_uri": "https://scryfall.com/sets/rav?utm_source=api",
+ "scryfall_uri": "https://scryfall.com/card/rav/45/dream-leash?utm_source=api",
+ "set": "rav",
+ "set_id": "15fccbe8-2825-41ca-9d0a-67aebdf91c4a",
+ "set_name": "Ravnica: City of Guilds",
+ "set_search_uri": "https://api.scryfall.com/cards/search?order=set&q=e%3Arav&unique=prints",
+ "set_type": "expansion",
+ "set_uri": "https://api.scryfall.com/sets/15fccbe8-2825-41ca-9d0a-67aebdf91c4a",
+ "story_spotlight": false,
+ "tcgplayer_id": 13264,
+ "textless": false,
+ "type_line": "Enchantment — Aura",
+ "uri": "https://api.scryfall.com/cards/0de4fa3d-a144-4918-b032-7495ab2e1c8c",
+ "variation": false
+}

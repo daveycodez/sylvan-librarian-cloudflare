@@ -1699,6 +1699,78 @@
 			"method": "GET",
 			"path": "/cards/search?q=%28otag%3Alands-matter+or+o%3A%2F%28%3F%3C%21any+%29%28number+of%7Cfor+each%29%5B%5E.%2C%5Cn%5D%2A%5Cb%28lands%7Cland+cards%7CForests%7CIslands%7CSwamps%7CMountains%7CPlains%29%5Cb%7Cfor+each+land+card%7Cwhenever%5B%5E%2C%5Cn%5D%2A%5Cbland%5B%5E%2C%5Cn%5D%2Agraveyard%7Clands+than%2F%29+%28%21%22Baldur%27s+Gate+Wilderness%22+or+%21%22Burgeoning%22+or+%21%22Lumra%2C+Bellow+of+the+Woods%22+or+%21%22Omnath%2C+Locus+of+Rage%22+or+%21%22Blanchwood+Armor%22+or+%21%22Mystic+Sanctuary%22%29",
 			"note": "The report's five named cards and the one card that broke them, six candidates in all: Burgeoning, Lumra, Omnath, Blanchwood Armor and Mystic Sanctuary carry the tag, Baldur's Gate Wilderness is the 1,489-character dungeon. 5 on api.scryfall.com 2026-10-03 and a 404 here: the dungeon is walked first, has no tag, so the regex runs on it, exhausts its budget, and all five tagged cards after it are dropped. `otag:lands-matter` under the same six-name scope was 5 on both sides throughout."
+		},
+		{
+			"name": "search-regex-case-fold-probes",
+			"method": "GET",
+			"path": "/cards/search?q=%21%22Fierce+Retribution%22+%28o%3A%2Fdestroy%5CWtarget%2F+or+o%3A%2Fdestr%5CDy%2F+or+o%3A%2Fdestro%5CBy%2F+or+o%3A%2Fdestroy%5B%5E%5CS%5Dtarget%2F+or+o%3A%2F%5CAcleave%2F%29",
+			"note": "THE RULE ISOLATED: api.scryfall.com lowercases the whole query before it parses it, so an uppercase class escape reaches its regex engine as its lowercase twin and the negation is lost. Measured 2026-10-04 scoped to Fierce Retribution (\"Cleave {5}{W}\\nDestroy target [attacking] creature.\"): `destroy\\Starget` 1 (a space is not \\S, so the escape is being read as \\s), `destroy[\\S]target` 1, `destroy[^\\S]target` 404, `destroy\\Wtarget` 404, `destr\\Dy` 404, `destro\\By` 404, `destro\\Yy` 404, `destroy\\M target` 404, `\\Acleave` 404 (\\a is BEL), `destroy\\X20target` 1, `destroy[[:SPACE:]]target` 1. This case ORs five of the 404s and is a 404 on both sides; before the fold each of the five answered the card here."
+		},
+		{
+			"name": "search-regex-case-fold-uppercase-s-is-whitespace",
+			"method": "GET",
+			"path": "/cards/search?q=%21%22Fierce+Retribution%22+o%3A%2Fdestroy%5CStarget%2F+o%3A%2Fdestroy%5B%5CS%5Dtarget%2F+o%3A%2Fdestroy%5CX20target%2F+o%3A%2Fdestroy%5B%5B%3ASPACE%3A%5D%5Dtarget%2F",
+			"note": "The other half of the case above: the four patterns that only match if the uppercase spelling is read as the lowercase one. 1 card on both sides; before the fold `\\S` was non-whitespace here and the first two were 404 (the last two were regex errors)."
+		},
+		{
+			"name": "search-report-r01-welcome-to-jurassic-park",
+			"method": "GET",
+			"path": "/cards/search?q=o%3A%2Fdestroy+%5B%5E.%5Cn%5D%2AEquipment%2F+OR+o%3A%22destroy+target+creature+or+Vehicle%22+OR+o%3A%22destroy+all+creatures+and+Vehicles%22+OR+o%3A%22exile+up+to+one+other+target+tapped+creature+or+Vehicle%22+OR+o%3A%22Exile+target+creature%2C+Vehicle%22+OR+o%3A%22Exile+target+creature+or+Vehicle%22+OR+o%3A%22Return+target+creature+or+Vehicle+to+its+owner%22+OR+o%3A%22Return+target+creature+or+Vehicle+an+opponent+controls+to+its+owner%22+OR+o%3A%22destroy+target+Attraction%22+OR+o%3A%22destroy+up+to+one+target+Attraction%22+OR+o%3A%22Exile+up+to+one+target+Equipment+attached+to+that+creature%22+OR+o%3A%22Exile+target+attacking+creature+and+all+Equipment+attached+to+it%22+OR+o%3A%2Ftarget+noncreature+artifact+%5B%5E%5Cn%5D%2Abecomes%5B%5Cs%5CS%5D%2Adestroy+all+Walls%2F+OR+o%3A%22artifact+creature+with+power+and+toughness+each+equal+to+its+mana+value%22",
+			"note": "mtg-seeker report R01 (2026-10-04). Scryfall 44; this port answered 45, the extra being Welcome to . . . // Jurassic Park through `target noncreature artifact [^\\n]*becomes[\\s\\S]*destroy all Walls` — chapter I to chapter III across two line breaks and a whole chapter. Scryfall reads `[\\s\\S]*` as `[\\s\\s]*`, a whitespace run."
+		},
+		{
+			"name": "search-report-r02-theft-artifact",
+			"method": "GET",
+			"path": "/cards/search?q=o%3A%2F%28%3F%3C%21they+%29%28%3F%3C%21player+%29gain+control+of+%5B%5E.%5Cn%5D%7B0%2C35%7D%5Cb%28artifact%7CEquipment%7CVehicle%29%5Cb%2F+OR+o%3A%22you+control+enchanted+Equipment%22+OR+o%3A%2Flegendary+artifact+card%5B%5E.%5D%2Agraveyard%5B%5E.%5D%2Adiscovery+counter%5B%5Cs%5CS%5D%2Ayou+may+play%2F",
+			"note": "R02. Scryfall 31; this port 32, the extra being Lara Croft, Tomb Raider through `discovery counter[\\s\\S]*you may play` (\"…discovery counter on it. You may play…\")."
+		},
+		{
+			"name": "search-report-r03-graveyard-copy-cast",
+			"method": "GET",
+			"path": "/cards/search?q=o%3A%2F%28%3F%3Aa%7Copponent.s%7Csingle%29+graveyard%5B%5Cs%5CS%5D%2Acopy%5B%5Cs%5CS%5D%2Ayou+may+cast%2F",
+			"note": "R03. Scryfall 404; this port answered 9 cards (Flawless Forgery, Mnemonic Deluge, Narset, Enlightened Exile, …). With `[\\s\\S]*` a whitespace run the pattern needs \"graveyard copy you may cast\" and no card says that."
+		},
+		{
+			"name": "search-report-r04-theft-equipment",
+			"method": "GET",
+			"path": "/cards/search?q=%28o%3A%2F%28%3F%3C%21choice+may+%29%28gain%7Cexchange%29+control+of+%28%3F%21this+%7Ceach%7Ctarget+%28spell%7CAura%29%7Cthat+artifact%29%5B%5E.%5D%7B0%2C35%7D%5Cb%28artifact%7Cpermanent%29s%3F%5Cb%28%3F%21+you+%28own%7Ccontrol%29%29%2F+OR+o%3A%2Fenchant+%28artifact%28%3F%21+creature%29%7Cperm%29%5B%5Cs%5CS%5D%2Ayou+control+enchanted%2F%29+-otag%3Atheft-equipment",
+			"note": "R04. Scryfall 55; this port 61 — Confiscate, Dream Leash, In Bolas's Clutches, Lay Claim, Take Possession and Volition Reins through `enchant (artifact(?! creature)|perm)[\\s\\S]*you control enchanted`: `perm` is followed by \"anent\", not by whitespace."
+		},
+		{
+			"name": "search-report-r05-three-theft-tags",
+			"method": "GET",
+			"path": "/cards/search?q=%28%28otag%3Atheft-equipment+OR+%28o%3A%2F%28%3F%3C%21choice+may+%29%28gain%7Cexchange%29+control+of+%28%3F%21this+%7Ceach%7Ctarget+%28spell%7CAura%29%7Cthat+artifact%29%5B%5E.%5D%7B0%2C35%7D%5Cb%28artifact%7Cpermanent%29s%3F%5Cb%28%3F%21+you+%28own%7Ccontrol%29%29%2F+OR+%28o%3A%2FEnchant+%28artifact%28%3F%21+creature%29%7Cperm%29%2F+o%3A%22You+control+enchanted%22%29%29%29+OR+%28otag%3Atheft-artifact+OR+%28o%3A%2F%28%3F%3C%21they+%29%28%3F%3C%21player+%29gain+control+of+%5B%5E.%5Cn%5D%7B0%2C35%7D%5Cb%28artifact%7CEquipment%7CVehicle%29%5Cb%2F+OR+o%3A%22you+control+enchanted+Equipment%22+OR+o%3A%2Flegendary+artifact+card%5B%5E.%5D%2Agraveyard%5B%5E.%5D%2Adiscovery+counter%5B%5Cs%5CS%5D%2Ayou+may+play%2F%29%29+OR+%28otag%3Atheft-creature+OR+%28o%3A%2F%28%3F%3C%21they+%29%28%3F%3C%21player+%29gain+control+of+%28%3F%21this+creature%29%5B%5E.%5Cn%5D%7B0%2C30%7D%5Cbcreatures%3F%5Cb%2F+OR+%28o%3A%22creature%22+o%3A%2Fgain+control+of+%28it%7Cthem%29+until%2F%29+OR+keyword%3Aassimilate+OR+o%3A%22control+of+up+to+three+target+nonattacking+creatures%22%29%29%29",
+			"note": "R05, without its `sort:edhrec` (the two sides rank against different EDHREC snapshots; membership is the report). Scryfall 382; this port 383, Lara Croft, Tomb Raider again."
+		},
+		{
+			"name": "search-report-r06-theft-planeswalker",
+			"method": "GET",
+			"path": "/cards/search?q=o%3A%2F%28%3F%3C%21opponent+%29gain+control+of+%28target%7Call%7Cenchanted%29+%28%5Cw%2B+%29%3Fpermanents%3F%5Cb%28%3F%21+you+own%29%7CEnchant+permanent%5B%5Cs%5CS%5D%2AYou+control+enchanted+permanent%2F+OR+o%3A%2Fexchange+control+of+%28%3F%21target+artifact%7Cthose+permanents%29%5B%5E.%5D%2Apermanent%2F",
+			"note": "R06. Scryfall 27; this port 29 — Dream Leash and Volition Reins, each with a line between \"Enchant permanent\" and \"You control enchanted permanent\". Confiscate, whose two lines are adjacent, is on both sides."
+		},
+		{
+			"name": "search-report-r07-theft-enchantment",
+			"method": "GET",
+			"path": "/cards/search?q=o%3A%2F%28%3F%3C%21opponent+%29gain+control+of+%28%3F%21%5B%5E.%5D%2Ayou+own%7Ctarget+spell%29%28target%7Call%7Cenchanted%29+%5B%5E.%5D%2Apermanent%7Cexchange+control+of+%28%3F%21target+artifact%29%5B%5E.%5D%2Apermanent%7Cgain+control+of+all+Auras%7CEnchant+permanent%5B%5Cs%5CS%5D%2AYou+control+enchanted%2F",
+			"note": "R07. Scryfall 31; this port 33 — the same two Auras as R06."
+		},
+		{
+			"name": "search-report-r10-discard-outlet",
+			"method": "GET",
+			"path": "/cards/search?q=o%3A%2F%28each+player%7Ctarget+player%28%5B%5E.%5D%2A%7C%5B%5Cs%5CS%5D%2Athat+player%29%29+discards%7Cunless+you+discard%7C%5B%2C.%5D+Discard+%28that%7Cthose%29+card%7Creturn%5B%5E.%5D%2Ahand%5B%2C.%5D+%28then+%29%3Fthat+player+discards%2F+OR+%28o%3A%2Fcontroller%5B%5E.%5D%2Adiscard%2F+-o%3A%22opponent+controls%22%29",
+			"note": "R10. Scryfall 243; this port 280. All 37 extras (Thoughtseize, Inquisition of Kozilek, Duress-shaped \"Target player reveals their hand. … That player discards that card.\") came through `target player([^.]*|[\\s\\S]*that player) discards`."
+		},
+		{
+			"name": "search-report-r21-surveil",
+			"method": "GET",
+			"path": "/cards/search?q=o%3A%2F%5Cbsurveil+%5B0-9X%5D%2F+OR+%28o%3A%2Flook+at%5B%5E.%5D%2Atop%5B%5E.%5D%2Alibrary%5B%5Cs%5CS%5D%2Aput%5B%5E.%5D%2Ainto%5B%5E.%5D%2Agraveyard%2F+-o%3A%22into+your+hand%22+-o%3A%22into+their+hand%22+-o%3A%22onto+the+battlefield%22+-o%3Aexile%29+OR+%28o%3Areveal+o%3A%22rest+on+top%22+o%3Agraveyard%29",
+			"note": "R21. Scryfall 228; this port 244 — 16 extras through `library[\\s\\S]*put[^.]*into[^.]*graveyard`."
+		},
+		{
+			"name": "search-report-r08-ob-nixilis",
+			"method": "GET",
+			"path": "/cards/search?q=%28%28%28o%3A%2F%5Cb%28opponent%7Copponents%7Ceach+player%7Ctarget+player%29%5Cb%5B%5E.%5D%2Aloses+%28exactly+%29%3F1+life%2F+OR+o%3A%2Fdeals+1+damage+to+%28an+opponent%7Ctarget+opponent%7Ceach+opponent%7Ctarget+player%7Ceach+player%7Cany+target%29%2F+OR+keyword%3Aproliferate+OR+o%3A%2Fwould+%28be+%29%3Fput+%5B%5E.%5D%2Acounters%3F%5B%5E.%5D%2Ainstead%2F+OR+otag%3Asynergy-exile-cast+OR+o%3A%2Fwhenever+you+cast+%5B%5E.%5D%2Afrom+exile%2F%29%29+ci%3C%3Dbr%29+%28f%3Acommander+or+%28date%3E2026-09-29+-is%3Adigital%29%29",
+			"note": "R08, without its `sort:edhrec`. Already at parity when re-measured 2026-10-04 (519 on both sides): the one extra, Vengeful Strangler // Strangling Grasp, was `[^.]*` crossing a line break, fixed by the negated-class rule of 2026-10-03. Pinned so it stays fixed."
 		}
 	]
 }

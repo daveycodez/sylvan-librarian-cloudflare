@@ -1,0 +1,136 @@
+{
+ "artist": "Aleksi Briclot",
+ "artist_ids": [
+  "5e470014-31cb-41b0-b054-e23374484449"
+ ],
+ "booster": true,
+ "border_color": "black",
+ "card_back_id": "0aeebaf5-8c7d-4636-9e82-8c27447861f7",
+ "cardmarket_id": 486044,
+ "cmc": 1.0,
+ "collector_number": "109",
+ "color_identity": [
+  "B"
+ ],
+ "colors": [
+  "B"
+ ],
+ "digital": false,
+ "edhrec_rank": 4423,
+ "finishes": [
+  "nonfoil",
+  "foil"
+ ],
+ "flavor_text": "\"Any dream is a robust harvest. Still, I prefer the timeworn dreams, heavy with import, that haunt the obsessive mind.\"",
+ "foil": true,
+ "frame": "2015",
+ "full_art": false,
+ "game_changer": false,
+ "games": [
+  "paper",
+  "mtgo"
+ ],
+ "highres_image": true,
+ "id": "b281a308-ab6b-47b6-bec7-632c9aaecede",
+ "illustration_id": "22df80a2-c7f1-4546-b092-6791a690cf5b",
+ "image_status": "highres_scan",
+ "image_updated_at": "2026-07-13T08:09:33Z",
+ "image_uris": {
+  "art": "https://cards.scryfall.io/art/front/b/2/b281a308-ab6b-47b6-bec7-632c9aaecede.webp?1783930173",
+  "art_crop": "https://cards.scryfall.io/art_crop/front/b/2/b281a308-ab6b-47b6-bec7-632c9aaecede.jpg?1783930173",
+  "border_crop": "https://cards.scryfall.io/border_crop/front/b/2/b281a308-ab6b-47b6-bec7-632c9aaecede.jpg?1783930173",
+  "crop": "https://cards.scryfall.io/crop/front/b/2/b281a308-ab6b-47b6-bec7-632c9aaecede.webp?1783930173",
+  "display": "https://cards.scryfall.io/display/front/b/2/b281a308-ab6b-47b6-bec7-632c9aaecede.webp?1783930173",
+  "grid": "https://cards.scryfall.io/grid/front/b/2/b281a308-ab6b-47b6-bec7-632c9aaecede.webp?1783930173",
+  "large": "https://cards.scryfall.io/large/front/b/2/b281a308-ab6b-47b6-bec7-632c9aaecede.jpg?1783930173",
+  "normal": "https://cards.scryfall.io/normal/front/b/2/b281a308-ab6b-47b6-bec7-632c9aaecede.jpg?1783930173",
+  "png": "https://cards.scryfall.io/png/front/b/2/b281a308-ab6b-47b6-bec7-632c9aaecede.png?1783930173",
+  "small": "https://cards.scryfall.io/small/front/b/2/b281a308-ab6b-47b6-bec7-632c9aaecede.jpg?1783930173",
+  "thumb": "https://cards.scryfall.io/thumb/front/b/2/b281a308-ab6b-47b6-bec7-632c9aaecede.webp?1783930173"
+ },
+ "keywords": [],
+ "lang": "en",
+ "layout": "normal",
+ "legalities": {
+  "alchemy": "not_legal",
+  "brawl": "legal",
+  "commander": "legal",
+  "competitivebrawl": "legal",
+  "duel": "legal",
+  "future": "not_legal",
+  "gladiator": "legal",
+  "historic": "legal",
+  "legacy": "legal",
+  "modern": "legal",
+  "oathbreaker": "legal",
+  "oldschool": "not_legal",
+  "pauper": "not_legal",
+  "paupercommander": "not_legal",
+  "penny": "not_legal",
+  "pioneer": "legal",
+  "predh": "legal",
+  "premodern": "not_legal",
+  "standard": "not_legal",
+  "standardbrawl": "not_legal",
+  "timeless": "legal",
+  "tlr": "legal",
+  "vintage": "legal"
+ },
+ "mana_cost": "{B}",
+ "mtgo_id": 82252,
+ "multiverse_ids": [
+  489782
+ ],
+ "name": "Thoughtseize",
+ "nonfoil": true,
+ "object": "card",
+ "oracle_id": "edd8d1e8-be43-4c38-bb3a-83081fbaf0b5",
+ "oracle_text": "Target player reveals their hand. You choose a nonland card from it. That player discards that card. You lose 2 life.",
+ "oversized": false,
+ "preview": {
+  "previewed_at": "2020-07-28",
+  "source": "Ken Yukuhiro",
+  "source_uri": "https://twitter.com/death_snow/status/1288135499060658176"
+ },
+ "prices": {
+  "eur": "8.05",
+  "eur_foil": "21.07",
+  "tix": "10.78",
+  "usd": "8.32",
+  "usd_etched": null,
+  "usd_foil": "14.44"
+ },
+ "prints_search_uri": "https://api.scryfall.com/cards/search?order=released&q=oracleid%3Aedd8d1e8-be43-4c38-bb3a-83081fbaf0b5&unique=prints",
+ "promo": false,
+ "purchase_uris": {
+  "cardhoarder": "https://www.cardhoarder.com/cards/82252?affiliate_id=scryfall&ref=card-profile&utm_campaign=affiliate&utm_medium=card&utm_source=scryfall",
+  "cardmarket": "https://www.cardmarket.com/en/Magic/Products?idProduct=486044&referrer=scryfall&utm_campaign=card_prices&utm_medium=text&utm_source=scryfall",
+  "tcgplayer": "https://partner.tcgplayer.com/c/4931599/1830156/21018?subId1=api&u=https%3A%2F%2Fwww.tcgplayer.com%2Fproduct%2F218934%3Fpage%3D1"
+ },
+ "rarity": "rare",
+ "related_uris": {
+  "edhrec": "https://edhrec.com/route/?cc=Thoughtseize",
+  "gatherer": "https://gatherer.wizards.com/Pages/Card/Details.aspx?multiverseid=489782&printed=false",
+  "tcgplayer_infinite_articles": "https://partner.tcgplayer.com/c/4931599/1830156/21018?subId1=api&trafcat=tcgplayer.com%2Fsearch%2Farticles&u=https%3A%2F%2Fwww.tcgplayer.com%2Fsearch%2Farticles%3FproductLineName%3Dmagic%26q%3DThoughtseize",
+  "tcgplayer_infinite_decks": "https://partner.tcgplayer.com/c/4931599/1830156/21018?subId1=api&trafcat=tcgplayer.com%2Fsearch%2Fdecks&u=https%3A%2F%2Fwww.tcgplayer.com%2Fsearch%2Fdecks%3FproductLineName%3Dmagic%26q%3DThoughtseize"
+ },
+ "released_at": "2020-08-07",
+ "reprint": true,
+ "reserved": false,
+ "rulings_uri": "https://api.scryfall.com/cards/b281a308-ab6b-47b6-bec7-632c9aaecede/rulings",
+ "scryfall_set_uri": "https://scryfall.com/sets/2xm?utm_source=api",
+ "scryfall_uri": "https://scryfall.com/card/2xm/109/thoughtseize?utm_source=api",
+ "security_stamp": "oval",
+ "set": "2xm",
+ "set_id": "372dafe8-b5d1-4b81-998f-3ae96b59498a",
+ "set_name": "Double Masters",
+ "set_search_uri": "https://api.scryfall.com/cards/search?order=set&q=e%3A2xm&unique=prints",
+ "set_type": "masters",
+ "set_uri": "https://api.scryfall.com/sets/372dafe8-b5d1-4b81-998f-3ae96b59498a",
+ "story_spotlight": false,
+ "tcgplayer_id": 218934,
+ "textless": false,
+ "type_line": "Sorcery",
+ "uri": "https://api.scryfall.com/cards/b281a308-ab6b-47b6-bec7-632c9aaecede",
+ "variation": false
+}
