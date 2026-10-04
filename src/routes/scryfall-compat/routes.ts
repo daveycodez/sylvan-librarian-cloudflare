@@ -84,6 +84,7 @@ import {
 	exceedsScryfallRegexBudget,
 	hasNestedScryfallDisplayOption,
 	NESTED_DISPLAY_OPTIONS_DETAILS,
+	SCRYFALL_ONLY_ORDERS,
 	scryfallTermPolicy,
 	TOO_MANY_REGEX_DETAILS,
 } from "./query-terms";
@@ -122,7 +123,6 @@ const ORDER_MAP: Map<string, CardOrdering> = new Map(CARD_ORDERING.values.map((m
  * Scryfall-internal with no public input and is not reproducible at all. Both fall back to `name`,
  * which is what Scryfall does with an order it does not recognize, and add a warning saying so.
  */
-const SCRYFALL_ONLY_ORDERS = ["penny", "review"];
 
 const DIRECTION_MAP: Record<string, SortDirection> = { asc: "asc", desc: "desc", auto: "auto" };
 
@@ -607,7 +607,9 @@ export async function cardsSearchHandler(
 	try {
 		const parsed = parser.parseWithDirectives(policy.query, await ctx.tagAliases());
 		filterTree = parsed.tree;
-		directives = parsed.directives;
+		// The policy has already lifted every display option out of the query text (they are not
+		// terms on Scryfall); anything the parser still finds is folded after them.
+		directives = [...policy.directives, ...parsed.directives];
 		loweredRegexTerms = parsed.loweredRegexTerms;
 		expandedDerivedTerms = parsed.expandedDerivedTerms;
 		// An `is:` value with no data behind it. The term still filters, so the answer is a
@@ -1489,16 +1491,19 @@ async function collectionScope(
 	});
 	const policy = scryfallTermPolicy(q);
 	if (policy.unclosedParens) return refuse(UNCLOSED_PARENS_DETAILS, null);
-	if (policy.allIgnored) return refuse(ALL_IGNORED_DETAILS, policy.warnings);
+	// A scope of nothing but display options is a scope with no filter — `q=prefer:oldest` is the
+	// whole point of this parameter — so only a query whose TERMS were all ignored is refused.
+	const optionsOnly = policy.allIgnored && policy.directives.length > 0;
+	if (policy.allIgnored && !optionsOnly) return refuse(ALL_IGNORED_DETAILS, policy.warnings);
 	const warnings: string[] = [...policy.warnings];
 
 	const parser = await loadParser();
 	let tree: unknown;
 	let directives: readonly DirectiveFound[] = [];
 	try {
-		const parsed = parser.parseWithDirectives(policy.query, tagAliases);
+		const parsed = parser.parseWithDirectives(optionsOnly ? "" : policy.query, tagAliases);
 		tree = parsed.tree;
-		directives = parsed.directives;
+		directives = [...policy.directives, ...parsed.directives];
 		warnings.push(...parsed.warnings);
 	} catch (err) {
 		const budgetMessage = parser.queryBudgetMessage(err);

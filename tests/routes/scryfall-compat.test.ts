@@ -1321,10 +1321,9 @@ describe("POST /cards/collection", () => {
 			parseScryfallQuery: fakeParse,
 			parseWithDirectives: () => ({
 				tree: { node_type: "TrueNode" },
-				directives: [
-					{ name: "prefer", value: "atypical", nested: false },
-					{ name: "unique", value: "prints", nested: false },
-				],
+				// The term policy lifts display options out of the query text before the parser
+				// reads it (x66), so the parser has none left to report.
+				directives: [],
 				warnings: [],
 				loweredRegexTerms: [],
 				expandedDerivedTerms: [],
@@ -1740,7 +1739,7 @@ describe("POST /cards/collection: a repeated batch is answered from the colo's c
 			parseScryfallQuery: fakeParse,
 			parseWithDirectives: () => ({
 				tree: { node_type: "TrueNode" },
-				directives: [{ name: "unique", value: "prints", nested: false }],
+				directives: [],
 				warnings: [],
 				loweredRegexTerms: [],
 				expandedDerivedTerms: [],

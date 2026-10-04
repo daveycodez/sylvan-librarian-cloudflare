@@ -53,6 +53,7 @@ import {
 	ParserClass,
 } from "../../parser/db-info";
 import { LexError } from "../../parser/errors";
+import type { DirectiveFound } from "../../parser/nodes";
 import { patternExceedsBudget, toJsValidationPattern } from "../../parser/regex-budget";
 import { isKnownSetCode } from "../../parser/set-dates.gen";
 import { isWordCont, type Token, TT, tokenize } from "../../parser/tokenizer";
@@ -181,18 +182,109 @@ const INCLUDE_VALUES: ReadonlyMap<string, readonly (keyof IncludeOptions)[]> = n
 /** How much of an unknown display-option value Scryfall echoes: ten characters, dots included. */
 const DISPLAY_VALUE_ECHO_LIMIT = 10;
 
-function unknownIncludeWarning(rawValue: string): string {
+/** `Unknown <what> “<value>” was ignored` — Scryfall's sentence for a display option's bad value. */
+function unknownDisplayValueWarning(what: string, rawValue: string): string {
 	const chars = [...rawValue.toLowerCase()];
 	const echoed =
 		chars.length > DISPLAY_VALUE_ECHO_LIMIT
 			? `${chars.slice(0, DISPLAY_VALUE_ECHO_LIMIT - 3).join("")}...`
 			: chars.join("");
-	return `Unknown direction choice \u201c${echoed}\u201d was ignored`;
+	return `Unknown ${what} \u201c${echoed}\u201d was ignored`;
 }
 
-/** The keywords Scryfall reads as display options: this parser's directives, and `include`. */
+function unknownIncludeWarning(rawValue: string): string {
+	return unknownDisplayValueWarning("direction choice", rawValue);
+}
+
+/**
+ * EVERY DISPLAY OPTION IS READ HERE, on the query text, and none of them is a term.
+ *
+ * `unique:`, `order:`/`sort:`, `direction:`/`dir:` and `prefer:` are this parser's directives
+ * (upstream #893) and `/search` reads them through the parser. On this surface three things about
+ * them were not Scryfall's, all measured on api.scryfall.com 2026-10-03 (`t:goblin` = 561):
+ *
+ * 1. THE SENTENCE. An unknown value is a `warnings` entry worded by Scryfall, where this port sent
+ *    upstream's `Ignored unknown unique mode 'nonsense' in unique:nonsense.`:
+ *
+ *      unique:nonsense          Unknown unique mode “nonsense” was ignored
+ *      order:nonsense  sort:…   Unknown order choice “nonsense” was ignored
+ *      direction:…     dir:…    Unknown direction choice “nonsense” was ignored
+ *      prefer:nonsense          Unknown preference mode “nonsense” was ignored
+ *      display:…       as:…     Unknown display mode “nonsense” was ignored
+ *
+ *    with the value lower-cased and cut to ten characters, dots included (`unique:abcdefghijklmnop`
+ *    → “abcdefg...”; `prefer:abcdefghij`, exactly ten, comes back whole). A QUOTED value is unknown
+ *    — `unique:"prints"` and `order:"cmc"` each warn, quotes echoed — and a `-` changes nothing.
+ *
+ * 2. A QUERY OF NOTHING BUT OPTIONS. `unique:prints`, `order:cmc`, `prefer:oldest`, `display:grid`
+ *    and `unique:prints order:cmc` are each `400 All of your terms were ignored.` with `warnings:
+ *    null` (`unique:nonsense` alone carries its warning). This port answered the whole corpus —
+ *    38,705 cards for `order:cmc`. Removing the options from the query text is what makes that
+ *    fall out: nothing is left.
+ *
+ * 3. `unique=prints` IS NOT AN OPTION. It is 561 carrying `Unknown keyword “unique”.`, as
+ *    `include=extras` and `display=grid` are; this port answered `400 Failed to parse query`.
+ *
+ * `display:`/`as:` change nothing an API response shows; `grid`, `checklist`, `full`, `text` and
+ * `images` are accepted silently and this port called the keyword unknown.
+ *
+ * WHAT STAYS THIS PORT'S OWN: the values its tables hold that Scryfall's do not — `unique:artwork`
+ * / `card` / `printing`, `order:cubecobra`, `prefer:borderless` — are honored where Scryfall warns
+ * (each measured as "Unknown … was ignored" there), the same superset the `order=` parameter
+ * keeps. And `order:penny` / `order:review`, which Scryfall sorts by and this port cannot, keep the
+ * parameter's own sentence.
+ */
+const DISPLAY_OPTION_LABELS: ReadonlyMap<string, string> = new Map([
+	["unique", "unique mode"],
+	["order", "order choice"],
+	["sort", "order choice"],
+	["direction", "direction choice"],
+	["dir", "direction choice"],
+	["prefer", "preference mode"],
+]);
+
+/** `display:` / `as:` — Scryfall's page layouts, which no API response shows. */
+const DISPLAY_MODE_KEYWORDS: ReadonlySet<string> = new Set(["display", "as"]);
+const DISPLAY_MODES: ReadonlySet<string> = new Set(["grid", "checklist", "full", "text", "images"]);
+
+/** The two orders Scryfall sorts by and this port cannot — see routes.ts, which words the warning. */
+export const SCRYFALL_ONLY_ORDERS: readonly string[] = ["penny", "review"];
+
+/** The keywords Scryfall reads as display options: this parser's directives, `include`, `display`. */
 function isDisplayKeyword(keyword: string): boolean {
-	return DIRECTIVE_TABLES.has(keyword) || keyword === INCLUDE_KEYWORD;
+	return DIRECTIVE_TABLES.has(keyword) || keyword === INCLUDE_KEYWORD || DISPLAY_MODE_KEYWORDS.has(keyword);
+}
+
+/** The verdict on one `<display keyword>:<value>` leaf. Never a term: it always leaves the query. */
+function classifyDisplayOption(keyword: string, rawValue: string): LeafVerdict {
+	const none = { keep: false, reason: null, include: [] } as const;
+	const value = rawValue.toLowerCase();
+	if (keyword === INCLUDE_KEYWORD) {
+		const switches = INCLUDE_VALUES.get(value);
+		return switches === undefined
+			? { ...none, warning: unknownIncludeWarning(rawValue) }
+			: { ...none, include: switches, warning: null };
+	}
+	if (DISPLAY_MODE_KEYWORDS.has(keyword)) {
+		return DISPLAY_MODES.has(value)
+			? { ...none, warning: null }
+			: { ...none, warning: unknownDisplayValueWarning("display mode", rawValue) };
+	}
+	const spec = DIRECTIVE_TABLES.get(keyword);
+	const label = DISPLAY_OPTION_LABELS.get(keyword);
+	if (spec === undefined || label === undefined) return { ...none, warning: null };
+	const resolved = spec.table.get(value);
+	if (resolved !== undefined) {
+		return {
+			...none,
+			warning: null,
+			directive: { name: keyword, value, nested: false },
+		};
+	}
+	if (spec.param === "orderby" && SCRYFALL_ONLY_ORDERS.includes(value)) {
+		return { ...none, warning: `This server cannot sort by '${value}' yet; sorted by name instead.` };
+	}
+	return { ...none, warning: unknownDisplayValueWarning(label, rawValue) };
 }
 
 /**
@@ -1289,6 +1381,11 @@ export interface TermPolicyResult {
 	allIgnored: boolean;
 	/** What the query's `include:` options switch on — OR'd with the `include_*` parameters. */
 	include: IncludeOptions;
+	/**
+	 * The display options the query carried with a value this port can apply, in source order —
+	 * already REMOVED from `query`, for the caller to fold with `applyDirectives`.
+	 */
+	directives: DirectiveFound[];
 }
 
 /**
@@ -1897,7 +1994,13 @@ type LeafVerdict =
 	| { keep: true; text: string }
 	| { keep: false; reason: string }
 	/** A display option: removed from the query, never a term, with its own warning if any. */
-	| { keep: false; reason: null; include: readonly (keyof IncludeOptions)[]; warning: string | null };
+	| {
+			keep: false;
+			reason: null;
+			include: readonly (keyof IncludeOptions)[];
+			warning: string | null;
+			directive?: DirectiveFound;
+	  };
 
 function classifyLeaf(term: string): LeafVerdict {
 	const match = LEAF_RE.exec(term);
@@ -1950,13 +2053,13 @@ function classifyLeaf(term: string): LeafVerdict {
 		return { keep: true, text: NEVER_MATCHES };
 	}
 
-	// `include:` under `:` is a display option, in either polarity — see INCLUDE_VALUES. Under `=`
-	// it falls through to the unknown-keyword rule, which is what Scryfall answers.
-	if (keyword === INCLUDE_KEYWORD && op === ":") {
-		const switches = INCLUDE_VALUES.get(rawValue.toLowerCase());
-		return switches === undefined
-			? { keep: false, reason: null, include: [], warning: unknownIncludeWarning(rawValue) }
-			: { keep: false, reason: null, include: switches, warning: null };
+	// A display option under `:`, in either polarity — see DISPLAY_OPTION_LABELS and INCLUDE_VALUES.
+	// Under `=` it is a keyword Scryfall does not know (`unique=prints`, `include=extras` and
+	// `display=grid` each earn the unknown-keyword sentence), which for `include`, `display` and
+	// `as` is the rule just below and for this parser's directive names has to be said here.
+	if (isDisplayKeyword(keyword)) {
+		if (op === ":") return classifyDisplayOption(keyword, rawValue);
+		return { keep: false, reason: `Unknown keyword \u201c${negated ? "-" : ""}${keyword}\u201d.` };
 	}
 
 	if (NOT_SCRYFALL_KEYWORDS.has(keyword) || (!KNOWN_KEYWORDS.has(keyword) && !SCRYFALL_ONLY_KEYWORDS.has(keyword))) {
@@ -2124,6 +2227,7 @@ function classifyLeaf(term: string): LeafVerdict {
 interface PolicyScan {
 	readonly warnings: string[];
 	readonly include: IncludeOptions;
+	readonly directives: DirectiveFound[];
 }
 
 function policyLevel(source: string, scan: PolicyScan): string | null {
@@ -2159,6 +2263,7 @@ function policyLevel(source: string, scan: PolicyScan): string | null {
 		if (verdict.reason === null) {
 			for (const option of verdict.include) scan.include[option] = true;
 			if (verdict.warning !== null) scan.warnings.push(verdict.warning);
+			if (verdict.directive !== undefined) scan.directives.push(verdict.directive);
 			continue;
 		}
 		scan.warnings.push(ignoredWarning(piece.text, verdict.reason));
@@ -2191,18 +2296,22 @@ function policyLevel(source: string, scan: PolicyScan): string | null {
  */
 export function scryfallTermPolicy(rawQuery: string): TermPolicyResult {
 	const folded = foldSmartQuotes(rawQuery);
-	const scan: PolicyScan = { warnings: [], include: { extras: false, variations: false, multilingual: false } };
-	const { include } = scan;
+	const scan: PolicyScan = {
+		warnings: [],
+		include: { extras: false, variations: false, multilingual: false },
+		directives: [],
+	};
+	const { include, directives } = scan;
 	if (unbalancedParens(folded)) {
-		return { query: folded, warnings: [], allIgnored: false, unclosedParens: true, include };
+		return { query: folded, warnings: [], allIgnored: false, unclosedParens: true, include, directives };
 	}
 	const query = policyLevel(folded, scan);
 	const warnings = scan.warnings;
 	if (query !== null && query.trim() !== "") {
-		return { query, warnings, allIgnored: false, unclosedParens: false, include };
+		return { query, warnings, allIgnored: false, unclosedParens: false, include, directives };
 	}
 	// Nothing survived, and now the only way that happens is a term Scryfall refused: a dangling
 	// operator is REWRITTEN rather than dropped (danglingOperatorTerm), so `q=t:` no longer empties
 	// the query and no longer needs an always-true leaf standing in for it.
-	return { query: folded, warnings, allIgnored: true, unclosedParens: false, include };
+	return { query: folded, warnings, allIgnored: true, unclosedParens: false, include, directives };
 }

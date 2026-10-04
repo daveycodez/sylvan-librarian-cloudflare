@@ -2140,6 +2140,36 @@
 			"method": "GET",
 			"path": "/cards/search?q=include%3Dextras+t%3Agoblin",
 			"note": "Only `:` makes it an option. Under `=` it is an ordinary keyword Scryfall does not know: 561 with `Invalid expression “include=extras” was ignored. Unknown keyword “include”.`"
+		},
+		{
+			"name": "search-unknown-unique-mode-warning",
+			"method": "GET",
+			"path": "/cards/search?q=unique%3Aabcdefghijklmnop+t%3Agoblin",
+			"note": "x66, `warnings` on a 200: an unknown display-option value is warned about in Scryfall's own sentence — `Unknown unique mode “abcdefg...” was ignored`, the value lower-cased and cut to ten characters, dots included (2026-10-03, 561 goblins). This port sent upstream's `Ignored unknown unique mode '…' in unique:….`"
+		},
+		{
+			"name": "search-unknown-order-and-direction-warnings",
+			"method": "GET",
+			"path": "/cards/search?q=sort%3Anonsense+dir%3Anonsense+t%3Agoblin",
+			"note": "`sort:` and `order:` share `Unknown order choice “nonsense” was ignored`; `dir:` and `direction:` share `Unknown direction choice …`; `prefer:` is `Unknown preference mode …`. Two warnings, in source order."
+		},
+		{
+			"name": "search-display-options-alone-have-no-terms",
+			"method": "GET",
+			"path": "/cards/search?q=unique%3Aprints+order%3Acmc",
+			"note": "A query of nothing but display options is `400 All of your terms were ignored.` with `warnings: null` on api.scryfall.com (2026-10-03; `unique:prints`, `order:cmc`, `prefer:oldest` and `display:grid` alone too). This port answered the whole corpus — 118,469 printings for this query."
+		},
+		{
+			"name": "search-unique-equals-is-an-unknown-keyword",
+			"method": "GET",
+			"path": "/cards/search?q=unique%3Dprints+t%3Agoblin",
+			"note": "Only `:` makes a display option. `unique=prints t:goblin` is 561 with `Invalid expression “unique=prints” was ignored. Unknown keyword “unique”.` (2026-10-03); this port answered `400 Failed to parse query`."
+		},
+		{
+			"name": "search-display-mode-is-accepted-silently",
+			"method": "GET",
+			"path": "/cards/search?q=display%3Achecklist+t%3Agoblin",
+			"note": "`display:`/`as:` choose a page layout no API response shows: `grid`, `checklist`, `full`, `text` and `images` are accepted with no warning (561), an unknown value is `Unknown display mode “…” was ignored`. This port called the keyword unknown."
 		}
 	]
 }
