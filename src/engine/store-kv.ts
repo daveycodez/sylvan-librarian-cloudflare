@@ -1894,8 +1894,22 @@ export async function gzipBytes(bytes: Uint8Array): Promise<Uint8Array> {
  *      GENERATION-ONLY: ten more values in the `card_is_tags` collection index, about fifteen
  *      thousand rows of every language between them. No layout, no format version, neither row
  *      touched.
+ *
+ *   66 (2026-10-04): `new:rarity` (x72). Scryfall's "the first printing of this card at this
+ *      rarity" failed to parse here; it needs every canonical printing of a card ordered, which no
+ *      stored field held. The store now holds each printing's answer as one bit
+ *      (`assign_new_rarity_flags`, which carries the rule: per card and rarity, the first
+ *      canonical printing outside promo, memorabilia, from_the_vault, treasure_chest and every
+ *      masterpiece set but `wot`, by release date, release batch, the collector number's first
+ *      integer, variation last and Scryfall id — 38,943 of 38,943 printings, the list read whole,
+ *      and a store built from the same day's `default_cards` answers that list id for id).
+ *
+ *      Paired with ARCHIVE_FORMAT_VERSION 2026100402 -> 2026100403, and NEITHER ROW GROWS: the
+ *      bit is bit 6 of the printing's `games` byte, above its three-bit order index, which every
+ *      reader of the byte now masks. Computed in card_engine's build after grouping, like the
+ *      cheapest codes of generation 61.
  */
-export const STORE_CONTENT_GENERATION = 65;
+export const STORE_CONTENT_GENERATION = 66;
 
 /**
  * Chunk key for a store. Keyed by store_key, so publishes never collide.

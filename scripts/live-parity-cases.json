@@ -3086,6 +3086,42 @@
 			"method": "GET",
 			"path": "/cards/search?q=is%3Aprintedtext+%21%22Tuinvale+Treefolk%22+e%3Aeld&unique=prints",
 			"note": "2026-10-04. 404: every foreign row of Tuinvale Treefolk // Oaken Boon prints rules text on its adventure alone — the creature half has none — and Scryfall does not count it (82 such rows; `-is:printedtext` here is 12, every language)."
+		},
+		{
+			"name": "new-rarity-khm",
+			"method": "GET",
+			"path": "/cards/search?q=new%3Ararity+e%3Akhm&unique=prints",
+			"note": "2026-10-04. 287 printings: the first canonical printing of each card at each rarity, outside promo, memorabilia, from_the_vault, treasure_chest and every masterpiece set but wot, in the order (release date, release batch, collector number's first integer, variation last, Scryfall id) — 38,943 of 38,943 printings corpus-wide. Failed to parse here before."
+		},
+		{
+			"name": "new-rarity-negated-is-the-complement",
+			"method": "GET",
+			"path": "/cards/search?q=-new%3Ararity+e%3Akhm&unique=prints",
+			"note": "2026-10-04. 120 printings: the plain complement (-new:rarity is 79,435 corpus-wide, 38,943 + 79,435 every canonical row)."
+		},
+		{
+			"name": "new-rarity-the-id-decides-a-same-day-tie",
+			"method": "GET",
+			"path": "/cards/search?q=new%3Ararity+%21%22Flying+Carpet%22&unique=prints",
+			"note": "2026-10-04. 3 printings, one of them Flying Carpet's FRENCH fbb/248 and not its English 3ed/248: Revised and the foreign black-bordered edition share a date and a batch, and the set code is no key — the lower Scryfall id wins (567 of 567 such ties corpus-wide)."
+		},
+		{
+			"name": "new-rarity-the-batch-before-the-number",
+			"method": "GET",
+			"path": "/cards/search?q=new%3Ararity+e%3A4bb&unique=prints",
+			"note": "2026-10-04. 404: every 4bb printing shares 1995-04-01 with Fourth Edition and is in the date's later release batch, so none is first at its rarity, whatever its id."
+		},
+		{
+			"name": "new-rarity-wot-is-the-one-masterpiece-set",
+			"method": "GET",
+			"path": "/cards/search?q=new%3Ararity+e%3Awot&unique=prints",
+			"note": "2026-10-04. 16 printings, where e:exp, e:mps and the sixteen other masterpiece sets answer none — a measured exception no card or set field explains."
+		},
+		{
+			"name": "new-unknown-value-is-ignored",
+			"method": "GET",
+			"path": "/cards/search?q=new%3Anonsense+e%3Akhm+t%3Agod&unique=prints",
+			"note": "2026-10-04. 25 printings carrying `Invalid expression “new:nonsense” was ignored. Checking if cards have a new “nonsense” is not supported`. A 400 here before."
 		}
 	]
 }

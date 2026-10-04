@@ -747,7 +747,8 @@ pub(crate) const CHEAPEST_NO_MINIMUM: u8 = 3;
 // khm, ["paper","arena","mtgo"] on mom, ["paper","mtgo","arena"] on sos — and a fixed emission
 // order disagreed with 42% of the printings that list more than one game. The ordering is a
 // permutation of at most three values, so it fits in three bits with two to spare and the archive
-// does not grow by a byte. See GAME_ORDERS.
+// does not grow by a byte. See GAME_ORDERS. Since 2026100403 bit 6 is `new:rarity`
+// (GAMES_NEW_RARITY), so a reader of the order masks it out; bit 7 is still spare.
 const GAME_PAPER: u8 = 1 << 0;
 const GAME_MTGO: u8 = 1 << 1;
 const GAME_ARENA: u8 = 1 << 2;
@@ -755,6 +756,14 @@ const GAME_ARENA: u8 = 1 << 2;
 const GAME_MEMBER_MASK: u8 = GAME_PAPER | GAME_MTGO | GAME_ARENA;
 /// Where the GAME_ORDERS index sits in a packed `games` byte.
 const GAME_ORDER_SHIFT: u32 = 3;
+/// ...and how wide it is. Bit 6 above it is NOT the order's: see `GAMES_NEW_RARITY`.
+const GAME_ORDER_MASK: u8 = 0b111;
+/// LOCAL PATCH (Cloudflare port): one of the two spare bits of the `games` byte holds the
+/// printing's answer to Scryfall's `new:rarity` — "the first printing of its card at this rarity".
+/// Decided by `assign_new_rarity_flags`, which carries the measured rule; zero on every row until
+/// that pass has run. Bit 7 is still spare: `new:language` was measured and is not exact (see that
+/// pass's doc).
+const GAMES_NEW_RARITY: u8 = 1 << 6;
 const FINISH_NONFOIL: u8 = 1 << 0;
 const FINISH_FOIL: u8 = 1 << 1;
 const FINISH_ETCHED: u8 = 1 << 2;
@@ -5163,6 +5172,121 @@ pub(crate) fn printing_is_cheapest(p: &APrinting, currency: CheapestCurrency, ne
     let plain_is = code == CHEAPEST_PLAIN;
     let foil_is = code == CHEAPEST_FOIL_ONLY || (plain_is && foil.is_some() && foil == plain);
     Some(if negated { (plain.is_none() || !plain_is) && (foil.is_none() || foil_is) } else { plain_is || foil_is })
+}
+
+/// The set types whose printings are never `new:rarity` — see `assign_new_rarity_flags`.
+const NEW_RARITY_EXCLUDED_SET_TYPES: &[&str] = &["promo", "memorabilia", "from_the_vault", "treasure_chest"];
+
+/// The first integer written in a collector number, 0 when it holds none: `"236s"` is 236,
+/// `"GRN-103"` 103, `"A25-141"` 25, `"★"` 0. The `new:rarity` order's third key — measured, against
+/// the stored `collector_number_int` (every digit concatenated) it decides the same today, but this
+/// is the reading the rule was fitted with.
+fn collector_first_integer(collector_number: &str) -> u32 {
+    collector_number
+        .bytes()
+        .skip_while(|b| !b.is_ascii_digit())
+        .take_while(u8::is_ascii_digit)
+        .fold(0u32, |n, b| n.saturating_mul(10).saturating_add(u32::from(b - b'0')))
+}
+
+/// LOCAL PATCH (Cloudflare port): decide every printing's `new:rarity` bit (`GAMES_NEW_RARITY`) —
+/// Scryfall's "the first printing of this card at this rarity".
+///
+/// THE RULE, measured on api.scryfall.com 2026-10-04 by reading the whole list (`new:rarity`,
+/// `unique=prints`, extras in: 38,943 printings) against the same day's `default_cards` bulk file,
+/// and exact — 38,943 of 38,943, nothing missing, nothing over:
+///
+///   per card (oracle id) and RARITY, over the card's CANONICAL rows, the one row that is least by
+///     (release date, release batch, first integer of the collector number, variation last,
+///      Scryfall id)
+///   among the rows OUTSIDE the set types promo, memorabilia, from_the_vault and treasure_chest,
+///   and outside every masterpiece set but `wot`
+///
+/// Each clause is evidence, not a reading of the name:
+///
+///   - CANONICAL rows: `new:rarity lang:any` is the same 38,943 and `new:rarity lang:de` is 1 —
+///     the card whose canonical row is German. The annex never answers.
+///   - the BATCH is `release_set_key`'s upper half, the measured order of the sets inside one
+///     release date (`release_batch`); without it 18 groups go to the wrong row.
+///   - the COLLECTOR NUMBER compares as its first integer (`collector_first_integer`), and the
+///     set code is NOT a key: 3ed and fbb share a date and a batch, and which of `3ed/270` and
+///     `fbb/270` is new is decided by the id. Of 567 groups whose first rows tie on the four
+///     keys before it, the id picks Scryfall's row in all 567; the raw collector string in its
+///     place gets 292 wrong.
+///   - `variation: true` sorts after its plain twin; without that key 51 groups go wrong.
+///   - the excluded set types: `new:rarity st:promo` is 0 against 697 printings `new:language`
+///     finds there; a masterpiece printing is new only in `wot` (16 of them, `new:rarity e:wot`,
+///     every one this order would pick) — `e:exp` is 0 though 44 of its 45 would be first at
+///     mythic, `e:mps` 0 against 54. Without the exception 34 are missing. No field of a card or
+///     of `/sets` tells `wot` from the eighteen other masterpiece sets: a measured exception.
+///   - SERIALIZED printings count: 4 of the 38,943 are serialized.
+///   - negation is the plain complement: `-new:rarity` is 79,435, and 38,943 + 79,435 is every
+///     canonical row. The term forces no extras and does not widen (the next_page echo of
+///     `new:rarity or cmc=3` and of `-new:rarity or cmc=3`).
+///
+/// NOT `new:language`. The same order over every row of a (card, language) pair — outside
+/// memorabilia and outside SERIALIZED printings (0 of 299 are in that list) — answers 285,528 of
+/// Scryfall's 285,760 (2026-10-04), with exactly Scryfall's number of (card, language) groups. The
+/// 232 others but one are one shape: two sets released the same day in the same batch, where
+/// Scryfall takes one SET first and this order lets the later keys decide — a main set and its
+/// promo set sharing a collector number (`grn/152` beside `pgrn/152s`, the id choosing the
+/// promo), or akh beside its masterpiece set mp2 (`mp2/20` numbered lower than `akh/82`).
+/// Scryfall puts one set first on eleven such pairs (ogw, kld, hou, grn, m20, eld, bok, gpt,
+/// plc over their promo sets, prtr over rtr, akh over mp2) and lets the id decide on five (one,
+/// mom, ltr, dsk beside their promo sets, 3ed beside fbb), and nothing published tells the two
+/// kinds apart — not the release dates, not `/sets`, not `date>` against a set code; plus
+/// `plg21/J2`'s Japanese row, which no order here explains. So it is not stored.
+fn assign_new_rarity_flags(
+    printings: &mut [Printing],
+    offsets: &[u32],
+    foreign: &mut [Printing],
+    coll_vocab: &[String],
+    strings: &[String],
+) {
+    let vid = |word: &str| coll_vocab.iter().position(|s| s == word).and_then(|i| u16::try_from(i).ok());
+    let excluded: Vec<u16> = NEW_RARITY_EXCLUDED_SET_TYPES.iter().filter_map(|t| vid(t)).collect();
+    let masterpiece = vid("masterpiece");
+    let eligible = |p: &Printing| {
+        let set_type = p.compat.set_type_id;
+        !excluded.contains(&set_type) && (Some(set_type) != masterpiece || p.card_set_code.as_str() == "wot")
+    };
+    let key = |p: &Printing| {
+        (
+            p.released_at_int.unwrap_or(u32::MAX),
+            p.release_set_key >> RELEASE_KEY_CODE_BITS,
+            strings.get(p.collector_number_id as usize).map_or(0, |s| collector_first_integer(s)),
+            p.compat.flags & COMPAT_VARIATION != 0,
+            p.scryfall_id,
+        )
+    };
+    for p in printings.iter_mut().chain(foreign.iter_mut()) {
+        p.compat.games &= !GAMES_NEW_RARITY;
+    }
+    for cid in 0..offsets.len().saturating_sub(1) {
+        let rows = &mut printings[offsets[cid] as usize..offsets[cid + 1] as usize];
+        let mut first: Vec<(Option<u8>, usize)> = Vec::new();
+        for (i, p) in rows.iter().enumerate() {
+            if !eligible(p) {
+                continue;
+            }
+            match first.iter_mut().find(|(rarity, _)| *rarity == p.card_rarity_int) {
+                Some(slot) => {
+                    if key(p) < key(&rows[slot.1]) {
+                        slot.1 = i;
+                    }
+                }
+                None => first.push((p.card_rarity_int, i)),
+            }
+        }
+        for (_, i) in first {
+            rows[i].compat.games |= GAMES_NEW_RARITY;
+        }
+    }
+}
+
+/// A printing's answer to `new:rarity` — two-valued: the negated term is the complement.
+pub(crate) fn printing_is_new_rarity(p: &APrinting) -> bool {
+    p.compat.games & GAMES_NEW_RARITY != 0
 }
 
 /// The set types whose RARITY Scryfall does not count toward `in:<rarity>`.
@@ -19578,7 +19702,9 @@ pub(crate) fn games_pack<'a>(names: impl IntoIterator<Item = &'a str>) -> u8 {
 /// Unpack a `games` byte into Scryfall's own ordering.
 pub(crate) fn games_to_names(packed: u8) -> Vec<&'static str> {
     let members = packed & GAME_MEMBER_MASK;
-    let index = ((packed >> GAME_ORDER_SHIFT) as usize).min(GAME_ORDERS.len() - 1);
+    // Masked: the two bits above the order are the `new:` flags (`GAMES_NEW_RARITY`), and reading
+    // them as order would list a flagged printing's games in the last permutation.
+    let index = (((packed >> GAME_ORDER_SHIFT) & GAME_ORDER_MASK) as usize).min(GAME_ORDERS.len() - 1);
     GAME_ORDERS[index]
         .iter()
         .filter(|bit| members & *bit != 0)
@@ -20293,7 +20419,15 @@ const ARCHIVE_MAGIC: [u8; 8] = *b"ATCARDS\0";
 //                `finishes` byte with bits it does not know against `FINISH_FOIL` and stop
 //                recognising surge foils. Paired with STORE_CONTENT_GENERATION 61;
 //                SORT_KEY_VERSION does not move.
-const ARCHIVE_FORMAT_VERSION: u32 = 2026100402;
+//   2026100403 — THE NEW:RARITY BIT (x72, LOCAL PATCH). `CompatFields::games` takes bit 6, one of
+//                the two above its order index, for the printing's answer to Scryfall's
+//                `new:rarity` (see `assign_new_rarity_flags`). No field is added and no row moves —
+//                `APrinting` is still 304 bytes — so the header cannot see the change: a reader
+//                pairing this code with a 2026100402 store would read a clear bit and answer
+//                `new:rarity` with nothing, and an OLD reader on this store would read the bit as
+//                part of the order index and list a flagged printing's `games` in the wrong order.
+//                Paired with STORE_CONTENT_GENERATION 66; SORT_KEY_VERSION does not move.
+const ARCHIVE_FORMAT_VERSION: u32 = 2026100403;
 const ARCHIVE_HEADER_LEN: usize = 16;
 
 fn archive_header() -> [u8; ARCHIVE_HEADER_LEN] {
@@ -21206,6 +21340,8 @@ fn build_card_data_sorted(
     assign_artist_counts(&mut printings, &mut foreign, &coll_vocab);
     // ...and the cheapest codes behind `cheapest:usd` / `:eur` / `:tix`, over the same rows.
     assign_cheapest_codes(&mut printings, &offsets, &mut foreign, &foreign_offsets, &coll_vocab);
+    // ...and `new:rarity`, over the canonical rows: needs the release batch `assign_set_ranks` set.
+    assign_new_rarity_flags(&mut printings, &offsets, &mut foreign, &coll_vocab, &strings);
     // Same walk as the line above — canonical rows AND the annex — because `in:ja` is exactly the
     // question the annex exists to answer. Interns the words it needs, so it runs before
     // `coll_vocab_sorted` below is cut.

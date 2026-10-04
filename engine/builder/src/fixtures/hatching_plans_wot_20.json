@@ -1,0 +1,145 @@
+{
+ "arena_id": 87058,
+ "artist": "Matteo Marjoram",
+ "artist_ids": [
+  "23210be7-dfe9-4cee-9149-3a84684fea1a"
+ ],
+ "booster": false,
+ "border_color": "borderless",
+ "card_back_id": "0aeebaf5-8c7d-4636-9e82-8c27447861f7",
+ "cardmarket_id": 730285,
+ "cmc": 2.0,
+ "collector_number": "20",
+ "color_identity": [
+  "U"
+ ],
+ "colors": [
+  "U"
+ ],
+ "digital": false,
+ "edhrec_rank": 19667,
+ "finishes": [
+  "nonfoil",
+  "foil"
+ ],
+ "flavor_text": "\"The thief fled with her ill-gotten prize, her mind awhirl with visions of wealth and glory. In her pack, unnoticed, the egg began to stir and crack.\"\n—*Tales of the Fae*",
+ "foil": true,
+ "frame": "2015",
+ "frame_effects": [
+  "showcase",
+  "inverted"
+ ],
+ "full_art": false,
+ "game_changer": false,
+ "games": [
+  "paper",
+  "mtgo",
+  "arena"
+ ],
+ "highres_image": true,
+ "id": "e8ebcbfb-1522-4ff5-b23a-f3ea9e08ad9b",
+ "illustration_id": "3fc7928d-b665-4eec-b638-31b50988047e",
+ "image_status": "highres_scan",
+ "image_updated_at": "2026-07-13T03:55:28Z",
+ "image_uris": {
+  "art": "https://cards.scryfall.io/art/front/e/8/e8ebcbfb-1522-4ff5-b23a-f3ea9e08ad9b.webp?1783914928",
+  "art_crop": "https://cards.scryfall.io/art_crop/front/e/8/e8ebcbfb-1522-4ff5-b23a-f3ea9e08ad9b.jpg?1783914928",
+  "border_crop": "https://cards.scryfall.io/border_crop/front/e/8/e8ebcbfb-1522-4ff5-b23a-f3ea9e08ad9b.jpg?1783914928",
+  "crop": "https://cards.scryfall.io/crop/front/e/8/e8ebcbfb-1522-4ff5-b23a-f3ea9e08ad9b.webp?1783914928",
+  "display": "https://cards.scryfall.io/display/front/e/8/e8ebcbfb-1522-4ff5-b23a-f3ea9e08ad9b.webp?1783914928",
+  "grid": "https://cards.scryfall.io/grid/front/e/8/e8ebcbfb-1522-4ff5-b23a-f3ea9e08ad9b.webp?1783914928",
+  "large": "https://cards.scryfall.io/large/front/e/8/e8ebcbfb-1522-4ff5-b23a-f3ea9e08ad9b.jpg?1783914928",
+  "normal": "https://cards.scryfall.io/normal/front/e/8/e8ebcbfb-1522-4ff5-b23a-f3ea9e08ad9b.jpg?1783914928",
+  "png": "https://cards.scryfall.io/png/front/e/8/e8ebcbfb-1522-4ff5-b23a-f3ea9e08ad9b.png?1783914928",
+  "small": "https://cards.scryfall.io/small/front/e/8/e8ebcbfb-1522-4ff5-b23a-f3ea9e08ad9b.jpg?1783914928",
+  "thumb": "https://cards.scryfall.io/thumb/front/e/8/e8ebcbfb-1522-4ff5-b23a-f3ea9e08ad9b.webp?1783914928"
+ },
+ "keywords": [],
+ "lang": "en",
+ "layout": "normal",
+ "legalities": {
+  "alchemy": "not_legal",
+  "brawl": "legal",
+  "commander": "legal",
+  "competitivebrawl": "legal",
+  "duel": "legal",
+  "future": "not_legal",
+  "gladiator": "legal",
+  "historic": "legal",
+  "legacy": "legal",
+  "modern": "legal",
+  "oathbreaker": "legal",
+  "oldschool": "not_legal",
+  "pauper": "not_legal",
+  "paupercommander": "not_legal",
+  "penny": "legal",
+  "pioneer": "not_legal",
+  "predh": "legal",
+  "premodern": "not_legal",
+  "standard": "not_legal",
+  "standardbrawl": "not_legal",
+  "timeless": "legal",
+  "tlr": "legal",
+  "vintage": "legal"
+ },
+ "mana_cost": "{1}{U}",
+ "mtgo_id": 115864,
+ "multiverse_ids": [
+  632448
+ ],
+ "name": "Hatching Plans",
+ "nonfoil": true,
+ "object": "card",
+ "oracle_id": "cebc9fcc-25ec-4366-a914-b95afbd134b0",
+ "oracle_text": "When this enchantment is put into a graveyard from the battlefield, draw three cards.",
+ "oversized": false,
+ "penny_rank": 5100,
+ "preview": {
+  "previewed_at": "2023-08-22",
+  "source": "Wizards of the Coast",
+  "source_uri": "https://www.twitch.tv/videos/1905659212"
+ },
+ "prices": {
+  "eur": "0.11",
+  "eur_foil": "0.20",
+  "tix": "0.04",
+  "usd": "0.18",
+  "usd_etched": null,
+  "usd_foil": "0.25"
+ },
+ "prints_search_uri": "https://api.scryfall.com/cards/search?order=released&q=oracleid%3Acebc9fcc-25ec-4366-a914-b95afbd134b0&unique=prints",
+ "promo": false,
+ "promo_types": [
+  "boosterfun"
+ ],
+ "purchase_uris": {
+  "cardhoarder": "https://www.cardhoarder.com/cards/115864?affiliate_id=scryfall&ref=card-profile&utm_campaign=affiliate&utm_medium=card&utm_source=scryfall",
+  "cardmarket": "https://www.cardmarket.com/en/Magic/Products?idProduct=730285&referrer=scryfall&utm_campaign=card_prices&utm_medium=text&utm_source=scryfall",
+  "tcgplayer": "https://partner.tcgplayer.com/c/4931599/1830156/21018?subId1=api&u=https%3A%2F%2Fwww.tcgplayer.com%2Fproduct%2F513399%3Fpage%3D1"
+ },
+ "rarity": "uncommon",
+ "related_uris": {
+  "edhrec": "https://edhrec.com/route/?cc=Hatching+Plans",
+  "gatherer": "https://gatherer.wizards.com/Pages/Card/Details.aspx?multiverseid=632448&printed=false",
+  "tcgplayer_infinite_articles": "https://partner.tcgplayer.com/c/4931599/1830156/21018?subId1=api&trafcat=tcgplayer.com%2Fsearch%2Farticles&u=https%3A%2F%2Fwww.tcgplayer.com%2Fsearch%2Farticles%3FproductLineName%3Dmagic%26q%3DHatching%2BPlans",
+  "tcgplayer_infinite_decks": "https://partner.tcgplayer.com/c/4931599/1830156/21018?subId1=api&trafcat=tcgplayer.com%2Fsearch%2Fdecks&u=https%3A%2F%2Fwww.tcgplayer.com%2Fsearch%2Fdecks%3FproductLineName%3Dmagic%26q%3DHatching%2BPlans"
+ },
+ "released_at": "2023-09-08",
+ "reprint": true,
+ "reserved": false,
+ "rulings_uri": "https://api.scryfall.com/cards/e8ebcbfb-1522-4ff5-b23a-f3ea9e08ad9b/rulings",
+ "scryfall_set_uri": "https://scryfall.com/sets/wot?utm_source=api",
+ "scryfall_uri": "https://scryfall.com/card/wot/20/hatching-plans?utm_source=api",
+ "set": "wot",
+ "set_id": "d1eba841-452b-4f81-88c9-b32973ac8176",
+ "set_name": "Wilds of Eldraine: Enchanting Tales",
+ "set_search_uri": "https://api.scryfall.com/cards/search?order=set&q=e%3Awot&unique=prints",
+ "set_type": "masterpiece",
+ "set_uri": "https://api.scryfall.com/sets/d1eba841-452b-4f81-88c9-b32973ac8176",
+ "story_spotlight": false,
+ "tcgplayer_id": 513399,
+ "textless": false,
+ "type_line": "Enchantment",
+ "uri": "https://api.scryfall.com/cards/e8ebcbfb-1522-4ff5-b23a-f3ea9e08ad9b",
+ "variation": false
+}

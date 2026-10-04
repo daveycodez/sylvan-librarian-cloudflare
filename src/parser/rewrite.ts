@@ -358,6 +358,14 @@ const HAS_EXPANSIONS: ReadonlyMap<string, string> = new Map([
 ]);
 
 /**
+ * NOT a Scryfall value: the spelling the compat surface writes Scryfall's `new:rarity` as
+ * (query-terms.ts NEW_KEYWORDS), answered by one bit the store's build decides (card_engine
+ * `assign_new_rarity_flags`, which carries the rule — 38,943 of 38,943 printings, 2026-10-04).
+ * Typed as `is:newrarity` on the compat surface it is dropped, as `is:game_paper` is.
+ */
+export const NEW_RARITY_IS_VALUE = "newrarity";
+
+/**
  * The `is:` values no rewrite can express and no importer tag holds: the engine answers each from a
  * field it already stores. Listed here so `SUPPORTED_IS_VALUES` covers them — the alternative is a
  * predicate that works and still warns that it does not.
@@ -435,6 +443,8 @@ const HAS_EXPANSIONS: ReadonlyMap<string, string> = new Map([
  *
  * `englishart` and `paperart` are TRUE OF EVERY ROW there — 545,173 of 545,173 with `lang:any`,
  * each negation 0, `is:paperart is:digital` every digital printing — and so are they here.
+ *
+ * `newrarity` is NOT a Scryfall value — see NEW_RARITY_IS_VALUE.
  */
 export const ENGINE_IS_VALUES: ReadonlySet<string> = new Set([
 	"localizedname",
@@ -454,6 +464,7 @@ export const ENGINE_IS_VALUES: ReadonlySet<string> = new Set([
 	"printedtext",
 	"englishart",
 	"paperart",
+	NEW_RARITY_IS_VALUE,
 ]);
 
 for (const [value, dsl] of HAS_EXPANSIONS) {

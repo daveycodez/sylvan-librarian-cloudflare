@@ -55,7 +55,7 @@ import {
 import { LexError } from "../../parser/errors";
 import type { DirectiveFound } from "../../parser/nodes";
 import { patternExceedsBudget, toJsValidationPattern } from "../../parser/regex-budget";
-import { SUPPORTED_HAS_VALUES, SUPPORTED_IS_VALUES } from "../../parser/rewrite";
+import { NEW_RARITY_IS_VALUE, SUPPORTED_HAS_VALUES, SUPPORTED_IS_VALUES } from "../../parser/rewrite";
 import { isKnownSetCode } from "../../parser/set-dates.gen";
 import { isWordCont, type Token, TT, tokenize } from "../../parser/tokenizer";
 import { DIRECTIVE_TABLES } from "../enums";
@@ -428,22 +428,10 @@ const SCRYFALL_ONLY_KEYWORDS: ReadonlySet<string> = new Set([
 	//   cube      `cube:vintage` 540, `cube:legacy` 600, `cube:arena` 550 … membership of
 	//             Scryfall's curated cube lists, which are in no bulk file and have no API
 	//             endpoint. Not obtainable by the import.
-	//   new       `new:art`, `new:artist`, `new:flavor`, `new:frame`, `new:language`,
-	//             `new:rarity`, `new:card` — and `new:illustration`, `new:lang`, `new:ft`,
-	//             `new:flavortext`, `new:foil`, `new:nonfoil`, `new:paper`, `new:game`, each
-	//             honored 2026-10-04 (anything else: `Checking if cards have a new “x” is not
-	//             supported`). Per-printing "first printing of this card with this" flags.
-	//             MEASURED AND NOT ANSWERED: two of the values fit a rule exactly over the
-	//             2026-09-24 corpus — `rarity` (42,688 of 42,688 card-rarity groups: the first
-	//             canonical printing outside promo, memorabilia, from_the_vault, treasure_chest
-	//             and every masterpiece set but `wot`) and `language` (30,866 of 30,866 for
-	//             German) — in the order (release date, release batch, first integer of the
-	//             collector number, variation last, Scryfall id). `frame`, `art`, `card` and
-	//             `flavor` do not: with promo and masterpiece printings eligible, a same-date tie
-	//             against the main set is decided by something this order does not hold (216,
-	//             410, 1,276 and 20,519 groups wrong), and `new:artist` is 542,524 of 545,293
-	//             printings — not "first by this artist" at all. A keyword answered for two
-	//             values and refused for the rest is not answered.
+	//   new       STAYS, and is half answered: NEW_KEYWORDS below answers `new:rarity` (x72,
+	//             store generation 66) and says Scryfall's sentence for a value it does not know;
+	//             every other value it honors still fails to parse here, which is what this table
+	//             is for. NEW_HONORED_UNANSWERED carries what was measured for each.
 	//
 	// `cheapest` LEFT SIXTH, the same day, with store generation 61, which holds each printing's
 	// answer: CHEAPEST_KEYWORDS below.
@@ -1940,6 +1928,75 @@ const CHEAPEST_CURRENCIES: ReadonlyMap<string, string> = new Map([
 	["mtgo", "tix"],
 ]);
 
+/**
+ * `new:` — Scryfall's "the first printing of this card with this", per value. One value is
+ * answered here, the rest Scryfall honors still fail to parse (SCRYFALL_ONLY_KEYWORDS), and a value
+ * Scryfall does not know is ignored with its sentence.
+ *
+ * Measured on api.scryfall.com 2026-10-04, anchor `e:khm t:god` (25 printings):
+ *
+ *   new:rarity  new:RARITY  new:"rarity"  new=rarity         12
+ *   -new:rarity  -new:RARITY                                 13 — the complement
+ *   new:nonsense  new:NONSENSE  new:languages  new:rarities  new:set  new:name  new:border
+ *   new:r  new:l  new:print  new:printing  new:reprint
+ *                    25 + `Checking if cards have a new “<value>” is not supported` (lower-cased,
+ *                    a quoted value with its space: `new:"non sense"` names “non sense”)
+ *   -new:nonsense    25, the same sentence, the minus echoed in the expression only
+ *   new:nonsense alone  400 `All of your terms were ignored.` carrying it
+ *   new:""  -new:""                 25 + Unknown keyword “new”. / “-new”.
+ *   new:/rarity/  -new:/rarity/     25 + Unknown regular expression keyword “new”. / “-new”.
+ *   new>rarity 404, -new>rarity 25  (the comparison rule)
+ *
+ * `new:rarity` is answered under the port's own spelling `is:newrarity` (rewrite.ts
+ * NEW_RARITY_IS_VALUE), whose engine leaf reads one bit the store's build decides — card_engine
+ * `assign_new_rarity_flags`, which carries the rule: the first canonical printing of a card at
+ * each rarity outside promo, memorabilia, from_the_vault, treasure_chest and every masterpiece set
+ * but `wot`, in the order (release date, release batch, first integer of the collector number,
+ * variation last, Scryfall id) — 38,943 of 38,943 printings, the list read whole. It forces no
+ * extras and does not widen, in either polarity (the next_page echo).
+ */
+const NEW_KEYWORDS: ReadonlySet<string> = new Set(["new"]);
+
+/**
+ * The `new:` values Scryfall HONORS that this port does not answer, each measured 2026-10-04
+ * (`new:<value> e:khm t:god` moves the count, or answers with no `warnings` key). The term is left
+ * as written and fails to parse, as `new:` did before — never dropped, which would answer wider
+ * than Scryfall does, and never guessed:
+ *
+ *   language, lang   NOT EXACT. Every row of a (card, language) pair outside memorabilia and
+ *                    outside SERIALIZED printings, in `new:rarity`'s order, is 285,528 of
+ *                    Scryfall's 285,760 (`new:language` with every language); the 232 others are
+ *                    eleven pairs of sets released the same day in the same batch where Scryfall
+ *                    takes one set first (grn before pgrn, prtr before rtr…) while on five others
+ *                    (one and pone, 3ed and fbb…) the id decides, and nothing published tells the
+ *                    two kinds apart. card_engine's `assign_new_rarity_flags` has the detail.
+ *   frame, art, card, flavor (ft, flavortext)
+ *                    measured over the 2026-09-24 corpus: with promo and masterpiece printings
+ *                    eligible, the same kind of same-day tie is decided by something this order
+ *                    does not hold (216, 410, 1,276 and 20,519 groups wrong).
+ *   artist           542,524 of 545,293 printings — not "first by this artist" at all.
+ *   illustration, foil, nonfoil, paper, game, mtgo, arena
+ *                    honored and not fitted.
+ */
+const NEW_HONORED_UNANSWERED: ReadonlySet<string> = new Set([
+	"language",
+	"lang",
+	"frame",
+	"art",
+	"card",
+	"flavor",
+	"ft",
+	"flavortext",
+	"artist",
+	"illustration",
+	"foil",
+	"nonfoil",
+	"paper",
+	"game",
+	"mtgo",
+	"arena",
+]);
+
 const STRICT_REGEX_KEYWORDS: ReadonlySet<string> = new Set([
 	...STAMP_KEYWORDS,
 	...EXTERNAL_ID_KEYWORDS.keys(),
@@ -2100,7 +2157,7 @@ const IS_KEYWORDS: ReadonlySet<string> = new Set(["is", "has", "not"]);
  * All three spellings take the same sentence, measured 2026-09-03: `is:nonsense`, `has:nonsense`
  * and `not:nonsense` each come back `Checking if cards are “nonsense” is not supported`.
  */
-const NOT_SCRYFALL_IS_VALUES: ReadonlySet<string> = new Set(GAME_IS_TAGS.values());
+const NOT_SCRYFALL_IS_VALUES: ReadonlySet<string> = new Set([...GAME_IS_TAGS.values(), NEW_RARITY_IS_VALUE]);
 
 /**
  * AN `is:` VALUE IS READ WITH ITS `-` AND `_` REMOVED, and Scryfall answers many values this port
@@ -3650,6 +3707,21 @@ function classifyLeaf(term: string, context: TermPolicyContext = {}): LeafVerdic
 		return { keep: false, reason: `Unknown keyword “${negated ? "-" : ""}${keyword}”.` };
 	}
 
+	// `new:` — see NEW_KEYWORDS. Before the regex rule below, whose sentence carries no minus where
+	// this one's does. Equality only reaches here: a comparison was answered above.
+	if (NEW_KEYWORDS.has(keyword)) {
+		const sign = negated ? "-" : "";
+		if (isRegexLiteral(rawValue)) {
+			return { keep: false, reason: `Unknown regular expression keyword “${sign}${keyword}”.` };
+		}
+		const newValue = unquote(rawValue).toLowerCase();
+		if (newValue === "") return { keep: false, reason: `Unknown keyword “${sign}${keyword}”.` };
+		if (newValue === "rarity") return { keep: true, text: `${sign}is:${NEW_RARITY_IS_VALUE}` };
+		// Honored there and unanswered here: left as written, to fail to parse.
+		if (NEW_HONORED_UNANSWERED.has(newValue)) return { keep: true, text: term };
+		return { keep: false, reason: `Checking if cards have a new “${newValue}” is not supported` };
+	}
+
 	// AFTER the unknown-keyword rule, because Scryfall orders them that way: `types:/creature/`
 	// and `subtype:/goblin/` come back `Unknown keyword`, not `Unknown regular expression
 	// keyword`, since neither spelling is a Scryfall keyword at all. See regexKeywordReason.
@@ -3887,8 +3959,13 @@ function classifyLeaf(term: string, context: TermPolicyContext = {}): LeafVerdic
 			return { keep: true, text: `${match[1]}${match[2]}${op}${digits ?? "0"}` };
 		}
 	}
-	// The `game_*` tags under this port's own spelling — see NOT_SCRYFALL_IS_VALUES.
-	if (IS_KEYWORDS.has(keyword) && NOT_SCRYFALL_IS_VALUES.has(loweredValue)) {
+	// The `game_*` tags under this port's own spelling, and `newrarity` under any — see
+	// NOT_SCRYFALL_IS_VALUES. `is:new_rarity` is measured: the same sentence, naming “new_rarity”;
+	// without the second test the separator rule below respelled it into the engine's value.
+	if (
+		IS_KEYWORDS.has(keyword) &&
+		(NOT_SCRYFALL_IS_VALUES.has(loweredValue) || loweredValue.replace(/[-_]/g, "") === NEW_RARITY_IS_VALUE)
+	) {
 		return { keep: false, reason: `Checking if cards are \u201c${loweredValue}\u201d is not supported` };
 	}
 	// An `is:` value Scryfall spells with separators, or answers under a word this port has

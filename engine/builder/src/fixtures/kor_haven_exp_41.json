@@ -1,0 +1,131 @@
+{
+ "artist": "Jonas De Ro",
+ "artist_ids": [
+  "561ebf9e-8d93-4b57-8156-8826d0c19601"
+ ],
+ "booster": true,
+ "border_color": "black",
+ "card_back_id": "0aeebaf5-8c7d-4636-9e82-8c27447861f7",
+ "cardmarket_id": 287035,
+ "cmc": 0.0,
+ "collector_number": "41",
+ "color_identity": [
+  "W"
+ ],
+ "colors": [],
+ "digital": false,
+ "edhrec_rank": 3741,
+ "finishes": [
+  "foil"
+ ],
+ "foil": true,
+ "frame": "2015",
+ "full_art": false,
+ "game_changer": false,
+ "games": [
+  "paper",
+  "mtgo"
+ ],
+ "highres_image": true,
+ "id": "2519b6a3-d074-4e9b-a57a-559fae5a8531",
+ "illustration_id": "342994f6-03e3-4630-a53b-6a6c6da8194c",
+ "image_status": "highres_scan",
+ "image_updated_at": "2026-07-13T10:18:52Z",
+ "image_uris": {
+  "art": "https://cards.scryfall.io/art/front/2/5/2519b6a3-d074-4e9b-a57a-559fae5a8531.webp?1783937932",
+  "art_crop": "https://cards.scryfall.io/art_crop/front/2/5/2519b6a3-d074-4e9b-a57a-559fae5a8531.jpg?1783937932",
+  "border_crop": "https://cards.scryfall.io/border_crop/front/2/5/2519b6a3-d074-4e9b-a57a-559fae5a8531.jpg?1783937932",
+  "crop": "https://cards.scryfall.io/crop/front/2/5/2519b6a3-d074-4e9b-a57a-559fae5a8531.webp?1783937932",
+  "display": "https://cards.scryfall.io/display/front/2/5/2519b6a3-d074-4e9b-a57a-559fae5a8531.webp?1783937932",
+  "grid": "https://cards.scryfall.io/grid/front/2/5/2519b6a3-d074-4e9b-a57a-559fae5a8531.webp?1783937932",
+  "large": "https://cards.scryfall.io/large/front/2/5/2519b6a3-d074-4e9b-a57a-559fae5a8531.jpg?1783937932",
+  "normal": "https://cards.scryfall.io/normal/front/2/5/2519b6a3-d074-4e9b-a57a-559fae5a8531.jpg?1783937932",
+  "png": "https://cards.scryfall.io/png/front/2/5/2519b6a3-d074-4e9b-a57a-559fae5a8531.png?1783937932",
+  "small": "https://cards.scryfall.io/small/front/2/5/2519b6a3-d074-4e9b-a57a-559fae5a8531.jpg?1783937932",
+  "thumb": "https://cards.scryfall.io/thumb/front/2/5/2519b6a3-d074-4e9b-a57a-559fae5a8531.webp?1783937932"
+ },
+ "keywords": [],
+ "lang": "en",
+ "layout": "normal",
+ "legalities": {
+  "alchemy": "not_legal",
+  "brawl": "not_legal",
+  "commander": "legal",
+  "competitivebrawl": "not_legal",
+  "duel": "legal",
+  "future": "not_legal",
+  "gladiator": "not_legal",
+  "historic": "not_legal",
+  "legacy": "legal",
+  "modern": "not_legal",
+  "oathbreaker": "legal",
+  "oldschool": "not_legal",
+  "pauper": "not_legal",
+  "paupercommander": "not_legal",
+  "penny": "not_legal",
+  "pioneer": "not_legal",
+  "predh": "legal",
+  "premodern": "legal",
+  "standard": "not_legal",
+  "standardbrawl": "not_legal",
+  "timeless": "not_legal",
+  "tlr": "legal",
+  "vintage": "legal"
+ },
+ "mana_cost": "",
+ "mtgo_foil_id": 59704,
+ "mtgo_id": 59703,
+ "multiverse_ids": [
+  409572
+ ],
+ "name": "Kor Haven",
+ "nonfoil": false,
+ "object": "card",
+ "oracle_id": "276cece9-f9f2-46e6-ae76-daddaa2fb9ab",
+ "oracle_text": "{T}: Add {C}.\n{1}{W}, {T}: Prevent all combat damage that would be dealt by target attacking creature this turn.",
+ "oversized": false,
+ "prices": {
+  "eur": null,
+  "eur_foil": "19.69",
+  "tix": "4.09",
+  "usd": null,
+  "usd_etched": null,
+  "usd_foil": "32.96"
+ },
+ "prints_search_uri": "https://api.scryfall.com/cards/search?order=released&q=oracleid%3A276cece9-f9f2-46e6-ae76-daddaa2fb9ab&unique=prints",
+ "produced_mana": [
+  "C"
+ ],
+ "promo": false,
+ "purchase_uris": {
+  "cardhoarder": "https://www.cardhoarder.com/cards/59703?affiliate_id=scryfall&ref=card-profile&utm_campaign=affiliate&utm_medium=card&utm_source=scryfall",
+  "cardmarket": "https://www.cardmarket.com/en/Magic/Products?idProduct=287035&referrer=scryfall&utm_campaign=card_prices&utm_medium=text&utm_source=scryfall",
+  "tcgplayer": "https://partner.tcgplayer.com/c/4931599/1830156/21018?subId1=api&u=https%3A%2F%2Fwww.tcgplayer.com%2Fproduct%2F110732%3Fpage%3D1"
+ },
+ "rarity": "mythic",
+ "related_uris": {
+  "edhrec": "https://edhrec.com/route/?cc=Kor+Haven",
+  "gatherer": "https://gatherer.wizards.com/Pages/Card/Details.aspx?multiverseid=409572&printed=false",
+  "tcgplayer_infinite_articles": "https://partner.tcgplayer.com/c/4931599/1830156/21018?subId1=api&trafcat=tcgplayer.com%2Fsearch%2Farticles&u=https%3A%2F%2Fwww.tcgplayer.com%2Fsearch%2Farticles%3FproductLineName%3Dmagic%26q%3DKor%2BHaven",
+  "tcgplayer_infinite_decks": "https://partner.tcgplayer.com/c/4931599/1830156/21018?subId1=api&trafcat=tcgplayer.com%2Fsearch%2Fdecks&u=https%3A%2F%2Fwww.tcgplayer.com%2Fsearch%2Fdecks%3FproductLineName%3Dmagic%26q%3DKor%2BHaven"
+ },
+ "released_at": "2016-01-22",
+ "reprint": true,
+ "reserved": false,
+ "rulings_uri": "https://api.scryfall.com/cards/2519b6a3-d074-4e9b-a57a-559fae5a8531/rulings",
+ "scryfall_set_uri": "https://scryfall.com/sets/exp?utm_source=api",
+ "scryfall_uri": "https://scryfall.com/card/exp/41/kor-haven?utm_source=api",
+ "security_stamp": "oval",
+ "set": "exp",
+ "set_id": "f6ccda04-e8ef-4260-8453-9408d788bacf",
+ "set_name": "Zendikar Expeditions",
+ "set_search_uri": "https://api.scryfall.com/cards/search?order=set&q=e%3Aexp&unique=prints",
+ "set_type": "masterpiece",
+ "set_uri": "https://api.scryfall.com/sets/f6ccda04-e8ef-4260-8453-9408d788bacf",
+ "story_spotlight": false,
+ "tcgplayer_id": 110732,
+ "textless": false,
+ "type_line": "Legendary Land",
+ "uri": "https://api.scryfall.com/cards/2519b6a3-d074-4e9b-a57a-559fae5a8531",
+ "variation": false
+}

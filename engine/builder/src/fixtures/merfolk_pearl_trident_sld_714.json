@@ -1,0 +1,134 @@
+{
+ "artist": "Dani Pendergast",
+ "artist_ids": [
+  "ab479862-d19f-46ef-b238-5e2d5a9ad67f"
+ ],
+ "booster": false,
+ "border_color": "borderless",
+ "card_back_id": "0aeebaf5-8c7d-4636-9e82-8c27447861f7",
+ "cardmarket_id": 727631,
+ "cmc": 1.0,
+ "collector_number": "714",
+ "color_identity": [
+  "U"
+ ],
+ "colors": [
+  "U"
+ ],
+ "digital": false,
+ "edhrec_rank": 25759,
+ "finishes": [
+  "nonfoil"
+ ],
+ "flavor_text": "Most human scholars believe that Merfolk are the survivors of sunken Atlantis, humans adapted to the water. Merfolk, however, believe that humans sprang forth from Merfolk who adapted themselves in order to explore their last frontier.",
+ "foil": false,
+ "frame": "2015",
+ "frame_effects": [
+  "inverted"
+ ],
+ "full_art": false,
+ "game_changer": false,
+ "games": [
+  "paper"
+ ],
+ "highres_image": true,
+ "id": "92ff7380-ac9c-46c4-9544-da6554cb0819",
+ "illustration_id": "f8037565-b926-4d56-9c2b-9687ec52fbfe",
+ "image_status": "highres_scan",
+ "image_updated_at": "2026-07-13T04:08:54Z",
+ "image_uris": {
+  "art": "https://cards.scryfall.io/art/front/9/2/92ff7380-ac9c-46c4-9544-da6554cb0819.webp?1783915734",
+  "art_crop": "https://cards.scryfall.io/art_crop/front/9/2/92ff7380-ac9c-46c4-9544-da6554cb0819.jpg?1783915734",
+  "border_crop": "https://cards.scryfall.io/border_crop/front/9/2/92ff7380-ac9c-46c4-9544-da6554cb0819.jpg?1783915734",
+  "crop": "https://cards.scryfall.io/crop/front/9/2/92ff7380-ac9c-46c4-9544-da6554cb0819.webp?1783915734",
+  "display": "https://cards.scryfall.io/display/front/9/2/92ff7380-ac9c-46c4-9544-da6554cb0819.webp?1783915734",
+  "grid": "https://cards.scryfall.io/grid/front/9/2/92ff7380-ac9c-46c4-9544-da6554cb0819.webp?1783915734",
+  "large": "https://cards.scryfall.io/large/front/9/2/92ff7380-ac9c-46c4-9544-da6554cb0819.jpg?1783915734",
+  "normal": "https://cards.scryfall.io/normal/front/9/2/92ff7380-ac9c-46c4-9544-da6554cb0819.jpg?1783915734",
+  "png": "https://cards.scryfall.io/png/front/9/2/92ff7380-ac9c-46c4-9544-da6554cb0819.png?1783915734",
+  "small": "https://cards.scryfall.io/small/front/9/2/92ff7380-ac9c-46c4-9544-da6554cb0819.jpg?1783915734",
+  "thumb": "https://cards.scryfall.io/thumb/front/9/2/92ff7380-ac9c-46c4-9544-da6554cb0819.webp?1783915734"
+ },
+ "keywords": [],
+ "lang": "en",
+ "layout": "normal",
+ "legalities": {
+  "alchemy": "not_legal",
+  "brawl": "not_legal",
+  "commander": "legal",
+  "competitivebrawl": "not_legal",
+  "duel": "legal",
+  "future": "not_legal",
+  "gladiator": "not_legal",
+  "historic": "not_legal",
+  "legacy": "legal",
+  "modern": "legal",
+  "oathbreaker": "legal",
+  "oldschool": "not_legal",
+  "pauper": "legal",
+  "paupercommander": "legal",
+  "penny": "legal",
+  "pioneer": "not_legal",
+  "predh": "legal",
+  "premodern": "legal",
+  "standard": "not_legal",
+  "standardbrawl": "not_legal",
+  "timeless": "not_legal",
+  "tlr": "legal",
+  "vintage": "legal"
+ },
+ "mana_cost": "{U}",
+ "multiverse_ids": [],
+ "name": "Merfolk of the Pearl Trident",
+ "nonfoil": true,
+ "object": "card",
+ "oracle_id": "218d9277-c179-4de3-9c7f-79b5a6d4fa38",
+ "oracle_text": "",
+ "oversized": false,
+ "power": "1",
+ "prices": {
+  "eur": null,
+  "eur_foil": null,
+  "tix": null,
+  "usd": null,
+  "usd_etched": null,
+  "usd_foil": null
+ },
+ "prints_search_uri": "https://api.scryfall.com/cards/search?order=released&q=oracleid%3A218d9277-c179-4de3-9c7f-79b5a6d4fa38&unique=prints",
+ "promo": false,
+ "promo_types": [
+  "serialized",
+  "sldbonus"
+ ],
+ "purchase_uris": {
+  "cardhoarder": "https://www.cardhoarder.com/cards?affiliate_id=scryfall&data%5Bsearch%5D=Merfolk+of+the+Pearl+Trident&ref=card-profile&utm_campaign=affiliate&utm_medium=card&utm_source=scryfall",
+  "cardmarket": "https://www.cardmarket.com/en/Magic/Products?idProduct=727631&referrer=scryfall&utm_campaign=card_prices&utm_medium=text&utm_source=scryfall",
+  "tcgplayer": "https://partner.tcgplayer.com/c/4931599/1830156/21018?subId1=api&u=https%3A%2F%2Fwww.tcgplayer.com%2Fproduct%2F510214%3Fpage%3D1"
+ },
+ "rarity": "rare",
+ "related_uris": {
+  "edhrec": "https://edhrec.com/route/?cc=Merfolk+of+the+Pearl+Trident",
+  "tcgplayer_infinite_articles": "https://partner.tcgplayer.com/c/4931599/1830156/21018?subId1=api&trafcat=tcgplayer.com%2Fsearch%2Farticles&u=https%3A%2F%2Fwww.tcgplayer.com%2Fsearch%2Farticles%3FproductLineName%3Dmagic%26q%3DMerfolk%2Bof%2Bthe%2BPearl%2BTrident",
+  "tcgplayer_infinite_decks": "https://partner.tcgplayer.com/c/4931599/1830156/21018?subId1=api&trafcat=tcgplayer.com%2Fsearch%2Fdecks&u=https%3A%2F%2Fwww.tcgplayer.com%2Fsearch%2Fdecks%3FproductLineName%3Dmagic%26q%3DMerfolk%2Bof%2Bthe%2BPearl%2BTrident"
+ },
+ "released_at": "2023-08-03",
+ "reprint": true,
+ "reserved": false,
+ "rulings_uri": "https://api.scryfall.com/cards/92ff7380-ac9c-46c4-9544-da6554cb0819/rulings",
+ "scryfall_set_uri": "https://scryfall.com/sets/sld?utm_source=api",
+ "scryfall_uri": "https://scryfall.com/card/sld/714/merfolk-of-the-pearl-trident?utm_source=api",
+ "security_stamp": "oval",
+ "set": "sld",
+ "set_id": "4d92a8a7-ccb0-437d-abdc-9d70fc5ed672",
+ "set_name": "Secret Lair Drop",
+ "set_search_uri": "https://api.scryfall.com/cards/search?order=set&q=e%3Asld&unique=prints",
+ "set_type": "box",
+ "set_uri": "https://api.scryfall.com/sets/4d92a8a7-ccb0-437d-abdc-9d70fc5ed672",
+ "story_spotlight": false,
+ "tcgplayer_id": 510214,
+ "textless": false,
+ "toughness": "1",
+ "type_line": "Creature — Merfolk",
+ "uri": "https://api.scryfall.com/cards/92ff7380-ac9c-46c4-9544-da6554cb0819",
+ "variation": false
+}

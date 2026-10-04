@@ -1,0 +1,143 @@
+{
+ "all_parts": [
+  {
+   "component": "combo_piece",
+   "id": "a39ab7f7-c22f-4cf7-ae1f-d40b84996177",
+   "name": "Pentavus",
+   "object": "related_card",
+   "type_line": "Artifact Creature — Construct",
+   "uri": "https://api.scryfall.com/cards/a39ab7f7-c22f-4cf7-ae1f-d40b84996177"
+  },
+  {
+   "component": "token",
+   "id": "4fbb0dc6-2f9e-4389-8a90-531e94009bfb",
+   "name": "Pentavite",
+   "object": "related_card",
+   "type_line": "Token Artifact Creature — Pentavite",
+   "uri": "https://api.scryfall.com/cards/4fbb0dc6-2f9e-4389-8a90-531e94009bfb"
+  }
+ ],
+ "artist": "Greg Staples",
+ "artist_ids": [
+  "93d65564-bf00-447b-8406-e2031f03b6b1"
+ ],
+ "booster": false,
+ "border_color": "black",
+ "card_back_id": "0aeebaf5-8c7d-4636-9e82-8c27447861f7",
+ "cardmarket_id": 18170,
+ "cmc": 0.0,
+ "collector_number": "3",
+ "color_identity": [],
+ "colors": [],
+ "digital": false,
+ "finishes": [
+  "nonfoil"
+ ],
+ "foil": false,
+ "frame": "2003",
+ "full_art": false,
+ "game_changer": false,
+ "games": [
+  "paper"
+ ],
+ "highres_image": true,
+ "id": "4fbb0dc6-2f9e-4389-8a90-531e94009bfb",
+ "illustration_id": "27378cca-8d9e-433d-8994-f374bb87b3ed",
+ "image_status": "highres_scan",
+ "image_updated_at": "2026-07-13T12:07:39Z",
+ "image_uris": {
+  "art": "https://cards.scryfall.io/art/front/4/f/4fbb0dc6-2f9e-4389-8a90-531e94009bfb.webp?1783944459",
+  "art_crop": "https://cards.scryfall.io/art_crop/front/4/f/4fbb0dc6-2f9e-4389-8a90-531e94009bfb.jpg?1783944459",
+  "border_crop": "https://cards.scryfall.io/border_crop/front/4/f/4fbb0dc6-2f9e-4389-8a90-531e94009bfb.jpg?1783944459",
+  "crop": "https://cards.scryfall.io/crop/front/4/f/4fbb0dc6-2f9e-4389-8a90-531e94009bfb.webp?1783944459",
+  "display": "https://cards.scryfall.io/display/front/4/f/4fbb0dc6-2f9e-4389-8a90-531e94009bfb.webp?1783944459",
+  "grid": "https://cards.scryfall.io/grid/front/4/f/4fbb0dc6-2f9e-4389-8a90-531e94009bfb.webp?1783944459",
+  "large": "https://cards.scryfall.io/large/front/4/f/4fbb0dc6-2f9e-4389-8a90-531e94009bfb.jpg?1783944459",
+  "normal": "https://cards.scryfall.io/normal/front/4/f/4fbb0dc6-2f9e-4389-8a90-531e94009bfb.jpg?1783944459",
+  "png": "https://cards.scryfall.io/png/front/4/f/4fbb0dc6-2f9e-4389-8a90-531e94009bfb.png?1783944459",
+  "small": "https://cards.scryfall.io/small/front/4/f/4fbb0dc6-2f9e-4389-8a90-531e94009bfb.jpg?1783944459",
+  "thumb": "https://cards.scryfall.io/thumb/front/4/f/4fbb0dc6-2f9e-4389-8a90-531e94009bfb.webp?1783944459"
+ },
+ "keywords": [
+  "Flying"
+ ],
+ "lang": "en",
+ "layout": "token",
+ "legalities": {
+  "alchemy": "not_legal",
+  "brawl": "not_legal",
+  "commander": "not_legal",
+  "competitivebrawl": "not_legal",
+  "duel": "not_legal",
+  "future": "not_legal",
+  "gladiator": "not_legal",
+  "historic": "not_legal",
+  "legacy": "not_legal",
+  "modern": "not_legal",
+  "oathbreaker": "not_legal",
+  "oldschool": "not_legal",
+  "pauper": "not_legal",
+  "paupercommander": "not_legal",
+  "penny": "not_legal",
+  "pioneer": "not_legal",
+  "predh": "not_legal",
+  "premodern": "not_legal",
+  "standard": "not_legal",
+  "standardbrawl": "not_legal",
+  "timeless": "not_legal",
+  "tlr": "not_legal",
+  "vintage": "not_legal"
+ },
+ "mana_cost": "",
+ "multiverse_ids": [],
+ "name": "Pentavite",
+ "nonfoil": true,
+ "object": "card",
+ "oracle_id": "c9e57f97-be25-4ab6-9158-d2677d7742f7",
+ "oracle_text": "Flying",
+ "oversized": false,
+ "power": "1",
+ "prices": {
+  "eur": "0.43",
+  "eur_foil": null,
+  "tix": null,
+  "usd": "5.48",
+  "usd_etched": null,
+  "usd_foil": null
+ },
+ "prints_search_uri": "https://api.scryfall.com/cards/search?order=released&q=oracleid%3Ac9e57f97-be25-4ab6-9158-d2677d7742f7&unique=prints",
+ "promo": true,
+ "promo_types": [
+  "playerrewards"
+ ],
+ "purchase_uris": {
+  "cardhoarder": "https://www.cardhoarder.com/cards?affiliate_id=scryfall&data%5Bsearch%5D=Pentavite&ref=card-profile&utm_campaign=affiliate&utm_medium=card&utm_source=scryfall",
+  "cardmarket": "https://www.cardmarket.com/en/Magic/Products?idProduct=18170&referrer=scryfall&utm_campaign=card_prices&utm_medium=text&utm_source=scryfall",
+  "tcgplayer": "https://partner.tcgplayer.com/c/4931599/1830156/21018?subId1=api&u=https%3A%2F%2Fwww.tcgplayer.com%2Fproduct%2F78627%3Fpage%3D1"
+ },
+ "rarity": "common",
+ "related_uris": {
+  "edhrec": "https://edhrec.com/route/?cc=Pentavite",
+  "tcgplayer_infinite_articles": "https://partner.tcgplayer.com/c/4931599/1830156/21018?subId1=api&trafcat=tcgplayer.com%2Fsearch%2Farticles&u=https%3A%2F%2Fwww.tcgplayer.com%2Fsearch%2Farticles%3FproductLineName%3Dmagic%26q%3DPentavite",
+  "tcgplayer_infinite_decks": "https://partner.tcgplayer.com/c/4931599/1830156/21018?subId1=api&trafcat=tcgplayer.com%2Fsearch%2Fdecks&u=https%3A%2F%2Fwww.tcgplayer.com%2Fsearch%2Fdecks%3FproductLineName%3Dmagic%26q%3DPentavite"
+ },
+ "released_at": "2004-01-01",
+ "reprint": true,
+ "reserved": false,
+ "rulings_uri": "https://api.scryfall.com/cards/4fbb0dc6-2f9e-4389-8a90-531e94009bfb/rulings",
+ "scryfall_set_uri": "https://scryfall.com/sets/p04?utm_source=api",
+ "scryfall_uri": "https://scryfall.com/card/p04/3/pentavite?utm_source=api",
+ "set": "p04",
+ "set_id": "5ba81c6d-2344-4760-bb13-b7276205e73e",
+ "set_name": "Magic Player Rewards 2004",
+ "set_search_uri": "https://api.scryfall.com/cards/search?order=set&q=e%3Ap04&unique=prints",
+ "set_type": "promo",
+ "set_uri": "https://api.scryfall.com/sets/5ba81c6d-2344-4760-bb13-b7276205e73e",
+ "story_spotlight": false,
+ "tcgplayer_id": 78627,
+ "textless": false,
+ "toughness": "1",
+ "type_line": "Token Artifact Creature — Pentavite",
+ "uri": "https://api.scryfall.com/cards/4fbb0dc6-2f9e-4389-8a90-531e94009bfb",
+ "variation": false
+}

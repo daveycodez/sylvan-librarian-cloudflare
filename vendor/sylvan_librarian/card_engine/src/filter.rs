@@ -1894,6 +1894,13 @@ pub(crate) enum FilterExpr {
         negated: bool,
     },
 
+    /// LOCAL PATCH (Cloudflare port): Scryfall's `new:rarity` — the printing is the first of its
+    /// card at its rarity. One bit the build decides (`assign_new_rarity_flags`, which carries the
+    /// measured rule: 38,943 of 38,943 printings, 2026-10-04). Two-valued: `-new:rarity` is the
+    /// plain complement, 79,435, every other canonical row. Reached as `is:newrarity`, the spelling
+    /// the compat surface rewrites `new:rarity` to.
+    NewRarity,
+
     /// `is:unique` — the owning CARD has been printed in exactly one SET. Card-level and total, off
     /// `OracleCard.single_set`, which the build computes over the canonical printings AND the annex
     /// (`assign_single_set_flags`); nothing here to bind and nothing per printing to consult.
@@ -2229,6 +2236,8 @@ pub(crate) fn verify_cost_tier(f: &FilterExpr) -> u32 {
         // Two bits of a field already on the printing, and a price compare when the plain price
         // is the cheapest.
         FilterExpr::Cheapest { .. } => MASK_COMPARE_NS100,
+        // One bit of a byte already on the printing.
+        FilterExpr::NewRarity => MASK_COMPARE_NS100,
         // A substring scan of the printing's flavor text, plus a field compare for its flavor name.
         FilterExpr::LorePrinting { .. } => TEXT_SCAN_NS100,
         // One length read on the card, and a layout compare on the 71 cards that pass it.
@@ -2523,8 +2532,8 @@ fn leaf_compares_printing_field(f: &FilterExpr) -> bool {
         FilterExpr::LorePrinting { .. } | FilterExpr::PrintsOwnFaces => true,
         // A reversible printing has two faces where its siblings have one.
         FilterExpr::FaceStatCmpFalse { .. } => true,
-        // The cheapest codes are the printing's (CompatFields).
-        FilterExpr::Cheapest { .. } => true,
+        // The cheapest codes are the printing's (CompatFields), and so is the `new:rarity` bit.
+        FilterExpr::Cheapest { .. } | FilterExpr::NewRarity => true,
         // The frame class is read entirely off the PRINTING (its compat flags, border, frame
         // effects, promo types, finishes) — a card's plain printing and its borderless one differ.
         FilterExpr::Atypical(_) => true,
@@ -3817,6 +3826,12 @@ impl FilterExpr {
                 Tri::True
             }
 
+            // Two-valued: the bit is set or it is not — see the variant's doc.
+            FilterExpr::NewRarity => {
+                let Some(p) = printing else { return Tri::PrintingDep };
+                tri_bool(super::printing_is_new_rarity(p))
+            }
+
             FilterExpr::LorePrinting { word } => {
                 let Some(p) = printing else { return Tri::PrintingDep };
                 let text = u32::from(p.flavor_text_lower_id);
@@ -5054,6 +5069,9 @@ fn build_binary(kw: &Value) -> Result<FilterExpr, String> {
                 // the same day's bulk file — their negations 0, `is:englishart lang:ja` all
                 // 62,689 Japanese rows and `is:paperart is:digital` all 9,129 digital printings.
                 "englishart" | "paperart" => return Ok(FilterExpr::True),
+                // LOCAL PATCH (Cloudflare port): `new:rarity`, which the compat surface writes as
+                // this tag — see `FilterExpr::NewRarity`.
+                "newrarity" => return Ok(FilterExpr::NewRarity),
                 _ => {}
             }
         }
