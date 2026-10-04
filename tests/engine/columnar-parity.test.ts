@@ -16,6 +16,11 @@ import { assembleColumnar, columnKeys, columnsFrameOf, serializeCards } from "..
 import { decodeRowPacket, joinJsonArray } from "../../src/engine/gather";
 import { newEngine } from "./wasm-engine";
 
+// The CPU-bound tests in this file carry an explicit 120 s timeout (the `120_000` closing them).
+// bun's default is 5 s, which they pass in under a second on a quiet machine and failed on a
+// busy one with nothing wrong: 2026-10-04, four suites at once beside 300 busy loops, the
+// slowest took 10.3 s. No assertion reads the clock; a hang still fails, later.
+
 const engine = newEngine();
 const decoder = new TextDecoder();
 
@@ -155,7 +160,7 @@ describe("JavaScript's number spelling, against JSON.stringify itself", () => {
 		const bits = new BigUint64Array(100_000);
 		for (let i = 0; i < bits.length; i++) bits[i] = next();
 		expectSpelled(new Float64Array(bits.buffer));
-	});
+	}, 120_000);
 
 	test("decimals a card actually carries, and every power of ten across both thresholds", () => {
 		const values: number[] = [];

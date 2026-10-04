@@ -36,6 +36,11 @@ import { makeCtx, testDispatch } from "../routes/harness";
 import misses from "./named-fuzzy-misses-2026-09-30.json";
 import recorded from "./named-fuzzy-recorded.json";
 
+// The CPU-bound tests in this file carry an explicit 120 s timeout (the `120_000` closing them).
+// bun's default is 5 s, which they pass in under a second on a quiet machine and failed on a
+// busy one with nothing wrong: 2026-10-04, four suites at once beside 300 busy loops, the
+// slowest took 10.3 s. No assertion reads the clock; a hang still fails, later.
+
 type Card = Record<string, unknown>;
 
 /** One partition's answer to each stage, for one needle. */
@@ -922,7 +927,7 @@ describe("a names-index plan asks only the partitions it names (n15)", () => {
 			}
 		}
 		expect(before).toBeGreaterThan(after * 1.8);
-	});
+	}, 120_000);
 
 	test("x48: every recorded needle behind every hint answers what the build before it and the three stages answer", async () => {
 		const cases = recorded.cases as unknown as { fuzzy: string; set: string; partitions: Stages[] }[];
@@ -955,7 +960,7 @@ describe("a names-index plan asks only the partitions it names (n15)", () => {
 		}
 		expect(after).toBeLessThan(before);
 		expect(unranked).toBeGreaterThan(100);
-	});
+	}, 120_000);
 
 	test("x48: a routed hit is one call that plans nothing — the work it always was", async () => {
 		const whole = { rank: [3, "lightningbolt", 1, "", 0.9], present: true, exact: named("Lightning Bolt") };

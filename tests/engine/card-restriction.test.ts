@@ -11,6 +11,11 @@ import { cardRestrictionOf } from "../../src/engine/card-restriction";
 import { partitionOfOracleId } from "../../src/engine/partition";
 import type { NameHint } from "../../src/engine/routing-filter";
 
+// The CPU-bound tests in this file carry an explicit 120 s timeout (the `120_000` closing them).
+// bun's default is 5 s, which they pass in under a second on a quiet machine and failed on a
+// busy one with nothing wrong: 2026-10-04, four suites at once beside 300 busy loops, the
+// slowest took 10.3 s. No assertion reads the clock; a hang still fails, later.
+
 const N = 10;
 
 type Tree = Record<string, unknown>;
@@ -279,5 +284,5 @@ describe("soundness: no matching row lives outside the restriction", () => {
 		// The property is not vacuous: many trees restrict, and many of those still match rows.
 		expect(restricted).toBeGreaterThan(4000);
 		expect(narrowedMatches).toBeGreaterThan(1000);
-	});
+	}, 120_000);
 });

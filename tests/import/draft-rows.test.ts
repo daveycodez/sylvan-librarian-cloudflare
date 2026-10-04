@@ -26,6 +26,11 @@ import {
 	WASM_FEED_BYTES,
 } from "../../src/import-spill";
 
+// The CPU-bound tests in this file carry an explicit 120 s timeout (the `120_000` closing them).
+// bun's default is 5 s, which they pass in under a second on a quiet machine and failed on a
+// busy one with nothing wrong: 2026-10-04, four suites at once beside 300 busy loops, the
+// slowest took 10.3 s. No assertion reads the clock; a hang still fails, later.
+
 /** Draft-like JSON: compressible, variable-length, deterministic. */
 function drafts(count: number, seed = 1): Uint8Array[] {
 	const enc = new TextEncoder();
@@ -81,7 +86,7 @@ describe("packedDraftGroups", () => {
 		expect(back.map((b) => Buffer.from(b).toString("hex"))).toEqual(all.map((b) => Buffer.from(b).toString("hex")));
 		// Compressible drafts fill whole 6MB groups: four fewer rows per 6MB than 1.5MB groups.
 		expect(groups[0]?.raw).toBeGreaterThan(DRAFT_BATCH_BYTES - 5_000);
-	});
+	}, 120_000);
 
 	test("a group that would pack past a row is re-cut at BLOB_GROUP_BYTES, so no row passes the cap", () => {
 		const all = noise(90, 60_000); // ~5.4MB raw that does not compress
@@ -92,7 +97,7 @@ describe("packedDraftGroups", () => {
 			expect(g.packed.length).toBeLessThanOrEqual(STAGED_ROW_BYTES);
 		}
 		expect(groups.at(-1)?.end).toBe(all.length);
-	});
+	}, 120_000);
 
 	test("no drafts, no groups", () => {
 		expect(packedDraftGroups([], packBlob)).toEqual([]);
@@ -113,7 +118,7 @@ describe("PackStream", () => {
 		expect(Buffer.from(unpackBlob(packed)).equals(Buffer.from(expected))).toBe(true);
 		// And about as small as the one-shot packing (the smaller hash table costs ~1%).
 		expect(packed.length).toBeLessThan(packBlob(expected).length * 1.1);
-	});
+	}, 120_000);
 
 	test("its bound holds for incompressible entries too — the case the row cap exists for", () => {
 		const stream = new PackStream();
@@ -122,7 +127,7 @@ describe("PackStream", () => {
 		}
 		const bound = stream.packedBound;
 		expect(stream.finish().length).toBeLessThanOrEqual(bound);
-	});
+	}, 120_000);
 
 	test("an empty stream is an empty batch", () => {
 		expect(unpackBlob(new PackStream().finish()).length).toBe(0);
@@ -146,7 +151,7 @@ describe("PackStream", () => {
 		const oneShot = packDraftBlob(expected);
 		expect(Buffer.from(unpackBlob(oneShot)).equals(Buffer.from(expected))).toBe(true);
 		expect(oneShot.length).toBeLessThanOrEqual(packBlob(expected).length);
-	});
+	}, 120_000);
 });
 
 describe("feedSlices", () => {
@@ -158,7 +163,7 @@ describe("feedSlices", () => {
 		for (const p of pieces) expect(p.length).toBeLessThanOrEqual(WASM_FEED_BYTES);
 		expect(pieces.flatMap((p) => splitBatch(p)).length).toBe(all.length);
 		expect(Buffer.concat(pieces.map((p) => Buffer.from(p))).equals(Buffer.from(batch))).toBe(true);
-	});
+	}, 120_000);
 
 	test("an entry larger than the cap stands alone rather than being split", () => {
 		const big = new Uint8Array(3000).fill(1);

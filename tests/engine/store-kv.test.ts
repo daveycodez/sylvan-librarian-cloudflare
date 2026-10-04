@@ -47,6 +47,11 @@ import {
 import type { Env, StoreManifest, StoreManifestPartition } from "../../src/engine/types";
 import { EngineUnavailableError } from "../../src/engine/types";
 
+// The CPU-bound tests in this file carry an explicit 120 s timeout (the `120_000` closing them).
+// bun's default is 5 s, which they pass in under a second on a quiet machine and failed on a
+// busy one with nothing wrong: 2026-10-04, four suites at once beside 300 busy loops, the
+// slowest took 10.3 s. No assertion reads the clock; a hang still fails, later.
+
 /** A store whose every byte is checkable: value at i is derived from i. */
 function syntheticStore(length: number): Uint8Array<ArrayBuffer> {
 	const out = new Uint8Array(new ArrayBuffer(length));
@@ -358,7 +363,7 @@ describe("gzipped chunks", () => {
 		expect(stored.length).toBe(2);
 		const env = { STORE_KV: fakeKv(entries) } as Env;
 		expect(await drain(kvStoreStream(env, manifest))).toEqual(store);
-	});
+	}, 120_000);
 
 	test("still one get per chunk — compression does not add reads", async () => {
 		const store = syntheticStore(KV_CHUNK_BYTES + 1_500_000);
@@ -367,7 +372,7 @@ describe("gzipped chunks", () => {
 		const env = { STORE_KV: fakeKv(entries, (k) => gets.push(k)) } as Env;
 		await drain(kvStoreStream(env, manifest));
 		expect(gets.length).toBe(manifest.chunk_count ?? 0);
-	});
+	}, 120_000);
 
 	test("the integrity check counts STORED bytes, so a truncated value fails loudly", async () => {
 		const store = syntheticStore(3_000_000);
@@ -422,7 +427,7 @@ describe("gzipped chunks", () => {
 		const gz = await gzipBytes(noise);
 		expect(gz.byteLength).toBeGreaterThan(KV_CHUNK_BYTES_SAFE); // it really is incompressible
 		expect(gz.byteLength).toBeLessThanOrEqual(KV_VALUE_CAP_BYTES);
-	});
+	}, 120_000);
 });
 
 describe("readManifest", () => {
@@ -947,14 +952,14 @@ describe("chunkForKv", () => {
 		const { chunks, cut } = chunkForKv(incompressible(KV_CHUNK_BYTES + 1_000), fakeGzip);
 		expect(cut).toBe(KV_CHUNK_BYTES_SAFE);
 		for (const c of chunks) expect(c.length).toBeLessThanOrEqual(KV_VALUE_CAP_BYTES);
-	});
+	}, 120_000);
 
 	test("no chunk it returns is ever over the cap, whichever cut it chose", () => {
 		for (const archive of [compressible(5_000_000), incompressible(5_000_000), compressible(KV_CHUNK_BYTES * 3)]) {
 			const { chunks } = chunkForKv(archive, fakeGzip);
 			for (const c of chunks) expect(c.length).toBeLessThanOrEqual(KV_VALUE_CAP_BYTES);
 		}
-	});
+	}, 120_000);
 
 	test("the chunks reassemble to the original archive", () => {
 		// The whole point: a cut is only correct if concatenating the pieces in

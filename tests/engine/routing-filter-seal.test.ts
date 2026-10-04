@@ -28,6 +28,11 @@ import {
 } from "../../src/engine/routing-filter";
 import { ReferenceAccumulator, referenceBuild } from "./routing-filter-reference";
 
+// The CPU-bound tests in this file carry an explicit 120 s timeout (the `120_000` closing them).
+// bun's default is 5 s, which they pass in under a second on a quiet machine and failed on a
+// busy one with nothing wrong: 2026-10-04, four suites at once beside 300 busy loops, the
+// slowest took 10.3 s. No assertion reads the clock; a hang still fails, later.
+
 const IDENTITY = { builtAt: "1790000000", partitionCount: 10, partitionHash: "fnv1a64/oracle_id/v1" };
 
 /** Deterministic PRNG so a failure reproduces. */
@@ -240,7 +245,7 @@ describe("the rewritten build publishes the reference's bytes", () => {
 			expectSameBuild(syntheticLines(count, seed, IDENTITY.partitionCount));
 			expectSameBuild(syntheticLines(count, seed, IDENTITY.partitionCount), IDENTITY.partitionCount, 3, true);
 		}
-	});
+	}, 120_000);
 
 	test("a cell holding more keys than a byte counts takes the wide counter, and the same bytes", () => {
 		// 300 keys share their `lo` half, so their first cell is the SAME cell under every seed — past

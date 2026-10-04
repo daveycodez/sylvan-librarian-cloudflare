@@ -14,6 +14,11 @@ import { gzipBytes } from "../../src/engine/store-kv";
 import { InflateRecodeSource } from "../../src/import-recode";
 import { instantiate } from "./inflate-host";
 
+// The CPU-bound tests in this file carry an explicit 120 s timeout (the `120_000` closing them).
+// bun's default is 5 s, which they pass in under a second on a quiet machine and failed on a
+// busy one with nothing wrong: 2026-10-04, four suites at once beside 300 busy loops, the
+// slowest took 10.3 s. No assertion reads the clock; a hang still fails, later.
+
 /** Card-shaped JSONL at roughly the real dump's compression ratio. */
 function makeRaw(bytes: number, seed = 7): Uint8Array {
 	let s = seed >>> 0;
@@ -144,14 +149,14 @@ describe("wasm inflater vs DecompressionStream", () => {
 			return 1 + (s % (96 * 1024));
 		});
 		expect(out).toEqual(NATIVE);
-	});
+	}, 120_000);
 
 	test("single-byte feeds through the header region still decode", () => {
 		// 1-byte feeds for the first 4KB (header + first blocks — every byte a
 		// suspension), then large feeds to finish.
 		const out = wasmChopped(GZ, 512 * 1024, (i) => (i < 4096 ? 1 : 512 * 1024));
 		expect(out).toEqual(NATIVE);
-	});
+	}, 120_000);
 
 	test("the committed CLI-gzip fixture (third encoder, FNAME header) decodes identically", async () => {
 		const gz = new Uint8Array(await Bun.file(new URL("fixtures/recode-sample.json.gz", import.meta.url)).arrayBuffer());

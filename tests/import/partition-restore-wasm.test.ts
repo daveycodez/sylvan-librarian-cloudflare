@@ -20,6 +20,11 @@
 import { describe, expect, test } from "bun:test";
 import { splitDraftEmit } from "../../src/import-spill";
 
+// The CPU-bound tests in this file carry an explicit 120 s timeout (the `120_000` closing them).
+// bun's default is 5 s, which they pass in under a second on a quiet machine and failed on a
+// busy one with nothing wrong: 2026-10-04, four suites at once beside 300 busy loops, the
+// slowest took 10.3 s. No assertion reads the clock; a hang still fails, later.
+
 const wasmBytes = await Bun.file(
 	new URL("../../engine/wasm-import/pkg/sylvan_wasm_import.wasm", import.meta.url),
 ).arrayBuffer();
@@ -359,7 +364,7 @@ describe("the partition-scoped restore", () => {
 		expect(rows.every((r) => typeof r.cubecobra_score === "number")).toBe(true);
 		expect(rows.some((r) => JSON.stringify(r.card_art_tags ?? "").includes("back-"))).toBe(true);
 		expect(rows.some((r) => JSON.stringify(r.card_oracle_tags ?? "").includes("oracle-"))).toBe(true);
-	});
+	}, 120_000);
 
 	test("a streamed snapshot restores the same wherever the host cuts its rows", () => {
 		// Compared as VALUES: the maps serialize in HashMap order, which follows the instance's hash

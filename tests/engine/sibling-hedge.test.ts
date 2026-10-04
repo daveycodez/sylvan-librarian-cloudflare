@@ -7,9 +7,10 @@
 // is pinned here is when one is sent, that at most one is, and that the answer and the errors are
 // the ones the call would have given alone.
 //
-// Real timers at a 20ms floor: "late" below is 150ms, "quick" the next tick.
+// Real timers at a 20ms floor: "late" below is 150ms, "quick" the next tick — except the two tests
+// that run on a clock the test moves (`onTestClock`), which is where a busy machine broke them.
 
-import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, jest, test } from "bun:test";
 import {
 	type CrossTarget,
 	HedgePhase,
@@ -53,6 +54,63 @@ beforeEach(() => {
 	restore = setSiblingHedgeForTests({ floorMs: 20, wakingFloorMs: 20 });
 });
 afterEach(() => restore());
+
+// ── a clock the test moves ───────────────────────────────────────────────────────────────────
+//
+// Two tests below raced REAL timers against each other and lost on a busy machine. Reproduced
+// 2026-10-04 with twelve runs of this file beside 700 busy loops (load average 400): "is sent once
+// more…" failed twice — its 20ms hedge timer fired after 120ms, so the hedged call took 150ms
+// where the test allows 120 — and "the original still wins…" once, its 80ms original landing
+// before the 20ms timer that should have hedged it. Neither says anything about the code: each
+// asserts an ORDER of events that only holds while the timers fire near their times.
+//
+// On bun's fake clock the order is exact. `setTimeout` and `Date.now` — the only clock
+// `HedgePhase` reads — move when the test moves them, one millisecond at a time, with a turn of
+// the REAL event loop between steps so every promise continuation a timer released has run before
+// the next timer is looked at. Nothing waits on wall time, so nothing can be late.
+
+/** `setImmediate` as it was at load: bun's fake timers leave it real, and this keeps it so. */
+const realTurn = setImmediate;
+/** One turn of the real event loop: every promise continuation queued so far has run. */
+const turn = () => new Promise<void>((resolve) => realTurn(resolve));
+
+interface TestClock {
+	/** Await `work` while the clock runs, a millisecond at a time. */
+	until<T>(work: Promise<T>): Promise<T>;
+	/** Let `ms` milliseconds pass. */
+	pass(ms: number): Promise<void>;
+}
+
+/** Run `body` on a clock only it moves; real timers are back when it returns or throws. */
+async function onTestClock<T>(body: (clock: TestClock) => Promise<T>): Promise<T> {
+	jest.useFakeTimers();
+	try {
+		return await body({
+			async until(work) {
+				let settled = false;
+				const mark = () => {
+					settled = true;
+				};
+				work.then(mark, mark);
+				for (let ms = 0; ; ms++) {
+					await turn();
+					if (settled) return work;
+					if (ms >= 60_000) throw new Error("the work did not settle within a minute of the test's clock");
+					jest.advanceTimersByTime(1);
+				}
+			},
+			async pass(ms) {
+				for (let i = 0; i < ms; i++) {
+					await turn();
+					jest.advanceTimersByTime(1);
+				}
+				await turn();
+			},
+		});
+	} finally {
+		jest.useRealTimers();
+	}
+}
 
 describe("the tuning production runs with", () => {
 	test("on; half the phase answered, 500ms out, four times the answers' median", () => {
@@ -100,37 +158,51 @@ describe("a phase whose calls all answer", () => {
 });
 
 describe("one call late while the rest have answered", () => {
-	test("is sent once more, and the second answer is the call's answer", async () => {
-		const phase = new HedgePhase();
-		const late = sibling(
-			() => after(150, "rows"),
-			() => after(0, "rows"),
-		);
-		const [, , , call] = await Promise.all([quick("a"), quick("b"), quick("c"), late].map((s) => phase.run(s.send)));
-		expect(late.state.sent).toBe(2);
-		if (!call?.ok) throw new Error("the hedged call did not answer");
-		expect(call.value).toBe("rows");
-		expect(call.ms).toBeLessThan(120);
-		expect(call.hedge).toMatchObject({ won: "hedge", answered: 3, issued: 4, originalMs: null });
-		expect(call.hedge?.firedAtMs).toBeGreaterThanOrEqual(19);
-		// The original is not cancelled; when it lands the note says how late it was.
-		await after(170, null);
-		expect(call.hedge?.originalMs).toBeGreaterThanOrEqual(140);
-		expect(late.state.sent).toBe(2);
-	});
+	test("is sent once more, and the second answer is the call's answer", () =>
+		onTestClock(async (clock) => {
+			const phase = new HedgePhase();
+			const late = sibling(
+				() => after(150, "rows"),
+				() => after(0, "rows"),
+			);
+			const [, , , call] = await clock.until(
+				Promise.all([quick("a"), quick("b"), quick("c"), late].map((s) => phase.run(s.send))),
+			);
+			expect(late.state.sent).toBe(2);
+			if (!call?.ok) throw new Error("the hedged call did not answer");
+			expect(call.value).toBe("rows");
+			expect(call.ms).toBeLessThan(120);
+			expect(call.hedge).toMatchObject({ won: "hedge", answered: 3, issued: 4, originalMs: null });
+			expect(call.hedge?.firedAtMs).toBeGreaterThanOrEqual(19);
+			// On the test's clock the times are exact: hedged at the 20ms floor, and answered by the
+			// next step of the clock (the hedge's own 0ms timer is set at 20 and fires by 21).
+			expect(call.hedge?.firedAtMs).toBe(20);
+			expect(call.ms).toBeLessThanOrEqual(21);
+			// The original is not cancelled; when it lands the note says how late it was.
+			await clock.pass(170);
+			expect(call.hedge?.originalMs).toBeGreaterThanOrEqual(140);
+			expect(call.hedge?.originalMs).toBe(150);
+			expect(late.state.sent).toBe(2);
+		}));
 
-	test("the original still wins when it answers first, and only one hedge is ever sent", async () => {
-		const phase = new HedgePhase();
-		const late = sibling(
-			() => after(80, "first"),
-			() => after(400, "second"),
-		);
-		const [, , call] = await Promise.all([quick("a"), quick("b"), late].map((s) => phase.run(s.send)));
-		expect(late.state.sent).toBe(2);
-		expect(call).toMatchObject({ ok: true, value: "first", hedge: { won: "original" } });
-		expect(call?.ms).toBeGreaterThanOrEqual(75);
-		expect(call?.hedge?.originalMs).toBe(call?.ms as number);
-	});
+	test("the original still wins when it answers first, and only one hedge is ever sent", () =>
+		onTestClock(async (clock) => {
+			const phase = new HedgePhase();
+			const late = sibling(
+				() => after(80, "first"),
+				() => after(400, "second"),
+			);
+			const [, , call] = await clock.until(Promise.all([quick("a"), quick("b"), late].map((s) => phase.run(s.send))));
+			expect(late.state.sent).toBe(2);
+			expect(call).toMatchObject({ ok: true, value: "first", hedge: { won: "original" } });
+			expect(call?.ms).toBeGreaterThanOrEqual(75);
+			expect(call?.hedge?.originalMs).toBe(call?.ms as number);
+			// On the test's clock the times are exact: hedged at the 20ms floor, won at 80ms.
+			expect([call?.hedge?.firedAtMs, call?.ms]).toEqual([20, 80]);
+			// ...and the hedge landing later, at 420ms, sends nothing more.
+			await clock.pass(400);
+			expect(late.state.sent).toBe(2);
+		}));
 
 	test("up to half the phase late together is still hedged; more than half is not", async () => {
 		const half = new HedgePhase();
