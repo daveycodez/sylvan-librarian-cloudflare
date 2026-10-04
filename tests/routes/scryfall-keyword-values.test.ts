@@ -5,7 +5,7 @@
 // beside KEYWORD_ABILITY_KEYWORDS in src/routes/scryfall-compat/query-terms.ts.
 
 import { describe, expect, test } from "bun:test";
-import { catalogKey } from "../../src/engine/reference-kv";
+import { catalogKey, encodeCountedArray } from "../../src/engine/reference-kv";
 import { EMPTY_TAG_ALIASES, parseScryfallQueryWithDirectives } from "../../src/parser";
 import {
 	type KeywordTables,
@@ -193,9 +193,12 @@ describe("the tables are asked only when a keyword: term needs them", () => {
 describe("through /cards/search, against the store's own keywords and the mirrored catalogs", () => {
 	const kv = () => {
 		const store = new FakeKV();
-		store.put(catalogKey("keyword-abilities"), JSON.stringify(["Flying", "Absorb", "Poisonous"]));
-		store.put(catalogKey("keyword-actions"), JSON.stringify(["Scry", "Untap", "Harness"]));
-		store.put(catalogKey("ability-words"), JSON.stringify(["Landfall"]));
+		// As the import publishes them: a counted array, not bare JSON (reference-kv.ts).
+		const put = (name: "keyword-abilities" | "keyword-actions" | "ability-words", words: string[]) =>
+			store.put(catalogKey(name), encodeCountedArray(JSON.stringify(words), words.length));
+		put("keyword-abilities", ["Flying", "Absorb", "Poisonous"]);
+		put("keyword-actions", ["Scry", "Untap", "Harness"]);
+		put("ability-words", ["Landfall"]);
 		return store;
 	};
 	const engine = () => {

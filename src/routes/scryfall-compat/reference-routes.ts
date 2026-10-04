@@ -241,7 +241,11 @@ export async function keywordCatalogWords(ctx: RouteContext): Promise<string[] |
 		const words: string[] = [];
 		for (const value of values) {
 			if (value === null) return null;
-			const parsed: unknown = JSON.parse(decoder.decode(value));
+			// The STORED shape is a counted array — a header, then the `data` array's bytes — the
+			// same value `/catalog/:name` splices into its envelope (readCountedArray). Parsing
+			// the whole value threw on the header, so every read came back "validate nothing" and
+			// `keyword:nonsense t:goblin` stayed a 404 against Scryfall's 561 and its warning.
+			const parsed: unknown = JSON.parse(decoder.decode(readCountedArray(value).data));
 			if (!Array.isArray(parsed)) return null;
 			for (const word of parsed) if (typeof word === "string") words.push(word);
 		}
