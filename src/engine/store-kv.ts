@@ -1908,8 +1908,23 @@ export async function gzipBytes(bytes: Uint8Array): Promise<Uint8Array> {
  *      bit is bit 6 of the printing's `games` byte, above its three-bit order index, which every
  *      reader of the byte now masks. Computed in card_engine's build after grouping, like the
  *      cheapest codes of generation 61.
+ *
+ *   67 (2026-10-04): THE NAME A
+ *      REVERSIBLE PRINTING PRINTS IS A NAME OF ITS OWN. 72 cards have a reversible Secret Lair
+ *      printing that prints its name twice joined ("Tuvasa the Sunlit // Tuvasa the Sunlit"), and
+ *      api.scryfall.com reads that name everywhere a name is read: `usd-a` is 13 printings where
+ *      this port answered 12 (the doubled name of sld/1081 holds `colossusdark` across its seam),
+ *      `name:"colossus // dark"` and `name:/^tuvasa the sunlit$/` (2 printings, not the 3 a card-only
+ *      read gives), `/cards/autocomplete?q=tuvasa` lists both names and the typo stage's race holds
+ *      the doubled one as a candidate of its own.
+ *
+ *      PUBLISHED, NOT STORED: the names blob gains one record per such card — 72 lines of ~100
+ *      bytes on a ~2 MB blob, beside the card's own — and the names index plans `name:`, autocomplete
+ *      and `?fuzzy=` from its records, so a blob without them would route the search away from the
+ *      partition that answers it. The archive is untouched: no layout, no format version, neither
+ *      row, and the engine reads the doubled names off the divergent records it already stores.
  */
-export const STORE_CONTENT_GENERATION = 66;
+export const STORE_CONTENT_GENERATION = 67;
 
 /**
  * Chunk key for a store. Keyed by store_key, so publishes never collide.

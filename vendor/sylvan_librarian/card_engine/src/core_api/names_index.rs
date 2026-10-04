@@ -209,8 +209,57 @@ pub(crate) fn name_records_of(d: &CardData) -> Vec<NameRecord> {
             best,
             flavor: normalize_flavor(flavor),
         });
+        // The name a REVERSIBLE printing prints is a name of its own — see `doubled_record`.
+        if let Some(own) = card.divergent.first() {
+            let mut classes = 0u8;
+            for (is_canonical, space) in [(true, canonical), (false, foreign)] {
+                for p in space.iter().filter(|p| p.card_layout_id == own.printing_layout_id) {
+                    classes |= class_bits(is_canonical, tagged(&p.card_is_tags, extra_vid), tagged(&p.card_is_tags, variation_vid));
+                }
+            }
+            // `best_printing_of` over the printings that print it: the first served canonical one,
+            // else the first (the archived twin does the same through `layout_of`).
+            let mut own_canonical = canonical.iter().filter(|p| p.card_layout_id == own.printing_layout_id);
+            let first = own_canonical.next();
+            let best_p = first.filter(|p| !tagged(&p.card_is_tags, extra_vid)).or_else(|| {
+                canonical.iter().find(|p| p.card_layout_id == own.printing_layout_id && !tagged(&p.card_is_tags, extra_vid)).or(first)
+            });
+            let best = best_p.map_or(BEST_ART_SERIES | BEST_NO_CONTAINMENT, |p| {
+                best_bits(Some(d.strings[p.card_layout_id as usize].as_str()))
+            });
+            out.push(doubled_record(
+                &d.strings[own.card_name_id as usize],
+                &d.strings[own.card_name_folded_id as usize],
+                classes,
+                best,
+            ));
+        }
     }
     out
+}
+
+/// The record of the name a REVERSIBLE printing prints — "Temple Garden // Temple Garden" where its
+/// card is "Temple Garden" — read as a name of its own: collated, lowercased and folded like any
+/// card's, carrying the classes of the printings that print it (a reversible printing tagged
+/// `extra` is not a default search's), and no flavor keys (the card's record holds those).
+///
+/// `name:colossusdark`, `usd-a`, `name:"colossus // dark"` and `/cards/autocomplete?q=tuvasa` all
+/// answer from a name only this printing prints, and the names index plans every one of them from
+/// its records. api.scryfall.com, 2026-10-04: `q=tuvasa` lists "Tuvasa the Sunlit" and "Tuvasa the
+/// Sunlit // Tuvasa the Sunlit"; the typo stage's race holds the doubled name as a candidate of its
+/// own (`fuzzy=Tuvasa the Sunlit // Tuvasa the Sunlt` is sld/1328).
+///
+/// One extra line for each of 72 cards, appended after the card's own.
+fn doubled_record(printed: &str, folded: &str, classes: u8, best: u8) -> NameRecord {
+    NameRecord {
+        collated: crate::collate_name(folded),
+        printed: printed.to_owned(),
+        lower: printed.to_lowercase(),
+        folded: folded.to_owned(),
+        classes,
+        best,
+        flavor: Vec::new(),
+    }
 }
 
 /// The names blob's line for each record (format 2 — engine/wasm/src/names.rs reads it,
@@ -312,6 +361,27 @@ impl BufferStore {
                 best,
                 flavor: normalize_flavor(std::mem::take(&mut flavor[cid])),
             });
+            if let Some(own) = card.divergent.first() {
+                let own_vpids: Vec<u32> = (cs..ce)
+                    .chain((fs..fe).map(|f| n + f))
+                    .filter(|&vpid| crate::divergent_of(card, crate::printing_at(data, vpid)).is_some())
+                    .collect();
+                let classes = own_vpids.iter().fold(0u8, |acc, &vpid| acc | bits_of(vpid));
+                // The first served canonical own printing, else the first (`best_bits` of its layout).
+                let canonical_own = || own_vpids.iter().copied().filter(|&vpid| vpid < n);
+                let best_vpid = canonical_own()
+                    .find(|&vpid| {
+                        let p = crate::printing_at(data, vpid);
+                        !extra_vid.is_some_and(|v| p.card_is_tags.iter().any(|t| u16::from(*t) == v))
+                    })
+                    .or_else(|| canonical_own().next());
+                let best = best_vpid.map_or(BEST_ART_SERIES | BEST_NO_CONTAINMENT, |vpid| best_bits(super::layout_of(data, vpid)));
+                if let (Some(printed), Some(folded)) =
+                    (str_at(&data.strings, u32::from(own.card_name_id)), str_at(&data.strings, u32::from(own.card_name_folded_id)))
+                {
+                    out.push(doubled_record(printed, folded, classes, best));
+                }
+            }
         }
         out
     }

@@ -862,6 +862,17 @@ fn autocomplete_names_of(d: &CardData) -> Vec<(String, String)> {
         };
         out.push((collated.to_owned(), printed.to_owned()));
     }
+    // The doubled names reversible printings print, served by those printings (see
+    // `BufferStore::autocomplete`).
+    for (cid, card) in d.cards.iter().enumerate() {
+        let Some(own) = card.divergent.first() else { continue };
+        let served = d.printings[d.offsets[cid] as usize..d.offsets[cid + 1] as usize].iter().any(|p| {
+            p.card_layout_id == own.printing_layout_id && extra_vid.is_none_or(|vid| !p.card_is_tags.contains(&vid))
+        });
+        if served {
+            out.push((crate::collate_name(&d.strings[own.card_name_folded_id as usize]), d.strings[own.card_name_id as usize].clone()));
+        }
+    }
     out.sort_unstable();
     out.dedup();
     out
@@ -3152,6 +3163,19 @@ impl BufferStore {
             let printed = str_at(&data.strings, u32::from(card.card_name_id)).unwrap_or(collated);
             out.push((collated.to_owned(), printed.to_owned()));
         }
+        // The doubled names, offered by the printings that print them (see `autocomplete`).
+        for cid in data.indexes.name_divergent.iter().map(|c| u32::from(*c) as usize) {
+            let Some(own) = data.cards[cid].divergent.first() else { continue };
+            if !self.own_printing_is_served(cid, extra_vid) {
+                continue;
+            }
+            let (Some(folded), Some(printed)) =
+                (str_at(&data.strings, u32::from(own.card_name_folded_id)), str_at(&data.strings, u32::from(own.card_name_id)))
+            else {
+                continue;
+            };
+            out.push((crate::collate_name(folded), printed.to_owned()));
+        }
         out.sort_unstable();
         out.dedup();
         out
@@ -3167,6 +3191,20 @@ impl BufferStore {
     /// `None` for `extra_vid` means this store's collection vocabulary never interned the tag —
     /// a fixture, or a corpus with no extras — and then every card is servable, which is the
     /// same answer the scan would give.
+    /// Whether any CANONICAL printing that prints this card's divergent record — a reversible
+    /// printing — is one a default search would show. The doubled name's twin of
+    /// `any_printing_is_served`; `Mechtitan // Mechtitan` is the one name whose only printing is an
+    /// extra, and api.scryfall.com offers it only with `include_extras`.
+    fn own_printing_is_served(&self, cid: usize, extra_vid: Option<u16>) -> bool {
+        let data = self.data();
+        let card = &data.cards[cid];
+        let (start, end) = (u32::from(data.offsets[cid]) as usize, u32::from(data.offsets[cid + 1]) as usize);
+        (start..end).any(|pid| {
+            let p = &data.printings[pid];
+            crate::divergent_of(card, p).is_some() && crate::printing_is_served(p, extra_vid)
+        })
+    }
+
     fn any_printing_is_served(&self, cid: usize, extra_vid: Option<u16>) -> bool {
         let Some(vid) = extra_vid else { return true };
         let data = self.data();
@@ -3273,6 +3311,34 @@ impl BufferStore {
             let printed = str_at(&data.strings, u32::from(card.card_name_id)).unwrap_or(collated);
             hits.push((rank, inter, name_tg.len() as u32, printed, cid));
         }
+        // THE NAMES REVERSIBLE PRINTINGS PRINT, offered beside their cards' own: `q=tuvasa` is
+        // Tuvasa the Sunlit AND `Tuvasa the Sunlit // Tuvasa the Sunlit` on api.scryfall.com
+        // (2026-10-04), and `q=colossusdark` is the doubled name alone, since its collation holds
+        // the seam. The catalog is the PRINTED names, so a name is one when a printing prints it.
+        //
+        // Scanned from `name_divergent` (72 cards) rather than through the trigram narrowing,
+        // whose index is built from the cards' own names and cannot see a needle across a seam.
+        // `doubled` remembers which hits these are: they are served by their OWN printings (a
+        // reversible printing tagged `extra` is a name only `include_extras` offers), where a
+        // card is served by any of its printings.
+        let mut doubled: Vec<u32> = Vec::new();
+        for cid in data.indexes.name_divergent.iter().map(|c| u32::from(*c)) {
+            let Some(own) = data.cards[cid as usize].divergent.first() else { continue };
+            let Some(folded) = str_at(&data.strings, u32::from(own.card_name_folded_id)) else { continue };
+            let collated = crate::collate_name(folded);
+            let rank = if collated.starts_with(&needle) {
+                0u8
+            } else if collated.contains(&needle) {
+                1u8
+            } else {
+                continue;
+            };
+            collated_trigrams(&collated, &mut name_tg);
+            let inter = name_tg.iter().filter(|t| needle_tg.contains(t)).count() as u32;
+            let Some(printed) = str_at(&data.strings, u32::from(own.card_name_id)) else { continue };
+            doubled.push(cid);
+            hits.push((rank, inter, name_tg.len() as u32, printed, cid));
+        }
         // similarity = inter / (|needle| + |name| - inter), compared as a cross-multiplied
         // rational in u64 — the counts are window counts of card names, so the products cannot
         // come close to overflowing.
@@ -3288,7 +3354,18 @@ impl BufferStore {
         for (_, _, _, printed, cid) in hits {
             // Extras BEFORE the dedup, so a name printed both as a token and as a real card is
             // still offered: the token copy is skipped and the served copy supplies the entry.
-            if !self.any_printing_is_served(cid as usize, extra_vid) {
+            let is_doubled = doubled.contains(&cid) && {
+                // The card's own printed name and the doubled one share a cid: told apart by the
+                // string, which is never equal (a doubled name has the seam).
+                let own = data.cards[cid as usize].divergent.first();
+                own.is_some_and(|o| str_at(&data.strings, u32::from(o.card_name_id)) == Some(printed))
+            };
+            let served = if is_doubled {
+                self.own_printing_is_served(cid as usize, extra_vid)
+            } else {
+                self.any_printing_is_served(cid as usize, extra_vid)
+            };
+            if !served {
                 continue;
             }
             // One entry per distinct printed name: several printings of one card are one

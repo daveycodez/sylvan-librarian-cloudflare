@@ -6583,6 +6583,60 @@ fn typo_pool_vpid(data: &Archived<CardData>, cid: usize, extra_vid: Option<u16>,
     (layout != Some("art_series")).then_some((vpid, served))
 }
 
+/// The printing a typo-stage candidate of a REVERSIBLE printing's name materializes: the first, in
+/// stored order, of the card's canonical printings that print its divergent record
+/// (`divergent_of`), a served one before an extra, within `set_code` when one is given — or None
+/// when the card has no such printing there.
+///
+/// WHICH of two sibling reversible printings (Ajani Goldmane's sld/745 and sld/1453) the race
+/// answers is not a rule api.scryfall.com keeps: `fuzzy=Chandra Nalaar // Chandra Nalaer` is
+/// sld/1456 and `// Chandra Nalaa` is sld/748, the same card and the same two candidates, only the
+/// typo moved (2026-10-04, 16 probes over the 10 two-printing cards). The first stored is the
+/// answer the exact stage gives and is deterministic.
+fn reversible_pool_vpid(data: &Archived<CardData>, cid: usize, extra_vid: Option<u16>, set_code: Option<&str>) -> Option<(u32, bool)> {
+    let card = &data.cards[cid];
+    let (start, end) = (u32::from(data.offsets[cid]), u32::from(data.offsets[cid + 1]));
+    let mut own = (start..end).filter(|&v| {
+        let p = &data.printings[v as usize];
+        divergent_of(card, p).is_some() && set_code.is_none_or(|set| p.card_set_code.as_str().eq_ignore_ascii_case(set))
+    });
+    let first = own.next()?;
+    if printing_is_served(&data.printings[first as usize], extra_vid) {
+        return Some((first, true));
+    }
+    match own.find(|&v| printing_is_served(&data.printings[v as usize], extra_vid)) {
+        Some(v) => Some((v, true)),
+        None => Some((first, false)),
+    }
+}
+
+/// Every candidate the typo stage holds for the names REVERSIBLE printings print, as
+/// `(score, served, cid, folded name, printing)` — `fuzzy_name_match_in` and
+/// `fuzzy_candidates_in` both race these beside the cards' own names. api.scryfall.com holds the
+/// doubled names as names of their own (2026-10-04: `fuzzy=Ajani Goldmane // Ajani Goldman` is the
+/// reversible sld/1453 where the card's own name answers m11/1), and a candidate is the printing
+/// that prints the name rather than the card's preferred one.
+fn reversible_name_candidates<'a>(
+    data: &'a Archived<CardData>,
+    needle_tg: &[[char; 3]],
+    floor: f32,
+    extra_vid: Option<u16>,
+    set_code: Option<&str>,
+    name_tg: &mut Vec<[char; 3]>,
+) -> Vec<(f32, bool, u32, &'a str, u32)> {
+    let mut out = Vec::new();
+    for cid in data.indexes.name_divergent.iter().map(|c| u32::from(*c)) {
+        let Some(own) = data.cards[cid as usize].divergent.first() else { continue };
+        let Some(name) = str_at(&data.strings, u32::from(own.card_name_folded_id)) else { continue };
+        collated_windows_into(name, name_tg);
+        let Some(score) = fuzzy_score_cleared(name_tg, needle_tg, floor) else { continue };
+        if let Some((vpid, served)) = reversible_pool_vpid(data, cid as usize, extra_vid, set_code) {
+            out.push((score, served, cid, name, vpid));
+        }
+    }
+    out
+}
+
 /// The owning card of a virtual printing id, via the direct arrays of whichever space it is in.
 ///
 /// LOCAL PATCH (Cloudflare port, #927): upstream dropped this with the printed-name pass of the
@@ -6681,6 +6735,9 @@ pub(crate) fn fuzzy_name_match_in(
             }
         }
     }
+    for (score, served, cid, name, vpid) in reversible_name_candidates(data, &needle_tg, floor, extra_vid, set_code, &mut name_tg) {
+        race.offer(RaceEntry { score, served, first: card_first_released(data, cid as usize), name, cid, vpid });
+    }
     race.outcome(lead)
 }
 
@@ -6738,6 +6795,9 @@ pub(crate) fn fuzzy_candidates_in(
             let first = card_first_released(data, cid);
             found.push(RaceEntry { score, served, first, name, cid: cid as u32, vpid });
         }
+    }
+    for (score, served, cid, name, vpid) in reversible_name_candidates(data, &needle_tg, floor, extra_vid, set_code, &mut name_tg) {
+        found.push(RaceEntry { score, served, first: card_first_released(data, cid as usize), name, cid, vpid });
     }
     // Best per (card, name) class: group, keep the top score (canonical vpid on a tie — it
     // sorts first), then rank classes in the race's order (FuzzyRace's own ranking, so the merged

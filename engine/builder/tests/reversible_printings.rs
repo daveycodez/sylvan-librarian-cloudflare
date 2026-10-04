@@ -201,3 +201,61 @@ fn a_negated_name_is_the_complement_over_printings() {
         ["c18/47", "sld/1081"]
     );
 }
+
+#[test]
+fn autocomplete_offers_the_doubled_name_beside_the_card() {
+    let store = store();
+    // api.scryfall.com 2026-10-04: `q=tuvasa` and `q=sunlit` list both, the card's first.
+    assert_eq!(store.autocomplete("tuvasa", 20), ["Tuvasa the Sunlit", "Tuvasa the Sunlit // Tuvasa the Sunlit"]);
+    assert_eq!(
+        store.autocomplete("tuvasa the sunlit //", 20),
+        ["Tuvasa the Sunlit", "Tuvasa the Sunlit // Tuvasa the Sunlit"]
+    );
+    // The collated match reaches across the seam: `colossusdark`, `sunlit tuvasa` and
+    // `tuvasa the sunlit // t` are the doubled name alone.
+    assert_eq!(store.autocomplete("colossusdark", 20), ["Darksteel Colossus // Darksteel Colossus"]);
+    assert_eq!(store.autocomplete("sunlit tuvasa", 20), ["Tuvasa the Sunlit // Tuvasa the Sunlit"]);
+    assert_eq!(store.autocomplete("tuvasa the sunlit // t", 20), ["Tuvasa the Sunlit // Tuvasa the Sunlit"]);
+    // An adventure's reversible printing prints three parts, and both names are offered.
+    assert_eq!(
+        store.autocomplete("bloomvine", 20),
+        ["Bloomvine Regent // Claim Territory", "Bloomvine Regent // Claim Territory // Bloomvine Regent"]
+    );
+    // One name per distinct printed name, however many printings print it (Ajani Goldmane has two).
+    assert_eq!(store.autocomplete("ajani goldmane", 20), ["Ajani Goldmane", "Ajani Goldmane // Ajani Goldmane"]);
+    // The pairs the names blob is made of hold them too.
+    let pairs = store.autocomplete_names();
+    let doubled = ("darksteelcolossusdarksteelcolossus".to_owned(), "Darksteel Colossus // Darksteel Colossus".to_owned());
+    assert!(pairs.contains(&doubled));
+}
+
+#[test]
+fn the_typo_stage_holds_the_doubled_names_as_names_of_their_own() {
+    let store = store();
+    let ask = |needle: &str| -> String {
+        let fields = Some(["name", "set_code", "collector_number"].map(str::to_owned).to_vec());
+        let (status, card) = store.fuzzy_card_by_name(needle, 0.4, 0.0, fields).expect("fuzzy");
+        let card = card.unwrap_or(Value::Null);
+        format!(
+            "{status} {} {}/{}",
+            card["name"].as_str().unwrap_or(""),
+            card["set_code"].as_str().unwrap_or(""),
+            card["collector_number"].as_str().unwrap_or("")
+        )
+    };
+    // api.scryfall.com 2026-10-04: the misspelt DOUBLED name is the reversible printing, where the
+    // misspelt single name is the ordinary one.
+    assert_eq!(ask("Tuvasa the Sunlit // Tuvasa the Sunlt"), "hit Tuvasa the Sunlit // Tuvasa the Sunlit sld/1328");
+    assert_eq!(ask("Tuvasa the Sunlt"), "hit Tuvasa the Sunlit c18/47");
+    assert_eq!(ask("Darksteel Colossus // Darksteel Colosus"), "hit Darksteel Colossus // Darksteel Colossus sld/1081");
+    assert_eq!(
+        ask("Bloomvine Regent // Claim Territory // Bloomvine Regnt"),
+        "hit Bloomvine Regent // Claim Territory // Bloomvine Regent tdm/381"
+    );
+    // Of the card's two reversible printings the first stored answers. Scryfall's own pick is not a
+    // rule it keeps: `Ajani Goldmane // Ajani Goldman` is sld/1453 and so is `// Ajani Goldmanee`,
+    // while `Chandra Nalaar // Chandra Nalaer` is sld/1456 and `// Chandra Nalaa` sld/748 — one
+    // card, two candidates, the typo moved. The card is the answer.
+    assert!(ask("Ajani Goldmane // Ajani Goldman").starts_with("hit Ajani Goldmane // Ajani Goldmane sld/"));
+    assert_eq!(ask("Ajani Goldman"), "hit Ajani Goldmane m11/1");
+}

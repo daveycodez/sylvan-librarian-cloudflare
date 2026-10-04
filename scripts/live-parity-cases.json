@@ -3128,6 +3128,30 @@
 			"method": "GET",
 			"path": "/cards/search?q=name%3A%2F%5Etuvasa+the+sunlit%24%2F&unique=prints",
 			"note": "2026-10-04. 2 printings (c18/47, pz2/70691), not the 3 a card-only read gives: sld/1328 prints `Tuvasa the Sunlit // Tuvasa the Sunlit`, which does not end where the regex says (`name:/^tuvasa the sunlit \\/\\/ tuvasa the sunlit$/` is sld/1328 alone, `!\"Tuvasa the Sunlit\"` is 3). NEEDS THE REBUILT ENGINE BLOB."
+		},
+		{
+			"name": "autocomplete-doubled-reversible-name",
+			"method": "GET",
+			"path": "/cards/autocomplete?q=tuvasa",
+			"note": "2026-10-04. `Tuvasa the Sunlit` and `Tuvasa the Sunlit // Tuvasa the Sunlit`, the card's first: a reversible printing prints its name twice joined, and the catalog is the printed names. Only the card's own name here before (`q=sunlit`, `darksteel colossus`, `temple garden` and `command tower` answer the same two; `q=mechtitan` offers `Mechtitan Core` and its doubled name, and only `include_extras=true` adds `Mechtitan` and `Mechtitan // Mechtitan` — a parameter this route does not read). Generation 65. NEEDS THE REBUILT ENGINE BLOB AND THE REPUBLISHED NAMES BLOB."
+		},
+		{
+			"name": "autocomplete-across-the-seam-of-a-doubled-name",
+			"method": "GET",
+			"path": "/cards/autocomplete?q=colossusdark",
+			"note": "2026-10-04. `Darksteel Colossus // Darksteel Colossus` alone: the collated match reaches across the seam of the doubled name (`sunlit tuvasa` is `Tuvasa the Sunlit // Tuvasa the Sunlit`). An empty catalog here. Generation 65. NEEDS THE REBUILT ENGINE BLOB AND THE REPUBLISHED NAMES BLOB."
+		},
+		{
+			"name": "named-fuzzy-misspelt-doubled-name",
+			"method": "GET",
+			"path": "/cards/named?fuzzy=Tuvasa+the+Sunlit+%2F%2F+Tuvasa+the+Sunlt",
+			"note": "2026-10-04. sld/1328, the reversible printing: the typo stage's race holds the doubled name as a candidate of its own (`Darksteel Colossus // Darksteel Colosus` sld/1081, `Temple Garden // Temple Gardn` ecl/351, `Mechtitan // Mechtitn` sld/1969). Answered the ordinary c18/47 here. Which of a card's TWO reversible printings answers is not a rule Scryfall keeps (`Chandra Nalaar // Chandra Nalaer` is sld/1456, `// Chandra Nalaa` sld/748), so this case is one with a single reversible printing. Generation 65. NEEDS THE REBUILT ENGINE BLOB AND THE REPUBLISHED NAMES BLOB."
+		},
+		{
+			"name": "name-across-the-seam-of-a-doubled-name",
+			"method": "GET",
+			"path": "/cards/search?q=usd-a&unique=prints",
+			"note": "2026-10-04. 13 printings, where this port answered 12: `usd-a` collates to `usda`, which the doubled name `Darksteel Colossus // Darksteel Colossus` (sld/1081) holds across its seam (`colossusdark` and `name:\"colossus // dark\"` are that printing alone, `name:/colossus \\/\\/ dark/` too). A reversible printing prints its own name and `name:` reads it. NEEDS THE REBUILT ENGINE BLOB AND THE REPUBLISHED NAMES BLOB."
 		}
 	]
 }

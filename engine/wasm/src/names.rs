@@ -724,6 +724,11 @@ mod tests {
         // Two cards, one printed name (different oracle ids): one suggestion.
         add(&mut rows, "Twin Name", false, None);
         add(&mut rows, "Twin Name", false, None);
+        // A card with a REVERSIBLE printing, which prints the name twice joined: the doubled name is
+        // a name of its own to every surface this index answers (autocomplete, `name:`, fuzzy).
+        let hellkite = add(&mut rows, "Doubled Hellkite", false, None);
+        add(&mut rows, "Doubled Hellkite // Doubled Hellkite", false, Some(hellkite));
+        rows.last_mut().expect("the row just added")["card_layout"] = json!("reversible_card");
         rows
     }
 
@@ -1124,13 +1129,18 @@ mod tests {
             "lordofblood", "draculalordofblooddraculalordofbats", "kaiju", "ego", "deriva", "inganno", "variant",
             "variation", "extra", "token", "emblem", "liliana", "titanoth", "rex", "zzzz", "q", "", "fireice", "whowhat",
             "eowyn", "limdul", "blitz", "foreign", "only", "card", "giant", "food", "1996", "100000",
+            // Across the seam of a reversible printing's doubled name, and inside either half.
+            "hellkitedoubled", "kitedou", "doubled", "hellkite", "doubledhellkitedoubledhellkite",
         ];
         let mut trees: Vec<Value> = Vec::new();
         for w in words {
             trees.push(name_leaf("CollatedNameValueNode", w));
             trees.push(name_leaf("StringValueNode", w));
         }
-        for re in ["^li", "bolt$", "o.*t", "(?:ego|rex)", "//", "^$", "[0-9]", "é", "^(?!s)"] {
+        for re in [
+            "^li", "bolt$", "o.*t", "(?:ego|rex)", "//", "^$", "[0-9]", "é", "^(?!s)", "^doubled hellkite$", "hellkite$",
+            r"hellkite \/\/ doubled", "^doubled hellkite \\/\\/ doubled hellkite$",
+        ] {
             trees.push(name_leaf("RegexValueNode", re));
         }
         for (a, b) in [("lightning", "bolt"), ("godzilla", "rex"), ("dracula", "bats"), ("variant", "card"), ("ego", "zzzz")] {
@@ -1238,9 +1248,42 @@ mod tests {
         assert_eq!(art.best, card_engine::BEST_ART_SERIES | card_engine::BEST_NO_CONTAINMENT);
         let emblem = stats.name_records.iter().find(|r| r.collated == "lilianaemblem").expect("emblem");
         assert_eq!(emblem.best, card_engine::BEST_NO_CONTAINMENT);
+        // The name a reversible printing prints is a record of its own beside its card's: collated
+        // whole (the seam is in it), carrying only the classes of the printings that print it.
+        let doubled = stats.name_records.iter().find(|r| r.collated == "doubledhellkitedoubledhellkite").expect("doubled");
+        assert_eq!(doubled.printed, "Doubled Hellkite // Doubled Hellkite");
+        assert_eq!(doubled.lower, "doubled hellkite // doubled hellkite");
+        assert_eq!((doubled.classes, doubled.best, doubled.flavor.len()), (0x1f, 0, 0));
+        assert!(stats.name_records.iter().any(|r| r.collated == "doubledhellkite"), "and the card's own stays");
         let only_variation = stats.name_records.iter().find(|r| r.collated == "onlyvariationbolt").expect("variation");
         assert_eq!(only_variation.classes & card_engine::CLASS_BOTH_GATES, 0);
         assert_ne!(only_variation.classes & card_engine::CLASS_EXTRA_GATE, 0);
+    }
+
+    /// A REVERSIBLE PRINTING'S DOUBLED NAME IS A NAME OF ITS OWN to the three surfaces the blob
+    /// answers alone. api.scryfall.com, 2026-10-04: `/cards/autocomplete?q=tuvasa` lists "Tuvasa the
+    /// Sunlit" and "Tuvasa the Sunlit // Tuvasa the Sunlit", `q=colossusdark` the doubled name
+    /// alone, and `fuzzy=Tuvasa the Sunlit // Tuvasa the Sunlt` is the reversible printing — whose
+    /// partition the plan must therefore ask, where the card's own name is a typo too far away.
+    #[test]
+    fn a_reversible_printings_doubled_name_is_a_name_of_its_own() {
+        let rows = index_corpus();
+        let holder = {
+            let r = rows.iter().find(|r| r["card_name"] == "Doubled Hellkite").expect("the card");
+            card_engine::partition_of_oracle_id(r["oracle_id"].as_str().expect("oracle"), 7) as u16
+        };
+        let names = NameList::parse(encode_v2(&partitions(&rows, 7))).expect("blob");
+        assert_eq!(autocomplete(&names, "hellkitedoubled", 20), ["Doubled Hellkite // Doubled Hellkite"]);
+        assert_eq!(autocomplete(&names, "doubled hell", 20), ["Doubled Hellkite", "Doubled Hellkite // Doubled Hellkite"]);
+        assert_eq!(autocomplete(&names, "doubled hellkite // d", 20), ["Doubled Hellkite // Doubled Hellkite"]);
+        let words = |w: &str| w.split(' ').map(str::to_owned).collect::<Vec<_>>();
+        let needle = "doubled hellkite // doubled hellkit";
+        let plan = fuzzy_plan(&names, needle, &words(needle), 0.625, 0.0, 0.71).expect("format 2");
+        assert_eq!(plan.partitions, vec![holder], "{plan:?}");
+        // The doubled name is a candidate however far past the card's own name the needle sits.
+        let far = "doubled hellkite // doubled helkite";
+        let plan = fuzzy_plan(&names, far, &words(far), 0.625, 0.0, 0.71).expect("format 2");
+        assert_eq!(plan.partitions, vec![holder], "{plan:?}");
     }
 
     /// The autocomplete answer does not depend on the format: a format-2 blob of the same builds
