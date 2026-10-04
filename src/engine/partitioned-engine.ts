@@ -1742,16 +1742,20 @@ export class PartitionedEngine implements Engine {
 	 * or when the one object cannot (a blob missing from KV, a stuck object): 1 + N calls, never a
 	 * different answer.
 	 */
-	async scryfallAutocomplete(prefix: string, limit: number): Promise<string[]> {
+	async scryfallAutocomplete(prefix: string, limit: number, includeExtras = false): Promise<string[]> {
 		if (cardNamesOf(this.manifest)) {
 			const p = gatherPartitionOf(`autocomplete:${prefix}`, this.n);
 			try {
-				return await this.at(p).scryfallAutocompleteNames(prefix, limit);
+				return await this.at(p).scryfallAutocompleteNames(prefix, limit, includeExtras);
 			} catch (err) {
 				console.warn(`autocomplete not answered from partition ${p}'s card names (${err}); asking every partition`);
 			}
 		}
-		return mergeAutocomplete(await this.all((e) => e.scryfallAutocomplete(prefix, limit)), prefix, limit);
+		return mergeAutocomplete(
+			await this.all((e) => e.scryfallAutocomplete(prefix, limit, includeExtras)),
+			prefix,
+			limit,
+		);
 	}
 
 	async scryfallNamesContaining(

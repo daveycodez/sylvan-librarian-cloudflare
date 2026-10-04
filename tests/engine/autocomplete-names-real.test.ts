@@ -157,7 +157,9 @@ describe.skipIf(!readable)(`autocomplete from the names blob vs the fan-out, on 
 			for (let k = 0; k < parts.length; k++) {
 				loadPartition(k);
 				const started = performance.now();
-				perPartition.push(folded.map((q) => JSON.parse(engine.use((g) => g.autocomplete(q, LIMIT))) as string[]));
+				perPartition.push(
+					folded.map((q) => JSON.parse(engine.use((g) => g.autocomplete(q, LIMIT, false))) as string[]),
+				);
 				fanOutMs += performance.now() - started;
 			}
 
@@ -171,7 +173,7 @@ describe.skipIf(!readable)(`autocomplete from the names blob vs the fan-out, on 
 			let answered = 0;
 			const shown: string[] = [];
 			const started = performance.now();
-			const fromNames = folded.map((q) => engine.use((g) => g.names_autocomplete(q, LIMIT)));
+			const fromNames = folded.map((q) => engine.use((g) => g.names_autocomplete(q, LIMIT, false)));
 			const namesMs = performance.now() - started;
 			for (let i = 0; i < folded.length; i++) {
 				const q = folded[i] as string;

@@ -262,8 +262,12 @@ export interface Engine {
 	 * bolt&set=war` with a 404 and `fuzzy=lightning blow&set=m11` with M11's Lightning Bolt.
 	 */
 	scryfallFuzzyName(name: string, baseUrl: string, setCode?: string): Promise<ScryfallFuzzyResult>;
-	/** Scryfall's autocomplete catalog: printed names, prefix matches first. */
-	scryfallAutocomplete(prefix: string, limit: number): Promise<string[]>;
+	/**
+	 * Scryfall's autocomplete catalog: printed names, prefix matches first. `includeExtras` is
+	 * Scryfall's parameter of that name: tokens, emblems, art-series cards, memorabilia and the doubled
+	 * names of extra reversible printings are offered too (the served test is lifted, nothing else).
+	 */
+	scryfallAutocomplete(prefix: string, limit: number, includeExtras?: boolean): Promise<string[]>;
 	/**
 	 * `/cards/named?exact=`: the best printing whose FOLDED name matches, or null.
 	 *

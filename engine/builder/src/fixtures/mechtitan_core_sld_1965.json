@@ -1,0 +1,185 @@
+{
+  "object": "card",
+  "id": "913f0aca-ac61-4377-b3b1-cd556b950df2",
+  "multiverse_ids": [],
+  "tcgplayer_id": 617830,
+  "cardmarket_id": 810755,
+  "name": "Mechtitan Core // Mechtitan Core",
+  "lang": "en",
+  "released_at": "2025-02-10",
+  "uri": "https://api.scryfall.com/cards/913f0aca-ac61-4377-b3b1-cd556b950df2",
+  "scryfall_uri": "https://scryfall.com/card/sld/1965/mechtitan-core-mechtitan-core?utm_source=api",
+  "layout": "reversible_card",
+  "highres_image": true,
+  "image_status": "highres_scan",
+  "image_updated_at": "2026-07-13T01:58:49Z",
+  "color_identity": [],
+  "keywords": [
+    "Crew"
+  ],
+  "card_faces": [
+    {
+      "object": "card_face",
+      "oracle_id": "f1eb489d-104c-4801-b6d2-3f1a7ee73a75",
+      "layout": "normal",
+      "name": "Mechtitan Core",
+      "mana_cost": "{2}",
+      "cmc": 2.0,
+      "type_line": "Artifact — Vehicle",
+      "oracle_text": "{5}, Exile this Vehicle and four other artifact creatures and/or Vehicles you control: Create Mechtitan, a legendary 10/10 Construct artifact creature token with flying, vigilance, trample, lifelink, and haste that's all colors. When that token leaves the battlefield, return all cards exiled with this Vehicle except this card to the battlefield tapped under their owners' control.\nCrew 2",
+      "colors": [],
+      "power": "2",
+      "toughness": "4",
+      "artist": "Ivan Shavrin",
+      "artist_id": "48432182-db18-4106-81c8-7b83100316d6",
+      "illustration_id": "79459279-05d1-480e-bf92-1da80606bbdd",
+      "image_uris": {
+        "small": "https://cards.scryfall.io/small/front/9/1/913f0aca-ac61-4377-b3b1-cd556b950df2.jpg?1783907929",
+        "normal": "https://cards.scryfall.io/normal/front/9/1/913f0aca-ac61-4377-b3b1-cd556b950df2.jpg?1783907929",
+        "large": "https://cards.scryfall.io/large/front/9/1/913f0aca-ac61-4377-b3b1-cd556b950df2.jpg?1783907929",
+        "png": "https://cards.scryfall.io/png/front/9/1/913f0aca-ac61-4377-b3b1-cd556b950df2.png?1783907929",
+        "art_crop": "https://cards.scryfall.io/art_crop/front/9/1/913f0aca-ac61-4377-b3b1-cd556b950df2.jpg?1783907929",
+        "border_crop": "https://cards.scryfall.io/border_crop/front/9/1/913f0aca-ac61-4377-b3b1-cd556b950df2.jpg?1783907929",
+        "thumb": "https://cards.scryfall.io/thumb/front/9/1/913f0aca-ac61-4377-b3b1-cd556b950df2.webp?1783907929",
+        "grid": "https://cards.scryfall.io/grid/front/9/1/913f0aca-ac61-4377-b3b1-cd556b950df2.webp?1783907929",
+        "display": "https://cards.scryfall.io/display/front/9/1/913f0aca-ac61-4377-b3b1-cd556b950df2.webp?1783907929",
+        "art": "https://cards.scryfall.io/art/front/9/1/913f0aca-ac61-4377-b3b1-cd556b950df2.webp?1783907929",
+        "crop": "https://cards.scryfall.io/crop/front/9/1/913f0aca-ac61-4377-b3b1-cd556b950df2.webp?1783907929"
+      }
+    },
+    {
+      "object": "card_face",
+      "oracle_id": "f1eb489d-104c-4801-b6d2-3f1a7ee73a75",
+      "layout": "normal",
+      "name": "Mechtitan Core",
+      "mana_cost": "{2}",
+      "cmc": 2.0,
+      "type_line": "Artifact — Vehicle",
+      "oracle_text": "{5}, Exile this Vehicle and four other artifact creatures and/or Vehicles you control: Create Mechtitan, a legendary 10/10 Construct artifact creature token with flying, vigilance, trample, lifelink, and haste that's all colors. When that token leaves the battlefield, return all cards exiled with this Vehicle except this card to the battlefield tapped under their owners' control.\nCrew 2",
+      "colors": [],
+      "power": "2",
+      "toughness": "4",
+      "artist": "Rob Pavic",
+      "artist_id": "dc002799-b1e7-4f09-844d-6e02d2e0b3e4",
+      "illustration_id": "1c420fb1-79a8-41f0-b74c-4f40bd46f645",
+      "image_uris": {
+        "small": "https://cards.scryfall.io/small/back/9/1/913f0aca-ac61-4377-b3b1-cd556b950df2.jpg?1783907929",
+        "normal": "https://cards.scryfall.io/normal/back/9/1/913f0aca-ac61-4377-b3b1-cd556b950df2.jpg?1783907929",
+        "large": "https://cards.scryfall.io/large/back/9/1/913f0aca-ac61-4377-b3b1-cd556b950df2.jpg?1783907929",
+        "png": "https://cards.scryfall.io/png/back/9/1/913f0aca-ac61-4377-b3b1-cd556b950df2.png?1783907929",
+        "art_crop": "https://cards.scryfall.io/art_crop/back/9/1/913f0aca-ac61-4377-b3b1-cd556b950df2.jpg?1783907929",
+        "border_crop": "https://cards.scryfall.io/border_crop/back/9/1/913f0aca-ac61-4377-b3b1-cd556b950df2.jpg?1783907929",
+        "thumb": "https://cards.scryfall.io/thumb/back/9/1/913f0aca-ac61-4377-b3b1-cd556b950df2.webp?1783907929",
+        "grid": "https://cards.scryfall.io/grid/back/9/1/913f0aca-ac61-4377-b3b1-cd556b950df2.webp?1783907929",
+        "display": "https://cards.scryfall.io/display/back/9/1/913f0aca-ac61-4377-b3b1-cd556b950df2.webp?1783907929",
+        "art": "https://cards.scryfall.io/art/back/9/1/913f0aca-ac61-4377-b3b1-cd556b950df2.webp?1783907929",
+        "crop": "https://cards.scryfall.io/crop/back/9/1/913f0aca-ac61-4377-b3b1-cd556b950df2.webp?1783907929"
+      }
+    }
+  ],
+  "all_parts": [
+    {
+      "object": "related_card",
+      "id": "5d02dee4-2071-448f-9fd3-58d63635d712",
+      "component": "token",
+      "name": "Mechtitan // Mechtitan",
+      "type_line": "Token Legendary Artifact Creature — Construct // Token Legendary Artifact Creature — Construct",
+      "uri": "https://api.scryfall.com/cards/5d02dee4-2071-448f-9fd3-58d63635d712"
+    },
+    {
+      "object": "related_card",
+      "id": "913f0aca-ac61-4377-b3b1-cd556b950df2",
+      "component": "combo_piece",
+      "name": "Mechtitan Core // Mechtitan Core",
+      "type_line": "Artifact — Vehicle // Artifact — Vehicle",
+      "uri": "https://api.scryfall.com/cards/913f0aca-ac61-4377-b3b1-cd556b950df2"
+    }
+  ],
+  "legalities": {
+    "standard": "not_legal",
+    "future": "not_legal",
+    "historic": "legal",
+    "timeless": "legal",
+    "gladiator": "legal",
+    "pioneer": "legal",
+    "modern": "legal",
+    "legacy": "legal",
+    "pauper": "not_legal",
+    "vintage": "legal",
+    "penny": "legal",
+    "commander": "legal",
+    "oathbreaker": "legal",
+    "standardbrawl": "not_legal",
+    "brawl": "legal",
+    "competitivebrawl": "legal",
+    "alchemy": "not_legal",
+    "paupercommander": "not_legal",
+    "duel": "legal",
+    "oldschool": "not_legal",
+    "premodern": "not_legal",
+    "predh": "not_legal",
+    "tlr": "legal"
+  },
+  "games": [
+    "paper"
+  ],
+  "reserved": false,
+  "game_changer": false,
+  "foil": true,
+  "nonfoil": true,
+  "finishes": [
+    "nonfoil",
+    "foil"
+  ],
+  "oversized": false,
+  "promo": false,
+  "reprint": true,
+  "variation": false,
+  "set_id": "4d92a8a7-ccb0-437d-abdc-9d70fc5ed672",
+  "set": "sld",
+  "set_name": "Secret Lair Drop",
+  "set_type": "box",
+  "set_uri": "https://api.scryfall.com/sets/4d92a8a7-ccb0-437d-abdc-9d70fc5ed672",
+  "set_search_uri": "https://api.scryfall.com/cards/search?order=set&q=e%3Asld&unique=prints",
+  "scryfall_set_uri": "https://scryfall.com/sets/sld?utm_source=api",
+  "rulings_uri": "https://api.scryfall.com/cards/913f0aca-ac61-4377-b3b1-cd556b950df2/rulings",
+  "prints_search_uri": "https://api.scryfall.com/cards/search?order=released&q=oracleid%3Af1eb489d-104c-4801-b6d2-3f1a7ee73a75&unique=prints",
+  "collector_number": "1965",
+  "digital": false,
+  "rarity": "rare",
+  "artist": "Ivan Shavrin & Rob Pavic",
+  "artist_ids": [
+    "48432182-db18-4106-81c8-7b83100316d6",
+    "dc002799-b1e7-4f09-844d-6e02d2e0b3e4"
+  ],
+  "border_color": "borderless",
+  "frame": "2015",
+  "security_stamp": "oval",
+  "full_art": true,
+  "textless": false,
+  "booster": false,
+  "story_spotlight": false,
+  "promo_types": [
+    "poster"
+  ],
+  "edhrec_rank": 4541,
+  "penny_rank": 10607,
+  "prices": {
+    "usd": "3.25",
+    "usd_foil": "3.49",
+    "usd_etched": null,
+    "eur": "2.95",
+    "eur_foil": "3.75",
+    "tix": null
+  },
+  "related_uris": {
+    "tcgplayer_infinite_articles": "https://partner.tcgplayer.com/c/4931599/1830156/21018?subId1=api&trafcat=tcgplayer.com%2Fsearch%2Farticles&u=https%3A%2F%2Fwww.tcgplayer.com%2Fsearch%2Farticles%3FproductLineName%3Dmagic%26q%3DMechtitan%2BCore%2B%252F%252F%2BMechtitan%2BCore",
+    "tcgplayer_infinite_decks": "https://partner.tcgplayer.com/c/4931599/1830156/21018?subId1=api&trafcat=tcgplayer.com%2Fsearch%2Fdecks&u=https%3A%2F%2Fwww.tcgplayer.com%2Fsearch%2Fdecks%3FproductLineName%3Dmagic%26q%3DMechtitan%2BCore%2B%252F%252F%2BMechtitan%2BCore",
+    "edhrec": "https://edhrec.com/route/?cc=Mechtitan+Core+%2F%2F+Mechtitan+Core"
+  },
+  "purchase_uris": {
+    "tcgplayer": "https://partner.tcgplayer.com/c/4931599/1830156/21018?subId1=api&u=https%3A%2F%2Fwww.tcgplayer.com%2Fproduct%2F617830%3Fpage%3D1",
+    "cardmarket": "https://www.cardmarket.com/en/Magic/Products?idProduct=810755&referrer=scryfall&utm_campaign=card_prices&utm_medium=text&utm_source=scryfall",
+    "cardhoarder": "https://www.cardhoarder.com/cards?affiliate_id=scryfall&data%5Bsearch%5D=Mechtitan+Core+%2F%2F+Mechtitan+Core&ref=card-profile&utm_campaign=affiliate&utm_medium=card&utm_source=scryfall"
+  }
+}

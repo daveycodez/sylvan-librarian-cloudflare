@@ -226,7 +226,7 @@ export class FakeEngine implements Engine {
 	/** Ids the fake resolves; anything else is a genuine miss, which IS the 404. */
 	scryfallKnownIds: string[] = FIXTURE_CARDS.map((c) => String(c.scryfall_id));
 	scryfallFuzzyStatus: ScryfallFuzzyResult["status"] = "hit";
-	lastAutocomplete: { prefix: string; limit: number } | null = null;
+	lastAutocomplete: { prefix: string; limit: number; includeExtras: boolean } | null = null;
 
 	private fixtureCard(index: number, baseUrl: string): Record<string, unknown> | null {
 		const row = FIXTURE_CARDS[index];
@@ -291,8 +291,8 @@ export class FakeEngine implements Engine {
 		return { status, card: status === "hit" ? this.fixtureCard(0, baseUrl) : null };
 	}
 
-	async scryfallAutocomplete(prefix: string, limit: number): Promise<string[]> {
-		this.lastAutocomplete = { prefix, limit };
+	async scryfallAutocomplete(prefix: string, limit: number, includeExtras = false): Promise<string[]> {
+		this.lastAutocomplete = { prefix, limit, includeExtras };
 		return FIXTURE_CARDS.map((c) => String(c.name))
 			.filter((n) => n.toLowerCase().startsWith(prefix.toLowerCase()))
 			.slice(0, limit);

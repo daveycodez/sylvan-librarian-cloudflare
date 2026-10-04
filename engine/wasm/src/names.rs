@@ -353,7 +353,7 @@ fn shared_windows(needle_tg: &[[char; 3]], collated: &str, seen: &mut Vec<bool>)
 /// 0.42ms at three characters and 1.0ms at two (thousands of hits to rank), 0.25ms averaged over
 /// the real-corpus differential's 6,350 needles — against 0.35ms of engine CPU the fan-out spent
 /// summed over ten partitions, before counting its ten Durable Object requests.
-pub fn autocomplete(names: &NameList, prefix: &str, limit: usize) -> Vec<String> {
+pub fn autocomplete(names: &NameList, prefix: &str, limit: usize, include_extras: bool) -> Vec<String> {
     let needle = collate_name(&prefix.to_lowercase());
     if needle.chars().count() < 2 {
         return Vec::new();
@@ -375,8 +375,11 @@ pub fn autocomplete(names: &NameList, prefix: &str, limit: usize) -> Vec<String>
         }
         last = i;
         // The extras gate: a card with no served printing is never offered (format 1 held no such
-        // card; format 2 holds every card and says which are served).
-        if !names.served(i) {
+        // card; format 2 holds every card and says which are served) — unless `include_extras`
+        // lifts it, which is all that flag does (api.scryfall.com 2026-10-04: over 28 prefixes
+        // whose candidates fit one page, the flag's answer is every card, doubled names of extra
+        // reversible printings included, and the default's is the served ones).
+        if !include_extras && !names.served(i) {
             continue;
         }
         let (collated, printed) = names.pair(i);
@@ -729,6 +732,11 @@ mod tests {
         let hellkite = add(&mut rows, "Doubled Hellkite", false, None);
         add(&mut rows, "Doubled Hellkite // Doubled Hellkite", false, Some(hellkite));
         rows.last_mut().expect("the row just added")["card_layout"] = json!("reversible_card");
+        // A TOKEN with a reversible printing of its own, both extras (the Mechtitan shape): the token
+        // is a name only `include_extras` offers, and so is the doubled name its printing prints.
+        let wurm = add(&mut rows, "Doubled Wurm", true, None);
+        add(&mut rows, "Doubled Wurm // Doubled Wurm", true, Some(wurm));
+        rows.last_mut().expect("the row just added")["card_layout"] = json!("reversible_card");
         rows
     }
 
@@ -837,7 +845,7 @@ mod tests {
             let mut answered = 0;
             for needle in &needles {
                 for limit in [20usize, 3] {
-                    let got = autocomplete(&names, needle, limit);
+                    let got = autocomplete(&names, needle, limit, false);
                     assert_eq!(got, single.autocomplete(needle, limit), "k={k} {needle:?} limit {limit}: single store");
                     let lists: Vec<Vec<String>> = parts.iter().map(|(s, _)| s.autocomplete(needle, limit)).collect();
                     assert_eq!(got, merge(&lists, needle, limit), "k={k} {needle:?} limit {limit}: fan-out merge");
@@ -865,6 +873,51 @@ mod tests {
         assert_eq!(printed.iter().filter(|p| **p == "Twin Name").count(), 1, "one pair per distinct (collated, printed)");
         assert!(stats.autocomplete_names.contains(&("eowynladyofrohan".to_owned(), "Éowyn, Lady of Rohan".to_owned())));
         assert!(stats.autocomplete_names.iter().any(|(c, p)| p.len() > 61 && c.len() > 57), "a long name whole");
+    }
+
+    /// `include_extras=true` LIFTS THE SERVED TEST AND NOTHING ELSE. api.scryfall.com, 2026-10-04:
+    /// across 28 prefixes whose candidates fit a page, the default catalog is the served cards to the
+    /// name and the flag's is every card to the name (`mechtitan` adds "Mechtitan" and "Mechtitan //
+    /// Mechtitan", `treasure k` the art-series "Treasure Keeper // Treasure Keeper"), and
+    /// `include_extras=false` is the parameter left out. The blob answers it from the records' served
+    /// bit (format 2 holds every card), the single store and the fan-out's merge from the archives —
+    /// all three agree, for every needle, at two limits and three partition counts.
+    #[test]
+    fn include_extras_offers_every_card_as_the_store_and_the_fan_out_do() {
+        let rows = corpus();
+        let (single, _) = build(&rows);
+        let needles = needles(&rows);
+        for k in [1u32, 3, 7] {
+            let parts = partitions(&rows, k);
+            let names = NameList::parse(encode_v2(&parts)).expect("v2 blob");
+            let (mut widened, mut answered) = (0, 0);
+            for needle in &needles {
+                for limit in [20usize, 3] {
+                    let got = autocomplete(&names, needle, limit, true);
+                    assert_eq!(got, single.autocomplete_gated(needle, limit, true), "k={k} {needle:?} limit {limit}: single store");
+                    let lists: Vec<Vec<String>> = parts.iter().map(|(s, _)| s.autocomplete_gated(needle, limit, true)).collect();
+                    assert_eq!(got, merge(&lists, needle, limit), "k={k} {needle:?} limit {limit}: fan-out merge");
+                    // The flag's catalog is the default's with names added, never one fewer name.
+                    let default = autocomplete(&names, needle, 1000, false);
+                    let every = autocomplete(&names, needle, 1000, true);
+                    assert!(default.iter().all(|n| every.contains(n)), "k={k} {needle:?}: a served name went missing");
+                    widened += usize::from(every.len() > default.len());
+                    answered += usize::from(!got.is_empty());
+                }
+            }
+            assert!(answered > 1000 && widened > 0, "k={k}: the flag must widen some needle ({widened}, {answered})");
+        }
+        // The two the fixture is named for: an extras-only card is offered by the flag alone.
+        let names = NameList::parse(encode_v2(&partitions(&rows, 3))).expect("v2 blob");
+        assert!(!autocomplete(&names, "shark", 20, false).contains(&"Shark".to_owned()));
+        assert!(autocomplete(&names, "shark", 20, true).contains(&"Shark".to_owned()));
+        // The token and the doubled name ITS reversible printing prints (both extras): the flag alone.
+        assert!(autocomplete(&names, "doubled wurm", 20, false).is_empty());
+        assert_eq!(autocomplete(&names, "doubled wurm", 20, true), ["Doubled Wurm", "Doubled Wurm // Doubled Wurm"]);
+        assert_eq!(autocomplete(&names, "wurmdoubled", 20, true), ["Doubled Wurm // Doubled Wurm"]);
+        // A format-1 blob holds served names only, so it cannot answer the flag (lib.rs refuses it
+        // and the router asks every partition, whose engines can).
+        assert_eq!(names.format(), 2);
     }
 
     /// The two moved costs, pinned to what they replace: the window intersection and the trigram
@@ -964,14 +1017,14 @@ mod tests {
         let list = NameList::parse(encode_for_tests(&pairs)).expect("blob");
         for needle in ["ab", "dup", "du", "abab", "b0", "0ab", "x", "xab", "zzab", "ab00x", "nothing", "ba"] {
             for limit in [1usize, 3, 20, 40, 500] {
-                assert_eq!(autocomplete(&list, needle, limit), reference(&list, needle, limit), "{needle:?} limit {limit}");
+                assert_eq!(autocomplete(&list, needle, limit, false), reference(&list, needle, limit), "{needle:?} limit {limit}");
             }
         }
         let rows = corpus();
         let pairs: Vec<(String, String)> = build(&rows).1.autocomplete_names;
         let list = NameList::parse(encode_for_tests(&pairs)).expect("blob");
         for needle in needles(&rows) {
-            assert_eq!(autocomplete(&list, &needle, 20), reference(&list, &needle, 20), "{needle:?}");
+            assert_eq!(autocomplete(&list, &needle, 20, false), reference(&list, &needle, 20), "{needle:?}");
         }
     }
 
@@ -984,7 +1037,7 @@ mod tests {
         assert!(NameList::parse(vec![0xff, 0xfe]).is_err(), "not UTF-8");
         assert!(NameList::from_gzip(b"not gzip").is_err());
         let empty = NameList::parse(NAMES_BLOB_HEADER.as_bytes().to_vec()).expect("an empty corpus");
-        assert!(empty.is_empty() && autocomplete(&empty, "ab", 20).is_empty());
+        assert!(empty.is_empty() && autocomplete(&empty, "ab", 20, false).is_empty());
     }
 
     // ─── The names index (backlog n15) ───────────────────────────────────────
@@ -1273,9 +1326,9 @@ mod tests {
             card_engine::partition_of_oracle_id(r["oracle_id"].as_str().expect("oracle"), 7) as u16
         };
         let names = NameList::parse(encode_v2(&partitions(&rows, 7))).expect("blob");
-        assert_eq!(autocomplete(&names, "hellkitedoubled", 20), ["Doubled Hellkite // Doubled Hellkite"]);
-        assert_eq!(autocomplete(&names, "doubled hell", 20), ["Doubled Hellkite", "Doubled Hellkite // Doubled Hellkite"]);
-        assert_eq!(autocomplete(&names, "doubled hellkite // d", 20), ["Doubled Hellkite // Doubled Hellkite"]);
+        assert_eq!(autocomplete(&names, "hellkitedoubled", 20, false), ["Doubled Hellkite // Doubled Hellkite"]);
+        assert_eq!(autocomplete(&names, "doubled hell", 20, false), ["Doubled Hellkite", "Doubled Hellkite // Doubled Hellkite"]);
+        assert_eq!(autocomplete(&names, "doubled hellkite // d", 20, false), ["Doubled Hellkite // Doubled Hellkite"]);
         let words = |w: &str| w.split(' ').map(str::to_owned).collect::<Vec<_>>();
         let needle = "doubled hellkite // doubled hellkit";
         let plan = fuzzy_plan(&names, needle, &words(needle), 0.625, 0.0, 0.71).expect("format 2");
@@ -1299,7 +1352,7 @@ mod tests {
             let v2 = NameList::parse(encode_v2(&parts)).expect("v2");
             for needle in needles(&rows) {
                 for limit in [20usize, 3] {
-                    assert_eq!(autocomplete(&v2, &needle, limit), autocomplete(&v1, &needle, limit), "k={k} {needle:?}");
+                    assert_eq!(autocomplete(&v2, &needle, limit, false), autocomplete(&v1, &needle, limit, false), "k={k} {needle:?}");
                 }
             }
         }

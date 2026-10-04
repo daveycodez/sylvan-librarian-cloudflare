@@ -3200,6 +3200,24 @@
 			"method": "GET",
 			"path": "/cards/search?q=%21lightning%2Fbolt",
 			"note": "2026-10-04. 2 = `!\"lightning bolt\"`, not `!lightning` and `bolt`: the exact-name value is the word with its slashes, which the collation deletes (`!lightning//bolt` the same, `!/fire` is `!fire`'s 1, `!fire /` is 1). This port answered `400 Failed to parse query`."
+		},
+		{
+			"name": "autocomplete-include-extras-token",
+			"method": "GET",
+			"path": "/cards/autocomplete?q=mechtitan&include_extras=true",
+			"note": "2026-10-04. \"Mechtitan\", \"Mechtitan // Mechtitan\", \"Mechtitan Core\", \"Mechtitan Core // Mechtitan Core\": the token and the doubled name ITS reversible printing prints (sld/1969), where the default catalog is the last two. `include_extras` lifts the served test and nothing else (`1`, `yes`, `on` and any case of `true` count; `false` and `0` are the default). This port answered the default whatever the flag said. NEEDS THE REBUILT ENGINE BLOB."
+		},
+		{
+			"name": "autocomplete-include-extras-art-series",
+			"method": "GET",
+			"path": "/cards/autocomplete?q=treasure+k&include_extras=true",
+			"note": "2026-10-04. \"Treasure Keeper\" and the art-series card \"Treasure Keeper // Treasure Keeper\" (aclb/26); the default is the first alone. Over 28 prefixes whose candidates fit a page the default is the served cards to the name and the flag's is every card to the name (`world champ` 1 against 10 memorabilia, `emblem` 2 against a full page of emblems, `wrenn and` 3 against 10). Their ORDER among equal similarities is Scryfall's own and not reproduced either way. NEEDS THE REBUILT ENGINE BLOB."
+		},
+		{
+			"name": "autocomplete-without-the-flag-is-unchanged",
+			"method": "GET",
+			"path": "/cards/autocomplete?q=mechtitan&include_extras=false",
+			"note": "2026-10-04. `false` is the parameter left out: \"Mechtitan Core\", \"Mechtitan Core // Mechtitan Core\"."
 		}
 	]
 }

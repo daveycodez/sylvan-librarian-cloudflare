@@ -121,11 +121,13 @@ interface SearchEngineStub {
 		prefix: string,
 		limit: number,
 		reportedShards?: number,
+		includeExtras?: boolean,
 	): Promise<{ names: string[] } & Telemetry>;
 	scryfallAutocompleteNames(
 		prefix: string,
 		limit: number,
 		reportedShards?: number,
+		includeExtras?: boolean,
 	): Promise<{ names: string[] } & Telemetry>;
 	scryfallNamedFuzzyPlan(
 		folded: string,
@@ -1204,9 +1206,11 @@ export class RemoteEngine implements Engine {
 		return value.candidates;
 	}
 
-	async scryfallAutocomplete(prefix: string, limit: number): Promise<string[]> {
+	async scryfallAutocomplete(prefix: string, limit: number, includeExtras = false): Promise<string[]> {
 		const { names } = await this.searchRpc("scryfallAutocomplete", (stub, shards) =>
-			stub.scryfallAutocomplete(prefix, limit, shards),
+			includeExtras
+				? stub.scryfallAutocomplete(prefix, limit, shards, true)
+				: stub.scryfallAutocomplete(prefix, limit, shards),
 		);
 		return names;
 	}
@@ -1259,9 +1263,11 @@ export class RemoteEngine implements Engine {
 
 	/** n8: the whole corpus's autocomplete from this one object's card-names blob (see the DO's
 	 * scryfallAutocompleteNames). Throws where the object cannot — the router then fans out. */
-	async scryfallAutocompleteNames(prefix: string, limit: number): Promise<string[]> {
+	async scryfallAutocompleteNames(prefix: string, limit: number, includeExtras = false): Promise<string[]> {
 		const { names } = await this.searchRpc("scryfallAutocompleteNames", (stub, shards) =>
-			stub.scryfallAutocompleteNames(prefix, limit, shards),
+			includeExtras
+				? stub.scryfallAutocompleteNames(prefix, limit, shards, true)
+				: stub.scryfallAutocompleteNames(prefix, limit, shards),
 		);
 		return names;
 	}

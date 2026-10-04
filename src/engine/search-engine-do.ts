@@ -703,13 +703,16 @@ export class SearchEngine extends DurableObject<Env> {
 		return this.instrumented(reportedShards, (engine) => engine.scryfallFuzzyName(name, baseUrl, setCode));
 	}
 
+	/** `includeExtras` is LAST and optional, so either build pairs with the other during a rolling
+	 * deploy: an object on the build before it ignores the argument and answers without extras. */
 	async scryfallAutocomplete(
 		prefix: string,
 		limit: number,
 		reportedShards?: number,
+		includeExtras = false,
 	): Promise<ScryfallNamesReply & SearchTelemetry> {
 		return this.instrumented(reportedShards, async (engine) => ({
-			names: await engine.scryfallAutocomplete(prefix, limit),
+			names: await engine.scryfallAutocomplete(prefix, limit, includeExtras),
 		}));
 	}
 
@@ -783,9 +786,10 @@ export class SearchEngine extends DurableObject<Env> {
 		prefix: string,
 		limit: number,
 		reportedShards?: number,
+		includeExtras = false,
 	): Promise<ScryfallNamesReply & SearchTelemetry> {
 		return this.instrumented(reportedShards, async () => ({
-			names: await autocompleteFromNames(this.env, this.loadContext(), prefix, limit),
+			names: await autocompleteFromNames(this.env, this.loadContext(), prefix, limit, includeExtras),
 		}));
 	}
 

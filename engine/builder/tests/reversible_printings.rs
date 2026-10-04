@@ -23,6 +23,8 @@
 //!   /cards/autocomplete?q=tuvasa  "Tuvasa the Sunlit", "Tuvasa the Sunlit // Tuvasa the Sunlit"
 //!   /cards/named?fuzzy=Tuvasa the Sunlit // Tuvasa the Sunlt   sld/1328
 //!   is:reversible t:planeswalker unique=art   sld/1453..1457, where this port answered 745..749
+//!   /cards/autocomplete?q=mechtitan                       "Mechtitan Core", "Mechtitan Core // Mechtitan Core"
+//!   /cards/autocomplete?q=mechtitan&include_extras=true   those and "Mechtitan", "Mechtitan // Mechtitan"
 //!
 //! The printings here: Darksteel Colossus m10/208 and sld/1081 (reversible), Tuvasa the Sunlit
 //! c18/47 and sld/1328, Bloomvine Regent tdm/136 (an adventure) and tdm/381 (reversible), Ajani
@@ -63,11 +65,15 @@ fn fixture(name: &str) -> Value {
 }
 
 fn store() -> BufferStore {
+    store_of(FIXTURES, PINNED)
+}
+
+fn store_of(fixtures: &[&str], pinned: &[&str]) -> BufferStore {
     static BUILDS: AtomicUsize = AtomicUsize::new(0);
     let build = BUILDS.fetch_add(1, Ordering::Relaxed);
-    let drafts = FIXTURES.iter().map(|n| transform_row(&fixture(n), true).unwrap().unwrap()).collect();
+    let drafts = fixtures.iter().map(|n| transform_row(&fixture(n), true).unwrap().unwrap()).collect();
     let mut tags = TagData::default();
-    tags.labels.extend(PINNED.iter().map(|n| fixture(n)["id"].as_str().unwrap().to_owned()));
+    tags.labels.extend(pinned.iter().map(|n| fixture(n)["id"].as_str().unwrap().to_owned()));
     let rows: Vec<Value> = finalize(drafts, &tags).collect();
     let out_dir = std::env::temp_dir().join(format!("sylvan-reversible-printings-{}-{build}", std::process::id()));
     let manifest = sylvan_store_builder::build_store(rows.into_iter(), &out_dir, "1754000000").expect("build");
@@ -308,4 +314,28 @@ fn rules_text_is_the_text_the_reversible_printing_prints() {
     // printings, and the one card whose reversible printing differs is the only one that moves.
     assert_eq!(printings(&store, &and(&[oracle("shuffle"), word("darksteel")])), ["m10/208", "sld/1081"]);
     assert_eq!(printings(&store, &oracle("shuffle")), ["m10/208", "sld/1081", "tdm/136"]);
+}
+
+#[test]
+fn autocomplete_include_extras_offers_the_token_and_its_reversible_printing() {
+    // Mechtitan Core (neo/249) is an ordinary card with a reversible Secret Lair printing (sld/1965,
+    // "Mechtitan Core // Mechtitan Core"); the Mechtitan TOKEN (tneo/14) is an extra, and so is the
+    // reversible printing of the token (sld/1969, "Mechtitan // Mechtitan"). api.scryfall.com,
+    // 2026-10-04: the default catalog for `q=mechtitan` is the first two names alone, and
+    // `&include_extras=true` adds the other two — nothing else moves, and `false` is the default.
+    let store = store_of(
+        &["mechtitan_core_neo_249", "mechtitan_core_sld_1965", "mechtitan_tneo_14", "mechtitan_sld_1969"],
+        &["mechtitan_core_neo_249", "mechtitan_tneo_14"],
+    );
+    let default = ["Mechtitan Core", "Mechtitan Core // Mechtitan Core"];
+    assert_eq!(store.autocomplete("mechtitan", 20), default);
+    assert_eq!(store.autocomplete_gated("mechtitan", 20, false), default);
+    assert_eq!(
+        store.autocomplete_gated("mechtitan", 20, true),
+        ["Mechtitan", "Mechtitan // Mechtitan", "Mechtitan Core", "Mechtitan Core // Mechtitan Core"]
+    );
+    // The collated match reaches the token's doubled name across its seam, with the flag alone.
+    assert!(store.autocomplete("titanmech", 20).is_empty());
+    assert_eq!(store.autocomplete_gated("mechtitanmech", 20, true), ["Mechtitan // Mechtitan"]);
+    assert!(store.autocomplete("mechtitanmech", 20).is_empty());
 }

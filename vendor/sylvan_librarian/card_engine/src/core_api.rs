@@ -3272,6 +3272,20 @@ impl BufferStore {
     /// object instead of every partition (backlog n8). Change the two together — the differential
     /// in that file (fixture-sized in CI, the real corpus when asked) fails on any drift.
     pub fn autocomplete(&self, prefix: &str, limit: usize) -> Vec<String> {
+        self.autocomplete_gated(prefix, limit, false)
+    }
+
+    /// LOCAL PATCH (sylvan-librarian-cloudflare): `autocomplete` with Scryfall's `include_extras`.
+    ///
+    /// api.scryfall.com, 2026-10-04: with `include_extras=true` the catalog offers EVERY card — the
+    /// tokens (`Treasure`, `Zombie`), emblems, art-series cards (`Treasure Keeper // Treasure
+    /// Keeper`, aclb/26), memorabilia and the doubled names of reversible printings tagged `extra`
+    /// (`Snow-Covered Plains // Snow-Covered Plains`) — and `false` is exactly the parameter left
+    /// out. Over 28 prefixes whose candidates fit one page, the default answer is the served cards
+    /// to the name and the flag's answer is every card with a name containing the needle, to the
+    /// name. The flag lifts the served test and nothing else: the rank, the similarity and the
+    /// dedupe are the same lines.
+    pub fn autocomplete_gated(&self, prefix: &str, limit: usize, include_extras: bool) -> Vec<String> {
         let data = self.data();
         // COLLATED, not merely lowered. `collate_name` is what `card_name_collated` is built with
         // and what `name_trigram` indexes, so the needle and the names are compared in one form,
@@ -3365,11 +3379,12 @@ impl BufferStore {
                 let own = data.cards[cid as usize].divergent.first();
                 own.is_some_and(|o| str_at(&data.strings, u32::from(o.card_name_id)) == Some(printed))
             };
-            let served = if is_doubled {
-                self.own_printing_is_served(cid as usize, extra_vid)
-            } else {
-                self.any_printing_is_served(cid as usize, extra_vid)
-            };
+            let served = include_extras
+                || if is_doubled {
+                    self.own_printing_is_served(cid as usize, extra_vid)
+                } else {
+                    self.any_printing_is_served(cid as usize, extra_vid)
+                };
             if !served {
                 continue;
             }
@@ -6716,6 +6731,11 @@ mod tests {
             vec!["Shatter"],
             "a card with no served printing leaves the catalog; one with any served printing stays"
         );
+        // LOCAL PATCH: `include_extras` lifts the served test and nothing else — every card whose
+        // name holds the needle is offered, ranked by the same lines (api.scryfall.com 2026-10-04:
+        // `q=mechtitan` is "Mechtitan Core" alone, `&include_extras=true` adds "Mechtitan").
+        assert_eq!(store.autocomplete_gated("sha", 20, true), vec!["Shark", "Shatter"], "3/7 windows beat 3/9");
+        assert_eq!(store.autocomplete_gated("sha", 20, false), store.autocomplete("sha", 20));
     }
 
     /// The rank split and the match predicate are asked of the COLLATED name, which is measured:

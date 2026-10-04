@@ -161,7 +161,7 @@ export async function checkCardNames(kv: FakeKV, nativeDir: string | null): Prom
 		}
 		const archive = new Uint8Array(Buffer.concat(pieces));
 		loadArchive(engine, archive);
-		answersOf.push(folded.map((q) => JSON.parse(engine.autocomplete(q, 20)) as string[]));
+		answersOf.push(folded.map((q) => JSON.parse(engine.autocomplete(q, 20, false)) as string[]));
 		for (const [i, tree] of trees.entries()) {
 			if ((JSON.parse(engine.query(tree, opts)) as { total: number }).total > 0) truth[i]?.push(k);
 		}
@@ -178,7 +178,7 @@ export async function checkCardNames(kv: FakeKV, nativeDir: string | null): Prom
 				20,
 			),
 		);
-		const got = engine.names_autocomplete(q, 20);
+		const got = engine.names_autocomplete(q, 20, false);
 		if (got !== merged) {
 			differing++;
 			if (differing <= 3) lines.push(`  ${JSON.stringify(q)}: names ${got} vs fan-out ${merged}`);

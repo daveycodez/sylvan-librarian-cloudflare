@@ -1034,6 +1034,27 @@ describe("GET /cards/autocomplete", () => {
 		await testDispatch(makeCtx({ engine }), `/cards/autocomplete?q=${encodeURIComponent(query)}`);
 		expect(engine.lastAutocomplete?.prefix).toBe(expected);
 	});
+
+	// `include_extras` offers every card, not the ones a default search shows. api.scryfall.com
+	// 2026-10-04: `mechtitan` is "Mechtitan Core" alone and `&include_extras=true` adds "Mechtitan"
+	// and "Mechtitan // Mechtitan"; the spellings `1`, `yes`, `on` and any case of `true` count, and
+	// `false`, `0`, an empty value and the parameter left out are all the default. Asserted on what
+	// the ENGINE receives, because the fixture corpus has no extras to widen the answer with.
+	test.each([
+		["&include_extras=true", true],
+		["&include_extras=TRUE", true],
+		["&include_extras=1", true],
+		["&include_extras=yes", true],
+		["&include_extras=on", true],
+		["&include_extras=false", false],
+		["&include_extras=0", false],
+		["&include_extras=", false],
+		["", false],
+	])("%p asks the engine for extras: %p", async (suffix, expected) => {
+		const engine = new FakeEngine();
+		await testDispatch(makeCtx({ engine }), `/cards/autocomplete?q=llan${suffix}`);
+		expect(engine.lastAutocomplete?.includeExtras).toBe(expected);
+	});
 });
 
 describe("GET /cards/search pinned to an oracle id", () => {

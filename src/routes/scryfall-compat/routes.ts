@@ -1091,7 +1091,15 @@ export async function cardsAutocompleteHandler(
 		// answered three cards, and `jotun` and `lim-dul` answered nothing. Scryfall returns 3, 3
 		// and 8 for those. The `name:` search path has folded here since #649 (card-query-nodes);
 		// this route simply never did.
-		const names = await engine.scryfallAutocomplete(foldAccents(needle.toLowerCase()), MAX_AUTOCOMPLETE_VALUES);
+		// `include_extras` offers every card — tokens, emblems, art series, memorabilia — where the
+		// default is the cards a default search shows (api.scryfall.com 2026-10-04: `mechtitan` is
+		// "Mechtitan Core" alone and `&include_extras=true` adds "Mechtitan" and "Mechtitan //
+		// Mechtitan"; `1`, `yes`, `on` and any case of `true` count, `0` and nothing do not).
+		const names = await engine.scryfallAutocomplete(
+			foldAccents(needle.toLowerCase()),
+			MAX_AUTOCOMPLETE_VALUES,
+			asBool(params.include_extras),
+		);
 		return scryfallJson(catalogObject(names), pretty, CARDS_CACHE);
 	} catch (err) {
 		return engineFailure(err, pretty);

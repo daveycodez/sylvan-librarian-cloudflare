@@ -27,10 +27,10 @@ export interface EngineGlue {
 	random_search_shaped(n: number, seed: bigint, filterTreeJson: string, fieldsJson: string, shape: string): Uint8Array;
 	shaped_frames_from_rows(rowsJson: string, shape: string): Uint8Array;
 	js_spelled_numbers(values: Float64Array): string;
-	autocomplete(prefix: string, limit: number): string;
+	autocomplete(prefix: string, limit: number, includeExtras: boolean): string;
 	store_autocomplete_names(): string;
 	load_names(gz: Uint8Array): number;
-	names_autocomplete(prefix: string, limit: number): string;
+	names_autocomplete(prefix: string, limit: number, includeExtras: boolean): string;
 	names_heap_bytes(): number;
 	names_format(): number;
 	names_search_partitions(filterTreeJson: string, multilingual: boolean): string;

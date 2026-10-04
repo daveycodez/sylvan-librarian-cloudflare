@@ -1249,10 +1249,14 @@ pub fn cards_containing_all_words(
     })
 }
 
-/// Card names matching a partial name, prefix matches first. Scryfall's autocomplete catalog.
+/// Card names matching a partial name, prefix matches first. Scryfall's autocomplete catalog;
+/// `include_extras` is its parameter of that name (tokens, art series, memorabilia and the like are
+/// offered too).
 #[wasm_bindgen]
-pub fn autocomplete(prefix: &str, limit: u32) -> Result<String, JsError> {
-    with_store(|store| Ok(serde_json::to_string(&store.autocomplete(prefix, limit as usize)).unwrap_or_else(|_| "[]".into())))
+pub fn autocomplete(prefix: &str, limit: u32, include_extras: bool) -> Result<String, JsError> {
+    with_store(|store| {
+        Ok(serde_json::to_string(&store.autocomplete_gated(prefix, limit as usize, include_extras)).unwrap_or_else(|_| "[]".into()))
+    })
 }
 
 // ─── /cards/autocomplete from the card-names blob (backlog n8) ───────────────
@@ -1279,13 +1283,18 @@ pub fn names_heap_bytes() -> u32 {
 }
 
 /// Scryfall's autocomplete catalog for the WHOLE corpus, from the loaded names — the answer the
-/// partitioned fan-out's merge gives, from one object. Errors when no names are loaded.
+/// partitioned fan-out's merge gives, from one object. Errors when no names are loaded, and — for
+/// `include_extras` — when the blob is format 1, which holds served names only: the router then asks
+/// every partition, whose engines answer the flag.
 #[wasm_bindgen]
-pub fn names_autocomplete(prefix: &str, limit: u32) -> Result<String, JsError> {
+pub fn names_autocomplete(prefix: &str, limit: u32, include_extras: bool) -> Result<String, JsError> {
     NAMES.with(|n| {
         let guard = n.try_borrow().map_err(|_| JsError::new(&poisoned("names")))?;
         let list = guard.as_ref().ok_or_else(|| JsError::new("no card names loaded"))?;
-        Ok(serde_json::to_string(&names::autocomplete(list, prefix, limit as usize)).unwrap_or_else(|_| "[]".into()))
+        if include_extras && list.format() < 2 {
+            return Err(JsError::new("a format-1 card names blob holds the served names only"));
+        }
+        Ok(serde_json::to_string(&names::autocomplete(list, prefix, limit as usize, include_extras)).unwrap_or_else(|_| "[]".into()))
     })
 }
 
@@ -2831,7 +2840,7 @@ mod tests {
         assert_eq!(v["card"]["name"], "Chunk Test");
 
         let v: serde_json::Value =
-            serde_json::from_str(&autocomplete("chun", 20).expect("autocomplete")).expect("valid JSON");
+            serde_json::from_str(&autocomplete("chun", 20, false).expect("autocomplete")).expect("valid JSON");
         assert_eq!(v, serde_json::json!(["Chunk Test"]), "the PRINTED name, not the folded key");
 
         unload_store().expect("unload");

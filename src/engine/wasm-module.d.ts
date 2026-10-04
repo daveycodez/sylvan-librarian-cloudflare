@@ -76,9 +76,9 @@ declare module "sylvan-engine-wasm" {
 			weakBelow: number,
 			fieldsJson: string,
 		): string;
-		autocomplete(prefix: string, limit: number): string;
+		autocomplete(prefix: string, limit: number, includeExtras: boolean): string;
 		load_names(gz: Uint8Array): number;
-		names_autocomplete(prefix: string, limit: number): string;
+		names_autocomplete(prefix: string, limit: number, includeExtras: boolean): string;
 		names_heap_bytes(): number;
 		store_autocomplete_names(): string;
 		names_format(): number;
@@ -143,11 +143,11 @@ declare module "sylvan-engine-wasm" {
 		fieldsJson: string,
 	): string;
 	/** Printed card names matching a partial name, prefix matches first. JSON array. */
-	export function autocomplete(prefix: string, limit: number): string;
+	export function autocomplete(prefix: string, limit: number, includeExtras: boolean): string;
 	/** n8: load the corpus-wide card-names blob (gzipped); returns the pair count. */
 	export function load_names(gz: Uint8Array): number;
 	/** n8: autocomplete for the whole corpus from the loaded names. JSON array. */
-	export function names_autocomplete(prefix: string, limit: number): string;
+	export function names_autocomplete(prefix: string, limit: number, includeExtras: boolean): string;
 	export function names_heap_bytes(): number;
 	/** The loaded store's own (collated, printed) autocomplete pairs, JSON — verification only. */
 	export function store_autocomplete_names(): string;

@@ -177,16 +177,19 @@ function fakeRemote(partition: number, calls: string[], answers: Record<string, 
 			// can make a LATER partition win.
 			return val<NameRank | null>("exactRank", "exact" in answers ? [3, "", 1, 0] : null);
 		},
-		scryfallAutocomplete: async () => {
+		scryfallAutocomplete: async (_prefix: string, _limit: number, includeExtras = false) => {
 			count("scryfallAutocomplete");
-			return val<string[]>("names", []);
+			// A partition asked with the flag answers its extras too (`namesWithExtras`).
+			return includeExtras && "namesWithExtras" in answers
+				? val<string[]>("namesWithExtras", [])
+				: val<string[]>("names", []);
 		},
-		scryfallAutocompleteNames: async (prefix: string, limit: number) => {
+		scryfallAutocompleteNames: async (prefix: string, limit: number, includeExtras = false) => {
 			count("scryfallAutocompleteNames");
 			// `namesFails` models an object that cannot answer from names: on the build before n8
 			// (no such method) or with the blob gone from KV.
 			if (answers.namesFails) throw new Error("no such method: scryfallAutocompleteNames");
-			return val<string[]>("wholeCorpus", [`${prefix}:${limit}`]);
+			return val<string[]>("wholeCorpus", [`${prefix}:${limit}${includeExtras ? ":extras" : ""}`]);
 		},
 		scryfallNamesContaining: async () => {
 			count("scryfallNamesContaining");
@@ -1494,6 +1497,26 @@ describe("name-route combination rules", () => {
 			expect(await engine.scryfallAutocomplete("sho", 20)).toEqual(["Shock"]);
 			expect(calls.filter((c) => c.startsWith("scryfallAutocompleteNames:")).length).toBe(1);
 			expect(calls.filter((c) => c.startsWith("scryfallAutocomplete:")).length).toBe(N);
+		});
+
+		test("include_extras reaches the object that answers, on the names path and on the fan-out", async () => {
+			const { engine, calls } = named();
+			expect(await engine.scryfallAutocomplete("lig", 20, true)).toEqual(["lig:20:extras"]);
+			expect(await engine.scryfallAutocomplete("lig", 20, false)).toEqual(["lig:20"]);
+			expect(await engine.scryfallAutocomplete("lig", 20)).toEqual(["lig:20"]);
+			// The flag is not part of which object answers: the same prefix, the same partition.
+			expect(new Set(calls).size).toBe(1);
+			// An object that cannot answer from names (a format-1 blob refuses the flag) costs the
+			// fan-out, and every partition is asked WITH the flag.
+			const everywhere = Object.fromEntries(
+				Array.from({ length: N }, (_, p) => [
+					p,
+					{ namesFails: true, names: [], namesWithExtras: p === 1 ? ["Shark"] : [] },
+				]),
+			);
+			const fanned = named(everywhere);
+			expect(await fanned.engine.scryfallAutocomplete("sha", 20, true)).toEqual(["Shark"]);
+			expect(await fanned.engine.scryfallAutocomplete("sha", 20)).toEqual([]);
 		});
 
 		test("a manifest naming no blob fans out exactly as before n8", async () => {

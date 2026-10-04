@@ -238,11 +238,12 @@ export interface EngineHandle {
 		fieldsJson: string,
 	): string;
 	fuzzy_candidates(name: string, setCode: string, floor: number, k: number): Uint8Array;
-	autocomplete(prefix: string, limit: number): string;
+	autocomplete(prefix: string, limit: number, includeExtras: boolean): string;
 	/** n8: the corpus-wide card names (a gzipped blob), replacing any loaded before. Returns the pair count. */
 	load_names(gz: Uint8Array): number;
-	/** n8: autocomplete over the loaded names — the whole corpus's answer. Throws when none are loaded. */
-	names_autocomplete(prefix: string, limit: number): string;
+	/** n8: autocomplete over the loaded names — the whole corpus's answer. Throws when none are loaded, or
+	 * when `includeExtras` is asked of a format-1 blob (served names only). */
+	names_autocomplete(prefix: string, limit: number, includeExtras: boolean): string;
 	names_heap_bytes(): number;
 	/** n15: the loaded names blob's format (0 = none, 1 = autocomplete only, 2 = the names index). */
 	names_format(): number;

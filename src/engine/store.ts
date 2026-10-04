@@ -662,8 +662,8 @@ class WasmEngine implements Engine {
 		return { status: out.status, card: out.card === null ? null : toScryfallCard(out.card, baseUrl) };
 	}
 
-	async scryfallAutocomplete(prefix: string, limit: number): Promise<string[]> {
-		return JSON.parse(this.w.autocomplete(prefix, limit)) as string[];
+	async scryfallAutocomplete(prefix: string, limit: number, includeExtras = false): Promise<string[]> {
+		return JSON.parse(this.w.autocomplete(prefix, limit, includeExtras)) as string[];
 	}
 
 	/**
@@ -1809,8 +1809,13 @@ export async function autocompleteFromNames(
 	ctx: LoadContext,
 	prefix: string,
 	limit: number,
+	includeExtras = false,
 ): Promise<string[]> {
-	return withCardNames(env, ctx, (handle) => JSON.parse(handle.names_autocomplete(prefix, limit)) as string[]);
+	return withCardNames(
+		env,
+		ctx,
+		(handle) => JSON.parse(handle.names_autocomplete(prefix, limit, includeExtras)) as string[],
+	);
 }
 
 /**
