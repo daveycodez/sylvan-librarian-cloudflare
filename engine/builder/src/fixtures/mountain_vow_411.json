@@ -1,0 +1,135 @@
+{
+ "artist": "Daria Khlebnikova",
+ "artist_ids": [
+  "f6f524ec-988a-4153-a379-4431bcd49220"
+ ],
+ "booster": false,
+ "border_color": "black",
+ "card_back_id": "0aeebaf5-8c7d-4636-9e82-8c27447861f7",
+ "cardmarket_id": 650996,
+ "cmc": 0.0,
+ "collector_number": "411",
+ "color_identity": [
+  "R"
+ ],
+ "colors": [],
+ "digital": false,
+ "finishes": [
+  "etched"
+ ],
+ "foil": false,
+ "frame": "2015",
+ "frame_effects": [
+  "inverted"
+ ],
+ "full_art": true,
+ "game_changer": false,
+ "games": [
+  "arena",
+  "paper",
+  "mtgo"
+ ],
+ "highres_image": true,
+ "id": "117716bf-43c8-4534-92da-d7948d4b5628",
+ "illustration_id": "40b7caf5-f1c6-4a38-8d5d-29f7206c7b93",
+ "image_status": "highres_scan",
+ "image_updated_at": "2026-07-13T06:38:28Z",
+ "image_uris": {
+  "art": "https://cards.scryfall.io/art/front/1/1/117716bf-43c8-4534-92da-d7948d4b5628.webp?1783924708",
+  "art_crop": "https://cards.scryfall.io/art_crop/front/1/1/117716bf-43c8-4534-92da-d7948d4b5628.jpg?1783924708",
+  "border_crop": "https://cards.scryfall.io/border_crop/front/1/1/117716bf-43c8-4534-92da-d7948d4b5628.jpg?1783924708",
+  "crop": "https://cards.scryfall.io/crop/front/1/1/117716bf-43c8-4534-92da-d7948d4b5628.webp?1783924708",
+  "display": "https://cards.scryfall.io/display/front/1/1/117716bf-43c8-4534-92da-d7948d4b5628.webp?1783924708",
+  "grid": "https://cards.scryfall.io/grid/front/1/1/117716bf-43c8-4534-92da-d7948d4b5628.webp?1783924708",
+  "large": "https://cards.scryfall.io/large/front/1/1/117716bf-43c8-4534-92da-d7948d4b5628.jpg?1783924708",
+  "normal": "https://cards.scryfall.io/normal/front/1/1/117716bf-43c8-4534-92da-d7948d4b5628.jpg?1783924708",
+  "png": "https://cards.scryfall.io/png/front/1/1/117716bf-43c8-4534-92da-d7948d4b5628.png?1783924708",
+  "small": "https://cards.scryfall.io/small/front/1/1/117716bf-43c8-4534-92da-d7948d4b5628.jpg?1783924708",
+  "thumb": "https://cards.scryfall.io/thumb/front/1/1/117716bf-43c8-4534-92da-d7948d4b5628.webp?1783924708"
+ },
+ "keywords": [],
+ "lang": "en",
+ "layout": "normal",
+ "legalities": {
+  "alchemy": "legal",
+  "brawl": "legal",
+  "commander": "legal",
+  "competitivebrawl": "legal",
+  "duel": "legal",
+  "future": "legal",
+  "gladiator": "legal",
+  "historic": "legal",
+  "legacy": "legal",
+  "modern": "legal",
+  "oathbreaker": "legal",
+  "oldschool": "not_legal",
+  "pauper": "legal",
+  "paupercommander": "legal",
+  "penny": "legal",
+  "pioneer": "legal",
+  "predh": "legal",
+  "premodern": "legal",
+  "standard": "legal",
+  "standardbrawl": "legal",
+  "timeless": "legal",
+  "tlr": "legal",
+  "vintage": "legal"
+ },
+ "mana_cost": "",
+ "multiverse_ids": [
+  547344
+ ],
+ "name": "Mountain",
+ "nonfoil": false,
+ "object": "card",
+ "oracle_id": "a3fb7228-e76b-4e96-a40e-20b5fed75685",
+ "oracle_text": "({T}: Add {R}.)",
+ "oversized": false,
+ "prices": {
+  "eur": null,
+  "eur_foil": null,
+  "tix": null,
+  "usd": null,
+  "usd_etched": "16.15",
+  "usd_foil": null
+ },
+ "prints_search_uri": "https://api.scryfall.com/cards/search?order=released&q=oracleid%3Aa3fb7228-e76b-4e96-a40e-20b5fed75685&unique=prints",
+ "produced_mana": [
+  "R"
+ ],
+ "promo": true,
+ "promo_types": [
+  "moonlitland",
+  "wizardsplaynetwork"
+ ],
+ "purchase_uris": {
+  "cardhoarder": "https://www.cardhoarder.com/cards?affiliate_id=scryfall&data%5Bsearch%5D=Mountain&ref=card-profile&utm_campaign=affiliate&utm_medium=card&utm_source=scryfall",
+  "cardmarket": "https://www.cardmarket.com/en/Magic/Products?idProduct=650996&referrer=scryfall&utm_campaign=card_prices&utm_medium=text&utm_source=scryfall",
+  "tcgplayer": "https://partner.tcgplayer.com/c/4931599/1830156/21018?subId1=api&u=https%3A%2F%2Fwww.tcgplayer.com%2Fsearch%2Fmagic%2Fproduct%3FproductLineName%3Dmagic%26q%3DMountain%26view%3Dgrid"
+ },
+ "rarity": "common",
+ "related_uris": {
+  "edhrec": "https://edhrec.com/route/?cc=Mountain",
+  "gatherer": "https://gatherer.wizards.com/Pages/Card/Details.aspx?multiverseid=547344&printed=false",
+  "tcgplayer_infinite_articles": "https://partner.tcgplayer.com/c/4931599/1830156/21018?subId1=api&trafcat=tcgplayer.com%2Fsearch%2Farticles&u=https%3A%2F%2Fwww.tcgplayer.com%2Fsearch%2Farticles%3FproductLineName%3Dmagic%26q%3DMountain",
+  "tcgplayer_infinite_decks": "https://partner.tcgplayer.com/c/4931599/1830156/21018?subId1=api&trafcat=tcgplayer.com%2Fsearch%2Fdecks&u=https%3A%2F%2Fwww.tcgplayer.com%2Fsearch%2Fdecks%3FproductLineName%3Dmagic%26q%3DMountain"
+ },
+ "released_at": "2021-11-19",
+ "reprint": true,
+ "reserved": false,
+ "rulings_uri": "https://api.scryfall.com/cards/117716bf-43c8-4534-92da-d7948d4b5628/rulings",
+ "scryfall_set_uri": "https://scryfall.com/sets/vow?utm_source=api",
+ "scryfall_uri": "https://scryfall.com/card/vow/411/mountain?utm_source=api",
+ "set": "vow",
+ "set_id": "8144b676-569f-4716-8005-bc8f0778f3fa",
+ "set_name": "Innistrad: Crimson Vow",
+ "set_search_uri": "https://api.scryfall.com/cards/search?order=set&q=e%3Avow&unique=prints",
+ "set_type": "expansion",
+ "set_uri": "https://api.scryfall.com/sets/8144b676-569f-4716-8005-bc8f0778f3fa",
+ "story_spotlight": false,
+ "tcgplayer_etched_id": 257555,
+ "textless": false,
+ "type_line": "Basic Land — Mountain",
+ "uri": "https://api.scryfall.com/cards/117716bf-43c8-4534-92da-d7948d4b5628",
+ "variation": false
+}

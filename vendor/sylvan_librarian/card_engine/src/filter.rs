@@ -1548,6 +1548,30 @@ pub(crate) enum ExternalIdKind {
     Multiverse,
 }
 
+/// LOCAL PATCH (Cloudflare port): the `is:` tag whose unnegated presence widens a query to every
+/// language — the builder's `FWB_IS_TAG`, Revised's foreign white-bordered rows. See
+/// `widens_to_annex`.
+pub(crate) const FWB_IS_TAG: &str = "fwb";
+
+/// LOCAL PATCH (Cloudflare port): which field of a printing a `FieldPresent` asks for — Scryfall's
+/// `is:mtgoid`, `is:arenaid`, `is:tcgplayer`, `is:cardmarket`, `is:multiverse` and
+/// `is:illustration`. See the variant for what each one reads and the counts behind it.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) enum PresentField {
+    /// `mtgo_id` — NOT `mtgo_foil_id`: the one printing carrying the foil id alone is not counted.
+    Mtgo,
+    /// `arena_id`.
+    Arena,
+    /// `tcgplayer_id` — not `tcgplayer_etched_id`: 892 printings carry the etched id alone.
+    Tcgplayer,
+    /// `cardmarket_id`.
+    Cardmarket,
+    /// A non-empty `multiverse_ids`.
+    Multiverse,
+    /// `illustration_id`, the printing's own or any face's.
+    Illustration,
+}
+
 /// The integer a Scryfall id keyword's value names: its leading decimal digits, 0 when it has
 /// none or overflows.
 ///
@@ -1992,6 +2016,65 @@ pub(crate) enum FilterExpr {
         vid: Option<u16>,
     },
 
+    /// LOCAL PATCH (Cloudflare port): `is:printedtext` — the printing carries a PRINTED rules
+    /// text: Scryfall's `printed_text`, on the printing itself or on its FIRST face.
+    ///
+    /// Measured on api.scryfall.com 2026-10-04 against every row of the same day's `all_cards`:
+    /// 364,982 rows, and per language — nineteen of them, German 56,219, Japanese 52,914, English
+    /// 533 … — exactly the rows carrying the key at either of those two places; the Korean list,
+    /// 12,434 rows, is the same set id for id. ANY face would be 365,064: the 82 over are
+    /// adventure cards whose creature half prints no rules text (Tuinvale Treefolk // Oaken Boon)
+    /// and whose adventure does, and Scryfall does not count them.
+    ///
+    /// It WIDENS the query in BOTH polarities, as `PrintedNamePresent` does: the next_page echo
+    /// says `include_multilingual=true` for `is:printedtext` and for `-is:printedtext` alike, and
+    /// the two are 364,982 and 180,196 — together every row of every language.
+    PrintedTextPresent,
+
+    /// LOCAL PATCH (Cloudflare port): `is:mtgoid`, `is:arenaid`, `is:tcgplayer`, `is:cardmarket`,
+    /// `is:multiverse` and `is:illustration` (and their `…id` spellings) — the printing CARRIES
+    /// the field. Read off what the store already holds for the card object and for the id
+    /// keywords above; nothing is stored for it and nothing is bound.
+    ///
+    /// Measured on api.scryfall.com 2026-10-04, `unique=prints` with extras, each term and its
+    /// negation against the same day's bulk file (118,373 printings there, 118,378 on Scryfall —
+    /// five newer than the file):
+    ///
+    ///   is:mtgoid         63,187   -is:mtgoid        55,191   `mtgo_id` present — 63,187; with
+    ///                                                         `mtgo_foil_id` alone it would be 63,188
+    ///   is:arenaid        19,829   -is:arenaid       98,549   `arena_id` — 19,829
+    ///   is:tcgplayer     102,276   -is:tcgplayer     16,102   `tcgplayer_id` — 102,276; with the
+    ///                                                         etched id, 103,168
+    ///   is:cardmarket    100,368   -is:cardmarket    18,010   `cardmarket_id` — 100,368
+    ///   is:multiverse     69,514   -is:multiverse    48,864   a non-empty `multiverse_ids` — 69,514
+    ///   is:illustration  117,615   -is:illustration     763   an `illustration_id` on the printing
+    ///                                                         or on a face — 117,610, and the 763
+    ///
+    /// Each pair sums to the corpus, so the negation is the plain complement and this is
+    /// two-valued — unlike the id KEYWORDS, whose negation is SQL's three-valued one. And it is
+    /// NOT their negation at an id no card has: `-mtgoid:0` is `NOT (mtgo_id = 0 OR mtgo_foil_id =
+    /// 0)`, Null wherever the foil id is absent, which is why it answered 15,872 cards where
+    /// `is:mtgoid` is 30,931.
+    FieldPresent {
+        field: PresentField,
+    },
+
+    /// LOCAL PATCH (Cloudflare port): the printing's `image_status` is `value` — behind
+    /// `is:placeholderimage` (`placeholder`) and, negated, `is:image` (not `missing`).
+    /// `StampMatch`'s shape: the status interns into `coll_vocab` as
+    /// `CompatFields.image_status_id` and resolves to an id in `bind()`; a printing with no
+    /// status is a plain False.
+    ///
+    /// Measured on api.scryfall.com 2026-10-04 against the same day's bulk file:
+    /// `is:placeholderimage` 573 and its negation 117,805 — `image_status: placeholder` is 573;
+    /// `is:image` 118,216 and its negation 162 — `image_status: missing` is 162 and everything
+    /// else 118,211 (plus the five printings newer than the file).
+    ImageStatusMatch {
+        value: String,
+        /// None: no loaded printing carries the status, which matches nothing.
+        vid: Option<u16>,
+    },
+
     Legality {
         shift: Option<u8>, // None: format absent from all loaded data — matches nothing
         expected: u64,
@@ -2194,6 +2277,11 @@ pub(crate) fn verify_cost_tier(f: &FilterExpr) -> u32 {
         // the printing's one-or-two multiverse ids).
         | FilterExpr::StampMatch { .. }
         | FilterExpr::ExternalIdMatch { .. }
+        // A FieldPresent is one compare against zero (a walk of the printing's few faces for the
+        // artwork), an ImageStatusMatch one id equality, a PrintedTextPresent two compares.
+        | FilterExpr::PrintedTextPresent
+        | FilterExpr::FieldPresent { .. }
+        | FilterExpr::ImageStatusMatch { .. }
         // A PrintedNamePresent is one u32 compare against a field already on the printing, a
         // FlavorNamePresent the same compare plus a walk of the printing's few faces, and a
         // SingleSet one bool read off a field already on the card.
@@ -2428,6 +2516,9 @@ fn leaf_compares_printing_field(f: &FilterExpr) -> bool {
         // is the whole reason `name:croft` returns 2 of Command Tower's 112 — and the same reason
         // `is:flavorname` matches Command Tower's sld/1864 row and none of its other 111.
         FilterExpr::FlavorNameIn { .. } | FilterExpr::FlavorNamePresent => true,
+        // The ids, the artwork and the image status are the printing's (CompatFields), and the
+        // printed text is the row's own language.
+        FilterExpr::FieldPresent { .. } | FilterExpr::ImageStatusMatch { .. } | FilterExpr::PrintedTextPresent => true,
         // `lore:`'s printing half: the printing's flavor text, flavor name and own faces.
         FilterExpr::LorePrinting { .. } | FilterExpr::PrintsOwnFaces => true,
         // A reversible printing has two faces where its siblings have one.
@@ -2877,6 +2968,14 @@ impl FilterExpr {
             // LOCAL PATCH: the security stamp interns into that vocab too
             // (CompatFields.security_stamp_id) — the same resolution a third time.
             FilterExpr::StampMatch { value, vid } => {
+                let i = sorted_ids.partition_point(|id| vocab[u16::from(*id) as usize].as_str() < value.as_str());
+                *vid = sorted_ids
+                    .get(i)
+                    .map(|id| u16::from(*id))
+                    .filter(|&id| vocab[id as usize].as_str() == value.as_str());
+            }
+            // LOCAL PATCH: and the image status (CompatFields.image_status_id), a fourth time.
+            FilterExpr::ImageStatusMatch { value, vid } => {
                 let i = sorted_ids.partition_point(|id| vocab[u16::from(*id) as usize].as_str() < value.as_str());
                 *vid = sorted_ids
                     .get(i)
@@ -3457,17 +3556,32 @@ impl FilterExpr {
     /// `run_query_routed`. Detected here, on the compiled tree, so the operators and the
     /// `include_multilingual` flag cannot widen differently.
     ///
-    /// Two leaves qualify. `LangMatch` is the obvious one. `PrintedNamePresent` is the second,
+    /// Three leaves qualify in either polarity. `LangMatch` is the obvious one;
+    /// `PrintedTextPresent` carries its own measurement. `PrintedNamePresent` is the second,
     /// and it is not a design choice — it is Scryfall's measured behaviour: `is:localizedname`
     /// with no `lang:` term in sight answers 31,294 cards there, and `&unique=prints` shows the
     /// rows it returns are German, French, Japanese… A canonical-only reading would answer 182
     /// (the English printings that carry a printed name) and call it the whole set.
     /// `FlavorNamePresent` was a third and is NOT one: see the variant for the measurement.
+    ///
+    /// `is:fwb` IS A THIRD, AND ONLY UNNEGATED (LOCAL PATCH, Cloudflare port). Its 917 rows are
+    /// the German, French and Italian printings of Revised — none of them its printing's
+    /// canonical row — and api.scryfall.com answers them with no `lang:` written, for the whole
+    /// query: `e:3ed (is:fwb or t:goblin)` is 920 (the 917 and the three ENGLISH goblins) and
+    /// `is:fwb or (e:khm t:god)` 1,062, every language of the gods. Negated it does not widen:
+    /// `-is:fwb` is 118,378, the canonical rows, where the widened complement is 544,261 (which
+    /// is what `-is:fwb lang:any` answers). Measured 2026-10-04.
     pub(crate) fn widens_to_annex(&self) -> bool {
+        self.widens(true)
+    }
+
+    /// `widens_to_annex` with the leaf's POLARITY: true under an even number of `Not`s.
+    fn widens(&self, unnegated: bool) -> bool {
         match self {
-            FilterExpr::LangMatch { .. } | FilterExpr::PrintedNamePresent => true,
-            FilterExpr::And(children) | FilterExpr::Or(children) => children.iter().any(Self::widens_to_annex),
-            FilterExpr::Not(inner) => inner.widens_to_annex(),
+            FilterExpr::LangMatch { .. } | FilterExpr::PrintedNamePresent | FilterExpr::PrintedTextPresent => true,
+            FilterExpr::CollectionCmp { field: CollField::IsTags, value, .. } if value == FWB_IS_TAG => unnegated,
+            FilterExpr::And(children) | FilterExpr::Or(children) => children.iter().any(|c| c.widens(unnegated)),
+            FilterExpr::Not(inner) => inner.widens(!unnegated),
             _ => false,
         }
     }
@@ -3757,6 +3871,37 @@ impl FilterExpr {
             FilterExpr::StampMatch { vid, .. } => {
                 let Some(p) = printing else { return Tri::PrintingDep };
                 tri_bool(vid.is_some_and(|v| u16::from(p.compat.security_stamp_id) == v))
+            }
+
+            // Two-valued, like PrintedNamePresent: the key on the printing or on its first face.
+            FilterExpr::PrintedTextPresent => {
+                let Some(p) = printing else { return Tri::PrintingDep };
+                tri_bool(
+                    p.printed_text_id != super::NONE_STR
+                        || p.printed_faces.first().is_some_and(|f| f.printed_text_id != super::NONE_STR),
+                )
+            }
+
+            // Two-valued: the field is there or it is not — see the variant's doc for the counts.
+            FilterExpr::FieldPresent { field } => {
+                let Some(p) = printing else { return Tri::PrintingDep };
+                let c = &p.compat;
+                tri_bool(match field {
+                    PresentField::Mtgo => c.mtgo_id.is_some(),
+                    PresentField::Arena => c.arena_id.is_some(),
+                    PresentField::Tcgplayer => c.tcgplayer_id.is_some(),
+                    PresentField::Cardmarket => c.cardmarket_id.is_some(),
+                    PresentField::Multiverse => !c.multiverse_ids.is_empty(),
+                    PresentField::Illustration => {
+                        u128::from(p.illustration_id) != 0 || p.faces.iter().any(|f| u128::from(f.illustration_id) != 0)
+                    }
+                })
+            }
+
+            // Two-valued, like StampMatch: a printing with no image status is False.
+            FilterExpr::ImageStatusMatch { vid, .. } => {
+                let Some(p) = printing else { return Tri::PrintingDep };
+                tri_bool(vid.is_some_and(|v| u16::from(p.compat.image_status_id) == v))
             }
 
             // Three-valued over the keyword's column(s) — see the variant's doc. An absent id is
@@ -4885,6 +5030,30 @@ fn build_binary(kw: &Value) -> Result<FilterExpr, String> {
                 "vanilla" => return Ok(FilterExpr::VanillaFace),
                 "atypical" => return Ok(FilterExpr::Atypical(super::PreferClassIds::UNBOUND)),
                 "default" => return Ok(FilterExpr::Not(Box::new(FilterExpr::Atypical(super::PreferClassIds::UNBOUND)))),
+                // LOCAL PATCH (Cloudflare port): the presence tests — see `FieldPresent` and
+                // `ImageStatusMatch`.
+                "mtgoid" => return Ok(FilterExpr::FieldPresent { field: PresentField::Mtgo }),
+                "arenaid" => return Ok(FilterExpr::FieldPresent { field: PresentField::Arena }),
+                "tcgplayer" => return Ok(FilterExpr::FieldPresent { field: PresentField::Tcgplayer }),
+                "cardmarket" => return Ok(FilterExpr::FieldPresent { field: PresentField::Cardmarket }),
+                "multiverse" => return Ok(FilterExpr::FieldPresent { field: PresentField::Multiverse }),
+                "illustration" => return Ok(FilterExpr::FieldPresent { field: PresentField::Illustration }),
+                "printedtext" => return Ok(FilterExpr::PrintedTextPresent),
+                "placeholderimage" => {
+                    return Ok(FilterExpr::ImageStatusMatch { value: "placeholder".to_owned(), vid: None });
+                }
+                "image" => {
+                    return Ok(FilterExpr::Not(Box::new(FilterExpr::ImageStatusMatch {
+                        value: "missing".to_owned(),
+                        vid: None,
+                    })));
+                }
+                // LOCAL PATCH (Cloudflare port): `is:englishart` and `is:paperart` are true of
+                // EVERY row. Measured on api.scryfall.com 2026-10-04: `is:englishart lang:any`
+                // and `is:paperart lang:any` are each 545,173 — every row of every language in
+                // the same day's bulk file — their negations 0, `is:englishart lang:ja` all
+                // 62,689 Japanese rows and `is:paperart is:digital` all 9,129 digital printings.
+                "englishart" | "paperart" => return Ok(FilterExpr::True),
                 _ => {}
             }
         }

@@ -1,0 +1,160 @@
+{
+ "artist": "Jason A. Engle",
+ "artist_ids": [
+  "02e2b5de-4341-464c-8fdb-a1adbf873bc0"
+ ],
+ "booster": true,
+ "border_color": "black",
+ "card_back_id": "0aeebaf5-8c7d-4636-9e82-8c27447861f7",
+ "card_faces": [
+  {
+   "artist": "Jason A. Engle",
+   "artist_id": "02e2b5de-4341-464c-8fdb-a1adbf873bc0",
+   "flavor_text": "「今のお前は弱々しい枝だが、私が年輪を育ててやる。」",
+   "illustration_id": "d623df81-96b1-465f-a3cb-62a6bdc572cb",
+   "mana_cost": "{5}{G}",
+   "name": "Tuinvale Treefolk",
+   "object": "card_face",
+   "oracle_text": "",
+   "power": "6",
+   "printed_name": "チューインベイルのツリーフォーク",
+   "printed_type_line": "クリーチャー — ツリーフォーク・ドルイド",
+   "toughness": "5",
+   "type_line": "Creature — Treefolk Druid"
+  },
+  {
+   "artist": "Jason A. Engle",
+   "artist_id": "02e2b5de-4341-464c-8fdb-a1adbf873bc0",
+   "illustration_id": "d623df81-96b1-465f-a3cb-62a6bdc572cb",
+   "mana_cost": "{3}{G}",
+   "name": "Oaken Boon",
+   "object": "card_face",
+   "oracle_text": "Put two +1/+1 counters on target creature. (Then exile this card. You may cast the creature later from exile.)",
+   "printed_name": "樫（かし）の加（か）護（ご）",
+   "printed_text": "クリーチャー１体を対象とし、それの上に＋１/＋１カウンターを２個置く。（その後、このカードを追放する。あなたは後で追放領域からこのクリーチャーを唱えてもよい。）",
+   "printed_type_line": "ソーサリー ― 出来事",
+   "type_line": "Sorcery — Adventure"
+  }
+ ],
+ "cmc": 6.0,
+ "collector_number": "180",
+ "color_identity": [
+  "G"
+ ],
+ "colors": [
+  "G"
+ ],
+ "digital": false,
+ "edhrec_rank": 16513,
+ "finishes": [
+  "nonfoil",
+  "foil"
+ ],
+ "flavor_text": "「今のお前は弱々しい枝だが、私が年輪を育ててやる。」",
+ "foil": true,
+ "frame": "2015",
+ "full_art": false,
+ "game_changer": false,
+ "games": [
+  "arena",
+  "paper",
+  "mtgo"
+ ],
+ "highres_image": false,
+ "id": "11d38471-e622-4177-a10e-a5a24b99b60a",
+ "illustration_id": "d623df81-96b1-465f-a3cb-62a6bdc572cb",
+ "image_status": "lowres",
+ "image_updated_at": "2026-07-01T13:35:01Z",
+ "image_uris": {
+  "art": "https://cards.scryfall.io/art/front/1/1/11d38471-e622-4177-a10e-a5a24b99b60a.webp?1782912901",
+  "art_crop": "https://cards.scryfall.io/art_crop/front/1/1/11d38471-e622-4177-a10e-a5a24b99b60a.jpg?1782912901",
+  "border_crop": "https://cards.scryfall.io/border_crop/front/1/1/11d38471-e622-4177-a10e-a5a24b99b60a.jpg?1782912901",
+  "crop": "https://cards.scryfall.io/crop/front/1/1/11d38471-e622-4177-a10e-a5a24b99b60a.webp?1782912901",
+  "display": "https://cards.scryfall.io/display/front/1/1/11d38471-e622-4177-a10e-a5a24b99b60a.webp?1782912901",
+  "grid": "https://cards.scryfall.io/grid/front/1/1/11d38471-e622-4177-a10e-a5a24b99b60a.webp?1782912901",
+  "large": "https://cards.scryfall.io/large/front/1/1/11d38471-e622-4177-a10e-a5a24b99b60a.jpg?1782912901",
+  "normal": "https://cards.scryfall.io/normal/front/1/1/11d38471-e622-4177-a10e-a5a24b99b60a.jpg?1782912901",
+  "png": "https://cards.scryfall.io/png/front/1/1/11d38471-e622-4177-a10e-a5a24b99b60a.png?1782912901",
+  "small": "https://cards.scryfall.io/small/front/1/1/11d38471-e622-4177-a10e-a5a24b99b60a.jpg?1782912901",
+  "thumb": "https://cards.scryfall.io/thumb/front/1/1/11d38471-e622-4177-a10e-a5a24b99b60a.webp?1782912901"
+ },
+ "keywords": [],
+ "lang": "ja",
+ "layout": "adventure",
+ "legalities": {
+  "alchemy": "not_legal",
+  "brawl": "legal",
+  "commander": "legal",
+  "competitivebrawl": "legal",
+  "duel": "legal",
+  "future": "not_legal",
+  "gladiator": "legal",
+  "historic": "legal",
+  "legacy": "legal",
+  "modern": "legal",
+  "oathbreaker": "legal",
+  "oldschool": "not_legal",
+  "pauper": "legal",
+  "paupercommander": "legal",
+  "penny": "not_legal",
+  "pioneer": "legal",
+  "predh": "not_legal",
+  "premodern": "not_legal",
+  "standard": "not_legal",
+  "standardbrawl": "not_legal",
+  "timeless": "legal",
+  "tlr": "not_legal",
+  "vintage": "legal"
+ },
+ "mana_cost": "{5}{G} // {3}{G}",
+ "multiverse_ids": [
+  474487
+ ],
+ "name": "Tuinvale Treefolk // Oaken Boon",
+ "nonfoil": true,
+ "object": "card",
+ "oracle_id": "09193c40-538c-4154-a671-076eece35e54",
+ "oversized": false,
+ "penny_rank": 18028,
+ "power": "6",
+ "prices": {
+  "eur": null,
+  "eur_foil": null,
+  "tix": null,
+  "usd": null,
+  "usd_etched": null,
+  "usd_foil": null
+ },
+ "prints_search_uri": "https://api.scryfall.com/cards/search?order=released&q=oracleid%3A09193c40-538c-4154-a671-076eece35e54&unique=prints",
+ "promo": false,
+ "purchase_uris": {
+  "cardhoarder": "https://www.cardhoarder.com/cards?affiliate_id=scryfall&data%5Bsearch%5D=Tuinvale+Treefolk&ref=card-profile&utm_campaign=affiliate&utm_medium=card&utm_source=scryfall",
+  "cardmarket": "https://www.cardmarket.com/en/Magic/Products/Search?referrer=scryfall&searchString=Tuinvale+Treefolk&utm_campaign=card_prices&utm_medium=text&utm_source=scryfall",
+  "tcgplayer": "https://partner.tcgplayer.com/c/4931599/1830156/21018?subId1=api&u=https%3A%2F%2Fwww.tcgplayer.com%2Fsearch%2Fmagic%2Fproduct%3FproductLineName%3Dmagic%26q%3DTuinvale%2BTreefolk%26view%3Dgrid"
+ },
+ "rarity": "common",
+ "related_uris": {
+  "edhrec": "https://edhrec.com/route/?cc=Tuinvale+Treefolk",
+  "gatherer": "https://gatherer.wizards.com/Pages/Card/Details.aspx?multiverseid=474487&printed=true",
+  "tcgplayer_infinite_articles": "https://partner.tcgplayer.com/c/4931599/1830156/21018?subId1=api&trafcat=tcgplayer.com%2Fsearch%2Farticles&u=https%3A%2F%2Fwww.tcgplayer.com%2Fsearch%2Farticles%3FproductLineName%3Dmagic%26q%3DTuinvale%2BTreefolk%2B%252F%252F%2BOaken%2BBoon",
+  "tcgplayer_infinite_decks": "https://partner.tcgplayer.com/c/4931599/1830156/21018?subId1=api&trafcat=tcgplayer.com%2Fsearch%2Fdecks&u=https%3A%2F%2Fwww.tcgplayer.com%2Fsearch%2Fdecks%3FproductLineName%3Dmagic%26q%3DTuinvale%2BTreefolk%2B%252F%252F%2BOaken%2BBoon"
+ },
+ "released_at": "2019-10-04",
+ "reprint": false,
+ "reserved": false,
+ "rulings_uri": "https://api.scryfall.com/cards/11d38471-e622-4177-a10e-a5a24b99b60a/rulings",
+ "scryfall_set_uri": "https://scryfall.com/sets/eld?utm_source=api",
+ "scryfall_uri": "https://scryfall.com/card/eld/180/ja/%E3%83%81%E3%83%A5%E3%83%BC%E3%82%A4%E3%83%B3%E3%83%99%E3%82%A4%E3%83%AB%E3%81%AE%E3%83%84%E3%83%AA%E3%83%BC%E3%83%95%E3%82%A9%E3%83%BC%E3%82%AF-%E6%A8%AB%EF%BC%88%E3%81%8B%E3%81%97%EF%BC%89%E3%81%AE%E5%8A%A0%EF%BC%88%E3%81%8B%EF%BC%89%E8%AD%B7%EF%BC%88%E3%81%94%EF%BC%89-(tuinvale-treefolk-oaken-boon)?utm_source=api",
+ "set": "eld",
+ "set_id": "a90a7b2f-9dd8-4fc7-9f7d-8ea2797ec782",
+ "set_name": "Throne of Eldraine",
+ "set_search_uri": "https://api.scryfall.com/cards/search?order=set&q=e%3Aeld&unique=prints",
+ "set_type": "expansion",
+ "set_uri": "https://api.scryfall.com/sets/a90a7b2f-9dd8-4fc7-9f7d-8ea2797ec782",
+ "story_spotlight": false,
+ "textless": false,
+ "toughness": "5",
+ "type_line": "Creature — Treefolk Druid // Sorcery — Adventure",
+ "uri": "https://api.scryfall.com/cards/11d38471-e622-4177-a10e-a5a24b99b60a",
+ "variation": false
+}

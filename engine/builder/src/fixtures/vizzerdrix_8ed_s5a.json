@@ -1,0 +1,129 @@
+{
+ "artist": "Dave Dorman",
+ "artist_ids": [
+  "9235458b-ce92-45bd-a430-a72ecd8e6176"
+ ],
+ "booster": false,
+ "border_color": "black",
+ "card_back_id": "0aeebaf5-8c7d-4636-9e82-8c27447861f7",
+ "cmc": 7.0,
+ "collector_number": "S5a",
+ "color_identity": [
+  "U"
+ ],
+ "colors": [
+  "U"
+ ],
+ "digital": true,
+ "edhrec_rank": 29074,
+ "finishes": [
+  "foil"
+ ],
+ "flavor_text": "A bored wizard once created a vizzerdrix out of a bunny and a piranha. He never made *that* mistake again.",
+ "foil": true,
+ "frame": "2003",
+ "full_art": false,
+ "game_changer": false,
+ "games": [
+  "mtgo"
+ ],
+ "highres_image": true,
+ "id": "4d04e124-5504-43c9-8bf3-c4c66c291a40",
+ "illustration_id": "29012126-bf29-42b5-ad67-628d4992e4e6",
+ "image_status": "highres_scan",
+ "image_updated_at": "2026-07-13T12:14:21Z",
+ "image_uris": {
+  "art": "https://cards.scryfall.io/art/front/4/d/4d04e124-5504-43c9-8bf3-c4c66c291a40.webp?1783944861",
+  "art_crop": "https://cards.scryfall.io/art_crop/front/4/d/4d04e124-5504-43c9-8bf3-c4c66c291a40.jpg?1783944861",
+  "border_crop": "https://cards.scryfall.io/border_crop/front/4/d/4d04e124-5504-43c9-8bf3-c4c66c291a40.jpg?1783944861",
+  "crop": "https://cards.scryfall.io/crop/front/4/d/4d04e124-5504-43c9-8bf3-c4c66c291a40.webp?1783944861",
+  "display": "https://cards.scryfall.io/display/front/4/d/4d04e124-5504-43c9-8bf3-c4c66c291a40.webp?1783944861",
+  "grid": "https://cards.scryfall.io/grid/front/4/d/4d04e124-5504-43c9-8bf3-c4c66c291a40.webp?1783944861",
+  "large": "https://cards.scryfall.io/large/front/4/d/4d04e124-5504-43c9-8bf3-c4c66c291a40.jpg?1783944861",
+  "normal": "https://cards.scryfall.io/normal/front/4/d/4d04e124-5504-43c9-8bf3-c4c66c291a40.jpg?1783944861",
+  "png": "https://cards.scryfall.io/png/front/4/d/4d04e124-5504-43c9-8bf3-c4c66c291a40.png?1783944861",
+  "small": "https://cards.scryfall.io/small/front/4/d/4d04e124-5504-43c9-8bf3-c4c66c291a40.jpg?1783944861",
+  "thumb": "https://cards.scryfall.io/thumb/front/4/d/4d04e124-5504-43c9-8bf3-c4c66c291a40.webp?1783944861"
+ },
+ "keywords": [],
+ "lang": "en",
+ "layout": "normal",
+ "legalities": {
+  "alchemy": "not_legal",
+  "brawl": "not_legal",
+  "commander": "legal",
+  "competitivebrawl": "not_legal",
+  "duel": "legal",
+  "future": "not_legal",
+  "gladiator": "not_legal",
+  "historic": "not_legal",
+  "legacy": "legal",
+  "modern": "legal",
+  "oathbreaker": "legal",
+  "oldschool": "not_legal",
+  "pauper": "not_legal",
+  "paupercommander": "not_legal",
+  "penny": "legal",
+  "pioneer": "not_legal",
+  "predh": "legal",
+  "premodern": "legal",
+  "standard": "not_legal",
+  "standardbrawl": "not_legal",
+  "timeless": "not_legal",
+  "tlr": "not_legal",
+  "vintage": "legal"
+ },
+ "mana_cost": "{6}{U}",
+ "mtgo_foil_id": 19476,
+ "multiverse_ids": [],
+ "name": "Vizzerdrix",
+ "nonfoil": false,
+ "object": "card",
+ "oracle_id": "a6649a99-c9cd-474e-91f2-cc8e75496864",
+ "oracle_text": "",
+ "oversized": false,
+ "power": "6",
+ "prices": {
+  "eur": null,
+  "eur_foil": null,
+  "tix": null,
+  "usd": null,
+  "usd_etched": null,
+  "usd_foil": null
+ },
+ "prints_search_uri": "https://api.scryfall.com/cards/search?order=released&q=oracleid%3Aa6649a99-c9cd-474e-91f2-cc8e75496864&unique=prints",
+ "promo": false,
+ "promo_types": [
+  "starterdeck"
+ ],
+ "purchase_uris": {
+  "cardhoarder": "https://www.cardhoarder.com/cards?affiliate_id=scryfall&data%5Bsearch%5D=Vizzerdrix&ref=card-profile&utm_campaign=affiliate&utm_medium=card&utm_source=scryfall",
+  "cardmarket": "https://www.cardmarket.com/en/Magic/Products/Search?referrer=scryfall&searchString=Vizzerdrix&utm_campaign=card_prices&utm_medium=text&utm_source=scryfall",
+  "tcgplayer": "https://partner.tcgplayer.com/c/4931599/1830156/21018?subId1=api&u=https%3A%2F%2Fwww.tcgplayer.com%2Fsearch%2Fmagic%2Fproduct%3FproductLineName%3Dmagic%26q%3DVizzerdrix%26view%3Dgrid"
+ },
+ "rarity": "rare",
+ "related_uris": {
+  "edhrec": "https://edhrec.com/route/?cc=Vizzerdrix",
+  "tcgplayer_infinite_articles": "https://partner.tcgplayer.com/c/4931599/1830156/21018?subId1=api&trafcat=tcgplayer.com%2Fsearch%2Farticles&u=https%3A%2F%2Fwww.tcgplayer.com%2Fsearch%2Farticles%3FproductLineName%3Dmagic%26q%3DVizzerdrix",
+  "tcgplayer_infinite_decks": "https://partner.tcgplayer.com/c/4931599/1830156/21018?subId1=api&trafcat=tcgplayer.com%2Fsearch%2Fdecks&u=https%3A%2F%2Fwww.tcgplayer.com%2Fsearch%2Fdecks%3FproductLineName%3Dmagic%26q%3DVizzerdrix"
+ },
+ "released_at": "2003-07-28",
+ "reprint": true,
+ "reserved": false,
+ "rulings_uri": "https://api.scryfall.com/cards/4d04e124-5504-43c9-8bf3-c4c66c291a40/rulings",
+ "scryfall_set_uri": "https://scryfall.com/sets/8ed?utm_source=api",
+ "scryfall_uri": "https://scryfall.com/card/8ed/S5a/vizzerdrix?utm_source=api",
+ "set": "8ed",
+ "set_id": "cae8d29d-5979-4d8f-884d-7f3183bcc886",
+ "set_name": "Eighth Edition",
+ "set_search_uri": "https://api.scryfall.com/cards/search?order=set&q=e%3A8ed&unique=prints",
+ "set_type": "core",
+ "set_uri": "https://api.scryfall.com/sets/cae8d29d-5979-4d8f-884d-7f3183bcc886",
+ "story_spotlight": false,
+ "textless": false,
+ "toughness": "6",
+ "type_line": "Creature — Rabbit Beast",
+ "uri": "https://api.scryfall.com/cards/4d04e124-5504-43c9-8bf3-c4c66c291a40",
+ "variation": true,
+ "variation_of": "168821ce-d77c-4294-a9fd-2a30852801ab"
+}

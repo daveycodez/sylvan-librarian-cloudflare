@@ -1877,8 +1877,25 @@ export async function gzipBytes(bytes: Uint8Array): Promise<Uint8Array> {
  *      row touched. (The same commit stops `is:flavorname` widening a search to every language
  *      and widens the `is:atypical` class — both are code on the query path reading fields the
  *      store already holds, and need no rebuild.)
+ *
+ *   65 (2026-10-04): THIRTY-FIVE `is:` VALUES SCRYFALL ANSWERS AND THIS PORT DID NOT (x72). Each
+ *      list was read on api.scryfall.com against the same day's bulk file. Twenty-five need
+ *      nothing stored: the presence tests (`is:mtgoid`, `is:arenaid`, `is:tcgplayer`,
+ *      `is:cardmarket`, `is:multiverse`, `is:illustration`, `is:image`, `is:placeholderimage`,
+ *      `is:printedtext`) read fields the printing already carries, `is:englishart` and `is:paperart` are true of
+ *      every row, and the rest are another word for a term this port had. TEN are tags the
+ *      importer writes with this generation: `is:back` (a card back that is not the ordinary
+ *      one, 3,330 printings), `is:indicator` (1,002), `is:attractionlights` (135), `is:fbb` and
+ *      `is:fwb` (the foreign black- and white-bordered editions, a set and a language),
+ *      `is:unset` (twelve set codes, 1,411), `is:tron`, `is:vergeland`, `is:timeshifted` (247)
+ *      and the `moonlitland` promo type. The builder run over the whole 2026-10-04 bulk file
+ *      tags exactly Scryfall's list for each.
+ *
+ *      GENERATION-ONLY: ten more values in the `card_is_tags` collection index, about fifteen
+ *      thousand rows of every language between them. No layout, no format version, neither row
+ *      touched.
  */
-export const STORE_CONTENT_GENERATION = 64;
+export const STORE_CONTENT_GENERATION = 65;
 
 /**
  * Chunk key for a store. Keyed by store_key, so publishes never collide.

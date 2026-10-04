@@ -417,6 +417,24 @@ const HAS_EXPANSIONS: ReadonlyMap<string, string> = new Map([
  * still nothing Scryfall lacks; the 53 left are in its class by no field the bulk data carries.
  * card_engine's `PreferClassIds` has the members, the counts and the thirteen `prefer:atypical`
  * probes that say the prefer ranks by the same wider class.
+ *
+ * THE PRESENCE TESTS (x72) — `mtgoid`, `arenaid`, `tcgplayer`, `cardmarket`, `multiverse`,
+ * `illustration`, `image` and `placeholderimage`: the printing CARRIES the field. Each is read
+ * off what the store already holds for the card object and the id keywords (card_engine's
+ * `FieldPresent` and `ImageStatusMatch`, which carry the counts): nothing is stored for them.
+ * Measured 2026-10-04 with each term and its negation against the same day's bulk file —
+ * `is:mtgoid` 63,187 is `mtgo_id` present (not the foil id), `is:tcgplayer` 102,276 is
+ * `tcgplayer_id` (not the etched one), `is:image` 118,216 is an `image_status` other than
+ * `missing`, and every negation is the plain complement. `-mtgoid:0` was never this: it is a
+ * three-valued comparison, 15,872 cards against `is:mtgoid`'s 30,931.
+ *
+ * `printedtext` is a `printed_text` on the printing or on its FIRST face — 364,982 rows, every
+ * one of nineteen languages' counts equal and the Korean list identical; any face would be 82
+ * adventure cards too many. Like `localizedname` it WIDENS the search to every language, and in
+ * both polarities (the next_page echo says `include_multilingual=true` for `-is:printedtext` too).
+ *
+ * `englishart` and `paperart` are TRUE OF EVERY ROW there — 545,173 of 545,173 with `lang:any`,
+ * each negation 0, `is:paperart is:digital` every digital printing — and so are they here.
  */
 export const ENGINE_IS_VALUES: ReadonlySet<string> = new Set([
 	"localizedname",
@@ -425,6 +443,17 @@ export const ENGINE_IS_VALUES: ReadonlySet<string> = new Set([
 	"flavorname",
 	"atypical",
 	"default",
+	"mtgoid",
+	"arenaid",
+	"tcgplayer",
+	"cardmarket",
+	"multiverse",
+	"illustration",
+	"image",
+	"placeholderimage",
+	"printedtext",
+	"englishart",
+	"paperart",
 ]);
 
 for (const [value, dsl] of HAS_EXPANSIONS) {

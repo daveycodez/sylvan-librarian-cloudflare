@@ -1,0 +1,162 @@
+{
+ "all_parts": [
+  {
+   "component": "combo_piece",
+   "id": "bfa6bfa2-0aee-4623-a17e-a77898deb16d",
+   "name": "Urza's Construction Drone",
+   "object": "related_card",
+   "type_line": "Artifact Creature — Construct",
+   "uri": "https://api.scryfall.com/cards/bfa6bfa2-0aee-4623-a17e-a77898deb16d"
+  },
+  {
+   "component": "combo_piece",
+   "id": "92fae767-8c14-46ef-a548-4f66225defdb",
+   "name": "Urza's Tower",
+   "object": "related_card",
+   "type_line": "Land — Urza's Tower",
+   "uri": "https://api.scryfall.com/cards/92fae767-8c14-46ef-a548-4f66225defdb"
+  },
+  {
+   "component": "combo_piece",
+   "id": "23c0e596-83c7-4d3f-903b-0c29276700ef",
+   "name": "Urza's Mine",
+   "object": "related_card",
+   "type_line": "Land — Urza's Mine",
+   "uri": "https://api.scryfall.com/cards/23c0e596-83c7-4d3f-903b-0c29276700ef"
+  },
+  {
+   "component": "combo_piece",
+   "id": "937a24e4-f1f7-48d2-bc31-b219b2f26f04",
+   "name": "Urza's Power Plant",
+   "object": "related_card",
+   "type_line": "Land — Urza's Power-Plant",
+   "uri": "https://api.scryfall.com/cards/937a24e4-f1f7-48d2-bc31-b219b2f26f04"
+  }
+ ],
+ "artist": "Mark Poole",
+ "artist_ids": [
+  "bfdeaf09-f915-4058-8e8b-bcac3bc43c33"
+ ],
+ "booster": true,
+ "border_color": "black",
+ "card_back_id": "0aeebaf5-8c7d-4636-9e82-8c27447861f7",
+ "cmc": 0.0,
+ "collector_number": "259a",
+ "color_identity": [],
+ "colors": [],
+ "digital": true,
+ "edhrec_rank": 834,
+ "finishes": [
+  "nonfoil",
+  "foil"
+ ],
+ "flavor_text": "Urza always put Tocasia's lessons on resource-gathering to effective use.",
+ "foil": true,
+ "frame": "1997",
+ "full_art": false,
+ "game_changer": false,
+ "games": [
+  "mtgo"
+ ],
+ "highres_image": true,
+ "id": "0696cc4b-45c9-424d-b472-8d530062fd52",
+ "illustration_id": "90123421-37ef-406d-ad5d-a54f14657d60",
+ "image_status": "highres_scan",
+ "image_updated_at": "2026-07-13T11:16:38Z",
+ "image_uris": {
+  "art": "https://cards.scryfall.io/art/front/0/6/0696cc4b-45c9-424d-b472-8d530062fd52.webp?1783941398",
+  "art_crop": "https://cards.scryfall.io/art_crop/front/0/6/0696cc4b-45c9-424d-b472-8d530062fd52.jpg?1783941398",
+  "border_crop": "https://cards.scryfall.io/border_crop/front/0/6/0696cc4b-45c9-424d-b472-8d530062fd52.jpg?1783941398",
+  "crop": "https://cards.scryfall.io/crop/front/0/6/0696cc4b-45c9-424d-b472-8d530062fd52.webp?1783941398",
+  "display": "https://cards.scryfall.io/display/front/0/6/0696cc4b-45c9-424d-b472-8d530062fd52.webp?1783941398",
+  "grid": "https://cards.scryfall.io/grid/front/0/6/0696cc4b-45c9-424d-b472-8d530062fd52.webp?1783941398",
+  "large": "https://cards.scryfall.io/large/front/0/6/0696cc4b-45c9-424d-b472-8d530062fd52.jpg?1783941398",
+  "normal": "https://cards.scryfall.io/normal/front/0/6/0696cc4b-45c9-424d-b472-8d530062fd52.jpg?1783941398",
+  "png": "https://cards.scryfall.io/png/front/0/6/0696cc4b-45c9-424d-b472-8d530062fd52.png?1783941398",
+  "small": "https://cards.scryfall.io/small/front/0/6/0696cc4b-45c9-424d-b472-8d530062fd52.jpg?1783941398",
+  "thumb": "https://cards.scryfall.io/thumb/front/0/6/0696cc4b-45c9-424d-b472-8d530062fd52.webp?1783941398"
+ },
+ "keywords": [],
+ "lang": "en",
+ "layout": "normal",
+ "legalities": {
+  "alchemy": "not_legal",
+  "brawl": "not_legal",
+  "commander": "legal",
+  "competitivebrawl": "not_legal",
+  "duel": "legal",
+  "future": "not_legal",
+  "gladiator": "not_legal",
+  "historic": "not_legal",
+  "legacy": "legal",
+  "modern": "legal",
+  "oathbreaker": "legal",
+  "oldschool": "not_legal",
+  "pauper": "legal",
+  "paupercommander": "legal",
+  "penny": "not_legal",
+  "pioneer": "not_legal",
+  "predh": "legal",
+  "premodern": "legal",
+  "standard": "not_legal",
+  "standardbrawl": "not_legal",
+  "timeless": "not_legal",
+  "tlr": "legal",
+  "vintage": "legal"
+ },
+ "mana_cost": "",
+ "mtgo_foil_id": 38795,
+ "mtgo_id": 38794,
+ "multiverse_ids": [
+  220957
+ ],
+ "name": "Urza's Tower",
+ "nonfoil": true,
+ "object": "card",
+ "oracle_id": "32fbb638-ab14-4e8b-a07a-d4c44e3496f2",
+ "oracle_text": "{T}: Add {C}. If you control an Urza's Mine and an Urza's Power-Plant, add {C}{C}{C} instead.",
+ "oversized": false,
+ "penny_rank": 13831,
+ "prices": {
+  "eur": null,
+  "eur_foil": null,
+  "tix": "1.92",
+  "usd": null,
+  "usd_etched": null,
+  "usd_foil": null
+ },
+ "prints_search_uri": "https://api.scryfall.com/cards/search?order=released&q=oracleid%3A32fbb638-ab14-4e8b-a07a-d4c44e3496f2&unique=prints",
+ "produced_mana": [
+  "C"
+ ],
+ "promo": false,
+ "purchase_uris": {
+  "cardhoarder": "https://www.cardhoarder.com/cards/38794?affiliate_id=scryfall&ref=card-profile&utm_campaign=affiliate&utm_medium=card&utm_source=scryfall",
+  "cardmarket": "https://www.cardmarket.com/en/Magic/Products/Search?referrer=scryfall&searchString=Urza%27s+Tower&utm_campaign=card_prices&utm_medium=text&utm_source=scryfall",
+  "tcgplayer": "https://partner.tcgplayer.com/c/4931599/1830156/21018?subId1=api&u=https%3A%2F%2Fwww.tcgplayer.com%2Fsearch%2Fmagic%2Fproduct%3FproductLineName%3Dmagic%26q%3DUrza%2527s%2BTower%26view%3Dgrid"
+ },
+ "rarity": "common",
+ "related_uris": {
+  "edhrec": "https://edhrec.com/route/?cc=Urza%27s+Tower",
+  "gatherer": "https://gatherer.wizards.com/Pages/Card/Details.aspx?multiverseid=220957&printed=false",
+  "tcgplayer_infinite_articles": "https://partner.tcgplayer.com/c/4931599/1830156/21018?subId1=api&trafcat=tcgplayer.com%2Fsearch%2Farticles&u=https%3A%2F%2Fwww.tcgplayer.com%2Fsearch%2Farticles%3FproductLineName%3Dmagic%26q%3DUrza%2527s%2BTower",
+  "tcgplayer_infinite_decks": "https://partner.tcgplayer.com/c/4931599/1830156/21018?subId1=api&trafcat=tcgplayer.com%2Fsearch%2Fdecks&u=https%3A%2F%2Fwww.tcgplayer.com%2Fsearch%2Fdecks%3FproductLineName%3Dmagic%26q%3DUrza%2527s%2BTower"
+ },
+ "released_at": "2011-01-10",
+ "reprint": true,
+ "reserved": false,
+ "rulings_uri": "https://api.scryfall.com/cards/0696cc4b-45c9-424d-b472-8d530062fd52/rulings",
+ "scryfall_set_uri": "https://scryfall.com/sets/me4?utm_source=api",
+ "scryfall_uri": "https://scryfall.com/card/me4/259a/urzas-tower?utm_source=api",
+ "set": "me4",
+ "set_id": "d38a13b7-6615-4c89-be7d-3b4eaacf1875",
+ "set_name": "Masters Edition IV",
+ "set_search_uri": "https://api.scryfall.com/cards/search?order=set&q=e%3Ame4&unique=prints",
+ "set_type": "masters",
+ "set_uri": "https://api.scryfall.com/sets/d38a13b7-6615-4c89-be7d-3b4eaacf1875",
+ "story_spotlight": false,
+ "textless": false,
+ "type_line": "Land — Urza's Tower",
+ "uri": "https://api.scryfall.com/cards/0696cc4b-45c9-424d-b472-8d530062fd52",
+ "variation": false
+}

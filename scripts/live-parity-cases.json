@@ -2978,6 +2978,114 @@
 			"method": "GET",
 			"path": "/cards/search?q=%21%22Fire-Lit+Thicket%22+prefer%3Aatypical",
 			"note": "2026-10-04. exp/29, the Zendikar Expedition: a masterpiece set is atypical (1,780 of 1,780) and the prefer ranks by the same class — thirteen of thirteen cards probed. This port answered the default 2xm/317."
+		},
+		{
+			"name": "is-tcgplayer-is-not-the-etched-id",
+			"method": "GET",
+			"path": "/cards/search?q=e%3Acmr+is%3Aetched+-is%3Atcgplayer+t%3Aelf",
+			"note": "2026-10-04. 7: Commander Legends' etched-foil Elves carry `tcgplayer_etched_id` alone. `is:tcgplayer` is 102,276 printings, `tcgplayer_id` present (103,168 with the etched id), and its negation the complement. The value was a warned no-match here."
+		},
+		{
+			"name": "is-mtgoid-negated-is-the-complement",
+			"method": "GET",
+			"path": "/cards/search?q=-is%3Amtgoid+e%3A8ed+t%3Awizard&unique=prints",
+			"note": "2026-10-04. 6. `is:mtgoid` is 63,187 printings — `mtgo_id` present, the foil id alone not counting — and `-is:mtgoid` the other 55,191. Not `-mtgoid:0`, a three-valued comparison that is Null wherever the foil id is absent (15,872 cards against 30,931)."
+		},
+		{
+			"name": "is-back-is-a-different-card-back",
+			"method": "GET",
+			"path": "/cards/search?q=is%3Aback+e%3Awc98+t%3Aland",
+			"note": "2026-10-04. 15: World Championship cards have their own back. `is:back` is a `card_back_id` other than the ordinary Magic one (3,330 of 3,330 printings) — no two-sided card is in it — and it opens extras. Generation 65."
+		},
+		{
+			"name": "is-fwb-widens-unnegated",
+			"method": "GET",
+			"path": "/cards/search?q=is%3Afwb+t%3Agoblin&unique=prints",
+			"note": "2026-10-04. 9 rows: Revised's three Goblins in German, French and Italian, with no `lang:` written — `is:fwb` is the 917 non-English rows of 3ed and switches include_multilingual on, as the next_page echo says. Generation 65."
+		},
+		{
+			"name": "is-fwb-negated-does-not-widen",
+			"method": "GET",
+			"path": "/cards/search?q=-is%3Afwb+e%3A3ed+t%3Agoblin&unique=prints",
+			"note": "2026-10-04. 3, the English rows: negated, `is:fwb` leaves include_multilingual off (`-is:fwb` is 118,378 where the widened complement is 544,261)."
+		},
+		{
+			"name": "is-fbb-foreign-black-border",
+			"method": "GET",
+			"path": "/cards/search?q=is%3Afbb+t%3Awall",
+			"note": "2026-10-04. 18. Every row of fbb, bchr, ren and rin and of 4bb all but its Korean and Chinese ones (`is:fbb lang:ko e:4bb` is 0 of 370); 1,001 printings by default, 2,488 with `lang:any`. Opens extras. Generation 65."
+		},
+		{
+			"name": "is-unset-is-not-st-funny",
+			"method": "GET",
+			"path": "/cards/search?q=is%3Aunset+t%3Agoblin",
+			"note": "2026-10-04. 26. Twelve set codes — the five Un-sets and seven that hang off them, not Unglued's tokens — 1,411 printings, where `st:funny` is 2,249. Does not open extras (1,307 by default), which is why it is a tag and not a union of `e:` terms. Generation 65."
+		},
+		{
+			"name": "is-tron",
+			"method": "GET",
+			"path": "/cards/search?q=is%3Atron",
+			"note": "2026-10-04. Urza's Tower, Mine and Power Plant: 96 printings. Generation 65."
+		},
+		{
+			"name": "is-timeshifted",
+			"method": "GET",
+			"path": "/cards/search?q=is%3Atimeshifted+t%3Aangel",
+			"note": "2026-10-04. 4. Time Spiral's timeshifted sheet, Time Spiral Remastered's 1997-frame printings, and The List's reprints that keep the `special` rarity: 247 of 247. Generation 65."
+		},
+		{
+			"name": "is-cube-is-the-treasure-chest-sets",
+			"method": "GET",
+			"path": "/cards/search?q=is%3Acube+t%3Adragon",
+			"note": "2026-10-04. 13: `is:cube` and `is:treasurechest` are both `st:treasure_chest`, the 419 printings of pz1 and pz2 (empty symmetric difference, every language)."
+		},
+		{
+			"name": "is-indicator",
+			"method": "GET",
+			"path": "/cards/search?q=is%3Aindicator+e%3Atsp",
+			"note": "2026-10-04. 5: Time Spiral's cards with no mana cost. A colour indicator on the printing or on a face, 1,002 printings; `is:ci` and `is:colorindicator` are the same. Generation 65."
+		},
+		{
+			"name": "is-placeholderimage",
+			"method": "GET",
+			"path": "/cards/search?q=is%3Aplaceholderimage+e%3Abchr+t%3Adragon",
+			"note": "2026-10-04. 2: `image_status: placeholder`, 573 printings; `is:image` is every status but `missing` (118,216, its negation 162)."
+		},
+		{
+			"name": "is-englishart-is-every-row",
+			"method": "GET",
+			"path": "/cards/search?q=is%3Aenglishart+e%3Alea+t%3Agoblin",
+			"note": "2026-10-04. 3, Alpha's Goblins: `is:englishart` and `is:paperart` are true of every row there (545,173 of 545,173 with `lang:any`, each negation 0)."
+		},
+		{
+			"name": "is-displaycommander-is-the-thick-promo-type",
+			"method": "GET",
+			"path": "/cards/search?q=is%3Adisplaycommander+e%3Aclb",
+			"note": "2026-10-04. 4: the thick-stock display commanders, exactly the 97 printings carrying `promo_types: thick`; opens extras as `is:thick` does."
+		},
+		{
+			"name": "is-vergeland",
+			"method": "GET",
+			"path": "/cards/search?q=is%3Avergeland",
+			"note": "2026-10-04. The ten Verges of Duskmourn and Aetherdrift, by name (Krosan Verge and Sandstorm Verge are not of the cycle). Generation 65."
+		},
+		{
+			"name": "is-illustration-negated",
+			"method": "GET",
+			"path": "/cards/search?q=-is%3Aillustration+t%3Aconspiracy",
+			"note": "2026-10-04. 404: every Conspiracy carries an illustration id. `is:illustration` is one on the printing or on a face, 117,615 printings, its negation 763."
+		},
+		{
+			"name": "is-printedtext-widens",
+			"method": "GET",
+			"path": "/cards/search?q=is%3Aprintedtext+e%3Afbb+cn%3A26&unique=prints",
+			"note": "2026-10-04. 1 row, Karma's German fbb/26, with no `lang:` written: `is:printedtext` is a `printed_text` on the printing or its first face (364,982 rows, nineteen languages' counts each equal) and switches include_multilingual on, in both polarities. A warned no-match here before."
+		},
+		{
+			"name": "is-printedtext-reads-the-first-face",
+			"method": "GET",
+			"path": "/cards/search?q=is%3Aprintedtext+%21%22Tuinvale+Treefolk%22+e%3Aeld&unique=prints",
+			"note": "2026-10-04. 404: every foreign row of Tuinvale Treefolk // Oaken Boon prints rules text on its adventure alone — the creature half has none — and Scryfall does not count it (82 such rows; `-is:printedtext` here is 12, every language)."
 		}
 	]
 }

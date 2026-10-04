@@ -2219,11 +2219,30 @@ const SCRYFALL_IS_SYNONYMS: ReadonlyMap<string, string> = new Map([
 	["trikeland", "is:tricycleland"],
 	["ub", "is:universesbeyond"],
 	["wpn", "is:wizardsplaynetwork"],
+	// The `…id` spellings of the presence tests, and the other words for a stored class (x72).
+	["cardmarketid", "is:cardmarket"],
+	["illustrationid", "is:illustration"],
+	["multiverseid", "is:multiverse"],
+	["tcgplayerid", "is:tcgplayer"],
+	["ci", "is:indicator"],
+	["colorindicator", "is:indicator"],
+	["lights", "is:attractionlights"],
+	// The thick-stock display commanders: all 97 printings carry `promo_types: thick` and no
+	// other printing does.
+	["displaycommander", "is:thick"],
 	// A set type.
 	["archenemy", "st:archenemy"],
 	["arsenal", "st:arsenal"],
 	["box", "st:box"],
 	["core", "st:core"],
+	// Magic Online's Treasure Chest sets are both words: `is:cube` and `is:treasurechest` are
+	// each the 419 printings of pz1 and pz2.
+	["cube", "st:treasure_chest"],
+	["dueldeck", "st:duel_deck"],
+	["fromthevault", "st:from_the_vault"],
+	["minigame", "st:minigame"],
+	["treasurechest", "st:treasure_chest"],
+	["vanguard", "st:vanguard"],
 	["eternal", "st:eternal"],
 	["expansion", "st:expansion"],
 	["masters", "st:masters"],
@@ -2245,74 +2264,51 @@ const SCRYFALL_IS_SYNONYMS: ReadonlyMap<string, string> = new Map([
 ]);
 
 /**
- * THE `is:` VALUES SCRYFALL ANSWERS AND THIS PORT CANNOT — the rest of the 2026-10-04 sweep, keyed
- * with the separators removed. Each is kept in the query and matches nothing, under the parser's
- * own "no data for that predicate" warning: narrower than Scryfall, never wider.
+ * THE `is:` VALUES SCRYFALL ANSWERS AND THIS PORT CANNOT — what is left of the 2026-10-04 sweep,
+ * keyed with the separators removed. Each is kept in the query and matches nothing, under the
+ * parser's own "no data for that predicate" warning: narrower than Scryfall, never wider.
  *
- *   an id or a field that is present, with no presence test in the engine
- *       arenaid mtgoid multiverse multiverseid tcgplayer tcgplayerid cardmarket cardmarketid
- *       illustration illustrationid image back printedtext related placeholderimage
- *       indicator ci colorindicator attractionlights lights
- *     `-mtgoid:0` is not `is:mtgoid` (15,872 on production against Scryfall's 30,744): the
- *     engine's id match is a comparison, and its negation is not "has one".
- *   a class of Scryfall's own, with no rule found
- *       beginner covered cube displaycommander englishart paperart fbb fwb intro invitational
- *       jumpstart misprint moonlitland vergeland spellbook spikey timeshifted tron unset
- *     Five guesses were measured as symmetric differences over printings and refuted:
- *     `is:unset` against `st:funny` (922 apart), `is:jumpstart` against its three sets (1,322),
- *     `is:fbb` against `e:fbb or e:4bb` (316), `is:spellbook` against `st:spellbook` (99),
- *     `is:intro` (= `is:beginner`, 191) against the intro-pack, beginner-box and starter-deck
- *     tags together (564).
- *   accepted by Scryfall and answering nothing by default there either
- *       dueldeck fromthevault gateway lair minigame treasurechest vanguard
+ * 46 values stood here. x72 measured every one — each list read printing by printing against the
+ * same day's bulk file — and 35 are answered now: the presence tests by the engine
+ * (rewrite.ts ENGINE_IS_VALUES), nine classes as tags the importer decides (db-info.ts
+ * BACK_IS_TAG and its neighbours), and the rest as another word for a term this port already
+ * had (SCRYFALL_IS_SYNONYMS above). What is left, with what was measured:
+ *
+ *   a class of Scryfall's own that no field of the bulk data decides
+ *     covered            55,954 printings / 22,286 cards. No rule found.
+ *     jumpstart          1,760: every printing of j25, jmp, j21 and ajmp, AND 55 printings in six
+ *                        other sets (mom, woe, ltr, dmu, bro, one) and 26 on The List that carry
+ *                        no promo type or other mark; Jumpstart 2022 is not in it at all.
+ *     spellbook          75 Alchemy cards. "spellbook" in the text is 64 of them; adding
+ *                        "conjure" reaches 74 and 172 that are not.
+ *     spikey             4,725 / 678 cards: every printing banned or restricted in standard,
+ *                        pioneer, modern, legacy, vintage, pauper or commander is in it, and
+ *                        so are 1,418 printings banned or restricted NOWHERE today — Counterspell, Icy Manipulator,
+ *                        Juggernaut, Orcish Oriflamme: cards that were once restricted. A history
+ *                        no bulk field holds.
+ *     related            22,298. `all_parts` present is 21,467 of them and nothing else; counted
+ *                        per CARD rather than per printing it is 21,747. 551 have no related
+ *                        part on any printing (Mentor's Guidance, Luminarch Aspirant).
+ *     misprint           133 printings in 60 sets, none marked.
+ *     invitational       18 printings of 16 cards: the first printing, and for two of them a
+ *                        List reprint — a list of printings, not of names.
+ *     intro beginner     224: all of dpa and rqs, 32 of acr's printings and 14 of fdn's — of the
+ *                        142 printings carrying the `beginnerbox` promo type it holds 14.
+ *   accepted by Scryfall and answering nothing there either, extras in or out
+ *       gateway lair
  */
 export const SCRYFALL_UNANSWERED_IS_VALUES: ReadonlySet<string> = new Set([
-	"arenaid",
-	"attractionlights",
-	"back",
 	"beginner",
-	"cardmarket",
-	"cardmarketid",
-	"ci",
-	"colorindicator",
 	"covered",
-	"cube",
-	"displaycommander",
-	"dueldeck",
-	"englishart",
-	"fbb",
-	"fromthevault",
-	"fwb",
 	"gateway",
-	"illustration",
-	"illustrationid",
-	"image",
-	"indicator",
 	"intro",
 	"invitational",
 	"jumpstart",
 	"lair",
-	"lights",
-	"minigame",
 	"misprint",
-	"moonlitland",
-	"mtgoid",
-	"multiverse",
-	"multiverseid",
-	"paperart",
-	"placeholderimage",
-	"printedtext",
 	"related",
 	"spellbook",
 	"spikey",
-	"tcgplayer",
-	"tcgplayerid",
-	"timeshifted",
-	"treasurechest",
-	"tron",
-	"unset",
-	"vanguard",
-	"vergeland",
 ]);
 
 /**

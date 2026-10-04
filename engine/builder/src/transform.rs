@@ -172,6 +172,9 @@ const ARRAY_IS_TAGS: &[(&str, &str, &str)] = &[
     ("magnified", "promo_types", "magnified"),
     ("manafoil", "promo_types", "manafoil"),
     ("media_insert", "promo_types", "mediainsert"),
+    // `is:moonlitland` — Crimson Vow's five WPN moonlit basics: 5 printings on api.scryfall.com
+    // (2026-10-04) and the five carrying the member.
+    ("moonlitland", "promo_types", "moonlitland"),
     ("neonink", "promo_types", "neonink"),
     ("oilslick", "promo_types", "oilslick"),
     ("openhouse", "promo_types", "openhouse"),
@@ -1303,6 +1306,94 @@ pub const SCRYFALL_PREVIEW_IS_TAG: &str = "scryfallpreview";
 const SCRYFALL_PREVIEW_CARD_PAGE: &str = "https://scryfall.com/card/";
 const SCRYFALL_PREVIEWS_WITHOUT_A_PREVIEW: &[(&str, &str)] = &[("uma", "50"), ("grn", "103"), ("plst", "GRN-103")];
 
+/// `is:back` — the printing has a card BACK that is not the ordinary Magic one.
+///
+/// Not "has a back face": no transform, modal or reversible card is in it. Measured 2026-10-04 on
+/// all 3,330 printings api.scryfall.com returns: every one carries a `card_back_id` other than
+/// the shared back `0aeebaf5-…`, and every printing that does is in the list — 3,330 of 3,330,
+/// 73 distinct backs (the oversized planes, schemes and vanguards, the Collectors' Edition and
+/// World Championship backs, tokens with an ad or a checklist behind them). A two-sided printing
+/// carries no `card_back_id` at all and is out.
+pub const BACK_IS_TAG: &str = "back";
+const STANDARD_CARD_BACK: &str = "0aeebaf5-8c7d-4636-9e82-8c27447861f7";
+
+/// `is:indicator` (and `is:ci`, `is:colorindicator`) — the printing carries a colour indicator,
+/// its own or on any face. 1,002 printings on api.scryfall.com (2026-10-04) and 1,002 in the
+/// same day's bulk file that carry `color_indicator` at either level (130 of them at the top),
+/// the negation its complement.
+pub const INDICATOR_IS_TAG: &str = "indicator";
+
+/// `is:attractionlights` (and `is:lights`) — an Unfinity Attraction's lit numbers. 135 printings
+/// on api.scryfall.com (2026-10-04) and the 135 that carry `attraction_lights`.
+pub const ATTRACTION_LIGHTS_IS_TAG: &str = "attractionlights";
+
+/// `is:fbb` — FOREIGN BLACK BORDER: the black-bordered foreign editions of Revised, Fourth
+/// Edition, Chronicles and Renaissance. A fact about the ROW, its set and its language.
+///
+/// Measured on api.scryfall.com 2026-10-04, `is:fbb lang:<x> e:<set>` for every pair: every row
+/// of `fbb` (German 307, French 306, Italian 306), `bchr` (Japanese 125), `ren` (German 122,
+/// French 122) and `rin` (Italian 69), and of `4bb` its Japanese, Spanish and Portuguese rows
+/// (378 / 378 / 375) — NOT its Korean and Traditional Chinese ones (370 each, 0 of them). With
+/// no `lang:` it is the 1,001 rows of those that are their printing's default one, and the
+/// symmetric difference against the five sets is empty; `is:fbb lang:any` is 2,488.
+pub const FBB_IS_TAG: &str = "fbb";
+const FBB_SETS: &[&str] = &["fbb", "bchr", "ren", "rin"];
+const FBB_FOURTH_EDITION: &str = "4bb";
+const FBB_FOURTH_EDITION_LANGS_OUT: &[&str] = &["ko", "zht"];
+
+/// `is:fwb` — FOREIGN WHITE BORDER: Revised Edition's German, French and Italian printings.
+///
+/// 917 rows on api.scryfall.com (2026-10-04): `is:fwb -e:3ed` and `e:3ed -lang:en -is:fwb` are
+/// both empty, so it is exactly the non-English rows of `3ed` (306 French, 306 Italian, 305
+/// German). None is its printing's default row — the English one is — and Scryfall answers them
+/// with no `lang:` written all the same: see card_engine's `widens_to_annex`.
+pub const FWB_IS_TAG: &str = "fwb";
+const FWB_SET: &str = "3ed";
+
+/// `is:unset` — a printing in one of the five Un-sets or the sets that hang off them, by SET.
+///
+/// Measured 2026-10-04 on all 1,411 printings api.scryfall.com returns: every printing of
+/// `ugl`, `unh`, `ust`, `und` and `unf`, of their child sets `sunf`, `tunf`, `tund`, `tust`,
+/// `punh` and `pust`, and of `ulst` — and nothing else. NOT `st:funny` (2,249: the playtest
+/// sets, the holiday cards and Unknown Event are funny and not Un-sets), and not every child
+/// either: Unglued's six tokens (`tugl`) are out. A tag and not an `e:` union because a set
+/// term opens extras on Scryfall and `is:unset` does not: 1,307 by default, where the union is
+/// 1,411.
+pub const UNSET_IS_TAG: &str = "unset";
+const UN_SETS: &[&str] = &["ugl", "unh", "ust", "und", "unf", "sunf", "tunf", "tund", "tust", "punh", "pust", "ulst"];
+
+/// `is:tron` — Urza's Tower, Urza's Mine and Urza's Power Plant: 96 printings on
+/// api.scryfall.com (2026-10-04), every printing of the three names.
+pub const TRON_IS_TAG: &str = "tron";
+const TRON_LANDS: &[&str] = &["Urza's Mine", "Urza's Power Plant", "Urza's Tower"];
+
+/// `is:vergeland` — the ten Verges of Duskmourn and Aetherdrift, by name: 45 printings on
+/// api.scryfall.com (2026-10-04). Krosan Verge and Sandstorm Verge are lands named Verge and
+/// not of the cycle.
+pub const VERGELAND_IS_TAG: &str = "vergeland";
+const VERGE_LANDS: &[&str] = &[
+    "Blazemire Verge",
+    "Bleachbone Verge",
+    "Floodfarm Verge",
+    "Gloomlake Verge",
+    "Hushwood Verge",
+    "Riverpyre Verge",
+    "Sunbillow Verge",
+    "Thornspire Verge",
+    "Wastewood Verge",
+    "Willowrush Verge",
+];
+
+/// `is:timeshifted` — the old-frame "timeshifted" sheets of Time Spiral and Time Spiral
+/// Remastered.
+///
+/// Measured 2026-10-04 on all 247 printings api.scryfall.com returns: every printing of `tsb`
+/// (121), the 1997-frame printings of `tsr` (122 — its 121 `special` cards and the retro
+/// buy-a-box Lotus Bloom, tsr/411, which is `rare`), and The List's four reprints of them that
+/// keep the `special` rarity (plst/TSB-91, TSR-302, TSR-306, TSR-366). The List's other eight
+/// 1997-frame `TSB-`/`TSR-` reprints are `rare` or `common` and are not counted.
+pub const TIMESHIFTED_IS_TAG: &str = "timeshifted";
+
 /// Scryfall's `/catalog/keyword-actions`, lowercased (80 on 2026-10-04) — the members of a card's
 /// `keywords` that are not keyword ABILITIES, for [`FRENCH_VANILLA_IS_TAG`]. Listed as the
 /// exclusion, not the 223 abilities as the inclusion, so a keyword ability printed after this
@@ -1524,6 +1615,40 @@ fn class_tags(card: &Map<String, Value>) -> Vec<&'static str> {
     }
     if is_scryfall_preview(card) {
         tags.push(SCRYFALL_PREVIEW_IS_TAG);
+    }
+    if card.get("card_back_id").and_then(Value::as_str).is_some_and(|back| back != STANDARD_CARD_BACK) {
+        tags.push(BACK_IS_TAG);
+    }
+    let has_indicator = |obj: &Map<String, Value>| obj.get("color_indicator").and_then(Value::as_array).is_some_and(|a| !a.is_empty());
+    if has_indicator(card) || face_objects(card).into_iter().any(has_indicator) {
+        tags.push(INDICATOR_IS_TAG);
+    }
+    if card.get("attraction_lights").is_some_and(|lights| !lights.is_null()) {
+        tags.push(ATTRACTION_LIGHTS_IS_TAG);
+    }
+    let (set, lang) = (s(card, "set").unwrap_or_default(), s(card, "lang").unwrap_or_default());
+    if FBB_SETS.contains(&set.as_str())
+        || (set == FBB_FOURTH_EDITION && !FBB_FOURTH_EDITION_LANGS_OUT.contains(&lang.as_str()))
+    {
+        tags.push(FBB_IS_TAG);
+    }
+    if set == FWB_SET && lang != "en" {
+        tags.push(FWB_IS_TAG);
+    }
+    if UN_SETS.contains(&set.as_str()) {
+        tags.push(UNSET_IS_TAG);
+    }
+    let name = s(card, "name").unwrap_or_default();
+    if TRON_LANDS.contains(&name.as_str()) {
+        tags.push(TRON_IS_TAG);
+    }
+    if VERGE_LANDS.contains(&name.as_str()) {
+        tags.push(VERGELAND_IS_TAG);
+    }
+    if s(card, "frame").as_deref() == Some("1997")
+        && (set == "tsb" || set == "tsr" || (set == "plst" && s(card, "rarity").as_deref() == Some("special")))
+    {
+        tags.push(TIMESHIFTED_IS_TAG);
     }
     tags
 }

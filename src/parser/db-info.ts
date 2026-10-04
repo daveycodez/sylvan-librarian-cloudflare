@@ -640,7 +640,52 @@ export const MODAL_IS_TAG = "modal";
 export const GAINLAND_IS_TAG = "gainland";
 export const SCRYFALL_PREVIEW_IS_TAG = "scryfallpreview";
 
+/**
+ * NINE MORE CLASSES THE IMPORTER DECIDES (x72, generation 65) — `is:` values api.scryfall.com
+ * answers that this port held in SCRYFALL_UNANSWERED_IS_VALUES. Each was measured 2026-10-04 by
+ * reading every printing Scryfall returns for it against the same day's bulk file; the rules are
+ * written at the builder's constants of the same names.
+ *
+ *   a field that is present
+ *     `is:back`               3,330 printings: a `card_back_id` that is not the ordinary Magic
+ *                             back. NOT "has a back face" — no two-sided card is in it.
+ *     `is:indicator`          1,002: a colour indicator, the printing's own or a face's.
+ *     `is:attractionlights`   135: an Attraction's lit numbers.
+ *   a list of sets, or of names
+ *     `is:fbb`                the foreign black-bordered editions: every row of `fbb`, `bchr`,
+ *                             `ren`, `rin`, and of `4bb` all but its Korean and Chinese ones.
+ *     `is:fwb`                Revised's German, French and Italian rows — 917, none of them a
+ *                             canonical row, and answered with no `lang:` written: unnegated it
+ *                             WIDENS the search (card_engine's `widens_to_annex`).
+ *     `is:unset`              1,411: the five Un-sets and seven sets that hang off them.
+ *     `is:tron`               96: Urza's Tower, Mine and Power Plant.
+ *     `is:vergeland`          45: the ten Verges.
+ *     `is:timeshifted`        247: Time Spiral's and Time Spiral Remastered's old-frame sheets.
+ *
+ * Tags and not rewrites onto `e:` or `!"name"` terms: a set term opens extras on Scryfall where
+ * these do not (`is:unset` is 1,307 by default and the union of its sets 1,411), and two of them
+ * depend on the row's language.
+ */
+export const BACK_IS_TAG = "back";
+export const INDICATOR_IS_TAG = "indicator";
+export const ATTRACTION_LIGHTS_IS_TAG = "attractionlights";
+export const FBB_IS_TAG = "fbb";
+export const FWB_IS_TAG = "fwb";
+export const UNSET_IS_TAG = "unset";
+export const TRON_IS_TAG = "tron";
+export const VERGELAND_IS_TAG = "vergeland";
+export const TIMESHIFTED_IS_TAG = "timeshifted";
+
 export const COMPUTED_IS_TAGS: ReadonlySet<string> = new Set([
+	BACK_IS_TAG,
+	INDICATOR_IS_TAG,
+	ATTRACTION_LIGHTS_IS_TAG,
+	FBB_IS_TAG,
+	FWB_IS_TAG,
+	UNSET_IS_TAG,
+	TRON_IS_TAG,
+	VERGELAND_IS_TAG,
+	TIMESHIFTED_IS_TAG,
 	BEAR_IS_TAG,
 	FRENCH_VANILLA_IS_TAG,
 	MODAL_IS_TAG,
@@ -801,6 +846,9 @@ export const ARRAY_IS_TAGS: ReadonlyMap<string, readonly [string, string]> = new
 	["magnified", ["promo_types", "magnified"]],
 	["manafoil", ["promo_types", "manafoil"]],
 	["media_insert", ["promo_types", "mediainsert"]],
+	// `is:moonlitland` — Crimson Vow's five WPN moonlit basics. 5 printings on api.scryfall.com
+	// (2026-10-04) and exactly the five carrying the member; it answered a warned no-match.
+	["moonlitland", ["promo_types", "moonlitland"]],
 	["neonink", ["promo_types", "neonink"]],
 	["oilslick", ["promo_types", "oilslick"]],
 	["openhouse", ["promo_types", "openhouse"]],

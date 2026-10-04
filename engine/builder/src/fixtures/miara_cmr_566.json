@@ -1,0 +1,142 @@
+{
+ "artist": "Johannes Voss",
+ "artist_ids": [
+  "3593dd7e-c547-4a32-81cd-7da725f60118"
+ ],
+ "booster": false,
+ "border_color": "black",
+ "card_back_id": "0aeebaf5-8c7d-4636-9e82-8c27447861f7",
+ "cardmarket_id": 513635,
+ "cmc": 2.0,
+ "collector_number": "566",
+ "color_identity": [
+  "B"
+ ],
+ "colors": [
+  "B"
+ ],
+ "digital": false,
+ "edhrec_rank": 7902,
+ "finishes": [
+  "etched"
+ ],
+ "flavor_text": "\"Approach from downwind. Tread with care. Aim for the heart.\"",
+ "foil": false,
+ "frame": "2015",
+ "frame_effects": [
+  "inverted",
+  "etched",
+  "legendary"
+ ],
+ "full_art": false,
+ "game_changer": false,
+ "games": [
+  "paper",
+  "mtgo"
+ ],
+ "highres_image": true,
+ "id": "006d1cf4-bdf2-4ed3-8583-38309807ce93",
+ "illustration_id": "0917bb41-fe1c-4a79-a936-744f2d13aa48",
+ "image_status": "highres_scan",
+ "image_updated_at": "2026-07-13T07:44:11Z",
+ "image_uris": {
+  "art": "https://cards.scryfall.io/art/front/0/0/006d1cf4-bdf2-4ed3-8583-38309807ce93.webp?1783928651",
+  "art_crop": "https://cards.scryfall.io/art_crop/front/0/0/006d1cf4-bdf2-4ed3-8583-38309807ce93.jpg?1783928651",
+  "border_crop": "https://cards.scryfall.io/border_crop/front/0/0/006d1cf4-bdf2-4ed3-8583-38309807ce93.jpg?1783928651",
+  "crop": "https://cards.scryfall.io/crop/front/0/0/006d1cf4-bdf2-4ed3-8583-38309807ce93.webp?1783928651",
+  "display": "https://cards.scryfall.io/display/front/0/0/006d1cf4-bdf2-4ed3-8583-38309807ce93.webp?1783928651",
+  "grid": "https://cards.scryfall.io/grid/front/0/0/006d1cf4-bdf2-4ed3-8583-38309807ce93.webp?1783928651",
+  "large": "https://cards.scryfall.io/large/front/0/0/006d1cf4-bdf2-4ed3-8583-38309807ce93.jpg?1783928651",
+  "normal": "https://cards.scryfall.io/normal/front/0/0/006d1cf4-bdf2-4ed3-8583-38309807ce93.jpg?1783928651",
+  "png": "https://cards.scryfall.io/png/front/0/0/006d1cf4-bdf2-4ed3-8583-38309807ce93.png?1783928651",
+  "small": "https://cards.scryfall.io/small/front/0/0/006d1cf4-bdf2-4ed3-8583-38309807ce93.jpg?1783928651",
+  "thumb": "https://cards.scryfall.io/thumb/front/0/0/006d1cf4-bdf2-4ed3-8583-38309807ce93.webp?1783928651"
+ },
+ "keywords": [
+  "Partner"
+ ],
+ "lang": "en",
+ "layout": "normal",
+ "legalities": {
+  "alchemy": "not_legal",
+  "brawl": "not_legal",
+  "commander": "legal",
+  "competitivebrawl": "not_legal",
+  "duel": "legal",
+  "future": "not_legal",
+  "gladiator": "not_legal",
+  "historic": "not_legal",
+  "legacy": "legal",
+  "modern": "not_legal",
+  "oathbreaker": "legal",
+  "oldschool": "not_legal",
+  "pauper": "not_legal",
+  "paupercommander": "not_legal",
+  "penny": "not_legal",
+  "pioneer": "not_legal",
+  "predh": "not_legal",
+  "premodern": "not_legal",
+  "standard": "not_legal",
+  "standardbrawl": "not_legal",
+  "timeless": "not_legal",
+  "tlr": "legal",
+  "vintage": "legal"
+ },
+ "mana_cost": "{1}{B}",
+ "multiverse_ids": [
+  502716
+ ],
+ "name": "Miara, Thorn of the Glade",
+ "nonfoil": false,
+ "object": "card",
+ "oracle_id": "6895d7a2-264b-4731-9294-c02e1e220384",
+ "oracle_text": "Whenever Miara or another Elf you control dies, you may pay {1} and 1 life. If you do, draw a card.\nPartner (You can have two commanders if both have partner.)",
+ "oversized": false,
+ "power": "1",
+ "prices": {
+  "eur": null,
+  "eur_foil": null,
+  "tix": null,
+  "usd": null,
+  "usd_etched": "0.65",
+  "usd_foil": null
+ },
+ "prints_search_uri": "https://api.scryfall.com/cards/search?order=released&q=oracleid%3A6895d7a2-264b-4731-9294-c02e1e220384&unique=prints",
+ "promo": false,
+ "promo_types": [
+  "boosterfun"
+ ],
+ "purchase_uris": {
+  "cardhoarder": "https://www.cardhoarder.com/cards?affiliate_id=scryfall&data%5Bsearch%5D=Miara%2C+Thorn+of+the+Glade&ref=card-profile&utm_campaign=affiliate&utm_medium=card&utm_source=scryfall",
+  "cardmarket": "https://www.cardmarket.com/en/Magic/Products?idProduct=513635&referrer=scryfall&utm_campaign=card_prices&utm_medium=text&utm_source=scryfall",
+  "tcgplayer": "https://partner.tcgplayer.com/c/4931599/1830156/21018?subId1=api&u=https%3A%2F%2Fwww.tcgplayer.com%2Fsearch%2Fmagic%2Fproduct%3FproductLineName%3Dmagic%26q%3DMiara%252C%2BThorn%2Bof%2Bthe%2BGlade%26view%3Dgrid"
+ },
+ "rarity": "uncommon",
+ "related_uris": {
+  "edhrec": "https://edhrec.com/route/?cc=Miara%2C+Thorn+of+the+Glade",
+  "gatherer": "https://gatherer.wizards.com/Pages/Card/Details.aspx?multiverseid=502716&printed=false",
+  "tcgplayer_infinite_articles": "https://partner.tcgplayer.com/c/4931599/1830156/21018?subId1=api&trafcat=tcgplayer.com%2Fsearch%2Farticles&u=https%3A%2F%2Fwww.tcgplayer.com%2Fsearch%2Farticles%3FproductLineName%3Dmagic%26q%3DMiara%252C%2BThorn%2Bof%2Bthe%2BGlade",
+  "tcgplayer_infinite_decks": "https://partner.tcgplayer.com/c/4931599/1830156/21018?subId1=api&trafcat=tcgplayer.com%2Fsearch%2Fdecks&u=https%3A%2F%2Fwww.tcgplayer.com%2Fsearch%2Fdecks%3FproductLineName%3Dmagic%26q%3DMiara%252C%2BThorn%2Bof%2Bthe%2BGlade"
+ },
+ "released_at": "2020-11-20",
+ "reprint": false,
+ "reserved": false,
+ "rulings_uri": "https://api.scryfall.com/cards/006d1cf4-bdf2-4ed3-8583-38309807ce93/rulings",
+ "scryfall_set_uri": "https://scryfall.com/sets/cmr?utm_source=api",
+ "scryfall_uri": "https://scryfall.com/card/cmr/566/miara-thorn-of-the-glade?utm_source=api",
+ "security_stamp": "oval",
+ "set": "cmr",
+ "set_id": "39de6fbf-1f11-48d0-8f04-f0407f6a0732",
+ "set_name": "Commander Legends",
+ "set_search_uri": "https://api.scryfall.com/cards/search?order=set&q=e%3Acmr&unique=prints",
+ "set_type": "draft_innovation",
+ "set_uri": "https://api.scryfall.com/sets/39de6fbf-1f11-48d0-8f04-f0407f6a0732",
+ "story_spotlight": false,
+ "tcgplayer_etched_id": 227069,
+ "textless": false,
+ "toughness": "2",
+ "type_line": "Legendary Creature — Elf Scout",
+ "uri": "https://api.scryfall.com/cards/006d1cf4-bdf2-4ed3-8583-38309807ce93",
+ "variation": false,
+ "watermark": "set"
+}

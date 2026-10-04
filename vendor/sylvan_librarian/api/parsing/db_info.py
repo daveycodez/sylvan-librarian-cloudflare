@@ -599,6 +599,38 @@ BOOLEAN_IS_TAGS: dict[str, str] = {
     "setextension": "cards.raw_card_blob->'promo_types' @> '\"setextension\"'",
     "singularityfoil": "cards.raw_card_blob->'promo_types' @> '\"singularityfoil\"'",
     "themepack": "cards.raw_card_blob->'promo_types' @> '\"themepack\"'",
+    # LOCAL PATCH (Cloudflare port): `is:` values Scryfall answers that are a field, a list of
+    # sets or a list of names -- each read off every printing it returns, 2026-10-04 (see the
+    # port's db-info.ts and the builder's `class_tags`). `fwb` is not here: its rows are Revised's
+    # non-English ones, which this corpus (default_cards) does not hold.
+    "moonlitland": "cards.raw_card_blob->'promo_types' @> '\"moonlitland\"'",
+    "back": (
+        "cards.raw_card_blob ? 'card_back_id' "
+        "AND cards.raw_card_blob->>'card_back_id' <> '0aeebaf5-8c7d-4636-9e82-8c27447861f7'"
+    ),
+    "indicator": (
+        "jsonb_array_length(COALESCE(cards.raw_card_blob->'color_indicator', '[]'::jsonb)) > 0 "
+        "OR jsonb_path_exists(cards.raw_card_blob, '$.card_faces[*].color_indicator[*]')"
+    ),
+    "attractionlights": "cards.raw_card_blob ? 'attraction_lights'",
+    "fbb": (
+        "cards.card_set_code IN ('fbb', 'bchr', 'ren', 'rin') "
+        "OR (cards.card_set_code = '4bb' AND cards.raw_card_blob->>'lang' NOT IN ('ko', 'zht'))"
+    ),
+    "unset": (
+        "cards.card_set_code IN "
+        "('ugl', 'unh', 'ust', 'und', 'unf', 'sunf', 'tunf', 'tund', 'tust', 'punh', 'pust', 'ulst')"
+    ),
+    "tron": "cards.card_name IN ('Urza''s Mine', 'Urza''s Power Plant', 'Urza''s Tower')",
+    "vergeland": (
+        "cards.card_name IN ('Blazemire Verge', 'Bleachbone Verge', 'Floodfarm Verge', 'Gloomlake Verge', "
+        "'Hushwood Verge', 'Riverpyre Verge', 'Sunbillow Verge', 'Thornspire Verge', 'Wastewood Verge', "
+        "'Willowrush Verge')"
+    ),
+    "timeshifted": (
+        "cards.raw_card_blob->>'frame' = '1997' AND (cards.card_set_code IN ('tsb', 'tsr') "
+        "OR (cards.card_set_code = 'plst' AND cards.raw_card_blob->>'rarity' = 'special'))"
+    ),
     # -- single-field lookups: shapes the old {tag: blob key} table could not express -----
     # LOCAL PATCH (Cloudflare port): the SOURCE alone is not Scryfall's `is:scryfallpreview`. On
     # 2026-10-04 that answered 7 printings there; 325 carry `preview.source = 'Scryfall'`, 321 of

@@ -168,7 +168,7 @@ describe("is:<set type> is st:<set type>", () => {
 		expect(parsed(`is:${value} t:goblin`).warnings).toEqual([]);
 	});
 
-	test("not every set type is one: is:spellbook is 99 printings apart from st:spellbook", () => {
+	test("not every set type is one: is:spellbook is 75 Alchemy cards and st:spellbook 24 printings", () => {
 		expect(scryfallTermPolicy("is:spellbook t:goblin").query).toBe("is:spellbook t:goblin");
 		// ...and these four are classes of their own, answered by their own tags and rewrites.
 		for (const value of ["commander", "funny", "promo", "token"]) {
@@ -243,6 +243,49 @@ describe("the respelled term opens extras exactly when the spelling it becomes d
 	});
 });
 
+describe("which of the x72 values open extras", () => {
+	// `<term> or cmc=3` sent with include_extras=false, the flag read out of next_page, 2026-10-04.
+	test.each([
+		["is:back", true],
+		["-is:back", true],
+		["is:attractionlights", true],
+		["is:lights", true],
+		["is:fbb", true],
+		["-is:fbb", true],
+		["is:tcgplayer", true],
+		["is:tcgplayerid", true],
+		["-is:cardmarket", true],
+		["is:image", true],
+		["is:flavorname", true],
+		["-is:flavorname", true],
+		["is:displaycommander", true],
+		["is:mtgoid", false],
+		["is:arenaid", false],
+		["is:multiverse", false],
+		["is:illustration", false],
+		["is:placeholderimage", false],
+		["is:indicator", false],
+		["is:englishart", false],
+		["is:fwb", false],
+		["is:unset", false],
+		["is:tron", false],
+		["is:vergeland", false],
+		["is:timeshifted", false],
+		["is:moonlitland", false],
+		["is:cube", false],
+		["is:vanguard", false],
+		["is:minigame", false],
+		["is:bear", false],
+		["is:frenchvanilla", false],
+		["is:modal", false],
+		["is:gainland", false],
+		["is:scryfallpreview", false],
+		["is:atypical", false],
+	])("%s or cmc=3", async (term, expected) => {
+		expect(await opensExtras(`${term} or cmc=3`)).toBe(expected);
+	});
+});
+
 describe("the six tags stored with generation 62", () => {
 	test.each(["contentwarning", "premiereshop", "schinesealtart", "setextension", "singularityfoil", "themepack"])(
 		"is:%s has data behind it",
@@ -274,8 +317,110 @@ describe("what Scryfall answers and this port cannot is kept, and says so", () =
 	});
 
 	test("under its separated spelling too", () => {
-		for (const term of ["is:mtgo_id", "is:attraction_lights", "is:from_the_vault"]) {
+		for (const term of ["is:spell_book", "is:jump-start", "is:in_tro"]) {
 			expect(scryfallTermPolicy(`${term} t:goblin`).query).toBe(`${term} t:goblin`);
 		}
+	});
+});
+
+// ── x72: 35 of the 46 values that stood in that list, measured and answered ──────────────────
+//
+// Each list was read printing by printing on api.scryfall.com (2026-10-04) against the same day's
+// bulk file. The rules and counts are at rewrite.ts ENGINE_IS_VALUES, db-info.ts BACK_IS_TAG and
+// SCRYFALL_IS_SYNONYMS; the stored ones are pinned on real card objects by the builder's
+// tests/x72_is_classes.rs.
+describe("the presence tests are answered by the engine", () => {
+	test.each([
+		"mtgoid",
+		"arenaid",
+		"multiverse",
+		"tcgplayer",
+		"cardmarket",
+		"illustration",
+		"image",
+		"placeholderimage",
+		"printedtext",
+		"englishart",
+		"paperart",
+	])("is:%s reaches the engine as written, with no warning", (value) => {
+		expect(SUPPORTED_IS_VALUES.has(value)).toBe(true);
+		expect(rewritten(`is:${value} t:goblin`)).toBe(`is:${value} t:goblin`);
+		const tree = parsed(`is:${value} t:goblin`);
+		expect(tree.warnings).toEqual([]);
+		expect(tree.wire).toContain(`"rhs":["${value}"]`);
+	});
+
+	test.each([
+		["multiverseid", "is:multiverse"],
+		["multiverse_id", "is:multiverse"],
+		["tcgplayerid", "is:tcgplayer"],
+		["cardmarketid", "is:cardmarket"],
+		["illustrationid", "is:illustration"],
+		["illustration_id", "is:illustration"],
+		["mtgo_id", "is:mtgoid"],
+		["arena_id", "is:arenaid"],
+		["placeholder_image", "is:placeholderimage"],
+		["printed_text", "is:printedtext"],
+	])("is:%s is %s", (value, target) => {
+		expect(rewritten(`is:${value} t:goblin`)).toBe(`${target} t:goblin`);
+		expect(parsed(`is:${value} t:goblin`)).toEqual(parsed(`${target} t:goblin`));
+	});
+
+	test("the negation is the plain complement, from every spelling of it", () => {
+		// `-is:mtgoid` is 55,191 where `is:mtgoid` is 63,187 of 118,378.
+		expect(rewritten("-is:mtgo_id t:goblin")).toBe("-is:mtgoid t:goblin");
+		expect(rewritten("not:tcgplayerid t:goblin")).toBe("-is:tcgplayer t:goblin");
+		expect(rewritten("has:multiverseid t:goblin")).toBe("is:multiverse t:goblin");
+	});
+});
+
+describe("the classes the importer decides since generation 65", () => {
+	test.each([
+		"back",
+		"indicator",
+		"attractionlights",
+		"fbb",
+		"fwb",
+		"unset",
+		"tron",
+		"vergeland",
+		"timeshifted",
+		"moonlitland",
+	])("is:%s has data behind it", (value) => {
+		expect(SUPPORTED_IS_VALUES.has(value)).toBe(true);
+		expect(rewritten(`is:${value} t:goblin`)).toBe(`is:${value} t:goblin`);
+		expect(parsed(`is:${value} t:goblin`).warnings).toEqual([]);
+	});
+
+	test.each([
+		["ci", "is:indicator"],
+		["colorindicator", "is:indicator"],
+		["color_indicator", "is:indicator"],
+		["lights", "is:attractionlights"],
+		["attraction_lights", "is:attractionlights"],
+		["displaycommander", "is:thick"],
+		["display_commander", "is:thick"],
+		["verge_land", "is:vergeland"],
+		["moonlit_land", "is:moonlitland"],
+	])("is:%s is %s", (value, target) => {
+		expect(rewritten(`is:${value} t:goblin`)).toBe(`${target} t:goblin`);
+		expect(parsed(`is:${value} t:goblin`)).toEqual(parsed(`${target} t:goblin`));
+		expect(parsed(`is:${value} t:goblin`).warnings).toEqual([]);
+	});
+
+	test.each([
+		["cube", "treasure_chest"],
+		["treasurechest", "treasure_chest"],
+		["treasure_chest", "treasure_chest"],
+		["dueldeck", "duel_deck"],
+		["duel_deck", "duel_deck"],
+		["fromthevault", "from_the_vault"],
+		["from_the_vault", "from_the_vault"],
+		["minigame", "minigame"],
+		["vanguard", "vanguard"],
+	])("is:%s is st:%s", (value, setType) => {
+		// Each symmetric difference against the set type is empty there, every language included.
+		expect(rewritten(`is:${value} t:goblin`)).toBe(`st:${setType} t:goblin`);
+		expect(parsed(`is:${value} t:goblin`).warnings).toEqual([]);
 	});
 });

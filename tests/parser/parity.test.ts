@@ -147,6 +147,9 @@ const PORT_ONLY_TREES: ReadonlyMap<string, string> = new Map([
 	["is:frenchvanilla", isTagTree("frenchvanilla")],
 	["is:gainland", isTagTree("gainland")],
 	["is:modal", isTagTree("modal")],
+	// `illustration` is a value this port answers (the engine's presence test), so `has:` is its
+	// alias like any other; upstream does not know the value and passes `has:` through.
+	["has:illustration", isTagTree("illustration")],
 	[
 		"is:permanent",
 		`{"kwargs":{"operands":[${[

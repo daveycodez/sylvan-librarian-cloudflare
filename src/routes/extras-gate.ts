@@ -93,6 +93,28 @@ const UNCONDITIONAL_EXTRAS_IS_TAGS: ReadonlySet<string> = new Set([
 	// same day (`premiereshop`, `schinesealtart`, `setextension`, `singularityfoil`, `themepack`)
 	// were probed the same way and all echo false; controls `is:glossy` true and `is:foil` false.
 	"contentwarning",
+	// THE x72 VALUES, 2026-10-04 — every `is:` value answered that day (the presence tests, the
+	// classes the importer decides, the re-measured rules) was probed the same way, the verdict
+	// read out of the next_page echo with `is:glossy` (true) and `is:foil` (false) as controls.
+	// SEVEN fire, and every one in both polarities (`-is:back or cmc=3` true):
+	//
+	//   is:back  is:attractionlights  is:fbb  is:tcgplayer  is:cardmarket  is:image  is:flavorname
+	//
+	// The others echo false: mtgoid, arenaid, multiverse, illustration,
+	// placeholderimage, indicator, englishart, paperart, fwb, unset, tron, vergeland, timeshifted,
+	// moonlitland, bear, frenchvanilla, modal, gainland, scryfallpreview, atypical, default and the
+	// set-type words. `is:unset` is the count that shows it is not about holding extras: 1,307
+	// by default and 1,411 with the flag. (`is:displaycommander` fires as `is:thick`, above.)
+	//
+	// `is:flavorname` was never probed before and was quiet here: `is:flavorname or cmc=3` echoes
+	// true there, as does its negation.
+	"back",
+	"attractionlights",
+	"fbb",
+	"tcgplayer",
+	"cardmarket",
+	"image",
+	"flavorname",
 	// A STORED tag since 2026-09-08 — it was `is:funny -> st:funny` in the rewrite and fired from
 	// `EXTRAS_DERIVED_TRIGGERS` as a derived term; now the builder writes it per printing
 	// (`FUNNY_IS_TAG`) and it reaches this walk as a leaf like the others. Same verdict either way:
