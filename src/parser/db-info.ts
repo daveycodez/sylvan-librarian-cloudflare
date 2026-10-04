@@ -128,7 +128,16 @@ export const DB_COLUMNS: readonly FieldInfo[] = [
 		searchAliases: ["loyalty", "loy"],
 		parserClass: ParserClass.NUMERIC,
 	},
-	{ dbColumnName: "edhrec_rank", fieldType: FieldType.NUMERIC, searchAliases: [], parserClass: ParserClass.NUMERIC },
+	{
+		// Scryfall's EDHREC-rank keyword, under all three of its spellings (2026-10-03: `edhrec:1`,
+		// `edhrecrank:1` and `edhrec_rank:1` are each Sol Ring; `edhrec<=10` 5, `edhrec>=5000 e:khm`
+		// 222). The column was here all along, sorted on and never searched. A card with no rank
+		// compares as NULL — `edhrec!=1 e:khm` and `edhrec>=0 e:khm` are both 295 of the set's 305.
+		dbColumnName: "edhrec_rank",
+		fieldType: FieldType.NUMERIC,
+		searchAliases: ["edhrec", "edhrecrank", "edhrec_rank"],
+		parserClass: ParserClass.NUMERIC,
+	},
 	{
 		dbColumnName: "mana_cost_jsonb",
 		fieldType: FieldType.JSONB_OBJECT,
@@ -267,7 +276,11 @@ export const DB_COLUMNS: readonly FieldInfo[] = [
 	{
 		dbColumnName: "card_set_code",
 		fieldType: FieldType.TEXT,
-		searchAliases: ["set", "s", "e"],
+		// `edition` is Scryfall's fourth spelling of the keyword: `edition:khm t:god` =
+		// `edition=khm t:god` = `e:khm t:god` = 12, and it opens extras on the condition `e:` does
+		// (`edition:lea or cmc=3` echoes include_extras=true, `edition:war or cmc=3` false).
+		// Measured 2026-10-03.
+		searchAliases: ["set", "s", "e", "edition"],
 		parserClass: ParserClass.TEXT,
 	},
 	{
@@ -277,9 +290,18 @@ export const DB_COLUMNS: readonly FieldInfo[] = [
 		parserClass: ParserClass.TEXT,
 	},
 	{
+		// `collector`/`collectornumber` are Scryfall's spellings of the NUMERIC collector number and
+		// of nothing else — unlike `cn`/`number` they have no string half. Measured 2026-10-03,
+		// anchor `e:khm` = 305: `collector:1` = `collectornumber:1` = `collector=1` 1,
+		// `collector>=390` 17 = `cn>=390`, `collector<5` 4, `collector>=cmc` 303 = `cn>=cmc`, and
+		// `collector>cn` is refused with `The sides of your comparison must be different.` — one
+		// column. A value that is not a number is `Unknown keyword “collector”.` (`collector:abc`,
+		// `collector:a-40`, `collector:★`, `collector:"1"`) where `cn:abc` is honored and matches
+		// nothing, and `-collector:1` is `Unknown keyword “-collector”.` where `-cn:1` is 304: the
+		// numeric columns' sentences, which query-terms.ts reproduces.
 		dbColumnName: "collector_number_int",
 		fieldType: FieldType.NUMERIC,
-		searchAliases: ["number", "cn"],
+		searchAliases: ["number", "cn", "collector", "collectornumber"],
 		parserClass: ParserClass.NUMERIC,
 	},
 	{

@@ -159,10 +159,13 @@ DB_COLUMNS = [
         search_aliases=["loyalty", "loy"],
         parser_class=ParserClass.NUMERIC,
     ),
+    # LOCAL PATCH (Cloudflare port): `edhrec` / `edhrecrank` / `edhrec_rank` are Scryfall's
+    # spellings of the EDHREC-rank keyword (measured on api.scryfall.com 2026-10-03; see
+    # src/parser/db-info.ts). The column was sorted on and had no alias.
     FieldInfo(
         db_column_name="edhrec_rank",
         field_type=FieldType.NUMERIC,
-        search_aliases=[],
+        search_aliases=["edhrec", "edhrecrank", "edhrec_rank"],
         parser_class=ParserClass.NUMERIC,
     ),
     FieldInfo(
@@ -281,10 +284,11 @@ DB_COLUMNS = [
         search_aliases=["rarity", "r"],
         parser_class=ParserClass.RARITY,
     ),
+    # LOCAL PATCH (Cloudflare port): `edition` is Scryfall's fourth spelling of `set`.
     FieldInfo(
         db_column_name="card_set_code",
         field_type=FieldType.TEXT,
-        search_aliases=["set", "s", "e"],
+        search_aliases=["set", "s", "e", "edition"],
         parser_class=ParserClass.TEXT,
     ),
     FieldInfo(
@@ -293,10 +297,12 @@ DB_COLUMNS = [
         search_aliases=["number", "cn"],
         parser_class=ParserClass.TEXT,
     ),
+    # LOCAL PATCH (Cloudflare port): `collector` / `collectornumber` are Scryfall's spellings of
+    # the NUMERIC collector number only; they have no string half (src/parser/db-info.ts).
     FieldInfo(
         db_column_name="collector_number_int",
         field_type=FieldType.NUMERIC,
-        search_aliases=["number", "cn"],
+        search_aliases=["number", "cn", "collector", "collectornumber"],
         parser_class=ParserClass.NUMERIC,
     ),  # No direct aliases - will be routed
     FieldInfo(

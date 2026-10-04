@@ -2275,6 +2275,48 @@
 			"note": "The opposite case: `direct:` is NOT a Scryfall keyword — 12 with `Invalid expression “direct:x” was ignored. Unknown keyword “direct”.` (2026-10-03) — and the port's table of Scryfall-only keywords listed it, answering `400 Failed to parse query`."
 		},
 		{
+			"name": "search-edition-is-a-spelling-of-set",
+			"method": "GET",
+			"path": "/cards/search?q=edition%3Akhm+t%3Agod",
+			"note": "x68. `edition:` is Scryfall's fourth spelling of `set:` — the 12 Kaldheim gods, as `e:khm t:god` (2026-10-03). It was `400 Failed to parse query` here."
+		},
+		{
+			"name": "search-collector-is-the-numeric-collector-number",
+			"method": "GET",
+			"path": "/cards/search?q=collector%3E%3D390+e%3Akhm",
+			"note": "x68. `collector>=390 e:khm` is 17, as `cn>=390 e:khm` (2026-10-03): `collector`/`collectornumber` are the numeric collector number."
+		},
+		{
+			"name": "search-collectornumber-equality",
+			"method": "GET",
+			"path": "/cards/search?q=collectornumber%3A1+e%3Akhm",
+			"note": "x68. `collectornumber:1 e:khm` is khm/1, Axgard Braggart (2026-10-03)."
+		},
+		{
+			"name": "search-collector-non-number-is-unknown-keyword",
+			"method": "GET",
+			"path": "/cards/search?q=collector%3Aabc+e%3Akhm+t%3Agod",
+			"note": "x68. A value that is not a number earns the numeric columns' sentence — `Invalid expression “collector:abc” was ignored. Unknown keyword “collector”.` over the 12 gods — where `cn:abc` is honored and matches nothing (2026-10-03)."
+		},
+		{
+			"name": "search-collector-leading-integer",
+			"method": "GET",
+			"path": "/cards/search?q=collector%3A1a+e%3Akhm",
+			"note": "x68. `collector:1a e:khm` is khm/1: a value led by digits and continued in letters is its leading integer (2026-10-03)."
+		},
+		{
+			"name": "search-edhrec-rank-one",
+			"method": "GET",
+			"path": "/cards/search?q=edhrec%3A1",
+			"note": "x68. `edhrec:1` is Sol Ring (2026-10-03). The rank moves with the bulk dump, so a day when the two sides hold different dumps can disagree on WHICH card; `edhrec_rank` itself is stripped as volatile."
+		},
+		{
+			"name": "search-edhrec-negated-equality-names-the-minus",
+			"method": "GET",
+			"path": "/cards/search?q=-edhrec%3A1+e%3Akhm+t%3Agod",
+			"note": "x68. `-edhrec:1` is refused as the numeric columns are: 12 with `Invalid expression “-edhrec:1” was ignored. Unknown keyword “-edhrec”.` (2026-10-03)."
+		},
+		{
 			"name": "search-regex-inline-flag-is-refused",
 			"method": "GET",
 			"path": "/cards/search?q=o%3A%2F%28%3Fi%29destroy+target+creature%2F+t%3Ainstant",

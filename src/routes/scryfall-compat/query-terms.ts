@@ -405,9 +405,12 @@ const SCRYFALL_ONLY_KEYWORDS: ReadonlySet<string> = new Set([
 	//
 	// (Under a comparison they were already honored-and-empty, by the COMPARABLE_KEYWORDS rule,
 	// and still are: narrower than Scryfall's count, never wider.)
+	//
+	// x68 TOOK THEM BACK OUT ONE GROUP AT A TIME, as each gained an answer. `edition`, `collector`,
+	// `collectornumber` and `edhrec` left first: they are spellings of columns the parser already
+	// had (db-info's `card_set_code`, `collector_number_int`, `edhrec_rank`).
 	"block",
 	"b",
-	"edition",
 	"lore",
 	"artists",
 	"mtgoid",
@@ -419,10 +422,7 @@ const SCRYFALL_ONLY_KEYWORDS: ReadonlySet<string> = new Set([
 	"paperprints",
 	"papersets",
 	"illustrations",
-	"edhrec",
 	"usdfoil",
-	"collector",
-	"collectornumber",
 ]);
 
 /**
@@ -447,6 +447,14 @@ const SCRYFALL_ONLY_KEYWORDS: ReadonlySet<string> = new Set([
  * `pt` and `powtou`, the combined power-and-toughness keyword, are the same kind of column and
  * take the same sentence: `-pt=2` alone is the 400 carrying `Unknown keyword “-pt”.`, and
  * `pt:foo t:goblin` is 561 carrying `Unknown keyword “pt”.` (2026-10-03).
+ *
+ * THE x68 NUMERIC KEYWORDS ARE THE SAME KIND AND TAKE THE SAME TWO SENTENCES, each measured
+ * 2026-10-03 against the anchor `e:khm` = 305: `collector:abc`, `collectornumber:abc` and
+ * `edhrec:abc` are 305 carrying `Unknown keyword “<kw>”.`; `-collector:1`, `-collectornumber:1`
+ * and `-edhrec:1` are 305 carrying `Unknown keyword “-<kw>”.`; and `-collector>=390` and
+ * `-edhrec>=5000` are 305 with no warning at all — the silent tautology below. `cn`/`number` are
+ * NOT here although `collector` is the same column: `-cn:1` is honored (304), because under `:`
+ * those two spellings read the string collector number.
  */
 const NEGATED_EQUALITY_UNKNOWN_KEYWORD: ReadonlySet<string> = new Set([
 	"pow",
@@ -461,7 +469,33 @@ const NEGATED_EQUALITY_UNKNOWN_KEYWORD: ReadonlySet<string> = new Set([
 	"eur",
 	"tix",
 	"year",
+	"collector",
+	"collectornumber",
+	"edhrec",
+	"edhrecrank",
+	"edhrec_rank",
 ]);
+
+/**
+ * `collector` / `collectornumber` — the numeric collector number's own spellings — and how
+ * Scryfall reads a value there that only STARTS as a number.
+ *
+ * Measured 2026-10-03, anchor `e:khm` = 305, one request per row:
+ *
+ *   collector:1  collector:040→40  collector:1a  collector:1-2      1 card each
+ *   collector:1★  collector:1.5  collector:-1  collector:0          404, no warning
+ *   collector:abc  collector:a-40  collector:a1  collector:★
+ *   collector:+1  collector:"1"                                     305 + `Unknown keyword “collector”.`
+ *
+ * So a value led by digits and continued in letters or hyphens is its leading integer (`1a` and
+ * `1-2` are both collector number 1); one led by a digit and continued in anything else is kept
+ * and matches nothing; and one that does not start as a number at all is the unknown-keyword
+ * sentence the numeric columns give. (`pow:1a t:goblin` is 135, the power-1 goblins, so the
+ * leading-integer reading is not this keyword's alone — it is applied here because it was
+ * measured here.)
+ */
+const COLLECTOR_NUMBER_KEYWORDS: ReadonlySet<string> = new Set(["collector", "collectornumber"]);
+const COLLECTOR_LEADING_INTEGER_RE = /^(\d+)[A-Za-z-][A-Za-z0-9-]*$/;
 
 /** The mana-value spellings, whose negated equality earns the value sentence instead. */
 const MANA_VALUE_KEYWORDS: ReadonlySet<string> = new Set(["cmc", "mv", "manavalue"]);
@@ -679,17 +713,16 @@ const DATE_KEYWORDS: ReadonlySet<string> = new Set(["date"]);
  *
  * ─── WHAT IS DELIBERATELY NOT IN THE SET ─────────────────────────────────────────────────────
  *
- * `edhrec`, `artists`, `paperprints` and `papersets` are numeric columns Scryfall compares
- * (`edhrec>=5000 e:khm t:creature` = 112) and this parser has no spelling for. They are not in
- * SCRYFALL_ONLY_KEYWORDS either, so they were already being reported as unknown keywords; under
- * this rule they answer the 404 an unknown keyword answers instead of the 151 the ignore
- * machinery answered. Both are wrong against Scryfall's count, and putting them in the set would
- * be worse — a term kept for a keyword the parser cannot lex is a 400.
+ * A numeric column Scryfall compares and this parser has no spelling for answers the 404 an
+ * unknown keyword answers under this rule — wrong against Scryfall's count, and putting it in
+ * the set would be worse: a term kept for a keyword the parser cannot lex is a 400. The names
+ * that were in that state are listed at SCRYFALL_ONLY_KEYWORDS, and each JOINS this set on the
+ * commit that gives it a column.
  *
- * `pt` WAS THE FIFTH NAME ON THAT LIST until 2026-10-03, and is the worked example of what the
- * list costs: `pt<6` answered this rule's 404 against Scryfall's 10,818, and `pt=2 t:creature`
- * answered all 18,760 creatures with an unknown-keyword warning against Scryfall's 2,127. It has
- * a column now (db-info's `power_plus_toughness`, both spellings), so it is in the set.
+ * `pt` was the first, on 2026-10-03, and is the worked example of what the gap costs: `pt<6`
+ * answered this rule's 404 against Scryfall's 10,818, and `pt=2 t:creature` answered all 18,760
+ * creatures with an unknown-keyword warning against Scryfall's 2,127. `edhrec` and the
+ * `collector` pair followed (x68).
  */
 const COMPARABLE_KEYWORDS: ReadonlySet<string> = new Set([
 	// colour and colour-identity counts
@@ -725,6 +758,13 @@ const COMPARABLE_KEYWORDS: ReadonlySet<string> = new Set([
 	"cn",
 	"number",
 	"year",
+	// x68, each measured 2026-10-03: `collector>=390 e:khm` 17 = `cn>=390 e:khm`,
+	// `collectornumber>=390 e:khm` 17, `edhrec>=5000 e:khm` 222, `edhrec<=10` 5.
+	"collector",
+	"collectornumber",
+	"edhrec",
+	"edhrecrank",
+	"edhrec_rank",
 	// ordered enums / dates
 	"r",
 	"rarity",
@@ -2259,6 +2299,16 @@ const CROSS_COLUMN_VALUES: ReadonlySet<string> = new Set([
 	"loy",
 	"loyalty",
 	"x",
+	// The collector number and the EDHREC rank, on the right as on the left (2026-10-03, anchor
+	// `e:khm` = 305): `pow>cn` = `pow>number` 1, `cmc<edhrec` = `cmc<edhrecrank` 295, and
+	// `collector>cn` and `collector=collector` are the same-sides refusal — which is only
+	// reachable once the name on the right reads as a column.
+	"cn",
+	"number",
+	"collector",
+	"collectornumber",
+	"edhrec",
+	"edhrecrank",
 ]);
 
 /**
@@ -2400,6 +2450,18 @@ function classifyLeaf(term: string): LeafVerdict {
 	 * downcasing where their vocabulary calls for it.
 	 */
 	const loweredValue = value.toLowerCase();
+
+	// `collector:1a` is collector number 1 and `collector:1★` matches nothing — see
+	// COLLECTOR_NUMBER_KEYWORDS. Before the numeric rule below, which would call both unknown.
+	if (COLLECTOR_NUMBER_KEYWORDS.has(keyword) && equality && /^\d/.test(rawValue) && !isNumericValue(rawValue)) {
+		const leading = COLLECTOR_LEADING_INTEGER_RE.exec(rawValue);
+		return { keep: true, text: leading === null ? NEVER_MATCHES : `${match[2]}${op}${leading[1]}` };
+	}
+	// ...and a signed value is not a collector number: `collector:+1` is the unknown-keyword
+	// sentence, where the number test below would read it as one.
+	if (COLLECTOR_NUMBER_KEYWORDS.has(keyword) && equality && rawValue.startsWith("+")) {
+		return { keep: false, reason: `Unknown keyword “${keyword}”.` };
+	}
 
 	// A numeric column asked for something that is not a number. With `:`/`=` Scryfall ignores the
 	// term; with a comparison it keeps it and matches nothing (`q=cmc>=notanumber` is a 404, not a

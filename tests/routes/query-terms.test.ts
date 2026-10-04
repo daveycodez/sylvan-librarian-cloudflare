@@ -1544,6 +1544,16 @@ describe("the regex surface, alias by alias", () => {
 		// measured 2026-09-03, `game:/^pap/ t:goblin` is 563 there carrying
 		// `Unknown regular expression keyword “game”.`
 		game: ["game:/^pap/", "Unknown regular expression keyword \u201cgame\u201d."],
+		// The x68 keywords, each read off `<kw>:/\u2026/ e:khm` (305 with the warning, 2026-10-03).
+		// `edition` is NOT given the regex path its siblings `set`/`s`/`e` were widened with: it is
+		// a new spelling here, so it starts at Scryfall's answer (`edition:/khm/ t:god` is 95
+		// carrying the sentence). A real pattern is used because a plain literal is lowered.
+		edition: ["edition:/^kh/", "Unknown regular expression keyword \u201cedition\u201d."],
+		collector: ["collector:/1/", "Unknown regular expression keyword \u201ccollector\u201d."],
+		collectornumber: ["collectornumber:/1/", "Unknown regular expression keyword \u201ccollectornumber\u201d."],
+		edhrec: ["edhrec:/1/", "Unknown regular expression keyword \u201cedhrec\u201d."],
+		edhrecrank: ["edhrecrank:/1/", "Unknown regular expression keyword \u201cedhrecrank\u201d."],
+		edhrec_rank: ["edhrec_rank:/1/", "Unknown regular expression keyword \u201cedhrec_rank\u201d."],
 	};
 
 	/**
@@ -1736,10 +1746,12 @@ describe("a keyword Scryfall honors is never called unknown", () => {
 	// api.scryfall.com — the count moves, or it is a plain 404 with no warnings — and each was being
 	// dropped here with `Unknown keyword`, answering wider than Scryfall under a sentence that says
 	// Scryfall would have ignored it too. They are left for the parser to refuse instead.
+	//
+	// The list shrinks as x68 answers them (tests/routes/scryfall-keywords-x68.test.ts): `edition`,
+	// `edhrec`, `collector` and `collectornumber` are spellings of columns the parser had.
 	const HONORED_THERE = [
 		"block:khm",
 		"b:khm",
-		"edition:khm",
 		"lore:x",
 		"artists:1",
 		"mtgoid:1",
@@ -1751,10 +1763,7 @@ describe("a keyword Scryfall honors is never called unknown", () => {
 		"paperprints:1",
 		"papersets:1",
 		"illustrations:1",
-		"edhrec:1",
 		"usdfoil:1",
-		"collector:1",
-		"collectornumber:1",
 		// The five that were already here.
 		"cube:vintage",
 		"new:art",
@@ -1770,7 +1779,7 @@ describe("a keyword Scryfall honors is never called unknown", () => {
 	});
 
 	test("under a comparison they are honored-and-empty, as before", () => {
-		expect(scryfallTermPolicy("edhrec>=5000 e:khm").query).toBe("cmc<0 e:khm");
+		expect(scryfallTermPolicy("lore>=5000 e:khm").query).toBe("cmc<0 e:khm");
 	});
 
 	test("`direct:` is the opposite case: Scryfall does not know it, so it is ignored and warned", () => {
