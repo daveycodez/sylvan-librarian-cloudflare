@@ -6660,11 +6660,10 @@ fn reversible_name_candidates<'a>(
 }
 
 /// THE REPRESENTATIVE OF A CARD OR AN ARTWORK WHEN A PLAIN PRINTING IS ON THE PAGE'S OTHER SIDE OF IT.
-/// Two rules, one funnel: `unique=art` gives a reversible card's `sldbonus` printing up to a plain
-/// sibling of its artwork, and `unique=cards` gives a reversible printing up to a plain printing of
-/// its card.
+/// Two rules, one funnel: `unique=art` gives a Secret Lair `sldbonus` printing up to a plain sibling
+/// of its artwork, and `unique=cards` gives a reversible printing up to a plain printing of its card.
 ///
-/// ─── `unique=art`: a reversible bonus printing gives way to a plain one of its artwork ───────
+/// ─── `unique=art`: a bonus printing gives way to a plain one of the same artwork ──────────────
 ///
 /// api.scryfall.com, 2026-10-04: `is:reversible t:planeswalker unique=art` answers sld/1453, 1454,
 /// 1455, 1456 and 1457 for the five Secret Lair planeswalkers, where `prefer_score` (a fitted score,
@@ -6674,6 +6673,23 @@ fn reversible_name_candidates<'a>(
 /// Zndrsplt: a foil printing beside a thick nonfoil one, neither a bonus) agree with `prefer_score`
 /// already, so the rule is the bonus tag and nothing wider: across all ten groups it is 10 of 10,
 /// where `prefer_score` is 5.
+///
+/// NOT ONLY REVERSIBLE CARDS. The 15 artwork groups inside `sld` (any layout; the sets `slc` and
+/// `slu` hold bonus printings but no mixed group) that mix a `sldbonus` printing with a plain one,
+/// each asked as `oracleid:… ((e:sld cn:…) or (e:sld cn:…)) unique=art`: Scryfall keeps the PLAIN
+/// printing in 14 and the bonus one in 1 — Counterspell's sld/SCTLR against sld/175, where the page
+/// holds the plain one already and the rule never fires. Where `prefer_score` kept the bonus printing
+/// — Silence sld/881 over sld/1816, Braid of Fire sld/729 over sld/1247, Counterspell sld/7010 over
+/// sld/1933 (and the five reversible planeswalkers) — it never agreed with Scryfall, so the swap is
+/// the rule's whole effect there: 14 of 15 after it, 11 before (the five reversible groups were
+/// already swapped; the six plain-layout ones where `prefer_score` falls on the plain printing agreed).
+///
+/// A SIBLING IN ANOTHER SET IS NOT SWAPPED, because it was not measured to be one rule: of the two
+/// mixed groups whose plain printing is outside `sld` and whose bonus printing is priced, Tibalt, the
+/// Fiend-Blooded (sld/537 against ddk/41) keeps the plain one and Evolving Wilds (sld/538 against
+/// pana/256) the bonus one. `unique=cards` on the same 15 groups is NOT this: it keeps the bonus
+/// printing in 8 (Silence, Braid of Fire, Counterspell sld/7010, and the five planeswalkers) and the
+/// plain one in the other 6, exactly where `prefer_score` falls, so only SCTLR differs there.
 ///
 /// ─── `unique=cards`: a reversible printing gives way to a plain printing of the card ──────────
 ///
@@ -6707,9 +6723,10 @@ fn reversible_name_candidates<'a>(
 /// the page's EDGE: a row that would have crossed into or out of the window on its new key was
 /// chosen on the old one.
 ///
-/// COST, which is nothing to a query without a candidate: both rules look at a row only when its card
-/// has a divergent record (one length read on a card the serializer is about to read anyway). No
-/// other mode runs it, and nothing is stored.
+/// COST, which is nothing to a query without a candidate: `unique=cards` looks at a row only when its
+/// card has a divergent record (one length read on a card the serializer is about to read anyway);
+/// `unique=art` additionally reads the printing's set code (three bytes) and goes on only for `sld`,
+/// where the 15 groups were measured. No other mode runs it, and nothing is stored.
 pub(crate) fn prefer_plain_sibling_rep<'a>(
     data: &'a Archived<CardData>,
     full: &FilterExpr,
@@ -6735,9 +6752,9 @@ pub(crate) fn prefer_plain_sibling_rep<'a>(
             // `unique=cards` would have answered had the card no reversible printing.
             data.printings[start..end].iter().find(|q| divergent_of(card, q).is_none() && full.matches(card, q, &data.strings))
         } else {
-            // A reversible card's bonus printing: the tag is read only on a printing of a card
-            // that prints a divergent record.
-            if !reversible {
+            // The tag is read only where it was measured: inside `sld`, whose 15 mixed groups are
+            // every one this has been asked of.
+            if p.card_set_code.as_str() != "sld" {
                 continue;
             }
             let vid = *bonus_vid.get_or_insert_with(|| data.coll_vocab.iter().position(|s| s.as_str() == "sldbonus").map(|v| v as u16));
@@ -6748,10 +6765,12 @@ pub(crate) fn prefer_plain_sibling_rep<'a>(
             }
             let (start, end) = printing_range(data, p);
             let gid = u16::from(p.artwork_group_id);
-            // The same artwork, the same record, not itself a bonus, matching.
+            // The same artwork in the same set, the same record (a reversible bonus printing gives
+            // way to a reversible one, a plain one to a plain one), not itself a bonus, matching.
             data.printings[start..end].iter().find(|q| {
                 u16::from(q.artwork_group_id) == gid
-                    && divergent_of(card, q).is_some()
+                    && q.card_set_code.as_str() == "sld"
+                    && (divergent_of(card, q).is_some() == reversible)
                     && !is_bonus(q)
                     && full.matches(card, q, &data.strings)
             })

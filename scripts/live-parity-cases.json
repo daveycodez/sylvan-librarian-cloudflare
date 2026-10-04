@@ -3230,6 +3230,50 @@
 			"method": "GET",
 			"path": "/cards/search?q=e%3Asld+is%3Areversible&unique=cards",
 			"note": "2026-10-04. 56 cards, each the reversible printing: a plain sibling the filter excludes cannot stand for the card, so the reversible printing is all there is (sld/1081 for Darksteel Colossus, sld/745 for Ajani Goldmane)."
+		},
+		{
+			"name": "unique-art-bonus-printing-gives-way-silence",
+			"method": "GET",
+			"path": "/cards/search?q=%21%22Silence%22+e%3Asld+%28cn%3A881+or+cn%3A1816%29&unique=art",
+			"note": "2026-10-04. sld/1816, the plain printing of the artwork, where this port answered the `sldbonus` printing sld/881 (`prefer_score` ranks it first). Not only reversible cards: of the 15 artwork groups inside `sld` that mix a bonus printing with a plain one, Scryfall's `unique=art` keeps the plain one in 14 (this, Braid of Fire sld/1247 over sld/729, Counterspell sld/1933 over sld/7010, the five reversible planeswalkers and six more this port already had). `unique=cards` on the same pair is sld/881, the opposite pick. NEEDS THE REBUILT ENGINE BLOB."
+		},
+		{
+			"name": "unique-art-bonus-printing-gives-way-braid-of-fire",
+			"method": "GET",
+			"path": "/cards/search?q=%21%22Braid+of+Fire%22+e%3Asld+%28cn%3A729+or+cn%3A1247%29&unique=art",
+			"note": "2026-10-04. sld/1247, where this port answered the bonus printing sld/729. Ordered by price the page follows the printing it shows (`order=usd` puts sld/1247's $29 where it belongs, not where the unpriced sld/729 sorted). NEEDS THE REBUILT ENGINE BLOB."
+		},
+		{
+			"name": "unique-art-bonus-printing-gives-way-counterspell",
+			"method": "GET",
+			"path": "/cards/search?q=%21%22Counterspell%22+e%3Asld+%28cn%3A1933+or+cn%3A7010%29&unique=art",
+			"note": "2026-10-04. sld/1933, where this port answered the bonus printing sld/7010. NEEDS THE REBUILT ENGINE BLOB."
+		},
+		{
+			"name": "unique-art-bonus-printing-kept-sctlr",
+			"method": "GET",
+			"path": "/cards/search?q=%21%22Counterspell%22+e%3Asld+%28cn%3A175+or+cn%3ASCTLR%29&unique=art",
+			"known_deviation": {
+				"reason": "THE ONE OF THE 15 `sld` ARTWORK GROUPS THAT MIX A BONUS PRINTING WITH A PLAIN ONE WHERE SCRYFALL KEEPS THE BONUS PRINTING, measured 2026-10-04: sld/SCTLR (`sldbonus`, priced $900, released 2023-08-25) over the plain sld/175 ($5.01, 2021-06-21), where the other 14 keep the plain one. This port answers sld/175: its `prefer_score` ranks the plain printing first, as it does in the 14, and the bonus rule only ever moves a row AWAY from a bonus printing. Nothing in the stored fields separates this group from the 14 — the bonus printing is the only one of the 15 with a price, but the two cross-set groups whose bonus printing is priced split (Tibalt, the Fiend-Blooded keeps the plain ddk/41 over sld/537, Evolving Wilds the bonus sld/538 over pana/256) — so a rule for it would be a patch for one card. `unique=cards` on the same pair is sld/SCTLR on Scryfall as well (and sld/175 here: the same `prefer_score` pick, not touched by anything of this rule).",
+				"scryfall": {
+					"status": 200,
+					"expect": {
+						"object": "list",
+						"total_cards": 1,
+						"data.0.set": "sld",
+						"data.0.collector_number": "SCTLR"
+					}
+				},
+				"ours": {
+					"status": 200,
+					"expect": {
+						"object": "list",
+						"total_cards": 1,
+						"data.0.set": "sld",
+						"data.0.collector_number": "175"
+					}
+				}
+			}
 		}
 	]
 }

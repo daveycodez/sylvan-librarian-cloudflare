@@ -1,0 +1,134 @@
+{
+  "object": "card",
+  "id": "e84468eb-c971-4e5c-92ab-338b4aaa48c6",
+  "oracle_id": "796009b3-73b5-42c0-a490-66f12be5a42e",
+  "multiverse_ids": [],
+  "tcgplayer_id": 493835,
+  "cardmarket_id": 728450,
+  "name": "Braid of Fire",
+  "lang": "en",
+  "released_at": "2023-04-14",
+  "uri": "https://api.scryfall.com/cards/e84468eb-c971-4e5c-92ab-338b4aaa48c6",
+  "scryfall_uri": "https://scryfall.com/card/sld/729/braid-of-fire?utm_source=api",
+  "layout": "normal",
+  "highres_image": true,
+  "image_status": "highres_scan",
+  "image_updated_at": "2026-07-13T04:36:18Z",
+  "image_uris": {
+    "small": "https://cards.scryfall.io/small/front/e/8/e84468eb-c971-4e5c-92ab-338b4aaa48c6.jpg?1783917378",
+    "normal": "https://cards.scryfall.io/normal/front/e/8/e84468eb-c971-4e5c-92ab-338b4aaa48c6.jpg?1783917378",
+    "large": "https://cards.scryfall.io/large/front/e/8/e84468eb-c971-4e5c-92ab-338b4aaa48c6.jpg?1783917378",
+    "png": "https://cards.scryfall.io/png/front/e/8/e84468eb-c971-4e5c-92ab-338b4aaa48c6.png?1783917378",
+    "art_crop": "https://cards.scryfall.io/art_crop/front/e/8/e84468eb-c971-4e5c-92ab-338b4aaa48c6.jpg?1783917378",
+    "border_crop": "https://cards.scryfall.io/border_crop/front/e/8/e84468eb-c971-4e5c-92ab-338b4aaa48c6.jpg?1783917378",
+    "thumb": "https://cards.scryfall.io/thumb/front/e/8/e84468eb-c971-4e5c-92ab-338b4aaa48c6.webp?1783917378",
+    "grid": "https://cards.scryfall.io/grid/front/e/8/e84468eb-c971-4e5c-92ab-338b4aaa48c6.webp?1783917378",
+    "display": "https://cards.scryfall.io/display/front/e/8/e84468eb-c971-4e5c-92ab-338b4aaa48c6.webp?1783917378",
+    "art": "https://cards.scryfall.io/art/front/e/8/e84468eb-c971-4e5c-92ab-338b4aaa48c6.webp?1783917378",
+    "crop": "https://cards.scryfall.io/crop/front/e/8/e84468eb-c971-4e5c-92ab-338b4aaa48c6.webp?1783917378"
+  },
+  "mana_cost": "{1}{R}",
+  "cmc": 2.0,
+  "type_line": "Enchantment",
+  "oracle_text": "Cumulative upkeep—Add {R}. (At the beginning of your upkeep, put an age counter on this permanent, then sacrifice it unless you pay its upkeep cost for each age counter on it.)",
+  "colors": [
+    "R"
+  ],
+  "color_identity": [
+    "R"
+  ],
+  "keywords": [
+    "Cumulative upkeep"
+  ],
+  "produced_mana": [
+    "R"
+  ],
+  "legalities": {
+    "standard": "not_legal",
+    "future": "not_legal",
+    "historic": "not_legal",
+    "timeless": "not_legal",
+    "gladiator": "not_legal",
+    "pioneer": "not_legal",
+    "modern": "legal",
+    "legacy": "legal",
+    "pauper": "not_legal",
+    "vintage": "legal",
+    "penny": "legal",
+    "commander": "legal",
+    "oathbreaker": "legal",
+    "standardbrawl": "not_legal",
+    "brawl": "not_legal",
+    "competitivebrawl": "not_legal",
+    "alchemy": "not_legal",
+    "paupercommander": "not_legal",
+    "duel": "legal",
+    "oldschool": "not_legal",
+    "premodern": "not_legal",
+    "predh": "legal",
+    "tlr": "legal"
+  },
+  "games": [
+    "paper"
+  ],
+  "reserved": false,
+  "game_changer": false,
+  "foil": true,
+  "nonfoil": false,
+  "finishes": [
+    "foil"
+  ],
+  "oversized": false,
+  "promo": false,
+  "reprint": true,
+  "variation": false,
+  "set_id": "4d92a8a7-ccb0-437d-abdc-9d70fc5ed672",
+  "set": "sld",
+  "set_name": "Secret Lair Drop",
+  "set_type": "box",
+  "set_uri": "https://api.scryfall.com/sets/4d92a8a7-ccb0-437d-abdc-9d70fc5ed672",
+  "set_search_uri": "https://api.scryfall.com/cards/search?order=set&q=e%3Asld&unique=prints",
+  "scryfall_set_uri": "https://scryfall.com/sets/sld?utm_source=api",
+  "rulings_uri": "https://api.scryfall.com/cards/e84468eb-c971-4e5c-92ab-338b4aaa48c6/rulings",
+  "prints_search_uri": "https://api.scryfall.com/cards/search?order=released&q=oracleid%3A796009b3-73b5-42c0-a490-66f12be5a42e&unique=prints",
+  "collector_number": "729",
+  "digital": false,
+  "rarity": "rare",
+  "flavor_text": "The prominence danced before the shaman, a tangle of power and flame—his to unravel.",
+  "card_back_id": "0aeebaf5-8c7d-4636-9e82-8c27447861f7",
+  "artist": "Sam Burley",
+  "artist_ids": [
+    "f89f4b78-cefb-41f7-b7cb-4f4d28de0c4f"
+  ],
+  "illustration_id": "89e357bc-bb67-4eea-9b7c-aa9cccb0d0ec",
+  "border_color": "black",
+  "frame": "2015",
+  "security_stamp": "oval",
+  "full_art": false,
+  "textless": false,
+  "booster": false,
+  "story_spotlight": false,
+  "promo_types": [
+    "sldbonus"
+  ],
+  "edhrec_rank": 4267,
+  "penny_rank": 4959,
+  "prices": {
+    "usd": null,
+    "usd_foil": "24.21",
+    "usd_etched": null,
+    "eur": null,
+    "eur_foil": "15.40",
+    "tix": null
+  },
+  "related_uris": {
+    "tcgplayer_infinite_articles": "https://partner.tcgplayer.com/c/4931599/1830156/21018?subId1=api&trafcat=tcgplayer.com%2Fsearch%2Farticles&u=https%3A%2F%2Fwww.tcgplayer.com%2Fsearch%2Farticles%3FproductLineName%3Dmagic%26q%3DBraid%2Bof%2BFire",
+    "tcgplayer_infinite_decks": "https://partner.tcgplayer.com/c/4931599/1830156/21018?subId1=api&trafcat=tcgplayer.com%2Fsearch%2Fdecks&u=https%3A%2F%2Fwww.tcgplayer.com%2Fsearch%2Fdecks%3FproductLineName%3Dmagic%26q%3DBraid%2Bof%2BFire",
+    "edhrec": "https://edhrec.com/route/?cc=Braid+of+Fire"
+  },
+  "purchase_uris": {
+    "tcgplayer": "https://partner.tcgplayer.com/c/4931599/1830156/21018?subId1=api&u=https%3A%2F%2Fwww.tcgplayer.com%2Fproduct%2F493835%3Fpage%3D1",
+    "cardmarket": "https://www.cardmarket.com/en/Magic/Products?idProduct=728450&referrer=scryfall&utm_campaign=card_prices&utm_medium=text&utm_source=scryfall",
+    "cardhoarder": "https://www.cardhoarder.com/cards?affiliate_id=scryfall&data%5Bsearch%5D=Braid+of+Fire&ref=card-profile&utm_campaign=affiliate&utm_medium=card&utm_source=scryfall"
+  }
+}

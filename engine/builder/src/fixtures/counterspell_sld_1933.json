@@ -1,0 +1,137 @@
+{
+  "object": "card",
+  "id": "053f724c-c88d-44c0-9902-6400c064640b",
+  "oracle_id": "cc187110-1148-4090-bbb8-e205694a39f5",
+  "multiverse_ids": [],
+  "tcgplayer_id": 623041,
+  "cardmarket_id": 818531,
+  "name": "Counterspell",
+  "lang": "en",
+  "released_at": "2025-03-24",
+  "uri": "https://api.scryfall.com/cards/053f724c-c88d-44c0-9902-6400c064640b",
+  "scryfall_uri": "https://scryfall.com/card/sld/1933/counterspell?utm_source=api",
+  "layout": "normal",
+  "highres_image": true,
+  "image_status": "highres_scan",
+  "image_updated_at": "2026-07-13T01:50:58Z",
+  "image_uris": {
+    "small": "https://cards.scryfall.io/small/front/0/5/053f724c-c88d-44c0-9902-6400c064640b.jpg?1783907458",
+    "normal": "https://cards.scryfall.io/normal/front/0/5/053f724c-c88d-44c0-9902-6400c064640b.jpg?1783907458",
+    "large": "https://cards.scryfall.io/large/front/0/5/053f724c-c88d-44c0-9902-6400c064640b.jpg?1783907458",
+    "png": "https://cards.scryfall.io/png/front/0/5/053f724c-c88d-44c0-9902-6400c064640b.png?1783907458",
+    "art_crop": "https://cards.scryfall.io/art_crop/front/0/5/053f724c-c88d-44c0-9902-6400c064640b.jpg?1783907458",
+    "border_crop": "https://cards.scryfall.io/border_crop/front/0/5/053f724c-c88d-44c0-9902-6400c064640b.jpg?1783907458",
+    "thumb": "https://cards.scryfall.io/thumb/front/0/5/053f724c-c88d-44c0-9902-6400c064640b.webp?1783907458",
+    "grid": "https://cards.scryfall.io/grid/front/0/5/053f724c-c88d-44c0-9902-6400c064640b.webp?1783907458",
+    "display": "https://cards.scryfall.io/display/front/0/5/053f724c-c88d-44c0-9902-6400c064640b.webp?1783907458",
+    "art": "https://cards.scryfall.io/art/front/0/5/053f724c-c88d-44c0-9902-6400c064640b.webp?1783907458",
+    "crop": "https://cards.scryfall.io/crop/front/0/5/053f724c-c88d-44c0-9902-6400c064640b.webp?1783907458"
+  },
+  "mana_cost": "{U}{U}",
+  "cmc": 2.0,
+  "type_line": "Instant",
+  "oracle_text": "Counter target spell.",
+  "colors": [
+    "U"
+  ],
+  "color_identity": [
+    "U"
+  ],
+  "keywords": [],
+  "legalities": {
+    "standard": "not_legal",
+    "future": "not_legal",
+    "historic": "legal",
+    "timeless": "legal",
+    "gladiator": "legal",
+    "pioneer": "not_legal",
+    "modern": "legal",
+    "legacy": "legal",
+    "pauper": "legal",
+    "vintage": "legal",
+    "penny": "not_legal",
+    "commander": "legal",
+    "oathbreaker": "legal",
+    "standardbrawl": "not_legal",
+    "brawl": "legal",
+    "competitivebrawl": "legal",
+    "alchemy": "not_legal",
+    "paupercommander": "legal",
+    "duel": "legal",
+    "oldschool": "not_legal",
+    "premodern": "legal",
+    "predh": "legal",
+    "tlr": "legal"
+  },
+  "games": [
+    "paper"
+  ],
+  "reserved": false,
+  "game_changer": false,
+  "foil": true,
+  "nonfoil": true,
+  "finishes": [
+    "nonfoil",
+    "foil"
+  ],
+  "oversized": false,
+  "promo": false,
+  "reprint": true,
+  "variation": false,
+  "set_id": "4d92a8a7-ccb0-437d-abdc-9d70fc5ed672",
+  "set": "sld",
+  "set_name": "Secret Lair Drop",
+  "set_type": "box",
+  "set_uri": "https://api.scryfall.com/sets/4d92a8a7-ccb0-437d-abdc-9d70fc5ed672",
+  "set_search_uri": "https://api.scryfall.com/cards/search?order=set&q=e%3Asld&unique=prints",
+  "scryfall_set_uri": "https://scryfall.com/sets/sld?utm_source=api",
+  "rulings_uri": "https://api.scryfall.com/cards/053f724c-c88d-44c0-9902-6400c064640b/rulings",
+  "prints_search_uri": "https://api.scryfall.com/cards/search?order=released&q=oracleid%3Acc187110-1148-4090-bbb8-e205694a39f5&unique=prints",
+  "collector_number": "1933",
+  "digital": false,
+  "rarity": "rare",
+  "card_back_id": "0aeebaf5-8c7d-4636-9e82-8c27447861f7",
+  "artist": "Tyler Walpole",
+  "artist_ids": [
+    "70c4c8c7-61a8-44e7-8fb1-161b7f943e7e"
+  ],
+  "illustration_id": "c4abab7d-ed8c-4e32-b423-ae2a1f7b2dda",
+  "border_color": "borderless",
+  "frame": "2015",
+  "frame_effects": [
+    "inverted"
+  ],
+  "security_stamp": "triangle",
+  "full_art": false,
+  "textless": false,
+  "booster": false,
+  "story_spotlight": false,
+  "promo_types": [
+    "universesbeyond"
+  ],
+  "edhrec_rank": 16,
+  "penny_rank": 8,
+  "preview": {
+    "source": "Collider",
+    "source_uri": "https://collider.com/spongebob-magic-the-gathering-special-secret-lair-images/",
+    "previewed_at": "2025-03-10"
+  },
+  "prices": {
+    "usd": "27.03",
+    "usd_foil": "19.73",
+    "usd_etched": null,
+    "eur": "23.38",
+    "eur_foil": "24.86",
+    "tix": null
+  },
+  "related_uris": {
+    "tcgplayer_infinite_articles": "https://partner.tcgplayer.com/c/4931599/1830156/21018?subId1=api&trafcat=tcgplayer.com%2Fsearch%2Farticles&u=https%3A%2F%2Fwww.tcgplayer.com%2Fsearch%2Farticles%3FproductLineName%3Dmagic%26q%3DCounterspell",
+    "tcgplayer_infinite_decks": "https://partner.tcgplayer.com/c/4931599/1830156/21018?subId1=api&trafcat=tcgplayer.com%2Fsearch%2Fdecks&u=https%3A%2F%2Fwww.tcgplayer.com%2Fsearch%2Fdecks%3FproductLineName%3Dmagic%26q%3DCounterspell",
+    "edhrec": "https://edhrec.com/route/?cc=Counterspell"
+  },
+  "purchase_uris": {
+    "tcgplayer": "https://partner.tcgplayer.com/c/4931599/1830156/21018?subId1=api&u=https%3A%2F%2Fwww.tcgplayer.com%2Fproduct%2F623041%3Fpage%3D1",
+    "cardmarket": "https://www.cardmarket.com/en/Magic/Products?idProduct=818531&referrer=scryfall&utm_campaign=card_prices&utm_medium=text&utm_source=scryfall",
+    "cardhoarder": "https://www.cardhoarder.com/cards?affiliate_id=scryfall&data%5Bsearch%5D=Counterspell&ref=card-profile&utm_campaign=affiliate&utm_medium=card&utm_source=scryfall"
+  }
+}
