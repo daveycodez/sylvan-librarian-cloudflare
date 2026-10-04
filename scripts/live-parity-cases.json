@@ -2303,6 +2303,24 @@
 			"method": "GET",
 			"path": "/cards/search?q=o%3A%2Fdraw%2B%3F+three+cards%5Cb%2F+t%3Ainstant",
 			"note": "The control: a lazy quantifier and a word boundary run (`destroy+? target creature`, `destroy??` and `destroy{1}?` were each 152 on api.scryfall.com 2026-10-03)."
+		},
+		{
+			"name": "search-type-adventure-excludes-the-playtest-six",
+			"method": "GET",
+			"path": "/cards/search?q=t%3Aadventure",
+			"note": "x66 R19, reported as an inconsistency inside this port: `t:adventure` is 144 and `layout:adventure -t:omen` is 150. Measured on api.scryfall.com 2026-10-03, Scryfall answers the SAME 144 and 150, card for card. The six between them — Champions of Archery, Collectigull, Decorated Knight, Garruk's Lost Wolf, Keeper of the Crown, Value Town — are Mystery Booster playtest cards, which are extras: `layout:` is an unconditional `include_extras` trigger and `t:` is not (extras-gate.ts), so the first query never sees them and the second does. `t:adventure&include_extras=true` is 150 on Scryfall. Nothing was wrong with the type index; the case pins that."
+		},
+		{
+			"name": "search-layout-adventure-includes-the-playtest-six",
+			"method": "GET",
+			"path": "/cards/search?q=layout%3Aadventure+-t%3Aomen",
+			"note": "The other half of R19: 150 on both sides (2026-10-03), because `layout:` switches extras on."
+		},
+		{
+			"name": "search-otag-indefinite-effect-seraph",
+			"method": "GET",
+			"path": "/cards/search?q=otag%3Aindefinite-effect+%21%22Seraph%22",
+			"note": "x66 R32, reported as 1 card here against a 404 on Scryfall. Re-measured 2026-10-03: 1 card on BOTH sides — Scryfall's search now carries the tag the oracle-tags bulk already did, so the report caught the port's nightly import ahead of Scryfall's own index, not a tag-expansion difference. Fourteen other tag queries were compared the same day (otag:removal 6,449, ramp 2,286, card-advantage 6,206, tutor 1,163, lands-matter 584, synergy-lifegain 240, theft-creature 229, synergy-exile-cast 76, theft-artifact 52, theft-equipment 6, indefinite-effect 475, atag:angel 609, and the function:/oracletag: spellings) and every count agreed. Data freshness; nothing changed."
 		}
 	]
 }
