@@ -2052,6 +2052,24 @@
 			"method": "GET",
 			"path": "/cards/search?q=t%3Ainstant+name%3A%2Faaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa%2F",
 			"note": "…and the 249th: 3,909 with `Invalid expression “name:/aaaaaaaaaaaaa…” was ignored. Regular expression too complex.`"
+		},
+		{
+			"name": "search-regex-repetition-fifty-runs",
+			"method": "GET",
+			"path": "/cards/search?q=t%3Ainstant+o%3A%2Fdestroy.%7B0%2C35%7Dcreature%2F",
+			"note": "x66, the control for the next case: a `{0,35}` bound — the one mtg-seeker's supplements use — runs, 272 instants on api.scryfall.com 2026-10-03. The upper bounds of a pattern's `{…}` quantifiers may add up to 50."
+		},
+		{
+			"name": "search-regex-too-much-repetition",
+			"method": "GET",
+			"path": "/cards/search?q=t%3Ainstant+o%3A%2Fdestroy.%7B135%7Dcreature%2F",
+			"note": "x66: past 50 the regex is dropped — 3,909 with `Invalid expression “o:/destroy.{135}cre…” was ignored. Too much repetition.` (2026-10-03). `a{25}b{25}` runs and `a{25}b{26}` does not; `a{25,26}` runs (the UPPER bound counts) and `a{51,}` runs (an open one counts nothing). This port ran every such pattern up to 1,024."
+		},
+		{
+			"name": "search-regex-repetition-is-a-sum",
+			"method": "GET",
+			"path": "/cards/search?q=t%3Ainstant+o%3A%2Fa%7B25%7Db%7B26%7D%2F",
+			"note": "Two bounds of 25 and 26 are 51: refused, where `(a{10}){10}` — 20 as a sum, 100 as a product — runs. 3,909 with the warning."
 		}
 	]
 }

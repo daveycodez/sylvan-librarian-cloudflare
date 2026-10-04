@@ -149,6 +149,71 @@ describe("a regex over Scryfall's complexity budget is ignored", () => {
 	});
 });
 
+describe("a regex whose `{…}` upper bounds add up past 50 is ignored", () => {
+	const REPETITION = "Too much repetition.";
+	const reasonOf = (body: string) => scryfallTermPolicy(`t:instant o:/${body}/`).warnings;
+	const runs = (body: string) => expect(reasonOf(body)).toEqual([]);
+	const refused = (body: string) =>
+		expect(reasonOf(body)).toEqual([
+			ignored([...`o:/${body}/`].length > 20 ? `${`o:/${body}/`.slice(0, 19)}\u2026` : `o:/${body}/`, REPETITION),
+		]);
+
+	test("50 runs and 51 does not, as one bound or as several", () => {
+		for (const ok of ["a{50}", "a{0,50}", ".{50}", "a{25}b{25}", "x{3,4}y{46}", "a{1}".repeat(26), "(a{10}){10}"]) {
+			runs(ok);
+		}
+		for (const over of [
+			"a{51}",
+			"a{0,51}",
+			".{51}",
+			"a{25}b{26}",
+			"a{0,25}b{0,26}",
+			"x{3,4}y{47}",
+			"a{2}".repeat(26),
+		]) {
+			refused(over);
+		}
+	});
+
+	test("the upper bound counts, and an open one counts nothing", () => {
+		runs("a{25,26}");
+		refused("a{51,60}");
+		refused("a{60,51}");
+		runs("a{51,}");
+		runs("x{3,}y{50}");
+		runs("a{255,}");
+	});
+
+	test("it reads characters: a bracketed brace counts, an escaped or spaced one does not", () => {
+		refused("[{51}]");
+		refused("{r}{51}");
+		refused("a{051}");
+		runs("\\{51\\}");
+		runs("a{ 51}");
+	});
+
+	test("the reported pattern, and where the rule sits", async () => {
+		expect(scryfallTermPolicy("t:instant o:/destroy.{135}creature/").warnings).toEqual([
+			ignored("o:/destroy.{135}cre\u2026", REPETITION),
+		]);
+		expect(scryfallTermPolicy("t:instant o:/destroy[^.]{0,100}creature/").warnings).toEqual([
+			ignored("o:/destroy[^.]{0,10\u2026", REPETITION),
+		]);
+		// The bound mtg-seeker's queries actually use.
+		runs("destroy[^.]{0,35}creature");
+		// After the other two text rules, before the compiler.
+		expect(reasonOf("(((a{60})))")[0]).toEndWith("Too many nested groups.");
+		expect(reasonOf(`a{60}${".".repeat(90)}`)[0]).toEndWith("Regular expression too complex.");
+		refused("a{60}[");
+		const response = await search("o:/a{1000}/");
+		expect(response.status).toBe(400);
+		expect(await json(response)).toMatchObject({
+			details: "All of your terms were ignored.",
+			warnings: [ignored("o:/a{1000}/", REPETITION)],
+		});
+	});
+});
+
 describe("a regex whose parentheses nest three deep is ignored", () => {
 	const NESTED = "Too many nested groups.";
 

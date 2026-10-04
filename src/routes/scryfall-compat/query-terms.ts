@@ -1450,12 +1450,55 @@ function tooComplex(pattern: string): boolean {
 }
 
 /**
+ * `Too much repetition.` — THE UPPER BOUNDS OF A PATTERN'S `{…}` QUANTIFIERS, ADDED UP, MAY NOT
+ * EXCEED 50.
+ *
+ * Found while pinning the complexity rule: `o:/destroy.{135}creature/` is refused with this
+ * sentence and not that one. This port ran every such pattern up to its own bound of 1,024.
+ *
+ * Measured on api.scryfall.com 2026-10-03, anchor `t:instant` = 3,909:
+ *
+ *   a{50}  a{0,50}  .{50}          run                 a{51}  a{0,51}  .{51}       refused
+ *   a{25}b{25}                     runs (50)           a{25}b{26}  a{0,25}b{0,26}  refused (51)
+ *   a{2} ×26                       refused (52)        a{1} ×26                    runs (26)
+ *   x{3,4}y{46}                    runs (4 + 46)       x{3,4}y{47}                 refused
+ *   (a{10}){10}                    runs — a SUM (20), not the product (100)
+ *
+ * IT IS THE UPPER BOUND THAT COUNTS, and an open one counts nothing: `a{25,26}` runs (26, not 51),
+ * `a{51,60}` is refused, and so is `a{60,51}` — 51, read before the compiler could object to the
+ * order — while `a{51,}` runs, `x{3,}y{50}` runs, and `a{255,}` runs (256 is the compiler's
+ * `invalid repetition count(s)`).
+ *
+ * And like the two rules before it, it reads CHARACTERS: `[{51}]` and `{r}{51}` are refused,
+ * `a{051}` is refused (51), while `\{51\}` and `a{ 51}` run — the shape is a brace, digits, an
+ * optional comma and more digits, and a brace, with nothing else between.
+ *
+ * LAST of the three text rules (`(((a{60})))` is "nested"; `a{60}` + 90 dots is "too complex") and
+ * still ahead of the compiler (`a{60}[` is this sentence, not "brackets [] not balanced").
+ *
+ * COST: one regex scan of the pattern at parse time.
+ */
+const TOO_MUCH_REPETITION_REASON = "Too much repetition.";
+const MAX_REGEX_REPETITION_SUM = 50;
+const REPETITION_BOUND_RE = /\{(?:\d+,)?(\d+)\}/g;
+
+function repeatsTooMuch(pattern: string): boolean {
+	let sum = 0;
+	for (const match of pattern.matchAll(REPETITION_BOUND_RE)) {
+		sum += Number(match[1]);
+		if (sum > MAX_REGEX_REPETITION_SUM) return true;
+	}
+	return false;
+}
+
+/**
  * Why Scryfall refuses a regex it has not compiled yet, or null — the checks it runs on the
  * pattern's TEXT, in the order it runs them.
  */
 function regexTextReason(pattern: string): string | null {
 	if (tooComplex(pattern)) return TOO_COMPLEX_REASON;
 	if (nestsTooDeep(pattern)) return NESTED_GROUPS_REASON;
+	if (repeatsTooMuch(pattern)) return TOO_MUCH_REPETITION_REASON;
 	return null;
 }
 
