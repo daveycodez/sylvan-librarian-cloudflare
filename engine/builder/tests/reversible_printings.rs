@@ -139,6 +139,10 @@ fn printings(store: &BufferStore, tree: &Value) -> Vec<String> {
     rows(store, tree, "printing")
 }
 
+fn reversible() -> Value {
+    leaf("card_layout", "layout", "StringValueNode", "reversible_card")
+}
+
 const NONE: [&str; 0] = [];
 
 #[test]
@@ -258,4 +262,22 @@ fn the_typo_stage_holds_the_doubled_names_as_names_of_their_own() {
     // card, two candidates, the typo moved. The card is the answer.
     assert!(ask("Ajani Goldmane // Ajani Goldman").starts_with("hit Ajani Goldmane // Ajani Goldmane sld/"));
     assert_eq!(ask("Ajani Goldman"), "hit Ajani Goldmane m11/1");
+}
+
+#[test]
+fn unique_art_gives_a_bonus_printing_up_to_its_sibling_of_the_same_artwork() {
+    let store = store();
+    let art = |tree: &Value| rows(&store, tree, "artwork");
+    // api.scryfall.com 2026-10-04, `is:reversible t:planeswalker unique=art`: sld/1453 for Ajani
+    // Goldmane, where sld/745 — the foil-only `sldbonus` printing of the same two illustrations —
+    // is the store's order and `prefer_score`'s pick.
+    assert_eq!(printings(&store, &and(&[reversible(), word("ajani")])), ["sld/1453", "sld/745"]);
+    assert_eq!(art(&and(&[reversible(), word("ajani")])), ["sld/1453"]);
+    // Only a printing the filter MATCHES can stand for the group: with the plain one excluded the
+    // bonus printing is all there is.
+    let without_1453 = and(&[reversible(), word("ajani"), not(leaf("collector_number", "cn", "StringValueNode", "1453"))]);
+    assert_eq!(art(&without_1453), ["sld/745"]);
+    // No other group moves: Darksteel Colossus's two printings are different artworks.
+    assert_eq!(art(&reversible()), ["sld/1081", "sld/1328", "sld/1453", "tdm/381"]);
+    assert_eq!(art(&word("sunlit")), ["c18/47", "sld/1328"]);
 }

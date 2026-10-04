@@ -3152,6 +3152,12 @@
 			"method": "GET",
 			"path": "/cards/search?q=usd-a&unique=prints",
 			"note": "2026-10-04. 13 printings, where this port answered 12: `usd-a` collates to `usda`, which the doubled name `Darksteel Colossus // Darksteel Colossus` (sld/1081) holds across its seam (`colossusdark` and `name:\"colossus // dark\"` are that printing alone, `name:/colossus \\/\\/ dark/` too). A reversible printing prints its own name and `name:` reads it. NEEDS THE REBUILT ENGINE BLOB AND THE REPUBLISHED NAMES BLOB."
+		},
+		{
+			"name": "unique-art-reversible-planeswalkers",
+			"method": "GET",
+			"path": "/cards/search?q=is%3Areversible+t%3Aplaneswalker&unique=art",
+			"note": "2026-10-04. sld/1453-1457 for the five Secret Lair planeswalkers (Ajani Goldmane, Jace Beleren, Liliana Vess, Chandra Nalaar, Garruk Wildspeaker), where this port answered their foil-only `sldbonus` twins sld/745-749 — the same illustration pair. The five other reversible cards with two printings of one artwork already agreed. `unique=cards` answers sld/745 on both sides, so the rule is the representative of an artwork and no wider. NEEDS THE REBUILT ENGINE BLOB."
 		}
 	]
 }

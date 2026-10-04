@@ -6637,6 +6637,63 @@ fn reversible_name_candidates<'a>(
     out
 }
 
+/// `unique=art`'S REPRESENTATIVE AMONG A REVERSIBLE CARD'S SIBLING PRINTINGS: a printing tagged
+/// `sldbonus` gives way to a sibling of the same artwork that prints the same record and is not.
+///
+/// api.scryfall.com, 2026-10-04: `is:reversible t:planeswalker unique=art` answers sld/1453, 1454,
+/// 1455, 1456 and 1457 for the five Secret Lair planeswalkers, where `prefer_score` (a fitted score,
+/// and the store's order) answers their `sldbonus` twins sld/745-749 — the same illustration pair,
+/// one printing each in the poster drop's foil-only bonus run and one in the drop itself. The other
+/// five reversible cards with two printings of one artwork (Jinnie Fay, Jetmir, Rin and Seri, Okaun,
+/// Zndrsplt: a foil printing beside a thick nonfoil one, neither a bonus) agree with `prefer_score`
+/// already, so the rule is the bonus tag and nothing wider: across all ten groups it is 10 of 10,
+/// where `prefer_score` is 5.
+///
+/// APPLIED TO THE PAGE AFTER THE REPRESENTATIVES ARE CHOSEN, at the one funnel every plan's rows
+/// pass through (`BufferStore::run_page`), and not inside the eight places that choose a
+/// representative — each is a different loop (first stored match, best score, popcount skip) over
+/// the same store order, and a demotion wired into one would be absent from the next. The price is
+/// a position: a swapped row keeps the place its predecessor sorted to, which is exact for every
+/// order whose key the two siblings share (name, set, released, rarity, artist, edhrec, cmc) and
+/// approximate for `order=usd|eur|tix`. And the cost is nothing to any other query: a row is looked
+/// at only when its card has a divergent record, one length read on a card the serializer is about
+/// to read anyway.
+///
+/// `unique=cards` is deliberately NOT here: it answers sld/745 for the same card on both sides
+/// (`e:sld unique=cards`, measured the same day), which is the opposite pick — Scryfall's two
+/// representatives are not one rule.
+pub(crate) fn prefer_plain_reversible_art_rep<'a>(
+    data: &'a Archived<CardData>,
+    full: &FilterExpr,
+    page: &mut [(&'a AOracleCard, &'a APrinting)],
+) {
+    let mut bonus_vid: Option<Option<u16>> = None;
+    for row in page.iter_mut() {
+        let (card, p) = *row;
+        if card.divergent.is_empty() || divergent_of(card, p).is_none() {
+            continue;
+        }
+        let vid = *bonus_vid.get_or_insert_with(|| data.coll_vocab.iter().position(|s| s.as_str() == "sldbonus").map(|v| v as u16));
+        let Some(vid) = vid else { continue };
+        let is_bonus = |q: &APrinting| q.card_is_tags.iter().any(|t| u16::from(*t) == vid);
+        if !is_bonus(p) {
+            continue;
+        }
+        let cid = card_of_vpid(data, vpid_of_ref(data, p)) as usize;
+        let (start, end) = (u32::from(data.offsets[cid]) as usize, u32::from(data.offsets[cid + 1]) as usize);
+        let gid = u16::from(p.artwork_group_id);
+        let sibling = data.printings[start..end].iter().find(|q| {
+            u16::from(q.artwork_group_id) == gid
+                && divergent_of(card, q).is_some()
+                && !is_bonus(q)
+                && full.matches(card, q, &data.strings)
+        });
+        if let Some(q) = sibling {
+            row.1 = q;
+        }
+    }
+}
+
 /// The owning card of a virtual printing id, via the direct arrays of whichever space it is in.
 ///
 /// LOCAL PATCH (Cloudflare port, #927): upstream dropped this with the printed-name pass of the

@@ -1863,6 +1863,11 @@ impl BufferStore {
                 plane_expr.as_ref(),
             )
         };
+        // `unique=art` among a reversible card's sibling printings — see the function.
+        let mut page = page;
+        if !widened && matches!(params.mode, super::Mode::Artwork) {
+            super::prefer_plain_reversible_art_rep(data, &unsplit, &mut page);
+        }
         regex_budget_held()?;
         Ok((params, total, page, widened))
     }

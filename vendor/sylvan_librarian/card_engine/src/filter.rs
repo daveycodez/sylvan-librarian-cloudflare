@@ -3605,8 +3605,8 @@ impl FilterExpr {
     /// True iff the filter matches this (card, printing) pair. With a printing
     /// supplied, evaluation is exact — PrintingDep cannot occur. The query
     /// driver goes through card_pass()/residual_matches() instead; this is the
-    /// unfactored single-pair form, kept for tests.
-    #[cfg(test)]
+    /// unfactored single-pair form — kept for tests, and read by `prefer_plain_reversible_art_rep`
+    /// for the one printing it asks about.
     pub(crate) fn matches(&self, card: &AOracleCard, printing: &APrinting, strings: &AStrings) -> bool {
         self.tri(card, Some(printing), strings) == Tri::True
     }
