@@ -383,7 +383,46 @@ const SCRYFALL_ONLY_KEYWORDS: ReadonlySet<string> = new Set([
 	// `include` LEFT THIS TABLE on 2026-10-03: `include:` is a display option this surface now
 	// reads (see INCLUDE_VALUES), and under `=` it is a keyword Scryfall itself does not know —
 	// `include=extras t:goblin` is 561 carrying `Unknown keyword “include”.`
-	"direct",
+	//
+	// `direct` LEFT IT the same day for the opposite reason: Scryfall does not know it either
+	// (`direct:x e:khm t:god` is 12 carrying `Unknown keyword “direct”.`), so the unknown-keyword
+	// rule is the right answer and this table was claiming otherwise.
+	//
+	// EIGHTEEN MORE JOINED IT, found by probing `<keyword>:<value> e:khm t:god` (12 cards) for
+	// every keyword Scryfall's syntax is known to carry, 2026-10-03. Each is HONORED there — the
+	// count moves, or the answer is a plain 404 with no `warnings` key — and each was being dropped
+	// here with `Unknown keyword “…”.`, which is the one thing this table exists to prevent: a
+	// query answered WIDER than Scryfall answers it, under a sentence saying Scryfall would have
+	// ignored the term too. A client that validates queries here and ships them there read that
+	// warning as "safe to send". Now they fail to parse, loudly, until the port can answer them:
+	//
+	//   block b edition           honored: `block:khm` and `edition:khm` are the 12
+	//   lore                      honored: `lore:x` is 7
+	//   artists                   honored: `artists:1` is the 12
+	//   mtgoid multiverseid arenaid tcgplayerid      404 for id 1 in that set
+	//   prints sets paperprints papersets illustrations edhrec usdfoil collector collectornumber
+	//                             404 for the probe value
+	//
+	// (Under a comparison they were already honored-and-empty, by the COMPARABLE_KEYWORDS rule,
+	// and still are: narrower than Scryfall's count, never wider.)
+	"block",
+	"b",
+	"edition",
+	"lore",
+	"artists",
+	"mtgoid",
+	"multiverseid",
+	"arenaid",
+	"tcgplayerid",
+	"prints",
+	"sets",
+	"paperprints",
+	"papersets",
+	"illustrations",
+	"edhrec",
+	"usdfoil",
+	"collector",
+	"collectornumber",
 ]);
 
 /**

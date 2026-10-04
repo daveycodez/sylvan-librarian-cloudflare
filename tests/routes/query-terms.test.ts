@@ -1636,3 +1636,58 @@ describe("game:, and a set code where a date goes", () => {
 		expect(policy("date:2021-13 e:khm").warnings).toEqual([]);
 	});
 });
+
+describe("a keyword Scryfall honors is never called unknown", () => {
+	// Probed 2026-10-03 as `<keyword>:<value> e:khm t:god` (12 cards): each of these is HONORED on
+	// api.scryfall.com — the count moves, or it is a plain 404 with no warnings — and each was being
+	// dropped here with `Unknown keyword`, answering wider than Scryfall under a sentence that says
+	// Scryfall would have ignored it too. They are left for the parser to refuse instead.
+	const HONORED_THERE = [
+		"block:khm",
+		"b:khm",
+		"edition:khm",
+		"lore:x",
+		"artists:1",
+		"mtgoid:1",
+		"multiverseid:1",
+		"arenaid:1",
+		"tcgplayerid:1",
+		"prints:1",
+		"sets:1",
+		"paperprints:1",
+		"papersets:1",
+		"illustrations:1",
+		"edhrec:1",
+		"usdfoil:1",
+		"collector:1",
+		"collectornumber:1",
+		// The five that were already here.
+		"cube:vintage",
+		"new:art",
+		"stamp:oval",
+		"cheapest:usd",
+	];
+
+	test.each(HONORED_THERE)("%s is kept, unwarned, and the parser refuses the query", (term) => {
+		const result = scryfallTermPolicy(`${term} e:khm t:god`);
+		expect(result.warnings).toEqual([]);
+		expect(result.query).toBe(`${term} e:khm t:god`);
+		expect(() => parseScryfallQuery(result.query)).toThrow();
+	});
+
+	test("under a comparison they are honored-and-empty, as before", () => {
+		expect(scryfallTermPolicy("edhrec>=5000 e:khm").query).toBe("cmc<0 e:khm");
+	});
+
+	test("`direct:` is the opposite case: Scryfall does not know it, so it is ignored and warned", () => {
+		const result = scryfallTermPolicy("direct:x e:khm t:god");
+		expect(result.query).toBe("e:khm t:god");
+		expect(result.warnings).toEqual(["Invalid expression “direct:x” was ignored. Unknown keyword “direct”."]);
+	});
+
+	test("`cardmarketid:` and `flavorname:` really are unknown there", () => {
+		for (const term of ["cardmarketid:1", "flavorname:x"]) {
+			expect(scryfallTermPolicy(`${term} e:khm t:god`).warnings).toHaveLength(1);
+		}
+	});
+});

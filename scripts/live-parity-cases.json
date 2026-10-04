@@ -2245,6 +2245,34 @@
 			"method": "GET",
 			"path": "/cards/search?q=-illustrationid%3A9e42d409-161d-4e63-8982-71e313f27b2f+layout%3Amodal_dfc",
 			"note": "…while a printing whose artwork lives on its FACES (no top-level illustration id) is a real False and survives the negation: all 98 modal DFCs (2026-10-03; `layout:transform` 393 of 394, `layout:art_series` all 2,243, `layout:split` none of 137)."
+		},
+		{
+			"name": "search-block-keyword-is-scryfalls-not-unknown",
+			"method": "GET",
+			"path": "/cards/search?q=block%3Akhm+e%3Akhm+t%3Agod",
+			"known_deviation": {
+				"reason": "A KEYWORD SCRYFALL HONORS AND THIS PORT CANNOT ANSWER IS REFUSED, NOT CALLED UNKNOWN (x66). `block:`/`b:` is a Scryfall keyword — this query is the 12 Kaldheim gods there (2026-10-03) — and the port has no block column. It used to DROP the term with `Unknown keyword “block”.`, which answers wider than Scryfall under a sentence saying Scryfall would have ignored the term too; a client validating queries here and shipping them there read that as safe. Eighteen keywords were in that state, each probed as `<keyword>:<value> e:khm t:god`: block, b, edition, lore, artists, mtgoid, multiverseid, arenaid, tcgplayerid, prints, sets, paperprints, papersets, illustrations, edhrec, usdfoil, collector, collectornumber. They now fail to parse, as cube:, new:, stamp: and cheapest: already did, until the port can answer them.",
+				"scryfall": {
+					"status": 200,
+					"expect": {
+						"object": "list",
+						"total_cards": 12
+					}
+				},
+				"ours": {
+					"status": 400,
+					"expect": {
+						"object": "error",
+						"code": "bad_request"
+					}
+				}
+			}
+		},
+		{
+			"name": "search-direct-keyword-is-unknown-on-both",
+			"method": "GET",
+			"path": "/cards/search?q=direct%3Ax+e%3Akhm+t%3Agod",
+			"note": "The opposite case: `direct:` is NOT a Scryfall keyword — 12 with `Invalid expression “direct:x” was ignored. Unknown keyword “direct”.` (2026-10-03) — and the port's table of Scryfall-only keywords listed it, answering `400 Failed to parse query`."
 		}
 	]
 }
