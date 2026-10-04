@@ -2070,6 +2070,24 @@
 			"method": "GET",
 			"path": "/cards/search?q=t%3Ainstant+o%3A%2Fa%7B25%7Db%7B26%7D%2F",
 			"note": "Two bounds of 25 and 26 are 51: refused, where `(a{10}){10}` — 20 as a sum, 100 as a product — runs. 3,909 with the warning."
+		},
+		{
+			"name": "search-regex-backreference-reported",
+			"method": "GET",
+			"path": "/cards/search?q=t%3Acreature+name%3A%2F%5E%28.%29%5C1%5C1%2F",
+			"note": "x66 R3, reported from mtg-seeker: a plain 404 on api.scryfall.com (2026-10-03), where this port refused the whole query — `400 Search query contains an unsupported regular expression.`"
+		},
+		{
+			"name": "search-regex-backreference-never-matches",
+			"method": "GET",
+			"path": "/cards/search?q=name%3A%2F%28o%29%5C1%2F+t%3Aelf",
+			"note": "WHY the reported query is a 404: not because no name opens with a tripled letter, but because `\\1` is not a backreference on Scryfall at all. `name:/oo/ t:elf` is 75 (Wood Elves) and this — the same question asked with a backreference — is 404; so are `name:/(.)\\1/ t:elf`, `o:/(e)\\1/ t:elf`, `name:/^(a)\\1/` (Aarakocra exists) and `name:/o\\1/ t:elf`, which has no group to refer to and earns no error either (2026-10-03). The term is honored and empty; the port rewrites each `\\<digits>` to `\\x01`."
+		},
+		{
+			"name": "search-regex-backreference-negated-is-everything",
+			"method": "GET",
+			"path": "/cards/search?q=-name%3A%2F%28.%29%5C1%2F+t%3Aelf",
+			"note": "The complement of nothing: 730 on api.scryfall.com 2026-10-03 — every elf, and 730 rather than `t:elf`'s 698 because a `name:` regex still switches `include_extras` on. Which is why the term is kept as a regex rather than replaced by an empty leaf."
 		}
 	]
 }

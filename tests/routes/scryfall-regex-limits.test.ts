@@ -347,3 +347,44 @@ describe("a regex whose parentheses nest three deep is ignored", () => {
 		expect((await json(response)).details).toBe("Too many regular expression operators used");
 	});
 });
+
+describe("a backreference is accepted and matches nothing", () => {
+	test("each `\\<digits>` becomes a character no card carries, and the term stays a regex", () => {
+		for (const [q, kept] of [
+			["t:creature name:/^(.)\\1\\1/", "t:creature name:/^(.)\\x01\\x01/"],
+			["name:/(o)\\1/ t:elf", "name:/(o)\\x01/ t:elf"],
+			["o:/(e)\\1/ t:elf", "o:/(e)\\x01/ t:elf"],
+			// No group to refer to, a group that does not exist, `\0` and two digits: the same 404.
+			["name:/o\\1/ t:elf", "name:/o\\x01/ t:elf"],
+			["name:/^(.)\\2/ t:elf", "name:/^(.)\\x01/ t:elf"],
+			["name:/(o)\\0/ t:elf", "name:/(o)\\x01/ t:elf"],
+			["name:/(o)\\10/ t:elf", "name:/(o)\\x01/ t:elf"],
+			// The `-` and the `or` compose on an empty leaf: 730 and 730 on Scryfall.
+			["-name:/(.)\\1/ t:elf", "-name:/(.)\\x01/ t:elf"],
+			["name:/a\\1b/ or t:elf", "name:/a\\x01b/ or t:elf"],
+			["Name:/(O)\\1/ t:elf", "Name:/(O)\\x01/ t:elf"],
+		] as const) {
+			const result = scryfallTermPolicy(q);
+			expect(result.warnings).toEqual([]);
+			expect(result.allIgnored).toBe(false);
+			expect(result.query).toBe(kept);
+		}
+	});
+
+	test("an escaped backslash before a digit is not one", () => {
+		const q = "o:/a\\\\1b/ t:elf";
+		expect(scryfallTermPolicy(q).query).toBe(q);
+	});
+
+	test("the reported query answers instead of refusing the whole search", async () => {
+		const response = await search("t:creature name:/^(.)\\1\\1/");
+		expect(response.status).toBe(200);
+		expect((await json(response)).warnings).toBeUndefined();
+	});
+
+	test("a backreference inside a nested pattern takes that rule's sentence", () => {
+		expect(scryfallTermPolicy("t:instant o:/(a)\\1\\1(((b)))/").warnings).toEqual([
+			ignored("o:/(a)\\1\\1(((b)))/", "Too many nested groups."),
+		]);
+	});
+});

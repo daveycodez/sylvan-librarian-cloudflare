@@ -1492,6 +1492,67 @@ function repeatsTooMuch(pattern: string): boolean {
 }
 
 /**
+ * A BACKREFERENCE IS ACCEPTED BY SCRYFALL AND NEVER MATCHES ANYTHING. It is not a backreference
+ * there at all.
+ *
+ * Reported from mtg-seeker (x66 R3): `t:creature name:/^(.)\1\1/` is a plain 404 on
+ * api.scryfall.com and was `400 Search query contains an unsupported regular expression.` here —
+ * the parser's budget refuses `\1` because the public engine is linear-time. The obvious reading,
+ * that Scryfall evaluated the pattern and no creature's name opens with a tripled letter, is
+ * wrong, and the rows that show it are the ones where a real backreference WOULD match
+ * (2026-10-03, `t:elf` = 698):
+ *
+ *   name:/oo/ t:elf            75      Wood Elves, and 74 more
+ *   name:/(o)\1/ t:elf         404     the same question, asked with a backreference
+ *   name:/(.)\1/ t:elf         404     any doubled letter at all
+ *   o:/(e)\1/ t:elf            404     …in rules text
+ *   name:/^(a)\1/              404     though Aarakocra exists
+ *   name:/o\1/ t:elf           404     NO GROUP to refer to, and no "invalid backreference" either
+ *   name:/^(.)\2/ t:elf        404     a group that does not exist: the same silence
+ *   name:/(o)\0/  name:/(o)\10/   404
+ *   -name:/(.)\1/ t:elf        730     every elf — the complement of nothing (730, not 698,
+ *                                      because a `name:` regex still switches extras on)
+ *   name:/a\1b/ or t:elf       730     and it composes under `or` as an empty leaf
+ *
+ * So a backslash and digits are some character no card's text contains, and the term is honored
+ * and empty — the answer a comparison on an unknown keyword gets. The named spellings are not
+ * this: `\g1` and `\k1` are `Invalid regular expression: invalid escape \ sequence.`
+ *
+ * THE CHOICE, cost first. Translating to an equivalent pattern is impossible (there is nothing to
+ * be equivalent to). Running real backreferences on the bounded backtracking engine would cost a
+ * whole-corpus scan per term (no literal factor to narrow by) to compute an answer Scryfall does
+ * not give — `name:/(o)\1/ t:elf` would be 75, not 404. So the term is kept and each `\<digits>`
+ * becomes `\x01`, a character no card carries: the pattern stays a regex (the `name:` extras
+ * trigger and the seven-operator budget still see one) and compiles on the LINEAR engine like any
+ * other escape. No backtracking engine is entered at all. Checked against the deployed engine the
+ * same day: `name:/(o)\x01/ t:elf` 404, `-name:/(.)\x01/ t:elf` 730, `name:/a\x01b/ or t:elf` 730.
+ *
+ * `\\1` is an escaped backslash and a digit, and is left alone.
+ */
+function neutralizeBackreferences(pattern: string): string {
+	if (!/\\\d/.test(pattern)) return pattern;
+	let out = "";
+	for (let i = 0; i < pattern.length; i++) {
+		const ch = pattern[i] as string;
+		if (ch !== "\\" || i + 1 >= pattern.length) {
+			out += ch;
+			continue;
+		}
+		const next = pattern[i + 1] as string;
+		if (next < "0" || next > "9") {
+			out += ch + next;
+			i++;
+			continue;
+		}
+		let end = i + 1;
+		while (end < pattern.length && (pattern[end] as string) >= "0" && (pattern[end] as string) <= "9") end++;
+		out += "\\x01";
+		i = end - 1;
+	}
+	return out;
+}
+
+/**
  * Why Scryfall refuses a regex it has not compiled yet, or null — the checks it runs on the
  * pattern's TEXT, in the order it runs them.
  */
@@ -1904,7 +1965,8 @@ function classifyLeaf(term: string): LeafVerdict {
 		// The refusals Scryfall decides on the pattern's text come first — `o:/(((a/` is "nested",
 		// not "not balanced". Not on the colour columns, where the slashes are value characters and
 		// no regex is ever read (`c:/w/` is `c:w`); `mana:/…/` is a real regex and takes them.
-		if (!REGEX_VALUE_FIRST_KEYWORDS.has(keyword) || MANA_COST_KEYWORDS.has(keyword)) {
+		const readsRegex = !REGEX_VALUE_FIRST_KEYWORDS.has(keyword) || MANA_COST_KEYWORDS.has(keyword);
+		if (readsRegex) {
 			const textReason = regexTextReason(pattern);
 			if (textReason !== null) return { keep: false, reason: textReason };
 		}
@@ -1912,6 +1974,12 @@ function classifyLeaf(term: string): LeafVerdict {
 			new RegExp(toJsValidationPattern(pattern));
 		} catch {
 			return { keep: false, reason: regexReason(pattern) };
+		}
+		if (readsRegex) {
+			const withoutBackreferences = neutralizeBackreferences(pattern);
+			if (withoutBackreferences !== pattern) {
+				return { keep: true, text: `${match[1]}${match[2]}${op}/${withoutBackreferences}/` };
+			}
 		}
 	}
 
