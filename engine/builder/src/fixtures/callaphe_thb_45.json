@@ -1,0 +1,138 @@
+{
+ "arena_id": 70556,
+ "artist": "Zack Stella",
+ "artist_ids": [
+  "17bc7f55-958b-43f4-bb40-09746d05b3f9"
+ ],
+ "booster": true,
+ "border_color": "black",
+ "card_back_id": "0aeebaf5-8c7d-4636-9e82-8c27447861f7",
+ "cardmarket_id": 430929,
+ "cmc": 3.0,
+ "collector_number": "45",
+ "color_identity": [
+  "U"
+ ],
+ "colors": [
+  "U"
+ ],
+ "digital": false,
+ "edhrec_rank": 7664,
+ "finishes": [
+  "nonfoil",
+  "foil"
+ ],
+ "foil": true,
+ "frame": "2015",
+ "frame_effects": [
+  "enchantment",
+  "legendary"
+ ],
+ "full_art": false,
+ "game_changer": false,
+ "games": [
+  "arena",
+  "paper",
+  "mtgo"
+ ],
+ "highres_image": true,
+ "id": "c5d433f2-0a3b-4f45-83a3-ed600a6d10b1",
+ "illustration_id": "863706ba-39dd-46be-b98a-ce0252fb3bfd",
+ "image_status": "highres_scan",
+ "image_updated_at": "2026-07-13T08:33:06Z",
+ "image_uris": {
+  "art": "https://cards.scryfall.io/art/front/c/5/c5d433f2-0a3b-4f45-83a3-ed600a6d10b1.webp?1783931586",
+  "art_crop": "https://cards.scryfall.io/art_crop/front/c/5/c5d433f2-0a3b-4f45-83a3-ed600a6d10b1.jpg?1783931586",
+  "border_crop": "https://cards.scryfall.io/border_crop/front/c/5/c5d433f2-0a3b-4f45-83a3-ed600a6d10b1.jpg?1783931586",
+  "crop": "https://cards.scryfall.io/crop/front/c/5/c5d433f2-0a3b-4f45-83a3-ed600a6d10b1.webp?1783931586",
+  "display": "https://cards.scryfall.io/display/front/c/5/c5d433f2-0a3b-4f45-83a3-ed600a6d10b1.webp?1783931586",
+  "grid": "https://cards.scryfall.io/grid/front/c/5/c5d433f2-0a3b-4f45-83a3-ed600a6d10b1.webp?1783931586",
+  "large": "https://cards.scryfall.io/large/front/c/5/c5d433f2-0a3b-4f45-83a3-ed600a6d10b1.jpg?1783931586",
+  "normal": "https://cards.scryfall.io/normal/front/c/5/c5d433f2-0a3b-4f45-83a3-ed600a6d10b1.jpg?1783931586",
+  "png": "https://cards.scryfall.io/png/front/c/5/c5d433f2-0a3b-4f45-83a3-ed600a6d10b1.png?1783931586",
+  "small": "https://cards.scryfall.io/small/front/c/5/c5d433f2-0a3b-4f45-83a3-ed600a6d10b1.jpg?1783931586",
+  "thumb": "https://cards.scryfall.io/thumb/front/c/5/c5d433f2-0a3b-4f45-83a3-ed600a6d10b1.webp?1783931586"
+ },
+ "keywords": [],
+ "lang": "en",
+ "layout": "normal",
+ "legalities": {
+  "alchemy": "not_legal",
+  "brawl": "legal",
+  "commander": "legal",
+  "competitivebrawl": "legal",
+  "duel": "legal",
+  "future": "not_legal",
+  "gladiator": "legal",
+  "historic": "legal",
+  "legacy": "legal",
+  "modern": "legal",
+  "oathbreaker": "legal",
+  "oldschool": "not_legal",
+  "pauper": "not_legal",
+  "paupercommander": "not_legal",
+  "penny": "not_legal",
+  "pioneer": "legal",
+  "predh": "not_legal",
+  "premodern": "not_legal",
+  "standard": "not_legal",
+  "standardbrawl": "not_legal",
+  "timeless": "legal",
+  "tlr": "legal",
+  "vintage": "legal"
+ },
+ "mana_cost": "{1}{U}{U}",
+ "mtgo_id": 79214,
+ "multiverse_ids": [
+  476296
+ ],
+ "name": "Callaphe, Beloved of the Sea",
+ "nonfoil": true,
+ "object": "card",
+ "oracle_id": "faf081dc-1fb2-47ac-a9c7-8001b4904120",
+ "oracle_text": "Callaphe's power is equal to your devotion to blue. (Each {U} in the mana costs of permanents you control counts toward your devotion to blue.)\nCreatures and enchantments you control have \"Spells your opponents cast that target this permanent cost {1} more to cast.\"",
+ "oversized": false,
+ "penny_rank": 6636,
+ "power": "*",
+ "prices": {
+  "eur": "0.10",
+  "eur_foil": "0.21",
+  "tix": "0.03",
+  "usd": "0.24",
+  "usd_etched": null,
+  "usd_foil": "0.32"
+ },
+ "prints_search_uri": "https://api.scryfall.com/cards/search?order=released&q=oracleid%3Afaf081dc-1fb2-47ac-a9c7-8001b4904120&unique=prints",
+ "promo": false,
+ "purchase_uris": {
+  "cardhoarder": "https://www.cardhoarder.com/cards/79214?affiliate_id=scryfall&ref=card-profile&utm_campaign=affiliate&utm_medium=card&utm_source=scryfall",
+  "cardmarket": "https://www.cardmarket.com/en/Magic/Products?idProduct=430929&referrer=scryfall&utm_campaign=card_prices&utm_medium=text&utm_source=scryfall",
+  "tcgplayer": "https://partner.tcgplayer.com/c/4931599/1830156/21018?subId1=api&u=https%3A%2F%2Fwww.tcgplayer.com%2Fproduct%2F206852%3Fpage%3D1"
+ },
+ "rarity": "uncommon",
+ "related_uris": {
+  "edhrec": "https://edhrec.com/route/?cc=Callaphe%2C+Beloved+of+the+Sea",
+  "gatherer": "https://gatherer.wizards.com/Pages/Card/Details.aspx?multiverseid=476296&printed=false",
+  "tcgplayer_infinite_articles": "https://partner.tcgplayer.com/c/4931599/1830156/21018?subId1=api&trafcat=tcgplayer.com%2Fsearch%2Farticles&u=https%3A%2F%2Fwww.tcgplayer.com%2Fsearch%2Farticles%3FproductLineName%3Dmagic%26q%3DCallaphe%252C%2BBeloved%2Bof%2Bthe%2BSea",
+  "tcgplayer_infinite_decks": "https://partner.tcgplayer.com/c/4931599/1830156/21018?subId1=api&trafcat=tcgplayer.com%2Fsearch%2Fdecks&u=https%3A%2F%2Fwww.tcgplayer.com%2Fsearch%2Fdecks%3FproductLineName%3Dmagic%26q%3DCallaphe%252C%2BBeloved%2Bof%2Bthe%2BSea"
+ },
+ "released_at": "2020-01-24",
+ "reprint": false,
+ "reserved": false,
+ "rulings_uri": "https://api.scryfall.com/cards/c5d433f2-0a3b-4f45-83a3-ed600a6d10b1/rulings",
+ "scryfall_set_uri": "https://scryfall.com/sets/thb?utm_source=api",
+ "scryfall_uri": "https://scryfall.com/card/thb/45/callaphe-beloved-of-the-sea?utm_source=api",
+ "set": "thb",
+ "set_id": "5f23a78d-cda1-462a-8be3-a62b40c34913",
+ "set_name": "Theros Beyond Death",
+ "set_search_uri": "https://api.scryfall.com/cards/search?order=set&q=e%3Athb&unique=prints",
+ "set_type": "expansion",
+ "set_uri": "https://api.scryfall.com/sets/5f23a78d-cda1-462a-8be3-a62b40c34913",
+ "story_spotlight": false,
+ "tcgplayer_id": 206852,
+ "textless": false,
+ "toughness": "3",
+ "type_line": "Legendary Enchantment Creature — Demigod",
+ "uri": "https://api.scryfall.com/cards/c5d433f2-0a3b-4f45-83a3-ed600a6d10b1",
+ "variation": false
+}

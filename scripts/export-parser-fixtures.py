@@ -463,6 +463,19 @@ EXTRA_CASES = [
     "artists>=cmc",
     "prints-paperprints>=2",
     '!"Lightning Bolt" prints>=50',
+    # lore: -- a literal substring of the name, flavor name, flavor text, oracle text or type
+    # line, composed by the engine (x71)
+    "lore:jace",
+    "lore=jace",
+    "lore:JACE",
+    'lore:"god of"',
+    'lore:" of "',
+    "lore:~",
+    "lore:ft e:khm",
+    "-lore:jace e:khm",
+    "lore:jace or lore:beleren",
+    'lore:"lim-dûl"',
+    "lore:æther",
     # floats and int/float json rendering
     "cmc=2.0",
     "cmc>=1.5",

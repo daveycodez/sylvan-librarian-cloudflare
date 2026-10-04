@@ -1576,6 +1576,8 @@ describe("the regex surface, alias by alias", () => {
 			].map((kw) => [kw, [`${kw}:/1/`, `Unknown regular expression keyword \u201c${kw}\u201d.`]]),
 		),
 		stamp: ["stamp:/oval/", "Unknown regular expression keyword \u201cstamp\u201d."],
+		// `lore:/jace/ e:khm` is 305 carrying the sentence (2026-10-04), however plain the pattern.
+		lore: ["lore:/jace/", "Unknown regular expression keyword \u201clore\u201d."],
 		// The six counts: `artists:/1/ e:khm` is 305 carrying the sentence; numeric columns all.
 		...Object.fromEntries(
 			["prints", "sets", "paperprints", "papersets", "illustrations", "artists"].map((kw) => [
@@ -1780,10 +1782,10 @@ describe("a keyword Scryfall honors is never called unknown", () => {
 	// `edhrec`, `collector` and `collectornumber` are spellings of columns the parser had; the four
 	// external ids, `usdfoil` and `stamp` read fields the store already held; and the six counts
 	// (`prints`, `sets`, `paperprints`, `papersets`, `illustrations`, `artists`) are stored since
-	// generation 58; `block`/`b` are rewritten into the sets of the block. What is left is listed,
-	// with the reason for each, at SCRYFALL_ONLY_KEYWORDS.
+	// generation 58; `block`/`b` are rewritten into the sets of the block; `lore` is answered by the
+	// engine since x71 (tests/routes/scryfall-keywords-x71.test.ts). What is left is listed, with
+	// the reason for each, at SCRYFALL_ONLY_KEYWORDS.
 	const HONORED_THERE = [
-		"lore:x",
 		// Three of the five that were already here.
 		"cube:vintage",
 		"new:art",
@@ -1798,7 +1800,7 @@ describe("a keyword Scryfall honors is never called unknown", () => {
 	});
 
 	test("under a comparison they are honored-and-empty, as before", () => {
-		expect(scryfallTermPolicy("lore>=5000 e:khm").query).toBe("cmc<0 e:khm");
+		expect(scryfallTermPolicy("cube>=5000 e:khm").query).toBe("cmc<0 e:khm");
 	});
 
 	test("`direct:` is the opposite case: Scryfall does not know it, so it is ignored and warned", () => {

@@ -513,6 +513,18 @@ function walkExtrasTriggers(
 			out.forced = true;
 			if (attr === "tcgplayer_id") out.variations = true;
 		}
+		// `lore:` forces extras as well, on the term and in either polarity — measured 2026-10-04 the
+		// same way (`<term> or cmc=3`, bare 8,089, extras-on 8,302):
+		//
+		//   lore:zzzzqq or cmc=3     lore=zzzzqq or cmc=3     8,302  extras=true  variations=false
+		//   -lore:zzzzqq cmc=3                               8,302  extras=true
+		//   lore>zzzzqq or cmc=3     lore!=zzzzqq or cmc=3    8,089  false/false
+		//
+		// which is why `lore:goblin t:token` is 19 with no `include:extras` written. `lore:""` and
+		// `lore:/x/` are ignored before a tree exists and fire nothing.
+		if (attr === "lore" && !fromExpansion && (n.kwargs?.op === ":" || n.kwargs?.op === "=")) {
+			out.forced = true;
+		}
 		if (attr === "card_set_code" && !fromExpansion) {
 			for (const value of values) out.sets.push(value);
 		}

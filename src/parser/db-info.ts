@@ -314,6 +314,20 @@ export const DB_COLUMNS: readonly FieldInfo[] = [
 		searchAliases: ["flavor", "ft"],
 		parserClass: ParserClass.TEXT,
 	},
+	// LOCAL PATCH (Cloudflare port): Scryfall's `lore:` — the value as a literal substring of the
+	// printing's name, its flavor name, its flavor text, the card's oracle text (no reminder text,
+	// `~` a plain tilde) or its type line (a plain substring, no type-word anchor). Measured on
+	// api.scryfall.com 2026-10-04: `lore:jace` 171, `lore:ft e:khm` 22 (the four-column union with
+	// the collated `name:` is 41), `lore:godzilla` 8 (flavor names), `lore:god` 486 against the
+	// 468 of `(name:/god/ or ft:god or o:god or t:god)` — the Demigods and the Godzilla names.
+	// Not a column: card_engine's `build_binary` composes it from the leaves the four keywords
+	// already use plus one for the flavor name, and carries the full measurements.
+	{
+		dbColumnName: "lore",
+		fieldType: FieldType.TEXT,
+		searchAliases: ["lore"],
+		parserClass: ParserClass.TEXT,
+	},
 	{
 		dbColumnName: "card_oracle_tags",
 		fieldType: FieldType.JSONB_OBJECT,

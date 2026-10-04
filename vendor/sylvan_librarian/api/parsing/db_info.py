@@ -324,6 +324,15 @@ DB_COLUMNS = [
         search_aliases=["flavor", "ft"],
         parser_class=ParserClass.TEXT,
     ),
+    # LOCAL PATCH (Cloudflare port): Scryfall's `lore:` -- a literal substring of the name, the
+    # flavor name, the flavor text, the oracle text or the type line (measured on api.scryfall.com
+    # 2026-10-04; see src/parser/db-info.ts). The engine composes it; there is no SQL column.
+    FieldInfo(
+        db_column_name="lore",
+        field_type=FieldType.TEXT,
+        search_aliases=["lore"],
+        parser_class=ParserClass.TEXT,
+    ),
     FieldInfo(
         db_column_name="card_oracle_tags",
         field_type=FieldType.JSONB_OBJECT,

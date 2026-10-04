@@ -125,6 +125,8 @@ pub(crate) fn has_printing_varying_leaf(f: &FilterExpr) -> bool {
         // ...and so are the printed name (Printing.printed_name_folded_id) and the flavor name
         // (Printing.flavor_name_id, or a PrintingFace's).
         FilterExpr::PrintedNamePresent | FilterExpr::FlavorNameIn { .. } | FilterExpr::FlavorNamePresent => true,
+        // ...and `lore:`'s printing half: the flavor text, the flavor name, the faces of its own.
+        FilterExpr::LorePrinting { .. } | FilterExpr::PrintsOwnFaces => true,
         // ...and so is the frame class (`is:atypical` / `is:default`): flags, border and promo
         // types are all the printing's.
         FilterExpr::Atypical(_) => true,
@@ -524,7 +526,11 @@ fn estimate_leaf(f: &FilterExpr, indexes: &Archived<CardIndexes>, n_cards: u32, 
         | FilterExpr::VanillaFace
         // No index answers the frame class; it is a per-printing field read like the two above.
         | FilterExpr::Atypical(_)
-        | FilterExpr::FlavorNameIn { .. } => unknown(n),
+        | FilterExpr::FlavorNameIn { .. }
+        // `lore:`'s printing half reads the printing's own flavor text and flavor name, and a
+        // reversible printing's own faces; no index counts any of it.
+        | FilterExpr::LorePrinting { .. }
+        | FilterExpr::PrintsOwnFaces => unknown(n),
 
         // Printing-space CSR width sums → project (varying).
         FilterExpr::ArtistMatch { ids } => {

@@ -1726,6 +1726,39 @@ pub(crate) enum FilterExpr {
         face_keys: Vec<Vec<u32>>,
     },
 
+    /// LOCAL PATCH (Cloudflare port): the PRINTING half of Scryfall's `lore:` — the needle is in
+    /// this printing's flavor text, in a flavor name it is sold under, or, for a printing that
+    /// prints faces of its own (a `reversible_card`, see `PrintsOwnFaces`), in ITS name, type line
+    /// or rules text. `build_binary` ORs it with the card half (name, oracle text, type line); see
+    /// the measurements there.
+    ///
+    /// TWO-VALUED, which `ft:` here is not: a printing with no flavor text is a plain False, so
+    /// `-lore:x` is the complement (`-lore:zzzzqq e:khm` is all 305 on api.scryfall.com,
+    /// 2026-10-04) and the Or it sits in never answers Null.
+    ///
+    /// `word` is lowercased, `æ`-folded and space-collapsed. The flavor text is matched per face,
+    /// like `ft:`, and READ OFF THE PRINTING rather than resolved through the flavor index the
+    /// way `ft:` is: that index holds the canonical printings' texts only, and `lore:` reads a
+    /// foreign printing's flavor text in its own language (`lore:blitz lang:de`: 149 German rows
+    /// hold the word nowhere else). The flavor name is matched LITERALLY against its lowercased
+    /// display form, per face when the faces carry it: `lore:"théoden, strength restored"` is 1
+    /// and `lore:"theoden, strength restored"` 0, `lore:"dracula, lord of blood"` 1 and
+    /// `lore:"lord of blood // dracula"` 0.
+    LorePrinting {
+        word: String,
+    },
+
+    /// LOCAL PATCH (Cloudflare port): this printing prints faces and a name of its own — it has a
+    /// `DivergentPrinting` record, which is to say it is one of the 81 `reversible_card`
+    /// printings. `lore:` uses it to keep the CARD's name, type line and rules text off those
+    /// printings, which answer by their own: Bloomvine Regent's reversible tdm/381 prints the
+    /// front face's text on both sides, and `lore:shuffle !"Bloomvine Regent"` is 3 of the card's
+    /// 4 printings on api.scryfall.com where the card's Omen says "shuffle" (2026-10-04).
+    ///
+    /// False at CARD level for the 38,555 cards with no such printing, so the term settles there
+    /// for them and only the 71 that have one go to their printings.
+    PrintsOwnFaces,
+
     /// `is:unique` — the owning CARD has been printed in exactly one SET. Card-level and total, off
     /// `OracleCard.single_set`, which the build computes over the canonical printings AND the annex
     /// (`assign_single_set_flags`); nothing here to bind and nothing per printing to consult.
@@ -2003,6 +2036,10 @@ pub(crate) fn verify_cost_tier(f: &FilterExpr) -> u32 {
         // Unbound only (see tri()): a lowercasing scan of the type line, the same tier as any
         // other per-card text scan.
         FilterExpr::TypeLineContains { .. } | FilterExpr::TextContains { .. } => TEXT_SCAN_NS100,
+        // A substring scan of the printing's flavor text, plus a field compare for its flavor name.
+        FilterExpr::LorePrinting { .. } => TEXT_SCAN_NS100,
+        // One length read on the card, and a layout compare on the 71 cards that pass it.
+        FilterExpr::PrintsOwnFaces => MASK_COMPARE_NS100,
         // Two mask bits reject all but the creatures, and the survivors read one string: the card's
         // already-stripped column, or the FRONT face's printed text through `strip_reminder_text`.
         // That last case is a scan, so it is ranked as one — the model must not under-charge a
@@ -2279,6 +2316,8 @@ fn leaf_compares_printing_field(f: &FilterExpr) -> bool {
         // is the whole reason `name:croft` returns 2 of Command Tower's 112 — and the same reason
         // `is:flavorname` matches Command Tower's sld/1864 row and none of its other 111.
         FilterExpr::FlavorNameIn { .. } | FilterExpr::FlavorNamePresent => true,
+        // `lore:`'s printing half: the printing's flavor text, flavor name and own faces.
+        FilterExpr::LorePrinting { .. } | FilterExpr::PrintsOwnFaces => true,
         // The frame class is read entirely off the PRINTING (its compat flags, border, frame
         // effects, promo types, finishes) — a card's plain printing and its borderless one differ.
         FilterExpr::Atypical(_) => true,
@@ -3452,6 +3491,32 @@ impl FilterExpr {
                 tri_bool(super::printing_has_flavor_name(p))
             }
 
+            FilterExpr::LorePrinting { word } => {
+                let Some(p) = printing else { return Tri::PrintingDep };
+                let text = u32::from(p.flavor_text_lower_id);
+                let in_text = text != NONE_STR
+                    && str_at(strings, text).is_some_and(|s| contains_per_face(word, TextSearchField::FlavorTextLower, s));
+                // The display name, lowercased here: the stored folded twin has lost its accents,
+                // and Scryfall compares them. 669 printings carry one, so the allocation is rare.
+                let named = |id: u32| {
+                    id != NONE_STR && str_at(strings, id).is_some_and(|name| name.to_lowercase().contains(word.as_str()))
+                };
+                tri_bool(
+                    in_text
+                        || named(u32::from(p.flavor_name_id))
+                        || p.faces.iter().any(|f| named(u32::from(f.flavor_name_id)))
+                        || crate::divergent_of(card, p).is_some_and(|own| lore_own_faces_hit(own, strings, word)),
+                )
+            }
+
+            FilterExpr::PrintsOwnFaces => {
+                if card.divergent.is_empty() {
+                    return Tri::False;
+                }
+                let Some(p) = printing else { return Tri::PrintingDep };
+                tri_bool(crate::divergent_of(card, p).is_some())
+            }
+
             FilterExpr::SingleSet => tri_bool(card.single_set),
 
             // Two-valued: a card either has a blank creature face or it does not, and a card with
@@ -4461,6 +4526,73 @@ fn build_binary(kw: &Value) -> Result<FilterExpr, String> {
         return Ok(FilterExpr::StampMatch { value: rhs_value_str(rhs).to_lowercase(), vid: None });
     }
 
+    // LOCAL PATCH (Cloudflare port): Scryfall's `lore:` — the value, as a LITERAL substring, in any
+    // of five places. Measured on api.scryfall.com 2026-10-04 by reading which fields of every
+    // matched printing hold the needle (`lore:sparkmage` over English rows, `lore:blitz lang:de`
+    // and `lore:稲妻 lang:ja` over foreign ones) and by set difference against the other keywords:
+    //
+    //   name         the oracle name as printed, joined ` // `, with neither fold: `lore:ft e:khm`
+    //                is 22 where `name:ft`'s space-less reading makes the four-column union 41
+    //                ("Jarl oF The Forsaken"); `lore:" // " e:khm` is the 16 two-faced cards;
+    //                `lore:"lim-dul"` 0 against `lore:"lim-dûl"` 35
+    //   flavor name  the printing's, or a face's: `lore:godzilla` 8, `lore:dracula` 9 against 4
+    //   flavor text  the printing's own, in its own language, as `ft:` reads it
+    //   oracle text  the English text without reminder text (`lore:"after your draw step" e:khm`
+    //                0), and `~` is a tilde, not the card's name: `lore:~` is 2 — the Phyrexian
+    //                flavor texts — where `o:~` is 20,181
+    //   type line    a plain substring, NOT the type word `t:` anchors a type name to: `lore:god`
+    //                has every Demigod `t:god` leaves out
+    //
+    // and NOT the printed name, text or type line of a foreign printing: of the German rows
+    // holding "blitz", the 1,062 that hold it only in `printed_text` and the 38 only in
+    // `printed_name` are not `lore:blitz lang:de`; every one of its 143 holds it in the flavor
+    // text, the English name or the English oracle text.
+    //
+    // With the name as a regex, `(name:/X/ or ft:X or o:X or t:X)` is the same answer on every
+    // probe a flavor name, a type name or a tilde does not reach — ft, sh, if, x, a, the, god of,
+    // draugr's, //, hakka, raven, kaldheim, legendary creature, — (all `e:khm`), jace, sparkmage,
+    // rebecca guay, urza's, phyrexia, aether, æther, cleric, elf, treasure, `{t}: add`.
+    //
+    // Case-insensitive (`lore:JACE` 171 = `lore:jace`), `æ` reads as `ae` in both directions
+    // (`lore:æther -lore:aether` and its converse are both 404), `=` is `:` and `!=` is nothing.
+    // A run of spaces is one space and an edge space is kept: `lore:"god  of" e:khm` is 17 =
+    // `lore:"god of"`, `lore:"  " e:khm` all 305 = `lore:" "`, and `lore:" of " e:khm` 174,
+    // `lore:"of "` 176, `lore:" of"` 175. Every part is two-valued, so the negation is the
+    // complement.
+    if attr == "lore" {
+        if op == "!=" {
+            return Ok(FilterExpr::Not(Box::new(FilterExpr::True)));
+        }
+        if !matches!(op, ":" | "=") {
+            return Err(format!("operator {op:?} is not supported on lore"));
+        }
+        let mut collapsed = String::new();
+        for c in rhs_value_str(rhs).chars() {
+            if !(c == ' ' && collapsed.ends_with(' ')) {
+                collapsed.push(c);
+            }
+        }
+        let word = crate::fold_ae(&collapsed.to_lowercase());
+        if word.is_empty() {
+            return Ok(FilterExpr::Not(Box::new(FilterExpr::True)));
+        }
+        // A REVERSIBLE printing answers by the name and faces IT prints, not the card's: Bloomvine
+        // Regent's tdm/381 prints the front face's rules text on both sides and is not
+        // `lore:shuffle` (3 of the card's 4 printings are), `lore:"garden // temple"` and
+        // `lore:"plains // land"` are each the one reversible Temple Garden, and
+        // `lore:"territory // bloomvine"` the one three-part name. So the card half is kept off
+        // those printings and `LorePrinting` reads their own.
+        let card_half = FilterExpr::Or(vec![
+            FilterExpr::TextContains { field: TextSearchField::NameLower, word: word.clone() },
+            FilterExpr::TextContains { field: TextSearchField::OracleTextLower, word: word.clone() },
+            FilterExpr::TypeLineContains { needle: word.clone(), whole_word: false },
+        ]);
+        return Ok(FilterExpr::Or(vec![
+            FilterExpr::And(vec![card_half, FilterExpr::Not(Box::new(FilterExpr::PrintsOwnFaces))]),
+            FilterExpr::LorePrinting { word },
+        ]));
+    }
+
     // LOCAL PATCH (Cloudflare port): equality only, like `oracle_id` above and for its reason.
     if attr == "scryfall_id" || attr == "illustration_id" {
         if !matches!(op, ":" | "=") {
@@ -4650,6 +4782,29 @@ impl NamePredicate {
             NamePredicate::Literal(_) | NamePredicate::Regex(_) => false,
         }
     }
+}
+
+/// `lore:` over the name, type line and rules text a REVERSIBLE printing prints — see
+/// `FilterExpr::PrintsOwnFaces`. The name is the printing's joined one; the type line is its
+/// faces' joined the same way, and for the three whose name has a third part (an adventure
+/// printed on both sides, "Bloomvine Regent // Claim Territory // Bloomvine Regent") the front
+/// face's line closes it too — `lore:"omen // creature"` is those 3 printings on api.scryfall.com.
+/// The rules text is each face's own, in the form `o:` searches. 81 printings; never the hot path.
+fn lore_own_faces_hit(own: &super::ArchivedDivergentPrinting, strings: &AStrings, word: &str) -> bool {
+    let lower = |id: u32| str_at(strings, id).map(|s| crate::fold_ae(&s.to_lowercase()));
+    let name = lower(u32::from(own.card_name_id)).unwrap_or_default();
+    if name.contains(word) {
+        return true;
+    }
+    let mut types: Vec<String> = own.faces.iter().filter_map(|f| lower(u32::from(f.type_line_id))).collect();
+    let closing = if name.split(" // ").count() > types.len() { types.first().cloned() } else { None };
+    types.extend(closing);
+    if types.join(" // ").contains(word) {
+        return true;
+    }
+    own.faces.iter().any(|f| {
+        str_at(strings, u32::from(f.oracle_text_id)).is_some_and(|text| crate::searchable_oracle_text(text).contains(word))
+    })
 }
 
 fn rhs_value_str(rhs: &Value) -> &str {

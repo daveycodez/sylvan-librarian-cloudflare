@@ -418,14 +418,13 @@ const SCRYFALL_ONLY_KEYWORDS: ReadonlySet<string> = new Set([
 	// holds the counts they compare. `block` and `b` left fourth: a block is a list of sets, and
 	// BLOCK_KEYWORDS below rewrites the term into them.
 	//
+	// `lore` LEFT FIFTH, on 2026-10-04, once the three probes its rewrite failed were understood:
+	// `lore:ft e:khm` is 22 against the four-column union's 41 because the union's `name:ft` is the
+	// COLLATED name ("Jarl oF The Forsaken") and `lore:` reads the name as printed. LORE_KEYWORDS
+	// below; card_engine's `build_binary` carries the rule and its measurements.
+	//
 	// WHAT IS LEFT, AND WHY, each measured the same day:
 	//
-	//   lore      `lore:jace` is 171: name, flavor text, rules text and type line (Space Beleren
-	//             by its `Jace` subtype), extras included. `(name:X or ft:X or o:X or t:X)` agrees
-	//             on nine of twelve probes inside Kaldheim and DISAGREES on short values —
-	//             `lore:ft e:khm` 22 against the union's 41, `lore:sh` 88 against 94, `lore:if`
-	//             152 against 153 — and a rewrite that answers wider than Scryfall is the thing
-	//             this table exists to prevent. Not understood well enough to answer.
 	//   cube      `cube:vintage` 540, `cube:legacy` 600, `cube:arena` 550 … membership of
 	//             Scryfall's curated cube lists, which are in no bulk file and have no API
 	//             endpoint. Not obtainable by the import.
@@ -436,7 +435,6 @@ const SCRYFALL_ONLY_KEYWORDS: ReadonlySet<string> = new Set([
 	//   cheapest  `cheapest:usd|eur|tix` (anything else: `Unknown currency “x”`). The cheapest
 	//             printing(s) of each card — ties included, `-cheapest:usd e:khm` 5 against the
 	//             positive's 220 — a stored per-printing tag over daily prices.
-	"lore",
 ]);
 
 /**
@@ -1488,7 +1486,31 @@ const LEADING_DIGITS_RE = /^\d+/;
  * lowers it. The exemption exists to keep answers this port already gave (`is:/promo/`); a keyword
  * that is new here has none to keep, and starts at Scryfall's answer.
  */
-const STRICT_REGEX_KEYWORDS: ReadonlySet<string> = new Set([...STAMP_KEYWORDS, ...EXTERNAL_ID_KEYWORDS.keys()]);
+/**
+ * `lore:` — a literal substring of the printing's name, flavor name, flavor text, oracle text or
+ * type line. The engine answers it (card_engine `build_binary`, which carries the field-by-field
+ * measurements); what is decided here is what Scryfall says about the term before any card is read.
+ *
+ * Measured on api.scryfall.com 2026-10-04:
+ *
+ *   lore:jace = lore=jace = lore:JACE            171
+ *   lore!=jace, lore>jace                        404 (the comparison rule)
+ *   -lore:zzzzqq e:khm                           305 — the complement, no third value
+ *   lore:/jace/ e:khm                            305 + Unknown regular expression keyword “lore”.
+ *   lore:"" e:khm, lore:'' e:khm                 305 + Unknown keyword “lore”.
+ *   -lore:"" cmc=3                               Unknown keyword “-lore”.
+ *   lore:" " e:khm                               305, no warning — a space is a value
+ *   lore: e:khm                                  1 — the dangling-operator rule, a card named lore
+ *
+ * It forces `include_extras` under `:`/`=` in either polarity (extras-gate.ts), and nothing else.
+ */
+const LORE_KEYWORDS: ReadonlySet<string> = new Set(["lore"]);
+
+const STRICT_REGEX_KEYWORDS: ReadonlySet<string> = new Set([
+	...STAMP_KEYWORDS,
+	...EXTERNAL_ID_KEYWORDS.keys(),
+	...LORE_KEYWORDS,
+]);
 
 /** The three spellings that read the `card_is_tags` vocabulary. `not:` is `-is:`. */
 const IS_KEYWORDS: ReadonlySet<string> = new Set(["is", "has", "not"]);
@@ -2687,6 +2709,11 @@ function classifyLeaf(term: string): LeafVerdict {
 	// only reaches here, as for `stamp:` below.
 	if (BLOCK_KEYWORDS.has(keyword)) {
 		return { keep: true, text: `${match[1]}${blockTerm(value)}`, include: ["extras"] };
+	}
+	// `lore:""` is the unknown-keyword sentence, minus included — see LORE_KEYWORDS. A value that
+	// is only spaces is a value.
+	if (LORE_KEYWORDS.has(keyword) && value === "") {
+		return { keep: false, reason: `Unknown keyword \u201c${negated ? "-" : ""}${keyword}\u201d.` };
 	}
 	// `stamp:` checks its value in both polarities — see STAMP_KEYWORDS. Equality only reaches
 	// here: a comparison was answered by the COMPARABLE_KEYWORDS rule above.

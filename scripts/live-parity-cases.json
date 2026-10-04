@@ -2297,7 +2297,7 @@
 			"method": "GET",
 			"path": "/cards/search?q=cube%3Avintage+t%3Agod",
 			"known_deviation": {
-				"reason": "A KEYWORD SCRYFALL HONORS AND THIS PORT CANNOT ANSWER IS REFUSED, NOT CALLED UNKNOWN (x66, narrowed by x68). `cube:vintage t:god` is 2 cards there (2026-10-03): membership of Scryfall's curated cube lists, which are in no bulk file and behind no API endpoint, so the import cannot obtain them. `lore:`, `new:` and `cheapest:` are the other three keywords still refused, each with its reason at SCRYFALL_ONLY_KEYWORDS; the eighteen x66 found beside them are answered since x68. Refusing is deliberate: dropping the term with `Unknown keyword` would answer wider than Scryfall under a sentence saying Scryfall ignores it too.",
+				"reason": "A KEYWORD SCRYFALL HONORS AND THIS PORT CANNOT ANSWER IS REFUSED, NOT CALLED UNKNOWN (x66, narrowed by x68). `cube:vintage t:god` is 2 cards there (2026-10-03): membership of Scryfall's curated cube lists, which are in no bulk file and behind no API endpoint, so the import cannot obtain them. `new:` and `cheapest:` are the other two keywords still refused, each with its reason at SCRYFALL_ONLY_KEYWORDS; the eighteen x66 found beside them are answered since x68, and `lore:` since x71. Refusing is deliberate: dropping the term with `Unknown keyword` would answer wider than Scryfall under a sentence saying Scryfall ignores it too.",
 				"scryfall": {
 					"status": 200,
 					"expect": {
@@ -2546,6 +2546,72 @@
 			"name": "x70-paperprints-counts-an-arena-slot-of-a-paper-set",
 			"method": "GET",
 			"path": "/cards/search?q=%21%22Rakshasa+Vizier%22+paperprints%3D4"
+		},
+		{
+			"name": "x71-lore-reads-the-name-as-printed",
+			"method": "GET",
+			"path": "/cards/search?q=lore%3Aft+e%3Akhm",
+			"note": "x71 (2026-10-04). 22 on Scryfall, where `(name:ft or ft:ft or o:ft or t:ft) e:khm` is 41: `lore:` reads the name as printed, so the space in \"Jarl oF The Forsaken\" is not collated away. The port refused `lore:` before x71."
+		},
+		{
+			"name": "x71-lore-reads-flavor-names",
+			"method": "GET",
+			"path": "/cards/search?q=lore%3Agodzilla",
+			"note": "x71. 8 cards on Scryfall, every one by a Godzilla-series flavor name; `(name:/godzilla/ or ft:godzilla or o:godzilla or t:godzilla)` is 404."
+		},
+		{
+			"name": "x71-lore-type-line-is-a-plain-substring",
+			"method": "GET",
+			"path": "/cards/search?q=lore%3Agod+e%3Athb",
+			"note": "x71. `lore:` is not `t:`'s type word: every Theros Beyond Death Demigod is here by the `god` inside its type, with the Gods and the cards that say the word."
+		},
+		{
+			"name": "x71-lore-a-tilde-is-a-tilde",
+			"method": "GET",
+			"path": "/cards/search?q=lore%3A~",
+			"note": "x71. 2 cards on Scryfall — Blighted Agent and Urabrask the Hidden, whose Phyrexian flavor text prints a tilde — where `o:~` is 20,181. `lore:` does not expand the self-reference."
+		},
+		{
+			"name": "x71-lore-foreign-rows-by-flavor-text-not-printed-text",
+			"method": "GET",
+			"path": "/cards/search?q=lore%3Ablitz+lang%3Ade&unique=prints",
+			"note": "x71. 143 cards on Scryfall: German printings holding the word in their flavor text, their English name or their English oracle text. The 1,062 holding it only in `printed_text` and the 38 only in `printed_name` are not here."
+		},
+		{
+			"name": "x71-lore-a-reversible-printing-reads-its-own-faces",
+			"method": "GET",
+			"path": "/cards/search?q=lore%3Ashuffle+%21%22Bloomvine+Regent%22&unique=prints",
+			"note": "x71. 3 of the card's 4 English printings on Scryfall: the reversible tdm/381 prints the front face's rules text on both sides, so the Omen's \"shuffle\" is not on it."
+		},
+		{
+			"name": "x71-lore-opens-extras",
+			"method": "GET",
+			"path": "/cards/search?q=lore%3Agoblin+t%3Atoken",
+			"note": "x71. 19 on Scryfall with no `include:extras` written: `lore:` forces extras under `:` and `=`, in either polarity (`lore:zzzzqq or cmc=3` echoes include_extras=true)."
+		},
+		{
+			"name": "x71-lore-negated-is-the-complement",
+			"method": "GET",
+			"path": "/cards/search?q=-lore%3Athe+e%3Akhm",
+			"note": "x71. The complement inside Kaldheim (`lore:the e:khm` is 232 of 305): every part of `lore:` is two-valued, so a printing with no flavor text is not lost to a NULL."
+		},
+		{
+			"name": "x71-lore-regex-is-the-regex-keyword-sentence",
+			"method": "GET",
+			"path": "/cards/search?q=lore%3A%2Fjace%2F+e%3Akhm",
+			"note": "x71. 305 on Scryfall carrying `Unknown regular expression keyword “lore”.`, however plain the pattern."
+		},
+		{
+			"name": "x71-lore-empty-value-is-the-unknown-keyword-sentence",
+			"method": "GET",
+			"path": "/cards/search?q=lore%3A%22%22+e%3Akhm",
+			"note": "x71. 305 on Scryfall carrying `Unknown keyword “lore”.`; `lore:\" \" e:khm` is 305 with no warning — a space is a value."
+		},
+		{
+			"name": "x71-lore-comparison-matches-nothing",
+			"method": "GET",
+			"path": "/cards/search?q=lore%3Ejace+or+e%3Akhm+t%3Agod",
+			"note": "x71. `lore>jace` and `lore!=jace` are 404 on Scryfall with no warnings, so this is the 12 Gods."
 		}
 	]
 }
