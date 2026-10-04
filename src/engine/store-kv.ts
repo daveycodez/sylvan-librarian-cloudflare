@@ -1803,8 +1803,20 @@ export async function gzipBytes(bytes: Uint8Array): Promise<Uint8Array> {
  *      only archive growth is the strings-table entry of each name 56 or 57 bytes long. Computed
  *      in card_engine's build, after grouping, so the native builder and the wasm import produce
  *      it from the same code and no row codec or staged draft carries a new field.
+ *
+ *   59 (2026-10-04): TWO OF THOSE COUNTS FOLLOWED THE WRONG RULE (x70). Compared corpus-wide
+ *      against api.scryfall.com the day they shipped: `prints=1 t:goblin` was 234 against 235 and
+ *      `paperprints=0` 657 against 654. (1) A VARIATION is not a print — Embermage Goblin's
+ *      foil-only ons/200★ is `variation: true` and the card is `prints=1`; 81 cards have one.
+ *      (2) A printing is a PAPER print by its SET, not by its own `games` — "Name Sticker"
+ *      Goblin's only printing is MTGO-only in Unfinity and is `paperprints=1`; 34 cards have
+ *      such a slot. 18 of 18 cards probed hold the value the two rules give. The paper/digital
+ *      flag per set is `set_digital_gen.rs`, Scryfall's own, refreshed with `bun run set-digital`.
+ *
+ *      GENERATION-ONLY: the same five u16 hold different values for about a hundred cards. No
+ *      layout, no format version, nothing on the query path.
  */
-export const STORE_CONTENT_GENERATION = 58;
+export const STORE_CONTENT_GENERATION = 59;
 
 /**
  * Chunk key for a store. Keyed by store_key, so publishes never collide.

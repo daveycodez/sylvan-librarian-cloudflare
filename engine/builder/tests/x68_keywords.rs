@@ -429,6 +429,48 @@ fn a_digital_only_card_has_no_paper_printings() {
 }
 
 #[test]
+fn a_variation_is_not_a_print() {
+    // Embermage Goblin is ons/200 and the foil-only ons/200★, which Scryfall marks
+    // `variation: true`. `!"Embermage Goblin" prints=1` and `paperprints=1` are each 1 on
+    // api.scryfall.com (2026-10-04) and `prints=2` is 404 — two slots, one print. Ten of ten
+    // cards with a variation probed that day read the same way (Kuja, Genome Sorcerer 5 of its 9
+    // slots, Vizzerdrix 6 of 8).
+    let store = store_from(&["embermage_goblin_ons_200", "embermage_goblin_ons_200_star", "lightning_bolt"]);
+    // Its ARTWORK still counts: the two carry different illustration ids, and
+    // `!"Embermage Goblin" illustrations=2` is 1 there where `illustrations=1` is 404.
+    assert_eq!(counts_of(&store, "ons/200"), (1, 1, 1, 1, 2));
+    // The variation is still a printing of the card, and answers with the card's counts.
+    assert_eq!(printings(&store, &num("print_count", "prints", "=", 1.0)), ["msc/806", "ons/200", "ons/200★"]);
+    assert_eq!(printings(&store, &num("print_count", "prints", ">", 1.0)), NONE);
+}
+
+#[test]
+fn a_digital_printing_in_a_paper_set_is_a_paper_print() {
+    // "Name Sticker" Goblin's only printing is unf/107m: `games: [mtgo]`, `digital: true` — in
+    // Unfinity, a paper set. Scryfall holds paperprints=1 and papersets=1 for it (2026-10-04):
+    // the SET decides. Counting by the row's `games` answered `paperprints=0` 657 against
+    // Scryfall's 654, this card being one of the three. ymkm/13 beside it is in a digital set.
+    let store = store_from(&["name_sticker_goblin_unf_107m", "case_of_the_market_melee_ymkm_13"]);
+    assert_eq!(counts_of(&store, "unf/107m"), (1, 1, 1, 1, 1));
+    assert_eq!(counts_of(&store, "ymkm/13"), (1, 1, 0, 0, 1));
+    assert_eq!(printings(&store, &num("paper_print_count", "paperprints", "=", 0.0)), ["ymkm/13"]);
+}
+
+#[test]
+fn a_set_the_table_does_not_know_reads_the_printings_own_games() {
+    // set_digital_gen.rs is refreshed by hand, so a set announced since is in neither list. Its
+    // printings fall back to their own `games` — right for every set that is wholly paper or
+    // wholly digital, which a new one is until Scryfall says otherwise.
+    let mut mtgo_only = fixture("name_sticker_goblin_unf_107m");
+    mtgo_only["set"] = json!("zz9");
+    let mut on_paper = fixture("lightning_bolt");
+    on_paper["set"] = json!("zz8");
+    let store = store_of(&[mtgo_only, on_paper]);
+    assert_eq!(counts_of(&store, "zz9/107m"), (1, 1, 0, 0, 1));
+    assert_eq!(counts_of(&store, "zz8/806"), (1, 1, 1, 1, 1));
+}
+
+#[test]
 fn doubling_cube_counts_slots_not_set_codes_in_the_number() {
     // 10e/321, 5dn/116, plst/10E-321 and sld/1080: four slots in four sets. The List's collector
     // number is the string `10E-321`, and it is its own slot. Three share the Fifth Dawn artwork;

@@ -2593,6 +2593,8 @@ use planes::*;
 mod estimator;
 mod cost;
 mod sigma_bound;
+// LOCAL PATCH (Cloudflare port): Scryfall's paper/digital flag per set, for `assign_print_counts`.
+mod set_digital_gen;
 
 // ─── Trigram index ────────────────────────────────────────────────────────────
 
@@ -4869,9 +4871,19 @@ fn assign_single_set_flags(
 ///     2; Abomination's two `4bb`/`fbb` foreign-only slots count beside its two English ones.
 ///   - `sets` is the distinct set codes over the same rows — `sets=1` is `is:unique` exactly
 ///     (16,115 = 16,115), which is why `single_set` reads the annex too.
-///   - `paperprints` / `papersets` are the same two counts over the rows whose `games` include
-///     `paper`: Reset's me3/48 is MTGO-only and leaves 2 / 2, and `paperprints=0` is 654 cards
-///     that exist only digitally.
+///   - `paperprints` / `papersets` are the same two counts over the rows of PAPER SETS: Reset's
+///     me3/48 is in a digital set and leaves 2 / 2, and `paperprints=0` is 654 cards that exist
+///     only in digital sets. The SET decides, not the row's own `games` (measured 2026-10-04, the
+///     rule before that day being `games` and 657): "Name Sticker" Goblin's one printing,
+///     unf/107m, is `games: [mtgo]` in a paper set and is `paperprints=1`; Rakshasa Vizier's
+///     Arena-only ktk/193y makes it 4, not 3. `set_digital_gen.rs` is Scryfall's `digital` flag
+///     per set; a set it does not know falls back to the row's `games`.
+///   - a VARIATION is not a print (2026-10-04): a row with `variation: true` adds no slot.
+///     Embermage Goblin is ons/200 and the foil-only ons/200★ and is `prints=1`; Kuja, Genome
+///     Sorcerer's nine slots are five, Vizzerdrix's eight six. Ten of ten cards probed, and the
+///     same holds under `paperprints` (Erg Raiders 9, not 10). No card's `sets` can tell the two
+///     readings apart — none has a set it appears in only as a variation — so the set counts
+///     keep every row.
 ///   - `illustrations` is the distinct artworks, a printing's artwork being its top-level
 ///     `illustration_id` or, when it has none (a transform or modal card), its FRONT face's:
 ///     Delver of Secrets' eight printings carry twelve face illustrations and count 6, Agadeem's
@@ -4895,16 +4907,26 @@ fn assign_print_counts(
     fn slot(p: &Printing) -> (&str, u32) {
         (p.card_set_code.as_str(), p.collector_number_id)
     }
+    let paper_sets: std::collections::HashSet<&str> = set_digital_gen::PAPER_SETS.split(' ').collect();
+    let digital_sets: std::collections::HashSet<&str> = set_digital_gen::DIGITAL_SETS.split(' ').collect();
     for (cid, card) in cards.iter_mut().enumerate() {
         let rows = || {
             printings[offsets[cid] as usize..offsets[cid + 1] as usize]
                 .iter()
                 .chain(foreign[foreign_offsets[cid] as usize..foreign_offsets[cid + 1] as usize].iter())
         };
-        let paper = |p: &&Printing| p.compat.games & GAME_PAPER != 0;
-        card.print_count = distinct(rows().map(slot).collect());
+        let paper = |p: &&Printing| {
+            let code = p.card_set_code.as_str();
+            if digital_sets.contains(code) {
+                false
+            } else {
+                paper_sets.contains(code) || p.compat.games & GAME_PAPER != 0
+            }
+        };
+        let print = |p: &&Printing| p.compat.flags & COMPAT_VARIATION == 0;
+        card.print_count = distinct(rows().filter(print).map(slot).collect());
         card.set_count = distinct(rows().map(|p| p.card_set_code.as_str()).collect());
-        card.paper_print_count = distinct(rows().filter(paper).map(slot).collect());
+        card.paper_print_count = distinct(rows().filter(print).filter(paper).map(slot).collect());
         card.paper_set_count = distinct(rows().filter(paper).map(|p| p.card_set_code.as_str()).collect());
         card.illustration_count = distinct(
             rows()

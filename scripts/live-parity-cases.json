@@ -2529,6 +2529,23 @@
 			"method": "GET",
 			"path": "/cards/search?q=otag%3Aindefinite-effect+%21%22Seraph%22",
 			"note": "x66 R32, reported as 1 card here against a 404 on Scryfall. Re-measured 2026-10-03: 1 card on BOTH sides — Scryfall's search now carries the tag the oracle-tags bulk already did, so the report caught the port's nightly import ahead of Scryfall's own index, not a tag-expansion difference. Fourteen other tag queries were compared the same day (otag:removal 6,449, ramp 2,286, card-advantage 6,206, tutor 1,163, lands-matter 584, synergy-lifegain 240, theft-creature 229, synergy-exile-cast 76, theft-artifact 52, theft-equipment 6, indefinite-effect 475, atag:angel 609, and the function:/oracletag: spellings) and every count agreed. Data freshness; nothing changed."
+		},
+		{
+			"name": "x70-a-variation-is-not-a-print",
+			"method": "GET",
+			"path": "/cards/search?q=prints%3D1+t%3Agoblin+e%3Aons",
+			"note": "x70 (2026-10-04). Scryfall 6, the port 5 on generation 58: Embermage Goblin is ons/200 and the foil-only ons/200\u2605, which Scryfall marks `variation: true`, and Scryfall holds prints=1 for it. A variation adds no print (81 cards have one; 10 of 10 probed agree, and the same under paperprints). Generation 59 skips them in `assign_print_counts`."
+		},
+		{
+			"name": "x70-paper-is-the-sets-not-the-printings",
+			"method": "GET",
+			"path": "/cards/search?q=paperprints%3D0+e%3Aunf+include%3Aextras",
+			"note": "x70 (2026-10-04). Scryfall 404, the port 1 card on generation 58: \"Name Sticker\" Goblin's only printing is unf/107m, `games: [mtgo]`, in a paper set, and Scryfall holds paperprints=1 for it. A printing is a paper print by its SET's `digital` flag (set_digital_gen.rs), not its own `games`: 34 cards have such a slot, 8 of 8 probed agree, and `paperprints=0` corpus-wide was 657 against 654."
+		},
+		{
+			"name": "x70-paperprints-counts-an-arena-slot-of-a-paper-set",
+			"method": "GET",
+			"path": "/cards/search?q=%21%22Rakshasa+Vizier%22+paperprints%3D4"
 		}
 	]
 }

@@ -177,7 +177,7 @@ export const DB_COLUMNS: readonly FieldInfo[] = [
 	//
 	//   prints=1 13,243   prints>=10 1,521   prints>=100 8   prints=0 404
 	//   sets=1 16,115 (= is:unique exactly)   sets>=10 1,068   sets>=50 16
-	//   paperprints=1 13,723   paperprints>=10 1,282   paperprints=0 654 (digital-only cards)
+	//   paperprints=1 13,723   paperprints>=10 1,282   paperprints=0 654 (cards only in digital sets)
 	//   papersets=1 16,825   papersets>=10 898   papersets=0 654
 	//   illustrations=1 25,688   illustrations>=2 7,957   illustrations>=10 95   illustrations=0 4
 	//   artists=2 = artists>=2 631   artists=0 12   artists=3 404   artists:1 e:khm all 305
