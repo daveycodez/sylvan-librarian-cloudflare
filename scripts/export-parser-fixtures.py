@@ -772,6 +772,38 @@ EXTRA_CASES = [
     "power-1",
     "cmc-power",
     "power-1>3",
+    # The hyphen and the slash as a bare word carries them, for ANY word. Measured on
+    # api.scryfall.com 2026-10-04: `fire-ice`, `fire--ice`, `fire-"ice"` and `fire-ice-` are Fire //
+    # Ice (1); `fire-` and `fire/` are `fire`'s 324 and `power-` is `power`'s 77; `fire/ice`,
+    # `fire//ice` and `fire- ice` are `fire ice`'s 4; `power/sink`, `power--sink` and
+    # `power-"sink"` are Power Sink. A value keeps both characters (`o:fire-` is 404 there), and
+    # arithmetic is unchanged.
+    "fire-",
+    "fire--ice",
+    "fire---ice",
+    'fire-"ice"',
+    "fire-ice-",
+    "fire/ice",
+    "fire//ice",
+    "fire/",
+    "fire- ice",
+    "fire/ice/x",
+    "power/sink",
+    "power--sink",
+    "usd-",
+    "cmc/",
+    "-fire-",
+    "(fire-) t:instant",
+    "fire/ice or t:goblin",
+    "fire-2-",
+    "*fire-",
+    "power/2>1",
+    "cmc--1",
+    "fire-(ice)",
+    "/fire",
+    "fire /ice",
+    "o:fire-",
+    "name:fire/ice",
 ]
 
 

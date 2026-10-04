@@ -1100,7 +1100,65 @@ describe("a hyphenated or starred word that opens with a numeric alias is a name
 	});
 
 	test("what was an error for an unknown word is still one here", () => {
-		for (const q of ["power-", "power-sink>3", 'power-"sink"', "power+sink", "power/sink"]) {
+		// `power-`, `power-"sink"` and `power/sink` were in this list while they were an error for
+		// EVERY word; they are name words now, for every word — the next describe.
+		for (const q of ["power-sink>3", "power+sink", "some-word>3", "some+word"]) {
+			expect(() => parseScryfallQuery(q)).toThrow(ParseError);
+		}
+	});
+});
+
+// ── the hyphen and the slash, as a bare name word carries them ──────────────────
+
+describe("a bare word's hyphens glue what follows, a trailing one is dropped, and a slash ends the word", () => {
+	// Measured on api.scryfall.com 2026-10-04, one request per row:
+	//   fire-ice  fire--ice  fire-"ice"  fire-ice-     1, Fire // Ice
+	//   fire-  fire/  (/fire)                          324 = fire          power-   77 = power
+	//   fire/ice  fire//ice  fire- ice                 4 = fire ice
+	//   power/sink  power--sink  power-"sink"          1, Power Sink
+	// Each was `Failed to parse query` in both parsers, for every word.
+	const wire = (query: string): string => canonicalStringify(parseScryfallQuery(query));
+
+	test("a run of hyphens glues a word, a number or a quoted string into the same name word", () => {
+		expect(wire("fire--ice")).toBe(wire("fire-ice"));
+		expect(wire("fire---ice")).toBe(wire("fire-ice"));
+		expect(wire('fire-"ice"')).toBe(wire("fire-ice"));
+		expect(wire("power--sink")).toBe(wire("power-sink"));
+		expect(wire('power-"sink"')).toBe(wire("power-sink"));
+		expect(wire("fire--2")).toBe(wire("fire-2"));
+		expect(wire("fire--ice")).toContain('"value":"FireIce"');
+	});
+
+	test("a hyphen with nothing glued behind it is dropped", () => {
+		expect(wire("fire-")).toBe(wire("fire"));
+		expect(wire("fire-ice-")).toBe(wire("fire-ice"));
+		expect(wire("fire--")).toBe(wire("fire"));
+		expect(wire("fire- ice")).toBe(wire("fire ice"));
+		expect(wire("(fire-) t:instant")).toBe(wire("(fire) t:instant"));
+		expect(wire("-fire-")).toBe(wire("-fire"));
+		// ...behind a numeric alias and behind a text alias alike.
+		expect(wire("power-")).toBe(wire("name:power"));
+		expect(wire("usd-")).toBe(wire("name:usd"));
+		expect(wire("type-")).toBe(wire("name:type"));
+	});
+
+	test("a slash ends the word, and what follows is the next term", () => {
+		expect(wire("fire/ice")).toBe(wire("fire ice"));
+		expect(wire("fire//ice")).toBe(wire("fire ice"));
+		expect(wire("fire/ice/x")).toBe(wire("fire ice x"));
+		expect(wire("fire/")).toBe(wire("fire"));
+		expect(wire("power/sink")).toBe(wire("name:power sink"));
+		expect(wire("fire/ice or t:goblin")).toBe(wire("fire ice or t:goblin"));
+		expect(wire("fire/t:instant")).toBe(wire("fire t:instant"));
+	});
+
+	test("arithmetic is untouched, and a value keeps both characters", () => {
+		for (const q of ["power/2>1", "cmc-1<3", "power-cmc>1", "cmc/tou>1"]) {
+			expect(wire(q)).not.toContain("card_name");
+		}
+		// `o:fire-` and `o:fire/ice` are 404 on Scryfall — the characters, not separators — and
+		// stay the errors they were here; so do a hyphen before a group and a leading slash.
+		for (const q of ["o:fire-", "name:fire/ice", "fire-(ice)", "/fire", "fire /ice"]) {
 			expect(() => parseScryfallQuery(q)).toThrow(ParseError);
 		}
 	});

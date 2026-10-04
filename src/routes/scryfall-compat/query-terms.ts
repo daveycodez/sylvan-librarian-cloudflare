@@ -3047,6 +3047,19 @@ function apostropheInWord(src: readonly string[], pos: number): boolean {
 }
 
 /**
+ * A `/` OPENS A PATTERN ONLY WHERE THE LEXER READS ONE: directly behind a comparison operator
+ * (tokenizer.ts). Anywhere else it is the character — the separator `fire/ice` has, or division.
+ * Both scanners below used to run to the next `/` on any slash, so `(fire/ice) e:khm` read as a
+ * pattern that swallowed the `)` and was refused as unclosed parentheses, and `fire/ice f:x` was
+ * one piece with the second term neither dropped nor warned — the apostrophe's two faults again.
+ */
+function opensPattern(src: readonly string[], pos: number): boolean {
+	if (pos === 0) return false;
+	const prev = src[pos - 1] as string;
+	return prev === ":" || prev === "=" || prev === "<" || prev === ">";
+}
+
+/**
  * Whether the query's parentheses balance, ignoring the ones inside strings, patterns and mana
  * symbols — the same regions `scanPieces` steps over, for the same reason.
  */
@@ -3057,7 +3070,7 @@ function unbalancedParens(source: string): boolean {
 	for (let pos = 0; pos < n; pos++) {
 		const c = src[pos] as string;
 		if (c === "'" && apostropheInWord(src, pos)) continue;
-		if (c === '"' || c === "'" || c === "/") {
+		if (c === '"' || c === "'" || (c === "/" && opensPattern(src, pos))) {
 			pos++;
 			while (pos < n) {
 				const d = src[pos] as string;
@@ -3119,7 +3132,7 @@ function scanPieces(source: string): Piece[] {
 				pos++;
 				continue;
 			}
-			if (c === '"' || c === "'" || c === "/") {
+			if (c === '"' || c === "'" || (c === "/" && opensPattern(src, pos))) {
 				// A quoted string or a regex literal: run to its closing delimiter, honoring `\`.
 				pos++;
 				while (pos < n) {

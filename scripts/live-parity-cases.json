@@ -2858,6 +2858,12 @@
 			"method": "GET",
 			"path": "/cards/search?q=pow%3D2x",
 			"note": "2026-10-04. 234 = `pow=2 x`: after a numeric keyword Scryfall reads a number, a zero word or a column name and lexes the rest as the next term (`pow=1a` 2,743, `pow=xy` 200, `pow=1-1` 3,561, `pow=**` 1,049, `tou=powerx` 457, `collector:1z e:khm` 404). This port ignored the term with `Unknown keyword “pow”.`"
+		},
+		{
+			"name": "name-word-slash-ends-the-word",
+			"method": "GET",
+			"path": "/cards/search?q=power%2Fsink",
+			"note": "2026-10-04. Power Sink: a slash ends a bare name word (`fire/ice` is `fire ice`'s 4), a run of hyphens glues what follows (`power--sink`, `power-\"sink\"` are Power Sink) and a hyphen with nothing behind it is dropped (`power-` is `power`'s 77, `fire-` 324). Each was `Failed to parse query` here, for every word."
 		}
 	]
 }

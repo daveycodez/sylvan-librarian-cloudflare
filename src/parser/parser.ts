@@ -713,6 +713,27 @@ export class Parser {
 	 * A bare term is a `name:` search, so `*` reaches it for the same reason it reaches
 	 * `parseTextValue`: the collation deletes it. Measured 2026-08-16 — `q=ft*`, `q=*ft*` and
 	 * `q=ft` all answer 1,628 on api.scryfall.com, and `q=godzilla*` answers `q=godzilla`'s 8.
+	 *
+	 * THE HYPHEN AND THE SLASH, AS A BARE WORD CARRIES THEM. Measured on api.scryfall.com
+	 * 2026-10-04, one request per row:
+	 *
+	 *   fire-ice  fire--ice  fire-"ice"  fire-ice-     1, Fire // Ice — one word, however many
+	 *                                                  hyphens join it and quoted or not
+	 *   fire-  fire/  /fire                            324 = fire     a hyphen or slash with nothing
+	 *   power-                                         77 = power     behind it is dropped
+	 *   fire/ice  fire//ice  fire- ice                 4 = fire ice   a slash ENDS the word: two words
+	 *   power/sink  power--sink  power-"sink"          1, Power Sink
+	 *   fire/ice/x  fire+ice                           404
+	 *
+	 * So a run of hyphens glues what follows it — a word, a number or a quoted string — into the
+	 * same name word (the collation deletes the hyphens either way), a run with nothing glued
+	 * behind it is dropped, and a slash closes the word and is dropped, leaving what follows as
+	 * the next term. Each of the six shapes was `Failed to parse query` here, for every word.
+	 *
+	 * Only where a NAME word is being read. In a value the two stay characters (`o:fire-` and
+	 * `o:fire/ice` are 404 there), a leading `/` is not read (the lexer hands this a SLASH only
+	 * after a word), and after a numeric alias this is reached only once `arithTail` has found no
+	 * numeric term behind the operator — `power/2>1` and `cmc-1<3` are arithmetic as before.
 	 */
 	parseHyphenatedName(first: string): CardBinaryOperatorNode {
 		let word = first;
@@ -731,14 +752,24 @@ export class Parser {
 				word += textOf(next);
 				continue;
 			}
-			if (
-				next.type === TT.MINUS &&
-				(this.peek(1).type === TT.WORD || this.peek(1).type === TT.NUMBER) &&
-				!this.peek(1).spaceBefore
-			) {
-				this.consume(); // MINUS
-				word += `-${textOf(this.consume())}`;
+			if (next.type === TT.MINUS) {
+				let hyphens = 1;
+				while (this.peek(hyphens).type === TT.MINUS && !this.peek(hyphens).spaceBefore) hyphens++;
+				const after = this.peek(hyphens);
+				const glued =
+					!after.spaceBefore && (after.type === TT.WORD || after.type === TT.NUMBER || after.type === TT.QUOTED);
+				const trailing = after.spaceBefore || after.type === TT.EOF || after.type === TT.RPAREN;
+				if (!glued && !trailing) break;
+				for (let i = 0; i < hyphens; i++) this.consume();
+				if (!glued) break;
+				this.consume();
+				word += "-".repeat(hyphens) + (after.type === TT.QUOTED ? pyStr(after.value) : textOf(after));
 				continue;
+			}
+			if (next.type === TT.SLASH) {
+				// The word ends here; what follows the slashes, if anything, is the next term.
+				while (this.peek().type === TT.SLASH && !this.peek().spaceBefore) this.consume();
+				break;
 			}
 			break;
 		}

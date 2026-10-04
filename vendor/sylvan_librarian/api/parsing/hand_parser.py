@@ -886,6 +886,19 @@ class Parser:
         A bare term is a ``name:`` search, so ``*`` reaches it for the same reason it reaches
         parse_text_value(): the collation deletes it. Measured 2026-08-16 -- ``q=ft*``, ``q=*ft*`` and
         ``q=ft`` all answer 1,628 on api.scryfall.com, and ``q=godzilla*`` answers ``q=godzilla``'s 8.
+
+        The hyphen and the slash, as a bare word carries them. Measured on api.scryfall.com
+        2026-10-04: ``fire-ice``, ``fire--ice``, ``fire-"ice"`` and ``fire-ice-`` are all Fire // Ice
+        (1); ``fire-``, ``fire/`` and ``/fire`` are ``fire``'s 324 and ``power-`` is ``power``'s 77;
+        ``fire/ice``, ``fire//ice`` and ``fire- ice`` are ``fire ice``'s 4; ``power/sink``,
+        ``power--sink`` and ``power-"sink"`` are Power Sink. So a run of hyphens glues what follows
+        it -- a word, a number or a quoted string -- into the same name word (the collation deletes
+        the hyphens either way), a run with nothing glued behind it is dropped, and a slash closes
+        the word and is dropped, leaving what follows as the next term. Each was a parse error.
+
+        Only where a name word is being read: in a value the two stay characters (``o:fire-`` and
+        ``o:fire/ice`` are 404 there), and after a numeric alias this is reached only once
+        _arith_tail has found no numeric term behind the operator.
         """
         word = first
         while True:
@@ -902,10 +915,27 @@ class Parser:
                 self.consume()
                 word += nxt.text
                 continue
-            if nxt.type == TT.MINUS and self.peek(1).type in (TT.WORD, TT.NUMBER) and not self.peek(1).space_before:
-                self.consume()  # MINUS
-                word += "-" + self.consume().text
+            if nxt.type == TT.MINUS:
+                hyphens = 1
+                while self.peek(hyphens).type == TT.MINUS and not self.peek(hyphens).space_before:
+                    hyphens += 1
+                after = self.peek(hyphens)
+                glued = not after.space_before and after.type in (TT.WORD, TT.NUMBER, TT.QUOTED)
+                trailing = after.space_before or after.type in (TT.EOF, TT.RPAREN)
+                if not glued and not trailing:
+                    break
+                for _ in range(hyphens):
+                    self.consume()
+                if not glued:
+                    break
+                self.consume()
+                word += "-" * hyphens + (str(after.value) if after.type == TT.QUOTED else after.text)
                 continue
+            if nxt.type == TT.SLASH:
+                # The word ends here; what follows the slashes, if anything, is the next term.
+                while self.peek().type == TT.SLASH and not self.peek().space_before:
+                    self.consume()
+                break
             break
         return _bare_name_node(word)
 
