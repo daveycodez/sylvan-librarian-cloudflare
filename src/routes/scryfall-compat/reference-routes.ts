@@ -225,6 +225,33 @@ export async function catalogHandler(
 	}
 }
 
+/** The three catalogs that list keywords, by Scryfall's own names. */
+const KEYWORD_CATALOGS = ["keyword-abilities", "keyword-actions", "ability-words"] as const;
+
+/**
+ * The words of Scryfall's three keyword catalogs, for the search surface's `keyword:` term
+ * (KEYWORD_ABILITY_KEYWORDS in query-terms.ts) — or null when any of them is unpublished or
+ * unreadable, which that reader takes as "validate nothing". The same memoized values
+ * `/catalog/:name` serves.
+ */
+export async function keywordCatalogWords(ctx: RouteContext): Promise<string[] | null> {
+	try {
+		const values = await Promise.all(KEYWORD_CATALOGS.map((name) => readValue(ctx, catalogKey(name))));
+		const decoder = new TextDecoder();
+		const words: string[] = [];
+		for (const value of values) {
+			if (value === null) return null;
+			const parsed: unknown = JSON.parse(decoder.decode(value));
+			if (!Array.isArray(parsed)) return null;
+			for (const word of parsed) if (typeof word === "string") words.push(word);
+		}
+		return words;
+	} catch (err) {
+		console.error("Reference data: the keyword catalogs could not be read", err);
+		return null;
+	}
+}
+
 // ─── GET /symbology ──────────────────────────────────────────────────────────
 
 /** Every card symbol, in Scryfall's order. */

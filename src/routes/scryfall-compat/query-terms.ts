@@ -500,6 +500,71 @@ function blockTerm(value: string): string {
 }
 
 /**
+ * `keyword:` / `kw:` — A VALUE THAT IS NO KEYWORD IS IGNORED, with a sentence of its own.
+ *
+ * Measured on api.scryfall.com 2026-10-04, one request per row:
+ *
+ *   keyword:untap  keyword:"untap"  keyword=untap  keyword:UNTAP  keyword:nonsense  keyword:tap
+ *                               400 `All of your terms were ignored.` carrying
+ *                               `Invalid expression “keyword:untap” was ignored. Unknown keyword “untap”`
+ *   kw:untap t:goblin  keyword:nonsense t:goblin     561 = t:goblin, with the sentence
+ *   -keyword:untap e:khm                             305 = e:khm, echoing “-keyword:untap”
+ *   keyword:untap or t:goblin e:lrw                  27 = the other arm, with the sentence
+ *   keyword:fly e:khm  keyword:"first" e:khm  keyword:cumulative     ignored: a PART of one is none
+ *   keyword:flying e:khm = keyword:FLYING = keyword:"flying" = keyword=flying = kw:flying   25
+ *   keyword:"first strike" e:khm = keyword:firststrike = keyword:first-strike               4
+ *
+ * So the value is the keyword's WHOLE name, compared with case, spaces and hyphens ignored. The
+ * sentence has no full stop — unlike the one for an unknown SEARCH keyword (`Unknown keyword
+ * “pow”.`) — and names the value lower-cased.
+ *
+ * WHICH VALUES ARE KEYWORDS, measured against this port's own store (production `/get_catalog`,
+ * 890 keywords) and Scryfall's three catalogs (`keyword-abilities` 223, `keyword-actions` 80,
+ * `ability-words` 69):
+ *
+ *   - EVERY KEYWORD SOME CARD CARRIES is one, in a catalog or not — 541 of the store's 890 are in
+ *     none (`10,000 needles`, `pasta`, `hero's reward` …). 110 were asked: the 25 rarest, 70 at
+ *     random and 15 with punctuation in them; 99 answered cards and 11 a plain 404 with no warning,
+ *     each of those carried by extras alone (`keyword:affinitycycling` is unk/CA06b under
+ *     `include:extras`, `keyword:"hero's reward"` 15 tokens). So the vocabulary is every card's.
+ *   - A CATALOG WORD NO CARD CARRIES is one too, and matches nothing: `keyword:absorb`,
+ *     `keyword:poisonous`, `keyword:"friends forever"` and `keyword:harness` are plain 404s, with
+ *     `include:extras` as without.
+ *   - EXCEPT NINETEEN KEYWORD ACTIONS, the rules' generic verbs, which are the unknown sentence
+ *     though `/catalog/keyword-actions` lists them — GENERIC_KEYWORD_ACTIONS, each asked.
+ *
+ * The first is not a list anyone can commit: new sets add keywords constantly, and a stale one
+ * would drop a real keyword with a warning — a WIDER answer than Scryfall's. So it is asked of
+ * the store itself (`Engine.cardKeywordCounts`, the catalog table that rides with every store
+ * generation and is cached per isolate and per colo — the read the extras gate makes for
+ * `setsWithExtras`), and the second of the three catalogs this port already mirrors nightly.
+ * `scryfallTermPolicyFor` reads the first only when the query has a `keyword:` term under `:` or
+ * `=`, and the second only when that term's value is carried by no card. A value is dropped only
+ * when both were read and neither holds it: a table that came back empty or unreadable validates
+ * nothing, which leaves the term to match nothing — narrower than Scryfall, never wider.
+ *
+ * AND THE TERM IS RESPELLED AS THE STORE SPELLS THE KEYWORD, which is what makes
+ * `keyword:firststrike` and `keyword:first-strike` the 4 they are there: the engine compares the
+ * word, and both were a 404 here.
+ */
+const KEYWORD_ABILITY_KEYWORDS: ReadonlySet<string> = new Set(["keyword", "kw"]);
+
+/**
+ * The keyword actions Scryfall's `keyword:` does not know, though its own catalog lists them —
+ * each asked 2026-10-04 and each the unknown sentence. `harness`, the one other keyword action no
+ * card carries, is honored.
+ */
+const GENERIC_KEYWORD_ACTIONS: ReadonlySet<string> = new Set([
+	...["abandon", "activate", "attach", "cast", "counter", "create", "destroy", "discard", "exchange", "exile"],
+	...["planeswalk", "play", "reveal", "sacrifice", "setinmotion", "shuffle", "tap", "untap", "vote"],
+]);
+
+/** A keyword as `keyword:` compares it: lower-cased, with its spaces and hyphens removed. */
+function keywordKey(value: string): string {
+	return value.toLowerCase().replace(/[\s-]+/g, "");
+}
+
+/**
  * `e:` / `set:` / `s:` / `edition:` — A SET IS NAMED BY ITS CODE, ITS NAME OR A RETIRED CODE.
  *
  * `e:zendikar` is `e:zen`'s 234 on api.scryfall.com, `set:"the list"` is The List and `e:mb1` — a
@@ -2465,6 +2530,21 @@ export interface TermPolicyResult {
 	 * Absent when there is none, which is every query without such a term.
 	 */
 	quietSets?: readonly string[];
+	/**
+	 * The query has a `keyword:` term whose value was NOT checked, because the table that would
+	 * say was not given: "carried" the store's own keywords, "catalog" Scryfall's catalogs (the
+	 * value is one no card carries). See KEYWORD_ABILITY_KEYWORDS. Absent otherwise, which is
+	 * every query without such a term.
+	 */
+	asksKeywords?: "carried" | "catalog";
+}
+
+/** What the policy may be told about the store it is answering for — see KEYWORD_ABILITY_KEYWORDS. */
+export interface TermPolicyContext {
+	/** The keywords some card in the store carries: `keywordKey` → the keyword as the store spells it. */
+	keywords?: ReadonlyMap<string, string>;
+	/** The words of Scryfall's three keyword catalogs, as `keywordKey`s. */
+	catalogKeywords?: ReadonlySet<string>;
 }
 
 /**
@@ -3455,7 +3535,15 @@ type LeafVerdict =
 	 * and `namedSet` / `typedSet` the set code a set term was respelled to or spelled with (see
 	 * SET_KEYWORDS).
 	 */
-	| { keep: true; text: string; include?: readonly (keyof IncludeOptions)[]; namedSet?: string; typedSet?: string }
+	| {
+			keep: true;
+			text: string;
+			include?: readonly (keyof IncludeOptions)[];
+			namedSet?: string;
+			typedSet?: string;
+			/** A `keyword:` term kept without its value being checked, and the table that would say. */
+			asksKeywords?: "carried" | "catalog";
+	  }
 	| { keep: false; reason: string }
 	/** A display option: removed from the query, never a term, with its own warning if any. */
 	| {
@@ -3466,7 +3554,7 @@ type LeafVerdict =
 			directive?: DirectiveFound;
 	  };
 
-function classifyLeaf(term: string): LeafVerdict {
+function classifyLeaf(term: string, context: TermPolicyContext = {}): LeafVerdict {
 	const match = LEAF_RE.exec(term);
 	if (match === null) return { keep: true, text: term };
 	const negated = match[1] === "-";
@@ -3735,6 +3823,28 @@ function classifyLeaf(term: string): LeafVerdict {
 		if (code === null) return { keep: true, text: term, typedSet: loweredValue };
 		return { keep: true, text: `${match[1]}${match[2]}${op}${code}`, namedSet: code };
 	}
+	// `keyword:untap`: a value that is no keyword — see KEYWORD_ABILITY_KEYWORDS. Equality only
+	// reaches here, in both polarities. A pattern is left to the rule it already has: a plain one
+	// is lowered to the word it spells (regexKeywordReason), and is not checked here.
+	if (KEYWORD_ABILITY_KEYWORDS.has(keyword) && !isRegexLiteral(rawValue)) {
+		const key = keywordKey(value);
+		const unknown: LeafVerdict = { keep: false, reason: `Unknown keyword “${loweredValue}”` };
+		if (GENERIC_KEYWORD_ACTIONS.has(key)) return unknown;
+		const { keywords, catalogKeywords } = context;
+		if (keywords === undefined) return { keep: true, text: term, asksKeywords: "carried" };
+		const carried = keywords.get(key);
+		if (carried !== undefined) {
+			// As the store spells it, which is the word the engine compares.
+			return carried === loweredValue
+				? { keep: true, text: term }
+				: { keep: true, text: `${match[1]}${match[2]}${op}"${carried}"` };
+		}
+		// No card carries it. An empty table is an engine that could not say, and validates nothing.
+		if (keywords.size === 0) return { keep: true, text: term };
+		if (catalogKeywords === undefined) return { keep: true, text: term, asksKeywords: "catalog" };
+		if (catalogKeywords.size > 0 && !catalogKeywords.has(key)) return unknown;
+		return { keep: true, text: term };
+	}
 	// `lore:""` is the unknown-keyword sentence, minus included — see LORE_KEYWORDS. A value that
 	// is only spaces is a value.
 	if (LORE_KEYWORDS.has(keyword) && value === "") {
@@ -3837,6 +3947,9 @@ interface PolicyScan {
 	/** Set codes written for a named set, and set codes the query spelled — see SET_KEYWORDS. */
 	readonly namedSets: Set<string>;
 	readonly typedSets: Set<string>;
+	/** What the caller knows of the store — see KEYWORD_ABILITY_KEYWORDS. */
+	readonly context: TermPolicyContext;
+	asksKeywords: "carried" | "catalog" | undefined;
 }
 
 function policyLevel(source: string, scan: PolicyScan): string | null {
@@ -3870,8 +3983,12 @@ function policyLevel(source: string, scan: PolicyScan): string | null {
 			if (inner !== null) kept.push({ kind: "leaf", text: inner });
 			continue;
 		}
-		const verdict = classifyLeaf(piece.text);
+		const verdict = classifyLeaf(piece.text, scan.context);
 		if (verdict.keep) {
+			// "carried" is asked first: until it is answered nothing says a catalog is needed.
+			if (verdict.asksKeywords !== undefined && scan.asksKeywords !== "carried") {
+				scan.asksKeywords = verdict.asksKeywords;
+			}
 			for (const option of verdict.include ?? []) scan.include[option] = true;
 			if (verdict.namedSet !== undefined) scan.namedSets.add(verdict.namedSet);
 			if (verdict.typedSet !== undefined) scan.typedSets.add(verdict.typedSet);
@@ -3914,7 +4031,7 @@ function policyLevel(source: string, scan: PolicyScan): string | null {
  * term was unusable with "All of your terms were ignored." — two different sentences for two
  * different mistakes.
  */
-export function scryfallTermPolicy(rawQuery: string): TermPolicyResult {
+export function scryfallTermPolicy(rawQuery: string, context: TermPolicyContext = {}): TermPolicyResult {
 	const folded = foldSmartQuotes(rawQuery);
 	const scan: PolicyScan = {
 		warnings: [],
@@ -3922,6 +4039,8 @@ export function scryfallTermPolicy(rawQuery: string): TermPolicyResult {
 		directives: [],
 		namedSets: new Set(),
 		typedSets: new Set(),
+		context,
+		asksKeywords: undefined,
 	};
 	const { include, directives } = scan;
 	if (unbalancedParens(folded)) {
@@ -3933,10 +4052,45 @@ export function scryfallTermPolicy(rawQuery: string): TermPolicyResult {
 		const result: TermPolicyResult = { query, warnings, allIgnored: false, unclosedParens: false, include, directives };
 		const quietSets = [...scan.namedSets].filter((code) => !scan.typedSets.has(code));
 		if (quietSets.length > 0) result.quietSets = quietSets;
+		if (scan.asksKeywords !== undefined) result.asksKeywords = scan.asksKeywords;
 		return result;
 	}
 	// Nothing survived, and now the only way that happens is a term Scryfall refused: a dangling
 	// operator is REWRITTEN rather than dropped (danglingOperatorTerm), so `q=t:` no longer empties
 	// the query and no longer needs an always-true leaf standing in for it.
 	return { query: folded, warnings, allIgnored: true, unclosedParens: false, include, directives };
+}
+
+/** What `scryfallTermPolicyFor` may ask about the store — each asked at most once, and only when needed. */
+export interface KeywordTables {
+	/** `Engine.cardKeywordCounts`: every keyword some card in the store carries. */
+	carried(): Promise<Record<string, number>>;
+	/** Scryfall's `keyword-abilities`, `keyword-actions` and `ability-words` catalogs, or null when unread. */
+	catalogs(): Promise<readonly string[] | null>;
+}
+
+/** One keyed map per catalog table, which the engine hands out once per store generation. */
+const CARRIED_KEYWORDS = new WeakMap<Record<string, number>, ReadonlyMap<string, string>>();
+
+/**
+ * The term policy for a store: `scryfallTermPolicy`, with `keyword:` values read against the
+ * keywords the store's own cards carry and Scryfall's catalogs — see KEYWORD_ABILITY_KEYWORDS.
+ *
+ * A query without a `keyword:` term costs exactly what `scryfallTermPolicy` costs and asks
+ * nothing. One with a term whose value a card carries asks `carried` (cached per isolate and
+ * colo) and runs the policy twice; only a value no card carries asks for the catalogs.
+ */
+export async function scryfallTermPolicyFor(rawQuery: string, tables: KeywordTables): Promise<TermPolicyResult> {
+	const policy = scryfallTermPolicy(rawQuery);
+	if (policy.asksKeywords === undefined) return policy;
+	const counts = await tables.carried();
+	let keywords = CARRIED_KEYWORDS.get(counts);
+	if (keywords === undefined) {
+		keywords = new Map(Object.keys(counts).map((keyword) => [keywordKey(keyword), keyword.toLowerCase()]));
+		CARRIED_KEYWORDS.set(counts, keywords);
+	}
+	const carried = scryfallTermPolicy(rawQuery, { keywords });
+	if (carried.asksKeywords === undefined) return carried;
+	const words = await tables.catalogs();
+	return scryfallTermPolicy(rawQuery, { keywords, catalogKeywords: new Set((words ?? []).map(keywordKey)) });
 }

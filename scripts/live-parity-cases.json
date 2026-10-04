@@ -2882,6 +2882,18 @@
 			"method": "GET",
 			"path": "/cards/search?q=block%3Amb1",
 			"note": "2026-10-04. 5,323 = `block:plst`: Mystery Booster was folded into The List and its code still answers (`e:mb1` = `e:fmb1` = `e:plist` 5,257, without the extras `e:plst` opens; `e:dar` 265 = `e:dom`, `e:7e` 335). A measured list, not the sets' MTGO codes (`e:uz`, `e:te` are 404). A 404 here."
+		},
+		{
+			"name": "keyword-value-no-card-carries-is-ignored",
+			"method": "GET",
+			"path": "/cards/search?q=kw%3Auntap+t%3Agoblin",
+			"note": "2026-10-04. `t:goblin`'s 561 carrying `Invalid expression “kw:untap” was ignored. Unknown keyword “untap”` (no full stop); `keyword:untap` alone is the 400. A plain 404 here. Known keywords are the ones some card carries (the store's own table) plus the catalog words none does (`keyword:absorb` is a plain 404), minus nineteen generic keyword actions."
+		},
+		{
+			"name": "keyword-value-ignores-spaces-and-hyphens",
+			"method": "GET",
+			"path": "/cards/search?q=keyword%3Afirststrike+e%3Akhm",
+			"note": "2026-10-04. 4 = `keyword:\"first strike\" e:khm` = `keyword:first-strike e:khm`; a part of a keyword is none (`keyword:fly e:khm` is the 305 with the unknown sentence). A 404 here."
 		}
 	]
 }

@@ -83,11 +83,14 @@ import { queryShape } from "./query-shape";
 import {
 	exceedsScryfallRegexBudget,
 	hasNestedScryfallDisplayOption,
+	type KeywordTables,
 	NESTED_DISPLAY_OPTIONS_DETAILS,
 	SCRYFALL_ONLY_ORDERS,
 	scryfallTermPolicy,
+	scryfallTermPolicyFor,
 	TOO_MANY_REGEX_DETAILS,
 } from "./query-terms";
+import { keywordCatalogWords } from "./reference-routes";
 import { asBool, scryfallCollectionBytes, scryfallCollectionResponse, scryfallJson, scryfallListJson } from "./respond";
 import { setAndCollectorNumber, TRUE_TREE } from "./trees";
 
@@ -552,7 +555,9 @@ export async function cardsSearchHandler(
 	// SCRYFALL'S IGNORE-AND-CONTINUE POLICY, applied to the raw query before anything reads it:
 	// the terms this API cannot honor leave the query carrying a warning, and only a query with
 	// NOTHING left is a bad request. See query-terms.ts for the measurements behind every rule.
-	const policy = scryfallTermPolicy(q);
+	// `keyword:` is the one term whose value is read against the store — see
+	// KEYWORD_ABILITY_KEYWORDS. The engine is asked only when the query has one.
+	const policy = await scryfallTermPolicyFor(q, keywordTables(ctx));
 	if (policy.unclosedParens) {
 		return scryfallJson(badRequestError(UNCLOSED_PARENS_DETAILS, null), pretty, CARDS_CACHE);
 	}
@@ -1090,6 +1095,18 @@ export async function cardsAutocompleteHandler(
 	}
 }
 
+/**
+ * What `keyword:` is read against: the store's own keywords and the three keyword catalogs this
+ * port mirrors — see KEYWORD_ABILITY_KEYWORDS in query-terms.ts. Nothing is read until the term
+ * policy asks, which is only for a query with a `keyword:` term.
+ */
+function keywordTables(ctx: RouteContext): KeywordTables {
+	return {
+		carried: async () => (await ctx.getEngine()).cardKeywordCounts(),
+		catalogs: () => keywordCatalogWords(ctx),
+	};
+}
+
 // ─── GET /cards/random ───────────────────────────────────────────────────────
 
 export async function cardsRandomHandler(
@@ -1110,7 +1127,7 @@ export async function cardsRandomHandler(
 		// random elf (measured 2026-08-16). A random card drawn from a query whose only term was
 		// silently dropped is a random card from the WHOLE corpus, which is the worst of the
 		// available answers.
-		const policy = scryfallTermPolicy(q);
+		const policy = await scryfallTermPolicyFor(q, keywordTables(ctx));
 		if (policy.unclosedParens) {
 			return scryfallJson(badRequestError(UNCLOSED_PARENS_DETAILS, null), pretty, RANDOM_CACHE);
 		}
