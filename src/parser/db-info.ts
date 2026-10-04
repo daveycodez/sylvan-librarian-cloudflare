@@ -168,6 +168,60 @@ export const DB_COLUMNS: readonly FieldInfo[] = [
 		searchAliases: ["usdfoil"],
 		parserClass: ParserClass.NUMERIC,
 	},
+	// LOCAL PATCH (Cloudflare port): Scryfall's five per-CARD counts and its per-printing artist
+	// count. STORED since generation 58 — card_engine's `assign_print_counts` decides the five
+	// over every printing of the card in every language and carries the rule for each, measured
+	// on api.scryfall.com 2026-10-03 by reading a card's printings and binary-searching the value
+	// Scryfall holds: Lightning Bolt is prints 77, sets 46, paperprints 68, papersets 41,
+	// illustrations 33; Reset 3 / 3 / 2 / 2 / 2. Corpus-wide the same day:
+	//
+	//   prints=1 13,243   prints>=10 1,521   prints>=100 8   prints=0 404
+	//   sets=1 16,115 (= is:unique exactly)   sets>=10 1,068   sets>=50 16
+	//   paperprints=1 13,723   paperprints>=10 1,282   paperprints=0 654 (digital-only cards)
+	//   papersets=1 16,825   papersets>=10 898   papersets=0 654
+	//   illustrations=1 25,688   illustrations>=2 7,957   illustrations>=10 95   illustrations=0 4
+	//   artists=2 = artists>=2 631   artists=0 12   artists=3 404   artists:1 e:khm all 305
+	//
+	// Numeric columns like any other: all seven operators, and a column on either side
+	// (`prints>sets e:khm` 119, `prints=sets e:khm` 186, `prints>paperprints e:khm` 98,
+	// `illustrations>=prints e:khm` 123, `prints>=cmc e:khm` 171, `artists>=cmc e:khm` 59). None
+	// opens extras.
+	{
+		dbColumnName: "print_count",
+		fieldType: FieldType.NUMERIC,
+		searchAliases: ["prints"],
+		parserClass: ParserClass.NUMERIC,
+	},
+	{
+		dbColumnName: "set_count",
+		fieldType: FieldType.NUMERIC,
+		searchAliases: ["sets"],
+		parserClass: ParserClass.NUMERIC,
+	},
+	{
+		dbColumnName: "paper_print_count",
+		fieldType: FieldType.NUMERIC,
+		searchAliases: ["paperprints"],
+		parserClass: ParserClass.NUMERIC,
+	},
+	{
+		dbColumnName: "paper_set_count",
+		fieldType: FieldType.NUMERIC,
+		searchAliases: ["papersets"],
+		parserClass: ParserClass.NUMERIC,
+	},
+	{
+		dbColumnName: "illustration_count",
+		fieldType: FieldType.NUMERIC,
+		searchAliases: ["illustrations"],
+		parserClass: ParserClass.NUMERIC,
+	},
+	{
+		dbColumnName: "artist_count",
+		fieldType: FieldType.NUMERIC,
+		searchAliases: ["artists"],
+		parserClass: ParserClass.NUMERIC,
+	},
 	{
 		dbColumnName: "produced_mana",
 		fieldType: FieldType.JSONB_OBJECT,

@@ -1788,8 +1788,23 @@ export async function gzipBytes(bytes: Uint8Array): Promise<Uint8Array> {
  *      columns the archive already has, about 2.5 KB across the whole store, and every text
  *      predicate, bound substring set and trigram posting is built from those strings as before.
  *      Nothing on the query path moves.
+ *
+ *   58 (2026-10-04): THE PER-CARD COUNTS SCRYFALL SEARCHES BY (x68). `prints`, `sets`,
+ *      `paperprints`, `papersets` and `illustrations` are card-level aggregates over every
+ *      printing of a card in every language, and `artists` is how many artists a printing
+ *      credits; each failed to parse here. The store now holds them: five u16 on the card
+ *      (`assign_print_counts`, which carries the measured rule for each — `prints` is distinct
+ *      (set, collector number) slots, 77 for Lightning Bolt and 3 for Reset on api.scryfall.com
+ *      2026-10-03) and two bits of the printing's compat flags (`assign_artist_counts`).
+ *
+ *      Paired with ARCHIVE_FORMAT_VERSION 2026092601 -> 2026100401, and NEITHER ROW GROWS: the
+ *      card stays 288 bytes and the printing 304. Eight of the ten bytes ride padding the card
+ *      row already had and two come out of the inline name (`InlineStr<57>` -> `<55>`), so the
+ *      only archive growth is the strings-table entry of each name 56 or 57 bytes long. Computed
+ *      in card_engine's build, after grouping, so the native builder and the wasm import produce
+ *      it from the same code and no row codec or staged draft carries a new field.
  */
-export const STORE_CONTENT_GENERATION = 57;
+export const STORE_CONTENT_GENERATION = 58;
 
 /**
  * Chunk key for a store. Keyed by store_key, so publishes never collide.

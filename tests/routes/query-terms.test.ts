@@ -1576,6 +1576,13 @@ describe("the regex surface, alias by alias", () => {
 			].map((kw) => [kw, [`${kw}:/1/`, `Unknown regular expression keyword \u201c${kw}\u201d.`]]),
 		),
 		stamp: ["stamp:/oval/", "Unknown regular expression keyword \u201cstamp\u201d."],
+		// The six counts: `artists:/1/ e:khm` is 305 carrying the sentence; numeric columns all.
+		...Object.fromEntries(
+			["prints", "sets", "paperprints", "papersets", "illustrations", "artists"].map((kw) => [
+				kw,
+				[`${kw}:/1/`, `Unknown regular expression keyword \u201c${kw}\u201d.`],
+			]),
+		),
 	};
 
 	/**
@@ -1771,17 +1778,13 @@ describe("a keyword Scryfall honors is never called unknown", () => {
 	//
 	// The list shrinks as x68 answers them (tests/routes/scryfall-keywords-x68.test.ts): `edition`,
 	// `edhrec`, `collector` and `collectornumber` are spellings of columns the parser had; the four
-	// external ids, `usdfoil` and `stamp` read fields the store already held.
+	// external ids, `usdfoil` and `stamp` read fields the store already held; and the six counts
+	// (`prints`, `sets`, `paperprints`, `papersets`, `illustrations`, `artists`) are stored since
+	// generation 58.
 	const HONORED_THERE = [
 		"block:khm",
 		"b:khm",
 		"lore:x",
-		"artists:1",
-		"prints:1",
-		"sets:1",
-		"paperprints:1",
-		"papersets:1",
-		"illustrations:1",
 		// Three of the five that were already here.
 		"cube:vintage",
 		"new:art",

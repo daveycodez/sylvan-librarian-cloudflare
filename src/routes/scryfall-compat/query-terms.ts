@@ -412,16 +412,12 @@ const SCRYFALL_ONLY_KEYWORDS: ReadonlySet<string> = new Set([
 	// `collectornumber` and `edhrec` left first: they are spellings of columns the parser already
 	// had (db-info's `card_set_code`, `collector_number_int`, `edhrec_rank`). `mtgoid`,
 	// `multiverseid`, `arenaid`, `tcgplayerid` and `usdfoil` left second: the engine answers them
-	// from fields the store already held for the card object.
+	// from fields the store already held for the card object. `prints`, `sets`, `paperprints`,
+	// `papersets`, `illustrations` and `artists` left third, with store generation 58, which
+	// holds the counts they compare.
 	"block",
 	"b",
 	"lore",
-	"artists",
-	"prints",
-	"sets",
-	"paperprints",
-	"papersets",
-	"illustrations",
 ]);
 
 /**
@@ -476,6 +472,16 @@ const NEGATED_EQUALITY_UNKNOWN_KEYWORD: ReadonlySet<string> = new Set([
 	// `usdfoil:abc e:khm` and `-usdfoil:1 e:khm` are 305 carrying the two sentences, and
 	// `-usdfoil>=1 e:khm` is 305 with none (2026-10-03).
 	"usdfoil",
+	// The six counts, each probed the same three ways: `<kw>:abc e:khm` and `-<kw>:1 e:khm` are
+	// 305 carrying `Unknown keyword “<kw>”.` / `“-<kw>”.` for prints, sets, paperprints,
+	// papersets, illustrations and artists; `-prints>=10 e:khm` and `-artists>=2 e:khm` are 305
+	// with no warning.
+	"prints",
+	"sets",
+	"paperprints",
+	"papersets",
+	"illustrations",
+	"artists",
 ]);
 
 /**
@@ -769,6 +775,14 @@ const COMPARABLE_KEYWORDS: ReadonlySet<string> = new Set([
 	"edhrec_rank",
 	// `usdfoil>=1 e:khm` 68, `usdfoil<1 e:khm` 229, `usdfoil!=1 e:khm` 285.
 	"usdfoil",
+	// `prints>=10` 1,521, `sets>=10` 1,068, `paperprints>=10` 1,282, `papersets>=10` 898,
+	// `illustrations>=10` 95, `artists>=2` 631, `artists!=1` 638.
+	"prints",
+	"sets",
+	"paperprints",
+	"papersets",
+	"illustrations",
+	"artists",
 	// ordered enums / dates
 	"r",
 	"rarity",
@@ -2380,6 +2394,15 @@ const CROSS_COLUMN_VALUES: ReadonlySet<string> = new Set([
 	"eur",
 	"tix",
 	"usdfoil",
+	// The counts: `prints>sets e:khm` 119, `prints=sets e:khm` 186, `prints>=paperprints e:khm`
+	// 305, `prints>paperprints e:khm` 98, `illustrations>=prints e:khm` 123, and
+	// `prints=prints e:khm` the same-sides refusal.
+	"prints",
+	"sets",
+	"paperprints",
+	"papersets",
+	"illustrations",
+	"artists",
 ]);
 
 /**

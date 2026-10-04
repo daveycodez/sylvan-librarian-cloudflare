@@ -97,6 +97,21 @@ pub(crate) enum NumField {
     /// `usd>usdfoil e:khm` 57 — two different numbers on one printing. Printing-level, NULL when
     /// the printing has no foil price, unindexed (verified per candidate, like `edhrec`).
     PriceUsdFoil,
+    /// LOCAL PATCH (Cloudflare port): Scryfall's five per-CARD counts — `prints`, `sets`,
+    /// `paperprints`, `papersets`, `illustrations` — read off the fields `assign_print_counts`
+    /// decides at build (it carries the rule and measurement for each). Card-level, never NULL
+    /// and never `PDep`: a card with no paper printing has `paperprints=0` (654 cards on
+    /// api.scryfall.com, 2026-10-03), which is a value, not an absence. Unindexed.
+    Prints,
+    Sets,
+    PaperPrints,
+    PaperSets,
+    Illustrations,
+    /// LOCAL PATCH (Cloudflare port): Scryfall's `artists` — how many artists the PRINTING
+    /// credits, out of two bits of its compat flags (`COMPAT_ARTISTS_SHIFT`). Printing-level and
+    /// never NULL: `artists=0` is the 12 cards with no artist, `artists=2` 631, `artists:1 e:khm`
+    /// all 305 (2026-10-03).
+    Artists,
 }
 
 fn attr_to_num_field(attr: &str) -> Option<NumField> {
@@ -113,6 +128,12 @@ fn attr_to_num_field(attr: &str) -> Option<NumField> {
         "price_eur"            => Some(NumField::PriceEur),
         "price_tix"            => Some(NumField::PriceTix),
         "price_usd_foil"       => Some(NumField::PriceUsdFoil),
+        "print_count"          => Some(NumField::Prints),
+        "set_count"            => Some(NumField::Sets),
+        "paper_print_count"    => Some(NumField::PaperPrints),
+        "paper_set_count"      => Some(NumField::PaperSets),
+        "illustration_count"   => Some(NumField::Illustrations),
+        "artist_count"         => Some(NumField::Artists),
         "prefer_score"         => Some(NumField::PreferScore),
         _ => None,
     }
@@ -161,6 +182,14 @@ fn field_num(card: &AOracleCard, printing: Option<&APrinting>, f: NumField) -> N
         NumField::PreferScore        => printing.map_or(NumVal::PDep, |p| known(p.prefer_score.as_ref().map(|v| f32::from(*v)))),
         NumField::PowTou             => front_power_plus_toughness(card),
         NumField::PriceUsdFoil       => printing.map_or(NumVal::PDep, |p| known_cents(p.compat.price_usd_foil.as_ref().map(|v| v.get()))),
+        NumField::Prints             => NumVal::Known(f64::from(u16::from(card.print_count))),
+        NumField::Sets               => NumVal::Known(f64::from(u16::from(card.set_count))),
+        NumField::PaperPrints        => NumVal::Known(f64::from(u16::from(card.paper_print_count))),
+        NumField::PaperSets          => NumVal::Known(f64::from(u16::from(card.paper_set_count))),
+        NumField::Illustrations      => NumVal::Known(f64::from(u16::from(card.illustration_count))),
+        NumField::Artists            => printing.map_or(NumVal::PDep, |p| {
+            NumVal::Known(f64::from((u16::from(p.compat.flags) & super::COMPAT_ARTISTS_MASK) >> super::COMPAT_ARTISTS_SHIFT))
+        }),
     }
 }
 
@@ -2179,8 +2208,15 @@ fn leaf_compares_printing_field(f: &FilterExpr) -> bool {
                 | NumField::PriceEur
                 | NumField::PriceTix
                 | NumField::PriceUsdFoil
+                | NumField::Artists
                 | NumField::PreferScore => true,
                 NumField::Cmc | NumField::Power | NumField::Toughness | NumField::Loyalty | NumField::EdhrEc => false,
+                // The per-card counts: one value for every printing of the card.
+                NumField::Prints
+                | NumField::Sets
+                | NumField::PaperPrints
+                | NumField::PaperSets
+                | NumField::Illustrations => false,
                 // The front face's stats: oracle-level, the same for every printing.
                 NumField::PowTou => false,
             },

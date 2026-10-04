@@ -206,6 +206,45 @@ DB_COLUMNS = [
         search_aliases=["usdfoil"],
         parser_class=ParserClass.NUMERIC,
     ),
+    # LOCAL PATCH (Cloudflare port): Scryfall's five per-card counts and its per-printing artist
+    # count, stored by card_engine's `assign_print_counts` / `assign_artist_counts` (measured on
+    # api.scryfall.com 2026-10-03; see src/parser/db-info.ts).
+    FieldInfo(
+        db_column_name="print_count",
+        field_type=FieldType.NUMERIC,
+        search_aliases=["prints"],
+        parser_class=ParserClass.NUMERIC,
+    ),
+    FieldInfo(
+        db_column_name="set_count",
+        field_type=FieldType.NUMERIC,
+        search_aliases=["sets"],
+        parser_class=ParserClass.NUMERIC,
+    ),
+    FieldInfo(
+        db_column_name="paper_print_count",
+        field_type=FieldType.NUMERIC,
+        search_aliases=["paperprints"],
+        parser_class=ParserClass.NUMERIC,
+    ),
+    FieldInfo(
+        db_column_name="paper_set_count",
+        field_type=FieldType.NUMERIC,
+        search_aliases=["papersets"],
+        parser_class=ParserClass.NUMERIC,
+    ),
+    FieldInfo(
+        db_column_name="illustration_count",
+        field_type=FieldType.NUMERIC,
+        search_aliases=["illustrations"],
+        parser_class=ParserClass.NUMERIC,
+    ),
+    FieldInfo(
+        db_column_name="artist_count",
+        field_type=FieldType.NUMERIC,
+        search_aliases=["artists"],
+        parser_class=ParserClass.NUMERIC,
+    ),
     FieldInfo(
         db_column_name="produced_mana",
         field_type=FieldType.JSONB_OBJECT,

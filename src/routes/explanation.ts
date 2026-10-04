@@ -70,6 +70,12 @@ const ATTRIBUTE_NAME_MAP: Record<string, string> = {
 	price_eur: "price (EUR)",
 	price_tix: "price (TIX)",
 	price_usd_foil: "foil price (USD)",
+	print_count: "number of printings",
+	set_count: "number of sets",
+	paper_print_count: "number of paper printings",
+	paper_set_count: "number of paper sets",
+	illustration_count: "number of illustrations",
+	artist_count: "number of artists",
 	edhrec_rank: "EDHREC rank",
 };
 

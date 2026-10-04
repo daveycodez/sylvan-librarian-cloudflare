@@ -384,3 +384,69 @@ describe("the four external-id keywords", () => {
 		expect(await gated("tcgplayerid:abc or cmc=3")).toEqual([false, false]);
 	});
 });
+
+describe("the six counts: prints, sets, paperprints, papersets, illustrations, artists", () => {
+	const COUNTS: [keyword: string, column: string][] = [
+		["prints", "print_count"],
+		["sets", "set_count"],
+		["paperprints", "paper_print_count"],
+		["papersets", "paper_set_count"],
+		["illustrations", "illustration_count"],
+		["artists", "artist_count"],
+	];
+
+	for (const [keyword, column] of COUNTS) {
+		test.each([":", "=", ">", ">=", "<", "<=", "!="])(`${keyword}%s2 is ${column}`, (op) => {
+			const tree = leaf(`${keyword}${op}2`);
+			expect(tree.kwargs.lhs.kwargs.attribute_name).toBe(column);
+			expect(tree.kwargs.lhs.kwargs.original_attribute).toBe(keyword);
+			expect(tree.kwargs.op).toBe(op);
+			expect(wire(`${keyword}${op}2`)).toContain('"rhs":{"kwargs":{"value":2},"node_type":"NumericValueNode"}');
+		});
+
+		test(`${keyword}: the numeric columns' sentences`, async () => {
+			expect(scryfallTermPolicy(`${keyword}:abc e:khm`).warnings).toEqual([
+				ignored(`${keyword}:abc`, `Unknown keyword “${keyword}”.`),
+			]);
+			expect(scryfallTermPolicy(`-${keyword}:1 e:khm`).warnings).toEqual([
+				ignored(`-${keyword}:1`, `Unknown keyword “-${keyword}”.`),
+			]);
+			const tautology = scryfallTermPolicy(`-${keyword}>=2 e:khm`);
+			expect([tautology.query, tautology.warnings]).toEqual(["-cmc<0 e:khm", []]);
+			// `prints=1 or cmc=3` … `artists:2 or cmc=3` all echo include_extras=false.
+			expect(await gated(`${keyword}=1 or cmc=3`)).toEqual([false, false]);
+		});
+	}
+
+	test("they compare against each other and against other columns", () => {
+		// `prints>sets e:khm` 119, `prints=sets e:khm` 186, `prints>paperprints e:khm` 98,
+		// `illustrations>=prints e:khm` 123, `prints>=cmc e:khm` 171, `artists>=cmc e:khm` 59.
+		for (const q of [
+			"prints>sets e:khm",
+			"prints=sets e:khm",
+			"prints>paperprints e:khm",
+			"papersets<sets e:khm",
+			"illustrations>=prints e:khm",
+			"prints>=cmc e:khm",
+			"artists>=cmc e:khm",
+			"cmc<prints e:khm",
+		]) {
+			const policy = scryfallTermPolicy(q);
+			expect([q, policy.query, policy.warnings]).toEqual([q, q, []]);
+			expect(() => parseScryfallQueryWithDirectives(q, EMPTY_TAG_ALIASES)).not.toThrow();
+		}
+	});
+
+	test("compared with itself", () => {
+		expect(scryfallTermPolicy("prints=prints e:khm").warnings).toEqual([
+			ignored("prints=prints", "The sides of your comparison must be different."),
+		]);
+	});
+
+	test("a quoted number is a string, as on every numeric column", () => {
+		// `artists:"1" e:khm` is 305 carrying the unknown-keyword sentence.
+		expect(scryfallTermPolicy('artists:"1" e:khm').warnings).toEqual([
+			ignored('artists:"1"', "Unknown keyword “artists”."),
+		]);
+	});
+});

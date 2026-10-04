@@ -342,3 +342,129 @@ fn multiverseid_is_membership_and_its_negation_is_a_plain_complement() {
         ["chk/153", "khm/114", "msc/806", "tund/4", "ysnc/23"]
     );
 }
+
+// ── prints: / sets: / paperprints: / papersets: / illustrations: ────────────────────────────────
+
+/// The value a per-card count holds for the card behind `address`, read back by asking
+/// `<keyword>=N` for every N: exactly one N answers, because the count is a value on every card.
+fn count_of(store: &BufferStore, column: &str, keyword: &str, address: &str) -> u32 {
+    let answers: Vec<u32> =
+        (0..40).filter(|&n| printings(store, &num(column, keyword, "=", f64::from(n))).iter().any(|a| a == address)).collect();
+    assert_eq!(answers.len(), 1, "{keyword} of {address} answered {answers:?}");
+    answers[0]
+}
+
+/// `(prints, sets, paperprints, papersets, illustrations)` of the card behind `address`.
+fn counts_of(store: &BufferStore, address: &str) -> (u32, u32, u32, u32, u32) {
+    (
+        count_of(store, "print_count", "prints", address),
+        count_of(store, "set_count", "sets", address),
+        count_of(store, "paper_print_count", "paperprints", address),
+        count_of(store, "paper_set_count", "papersets", address),
+        count_of(store, "illustration_count", "illustrations", address),
+    )
+}
+
+#[test]
+fn reset_counts_what_scryfall_counts() {
+    // EVERY printing api.scryfall.com holds for Reset (2026-10-03): leg/73 in English and in
+    // Italian, me3/48 (MTGO only, the Legends artwork) and mb2/170 (new artwork). Scryfall's own
+    // values for the card that day, found by search: `!"Reset" prints=3`, `sets=3`,
+    // `paperprints=2`, `papersets=2`, `illustrations=2` are each 1, and `paperprints=1`,
+    // `papersets=1` and `illustrations=1` each 404.
+    //
+    // Four rows and three slots: the Italian leg/73 is a translation of a printing, not another
+    // one. Three slots and two on paper: me3/48 is digital. Three printings and two artworks.
+    let store = store_from(&["reset_leg_73", "reset_leg_73_it", "reset_me3_48", "reset_mb2_170", "lightning_bolt"]);
+    assert_eq!(counts_of(&store, "leg/73"), (3, 3, 2, 2, 2));
+    // The count is the CARD's: every printing of it answers, the digital one included.
+    assert_eq!(printings(&store, &num("paper_print_count", "paperprints", "=", 2.0)), ["leg/73", "mb2/170", "me3/48"]);
+    assert_eq!(printings(&store, &num("print_count", "prints", ">=", 2.0)), ["leg/73", "mb2/170", "me3/48"]);
+    assert_eq!(printings(&store, &num("print_count", "prints", "=", 1.0)), ["msc/806"]);
+    assert_eq!(printings(&store, &not(num("print_count", "prints", "=", 3.0))), ["msc/806"]);
+}
+
+#[test]
+fn tithe_counts_its_gold_bordered_printing() {
+    // Tithe is vis/23 and the World Championship deck's wc98/bh23a — memorabilia, an extra — and
+    // Scryfall holds prints=2 sets=2 paperprints=2 papersets=2 illustrations=1 for it
+    // (2026-10-03): extras printings count, and one artwork printed twice is one.
+    let store = store_from(&["tithe_vis_23", "tithe_wc98_bh23a"]);
+    assert_eq!(counts_of(&store, "vis/23"), (2, 2, 2, 2, 1));
+}
+
+#[test]
+fn a_set_printed_twice_is_one_set_and_a_foreign_only_slot_is_a_printing() {
+    // Flashback: psos/115p, sos/115 and sos/333 — three slots, two sets, one artwork.
+    let store = store_from(&["flashback_psos_115p", "flashback_sos_115", "flashback_sos_333"]);
+    assert_eq!(counts_of(&store, "sos/115"), (3, 2, 3, 2, 1));
+    assert_eq!(printings(&store, &num_col("print_count", "prints", ">", "set_count", "sets")), ["psos/115p", "sos/115", "sos/333"]);
+    // Delver of Secrets in English (inr/60) with a Spanish printing of ANOTHER slot (isd/51) and
+    // no English row for it: the shape of Aether Shockwave, which has one English printing and a
+    // Spanish-only Salvat one and is `prints=2 sets=2` on api.scryfall.com. The annex counts.
+    // (The two rows carry different oracle ids in the fixtures — isd/51 predates the errata that
+    // split them — so the Spanish row is given the English one's.)
+    let english = fixture("delver_of_secrets");
+    let mut spanish = fixture("delver_es");
+    spanish["oracle_id"] = english["oracle_id"].clone();
+    let store = store_of(&[english, spanish]);
+    // Its artwork is on its FACES, and both rows print the same front: one illustration, though
+    // the two backs differ (Delver's eight printings carry twelve face artworks and count 6).
+    assert_eq!(counts_of(&store, "inr/60"), (2, 2, 2, 2, 1));
+}
+
+#[test]
+fn a_digital_only_card_has_no_paper_printings() {
+    // `paperprints=0` and `papersets=0` are each 654 cards on api.scryfall.com — the Alchemy cards
+    // among them. ymkm/13 exists on Arena alone. A count of zero is a VALUE: it compares, and its
+    // complement holds the paper card.
+    let store = store_from(&["case_of_the_market_melee_ymkm_13", "lightning_bolt"]);
+    assert_eq!(counts_of(&store, "ymkm/13"), (1, 1, 0, 0, 1));
+    assert_eq!(printings(&store, &num("paper_print_count", "paperprints", "<", 1.0)), ["ymkm/13"]);
+    assert_eq!(printings(&store, &not(num("paper_set_count", "papersets", "=", 0.0))), ["msc/806"]);
+    assert_eq!(
+        printings(&store, &num_col("print_count", "prints", ">", "paper_print_count", "paperprints")),
+        ["ymkm/13"]
+    );
+}
+
+#[test]
+fn doubling_cube_counts_slots_not_set_codes_in_the_number() {
+    // 10e/321, 5dn/116, plst/10E-321 and sld/1080: four slots in four sets. The List's collector
+    // number is the string `10E-321`, and it is its own slot. Three share the Fifth Dawn artwork;
+    // the Secret Lair printing has its own, on its faces.
+    let store =
+        store_from(&["doubling_cube_10e_321", "doubling_cube_5dn_116", "doubling_cube_plst_10e_321", "doubling_cube_sld_1080"]);
+    assert_eq!(counts_of(&store, "5dn/116"), (4, 4, 4, 4, 2));
+}
+
+// ── artists: ────────────────────────────────────────────────────────────────────────────────────
+
+#[test]
+fn artists_is_how_many_artists_the_printing_credits() {
+    // dmr/215 Fire // Ice ("David Martin & Franz Vohwinkel") and sld/1969 Mechtitan ("Ivan Shavrin
+    // & Rob Pavic") credit two; tclb/0 Baldur's Gate Wilderness and mmid/2 credit none — tclb/0 is
+    // one of the 12 cards `artists=0` answers on api.scryfall.com; the rest credit one.
+    let store = store_from(&[
+        "fire_ice",
+        "mechtitan_sld_1969",
+        "mechtitan_tneo_14",
+        "baldurs_gate_wilderness_tclb_0",
+        "day_vs_night_mmid_2",
+        "lightning_bolt",
+    ]);
+    let artists = |op: &str, v: f64| printings(&store, &num("artist_count", "artists", op, v));
+    assert_eq!(artists("=", 2.0), ["dmr/215", "sld/1969"]);
+    assert_eq!(artists(":", 2.0), ["dmr/215", "sld/1969"]);
+    assert_eq!(artists(">=", 2.0), ["dmr/215", "sld/1969"]);
+    assert_eq!(artists("=", 0.0), ["mmid/2", "tclb/0"]);
+    assert_eq!(artists("<", 1.0), ["mmid/2", "tclb/0"]);
+    assert_eq!(artists("=", 1.0), ["msc/806", "tneo/14"]);
+    assert_eq!(artists("!=", 1.0), ["dmr/215", "mmid/2", "sld/1969", "tclb/0"]);
+    assert_eq!(artists(">", 2.0), NONE);
+    // Per PRINTING: Mechtitan's token printing credits one artist and its Secret Lair one two.
+    // And a column on the right: Fire // Ice's two artists are fewer than its mana value of 4,
+    // Lightning Bolt's one is its mana value exactly (`artists>=cmc e:khm` is 59 there).
+    let at_least_cmc = printings(&store, &num_col("artist_count", "artists", ">=", "cmc", "cmc"));
+    assert!(at_least_cmc.contains(&"msc/806".to_owned()) && !at_least_cmc.contains(&"dmr/215".to_owned()), "{at_least_cmc:?}");
+}

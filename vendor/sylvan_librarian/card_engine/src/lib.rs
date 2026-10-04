@@ -638,6 +638,18 @@ const COMPAT_REPRINT: u16 = 1 << 8;
 const COMPAT_STORY_SPOTLIGHT: u16 = 1 << 9;
 const COMPAT_TEXTLESS: u16 = 1 << 10;
 const COMPAT_VARIATION: u16 = 1 << 11;
+/// LOCAL PATCH (Cloudflare port): bits 12-13 of `CompatFields::flags` hold how many ARTISTS the
+/// printing credits — Scryfall's `artists` keyword — as 0, 1, 2, or 3 for "three or more".
+///
+/// Two bits because that is the whole range: on api.scryfall.com (2026-10-03) `artists=2` is 631
+/// cards, `artists=0` is 12 (the cards with no artist at all), and `artists=3` and `artists>2`
+/// are both 404. Stored rather than read at query time because the count is the length of
+/// `artist_ids`, which lives joined in `coll_vocab` behind `Printing::artist_ids_vid`, and
+/// `tri()` has no vocab in hand. Written by `assign_artist_counts` at build, from that same
+/// vocab entry, so no row codec carries it and both import runners agree by construction. The
+/// bits were clear in every archive before 2026100401.
+const COMPAT_ARTISTS_SHIFT: u32 = 12;
+const COMPAT_ARTISTS_MASK: u16 = 0b11 << COMPAT_ARTISTS_SHIFT;
 
 // `games` and `finishes` bitsets. Closed vocabularies, so a byte each beats a Vec of interned ids.
 //
@@ -766,7 +778,26 @@ struct OracleCard {
     // row to 304 and cost ~618 KB of archive for a field 36 cards need. The price is that a few
     // more names — the ones between 58 and 61 bytes — take the strings-table path too, which is
     // one interned string each and nothing on the rows that fit.
-    card_name_lower: InlineStr<57>,
+    //
+    // 57 -> 55 WITH 2026100301, THE SAME TRADE A SECOND TIME (LOCAL PATCH, Cloudflare port). The
+    // five per-card counts behind `prints`/`sets`/`paperprints`/`papersets`/`illustrations` are
+    // ten bytes, and the row had eight to give: two after this inline, two after
+    // `planeswalker_loyalty` and four at the tail. `InlineStr<55>` is 56, so `print_count` and
+    // `paper_print_count` sit at 56 and 58, the id still lands at 60, and the row is still 288 —
+    // where the five declared together took it to 304. The names of 56 and 57 bytes join the
+    // strings-table path.
+    card_name_lower: InlineStr<55>,
+    /// LOCAL PATCH (Cloudflare port): Scryfall's `prints` / `paperprints` / `illustrations` /
+    /// `sets` / `papersets` — how many (set, collector number) slots, paper slots, distinct
+    /// artworks, sets and paper sets this CARD has, over its canonical printings AND its annex.
+    /// Decided at build by `assign_print_counts`, which carries the measured rule for each.
+    ///
+    /// FIVE FIELDS IN THREE PLACES, because that is where the row's padding was (see the note on
+    /// `card_name_lower` above): these two here, `illustration_count` after
+    /// `planeswalker_loyalty`, and `set_count` / `paper_set_count` at the tail. The offsets are
+    /// pinned in `the_print_counts_ride_padding_the_card_row_already_had`.
+    print_count: u16,
+    paper_print_count: u16,
     // The whole lowercase name when it does not fit inline above, `NONE_STR` when it does — the
     // same shape as the two ids below it, and NONE_STR on 38,590 of 38,626 cards. What it bought:
     // `!"Curse of the Fire Penguin Creature"`, `name:"fire penguin creature"` and
@@ -815,8 +846,10 @@ struct OracleCard {
     /// walk can see the annex from `tri()`, which holds one card and one printing and nothing else.
     ///
     /// A bool and not a count: the predicate asks `== 1` and nothing else asks at all, so a u16
-    /// would be 2 bytes a card for a question no operator poses. `sets=`/`prints=` would want the
-    /// count, and neither exists here yet; when one does, this is the field that widens.
+    /// would be 2 bytes a card for a question no operator poses. `sets=`/`prints=` want the count,
+    /// and since 2026100301 they have it — `set_count` and its four siblings (see `print_count`).
+    /// This one stays: `is:unique` has read it since 2026081609, it is `set_count == 1` by
+    /// construction, and removing it would free one byte the row has no use for.
     single_set: bool,
 
     // True for the ~556 oracle ids whose printings carry different legality
@@ -863,6 +896,9 @@ struct OracleCard {
     creature_power: Option<f32>,
     creature_toughness: Option<f32>,
     planeswalker_loyalty: Option<u8>, // always 1-12
+    // In the two bytes of padding the Option<u8> above leaves before the next u32 — see
+    // `print_count`.
+    illustration_count: u16,
     edhrec_rank: Option<u32>,         // up to ~30k unique cards
     cubecobra_score: Option<f32>,
     // Dense rank of card_name_lower in byte order (equal names share a rank so
@@ -958,6 +994,10 @@ struct OracleCard {
     /// 8-byte header either way, the build is a `push`, and a corpus that ever grew a THIRD pair
     /// for one card is expressible rather than a panic.
     divergent: Vec<DivergentPrinting>,
+
+    // In the four bytes of tail padding the row's 16-byte alignment left — see `print_count`.
+    set_count: u16,
+    paper_set_count: u16,
 }
 
 /// The faces and name a SUBSET of a card's printings print, keyed by the layout that marks them.
@@ -4797,6 +4837,94 @@ fn assign_single_set_flags(
         // A card with no rows at all cannot have been printed in one set; `drop_group_if_annex_only`
         // means it should not exist, and answering False keeps it out of `is:unique` if it does.
         card.single_set = one && first.is_some();
+    }
+}
+
+/// LOCAL PATCH (Cloudflare port): decide the five per-card counts behind Scryfall's `prints`,
+/// `sets`, `paperprints`, `papersets` and `illustrations` keywords.
+///
+/// Card-level aggregates over every stored row of the card — canonical AND annex — for the reason
+/// `single_set` is one: `tri()` holds one card and one printing and cannot count the rest, and a
+/// query-time walk would be a scan of the card's printing range per candidate. The store is
+/// partitioned by oracle id, so every row of a card is in this archive and the counts are whole.
+///
+/// THE RULES, measured on api.scryfall.com 2026-10-03 by reading every printing of a card
+/// (`unique=prints`, extras, variations and every language included) and then binary-searching the
+/// value Scryfall holds for it (`!"Name" prints>=K`):
+///
+///   card                  rows  en   slots sets  paper slots/sets  art   →  prints sets paperprints papersets illustrations
+///   Reset                    4   3     3     3        2 / 2          2   →     3     3       2          2          2
+///   Aether Shockwave        11   1     2     2        2 / 2          1   →     2     2       2          2          1
+///   Abomination             16   2     4     4        4 / 4          1   →     4     4       4          4          1
+///   Aladdin's Lamp          21   4     6     6        6 / 6          1   →     6     6       6          6          1
+///   Graf Rats               13   3     3     3        2 / 2          1   →     3     3       2          2          1
+///   Lightning Bolt         166  74    77    46       68 / 41        33   →    77    46      68         41         33
+///   Delver of Secrets       28   8     8     6        8 / 6       6 front →    8     6       8          6          6
+///   Agadeem's Awakening     14   4     4     3        3 / 2       1 front →    4     3       3          2          1
+///
+/// So:
+///   - `prints` is the number of distinct (set, collector number) SLOTS over every language. Not
+///     rows (Kaldheim's 120 `prints=1` cards each exist in eleven languages) and not English
+///     printings: Aether Shockwave has one English printing and a Spanish-only Salvat one, and is
+///     2; Abomination's two `4bb`/`fbb` foreign-only slots count beside its two English ones.
+///   - `sets` is the distinct set codes over the same rows — `sets=1` is `is:unique` exactly
+///     (16,115 = 16,115), which is why `single_set` reads the annex too.
+///   - `paperprints` / `papersets` are the same two counts over the rows whose `games` include
+///     `paper`: Reset's me3/48 is MTGO-only and leaves 2 / 2, and `paperprints=0` is 654 cards
+///     that exist only digitally.
+///   - `illustrations` is the distinct artworks, a printing's artwork being its top-level
+///     `illustration_id` or, when it has none (a transform or modal card), its FRONT face's:
+///     Delver of Secrets' eight printings carry twelve face illustrations and count 6, Agadeem's
+///     Awakening two and counts 1. `illustrations=0` is the 4 cards with no artwork id at all.
+///   - extras, promos and memorabilia printings all count: Tithe (vis/23 and the gold-bordered
+///     wc98/bh23a) is 2 / 2.
+///
+/// Saturating at u16::MAX; the largest today is Forest, past 900 slots.
+fn assign_print_counts(
+    cards: &mut [OracleCard],
+    printings: &[Printing],
+    offsets: &[u32],
+    foreign: &[Printing],
+    foreign_offsets: &[u32],
+) {
+    fn distinct<T: Ord>(mut v: Vec<T>) -> u16 {
+        v.sort_unstable();
+        v.dedup();
+        u16::try_from(v.len()).unwrap_or(u16::MAX)
+    }
+    fn slot(p: &Printing) -> (&str, u32) {
+        (p.card_set_code.as_str(), p.collector_number_id)
+    }
+    for (cid, card) in cards.iter_mut().enumerate() {
+        let rows = || {
+            printings[offsets[cid] as usize..offsets[cid + 1] as usize]
+                .iter()
+                .chain(foreign[foreign_offsets[cid] as usize..foreign_offsets[cid + 1] as usize].iter())
+        };
+        let paper = |p: &&Printing| p.compat.games & GAME_PAPER != 0;
+        card.print_count = distinct(rows().map(slot).collect());
+        card.set_count = distinct(rows().map(|p| p.card_set_code.as_str()).collect());
+        card.paper_print_count = distinct(rows().filter(paper).map(slot).collect());
+        card.paper_set_count = distinct(rows().filter(paper).map(|p| p.card_set_code.as_str()).collect());
+        card.illustration_count = distinct(
+            rows()
+                .map(|p| if p.illustration_id != 0 { p.illustration_id } else { p.faces.first().map_or(0, |f| f.illustration_id) })
+                .filter(|&id| id != 0)
+                .collect(),
+        );
+    }
+}
+
+/// LOCAL PATCH (Cloudflare port): write each printing's ARTIST COUNT into bits 12-13 of its compat
+/// flags — see `COMPAT_ARTISTS_SHIFT`. The count is the length of the printing's `artist_ids`
+/// list, read back off the vocab entry `artist_ids_vid` interned it as (uuids joined with `,`):
+/// no list, or an empty one, is 0.
+fn assign_artist_counts(printings: &mut [Printing], foreign: &mut [Printing], coll_vocab: &[String]) {
+    for p in printings.iter_mut().chain(foreign.iter_mut()) {
+        let joined =
+            if p.artist_ids_vid == VOCAB_NONE { "" } else { coll_vocab.get(usize::from(p.artist_ids_vid)).map_or("", String::as_str) };
+        let count = if joined.is_empty() { 0 } else { joined.bytes().filter(|&b| b == b',').count() + 1 };
+        p.compat.flags = (p.compat.flags & !COMPAT_ARTISTS_MASK) | ((count.min(3) as u16) << COMPAT_ARTISTS_SHIFT);
     }
 }
 
@@ -19839,7 +19967,20 @@ const ARCHIVE_MAGIC: [u8; 8] = *b"ATCARDS\0";
 //                row per card) and the old group id as an `extras_id` into the string table (a
 //                garbage residue on every printing). Paired with STORE_CONTENT_GENERATION 54;
 //                SORT_KEY_VERSION does not move.
-const ARCHIVE_FORMAT_VERSION: u32 = 2026092601;
+//   2026100401 — THE PER-CARD COUNTS (x68, LOCAL PATCH). `OracleCard` gains `print_count`,
+//                `paper_print_count`, `illustration_count`, `set_count` and `paper_set_count` — the
+//                values Scryfall's `prints` / `paperprints` / `illustrations` / `sets` / `papersets`
+//                keywords compare — and `CompatFields::flags` takes two of its spare bits for the
+//                printing's ARTIST count (`artists`). Ten bytes on the card and none on the row
+//                total: eight ride padding the row already had (after `planeswalker_loyalty`, and
+//                the four tail bytes), and the other two come out of the inline name,
+//                `InlineStr<57>` -> `<55>`, the trade 2026083101 made. So `size_of::<AOracleCard>`
+//                stays 288 and `APrinting` 304 — the header cannot see the change — and a reader
+//                pairing this code with a 2026092601 store would read the last two bytes of every
+//                long name as a print count and old padding as the rest, while an OLD reader on
+//                this store would read two count bytes as part of the name. Paired with
+//                STORE_CONTENT_GENERATION 58; SORT_KEY_VERSION does not move.
+const ARCHIVE_FORMAT_VERSION: u32 = 2026100401;
 const ARCHIVE_HEADER_LEN: usize = 16;
 
 fn archive_header() -> [u8; ARCHIVE_HEADER_LEN] {
@@ -20464,8 +20605,8 @@ fn build_card_data_sorted(
                 // INLINE — that is the bug this shape fixes: the folded and collated ids used to
                 // be derived from an already-truncated `InlineStr<61>`, so the 36 over-long names
                 // reached the archive cut in three places at once.
-                card_name_lower: InlineStr::<57>::from_str(&row.card_name_lower),
-                card_name_lower_id: if row.card_name_lower.len() <= 57 {
+                card_name_lower: InlineStr::<55>::from_str(&row.card_name_lower),
+                card_name_lower_id: if row.card_name_lower.len() <= 55 {
                     NONE_STR
                 } else {
                     strings.push(row.card_name_lower.clone());
@@ -20502,6 +20643,12 @@ fn build_card_data_sorted(
                 color_indicator: row.color_indicator,
                 card_types: row.card_types,
                 single_set: false, // decided after grouping by assign_single_set_flags
+                // ...and these five by assign_print_counts.
+                print_count: 0,
+                set_count: 0,
+                paper_print_count: 0,
+                paper_set_count: 0,
+                illustration_count: 0,
                 legality_divergent: false,
                 oracle_id: row.oracle_id,
                 card_name_id: row.card_name_id,
@@ -20732,6 +20879,11 @@ fn build_card_data_sorted(
     // passes because it is one, and stored on the card because `tri()` sees one card and one
     // printing -- never the card's other rows, and never the annex.
     assign_single_set_flags(&mut cards, &printings, &offsets, &foreign, &foreign_offsets);
+    // LOCAL PATCH (Cloudflare port): the five per-card counts and the per-printing artist count
+    // behind `prints` / `sets` / `paperprints` / `papersets` / `illustrations` / `artists`. The
+    // same walk again, and before `printings` is archived for the same reason the ranks are.
+    assign_print_counts(&mut cards, &printings, &offsets, &foreign, &foreign_offsets);
+    assign_artist_counts(&mut printings, &mut foreign, &coll_vocab);
     // Same walk as the line above — canonical rows AND the annex — because `in:ja` is exactly the
     // question the annex exists to answer. Interns the words it needs, so it runs before
     // `coll_vocab_sorted` below is cut.

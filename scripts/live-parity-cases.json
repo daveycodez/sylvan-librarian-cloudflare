@@ -2383,6 +2383,60 @@
 			"note": "x68. `Invalid expression “-stamp:nonsense” was ignored. Unknown security stamp “nonsense”` over the 12 gods — in either polarity, and with no closing period (2026-10-03)."
 		},
 		{
+			"name": "search-prints-reset",
+			"method": "GET",
+			"path": "/cards/search?q=%21%22Reset%22+prints%3D3+sets%3D3+paperprints%3D2+papersets%3D2+illustrations%3D2",
+			"note": "x68, store generation 58. Reset's five counts as Scryfall holds them (2026-10-03): three (set, collector number) slots — leg/73's Italian printing is a translation, not a fourth — in three sets, two of them on paper (me3/48 is MTGO-only), and two artworks."
+		},
+		{
+			"name": "search-prints-lightning-bolt-floor",
+			"method": "GET",
+			"path": "/cards/search?q=%21%22Lightning+Bolt%22+prints%3E%3D77+sets%3E%3D46+paperprints%3E%3D68+papersets%3E%3D41+illustrations%3E%3D33",
+			"note": "x68. Lightning Bolt was prints 77, sets 46, paperprints 68, papersets 41, illustrations 33 on 2026-10-03, and only grows — the floors hold on both sides whenever both hold the same printings."
+		},
+		{
+			"name": "search-prints-one-in-a-set",
+			"method": "GET",
+			"path": "/cards/search?q=prints%3D1+e%3Akhm&order=name",
+			"note": "x68. `prints=1 e:khm` is 120 (2026-10-03): each of those cards exists in eleven languages and is one printing — `prints` counts slots, not rows."
+		},
+		{
+			"name": "search-prints-greater-than-sets",
+			"method": "GET",
+			"path": "/cards/search?q=prints%3Esets+e%3Akhm+t%3Agod",
+			"note": "x68. A count compares against a count: `prints>sets e:khm` is 119 and `prints=sets e:khm` 186 (2026-10-03)."
+		},
+		{
+			"name": "search-sets-one-is-unique",
+			"method": "GET",
+			"path": "/cards/search?q=sets%3D1+-is%3Aunique+e%3Akhm",
+			"note": "x68. A 404 on both sides: `sets=1` and `is:unique` are 16,115 each (2026-10-03) and the same cards."
+		},
+		{
+			"name": "search-paperprints-zero",
+			"method": "GET",
+			"path": "/cards/search?q=paperprints%3D0+e%3Aymkm&order=name",
+			"note": "x68. `paperprints=0` is the 654 cards that exist only digitally (2026-10-03) — zero is a value, not an absence — here the Alchemy: Karlov Manor ones."
+		},
+		{
+			"name": "search-illustrations-of-a-dfc",
+			"method": "GET",
+			"path": "/cards/search?q=%21%22Agadeem%27s+Awakening%22+illustrations%3D1",
+			"note": "x68. A modal card's artwork is on its faces and its FRONT is the one counted: Agadeem's Awakening's four printings carry two face illustrations and Scryfall holds illustrations=1 (2026-10-03; Delver of Secrets, twelve face artworks over eight printings, is 6)."
+		},
+		{
+			"name": "search-artists-two",
+			"method": "GET",
+			"path": "/cards/search?q=artists%3D2+e%3Admr",
+			"note": "x68. `artists` is how many artists the printing credits: `artists=2` is 631 cards, `artists=0` 12 and `artists=3` none (2026-10-03). Dominaria Remastered's are its split cards, Fire // Ice among them."
+		},
+		{
+			"name": "search-artists-negated-equality-names-the-minus",
+			"method": "GET",
+			"path": "/cards/search?q=-artists%3A1+e%3Akhm+t%3Agod",
+			"note": "x68. 12 with `Invalid expression “-artists:1” was ignored. Unknown keyword “-artists”.` (2026-10-03) — the numeric columns' sentence."
+		},
+		{
 			"name": "search-regex-inline-flag-is-refused",
 			"method": "GET",
 			"path": "/cards/search?q=o%3A%2F%28%3Fi%29destroy+target+creature%2F+t%3Ainstant",

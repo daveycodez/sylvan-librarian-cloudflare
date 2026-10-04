@@ -221,6 +221,11 @@ fn stub_card(oracle_id: u128, card_types: u16, subtypes: &[&str], vocab: &mut Vo
         color_indicator: 0,
         card_types,
         single_set: false,
+        print_count: 0,
+        set_count: 0,
+        paper_print_count: 0,
+        paper_set_count: 0,
+        illustration_count: 0,
         card_in_tags: Vec::new(),
         legality_divergent: false,
         oracle_id,
@@ -2216,6 +2221,8 @@ fn fuzz_num_field_str(f: NumField) -> &'static str {
         NumField::RarityInt => "rarity", NumField::CollectorNumberInt => "cn", NumField::EdhrEc => "edhrec",
         NumField::PriceUsd => "usd", NumField::PriceEur => "eur", NumField::PriceTix => "tix", NumField::PreferScore => "prefer",
         NumField::PowTou => "pt", NumField::PriceUsdFoil => "usdfoil",
+        NumField::Prints => "prints", NumField::Sets => "sets", NumField::PaperPrints => "paperprints",
+        NumField::PaperSets => "papersets", NumField::Illustrations => "illustrations", NumField::Artists => "artists",
     }
 }
 fn fuzz_num_expr_str(e: &NumExpr) -> String {
@@ -19354,6 +19361,10 @@ fn the_archived_row_sizes_stay_pinned() {
     // printing and `artist_id_vid` to its faces: all three land in padding the rows already had,
     // mid-row rather than at the tail these notes kept measuring. The offsets are pinned in
     // `the_card_object_residue_rides_padding_the_rows_already_had`.
+    // 288 STAYS 288 through 2026100401 (x68) as well, which adds five u16 counts to the card:
+    // declared together they made it 304, so they are declared in the three places the row had
+    // padding, and the inline name gives up two more bytes (`<57>` -> `<55>`). Pinned in
+    // `the_print_counts_ride_padding_the_card_row_already_had`.
     assert_eq!(std::mem::size_of::<Archived<Printing>>(), 304);
     assert_eq!(std::mem::size_of::<Archived<OracleCard>>(), 288);
     assert_eq!(std::mem::size_of::<Archived<RelatedCard>>(), 32);
@@ -20164,4 +20175,85 @@ fn seeked_backtracking_regex_answers_what_the_unseeked_one_does() {
     }
     // Not vacuous: the battery matches, and refuses, plenty.
     assert!(matched > 200 && matched < PATTERNS.len() * texts.len() - 200, "{matched}");
+}
+
+/// LOCAL PATCH (Cloudflare port): the five per-card counts (2026100401) cost the card row nothing,
+/// and this is where that is held. Declared together after `single_set` they took the row from
+/// 288 to 304 — ~618 KB over the 38,626 cards. Declared where the padding was, they do not: two
+/// in the four bytes an `InlineStr<55>` leaves before `card_name_lower_id`, one in the two bytes
+/// after `planeswalker_loyalty`'s `Option<u8>`, two in the four tail bytes. A field moved, or a
+/// neighbour widened, shows up here as an offset rather than as 16 bytes on every card.
+#[test]
+fn the_print_counts_ride_padding_the_card_row_already_had() {
+    use std::mem::offset_of;
+    type C = Archived<OracleCard>;
+    assert_eq!(std::mem::size_of::<Archived<InlineStr<55>>>(), 56);
+    assert_eq!(offset_of!(C, card_name_lower), 0);
+    assert_eq!(offset_of!(C, print_count), 56);
+    assert_eq!(offset_of!(C, paper_print_count), 58);
+    assert_eq!(offset_of!(C, card_name_lower_id), 60);
+    assert_eq!(offset_of!(C, planeswalker_loyalty), 144);
+    assert_eq!(offset_of!(C, illustration_count), 146);
+    assert_eq!(offset_of!(C, edhrec_rank), 148);
+    assert_eq!(offset_of!(C, divergent), 276);
+    assert_eq!(offset_of!(C, set_count), 284);
+    assert_eq!(offset_of!(C, paper_set_count), 286);
+    assert_eq!(std::mem::size_of::<C>(), 288);
+}
+
+/// LOCAL PATCH (Cloudflare port): `assign_print_counts` and `assign_artist_counts` on hand-built
+/// rows — the shapes the rules turn on, which no small set of real cards holds all at once. The
+/// measured values for real cards are on `assign_print_counts`.
+#[test]
+fn the_per_card_counts_follow_scryfalls_rules() {
+    let mut vocab = VocabInterner::new();
+    let mut cards = vec![stub_card(1, 0, &[], &mut vocab), stub_card(2, 0, &[], &mut vocab)];
+    let face = |illustration_id: u128| PrintingFace {
+        illustration_id,
+        card_artist_vid: ARTIST_NONE,
+        artist_id_vid: VOCAB_NONE,
+        card_artist_name_id: NONE_STR,
+        card_watermark_id: NONE_STR,
+        flavor_text_id: NONE_STR,
+        flavor_name_id: NONE_STR,
+    };
+    let row = |set: &str, number: u32, paper: bool, illustration: u128, faces: Vec<PrintingFace>| {
+        let mut p = stub_printing(1, illustration, None);
+        p.card_set_code = InlineStr::from_str(set);
+        p.collector_number_id = number;
+        p.faces = faces;
+        p.compat.games = if paper { super::GAME_PAPER } else { super::GAME_MTGO };
+        p
+    };
+    // Card 0: three canonical slots in two sets — one of them MTGO-only — and two annex rows: a
+    // translation of an English slot (not a new printing) and a foreign-ONLY slot in a third set.
+    let printings = vec![
+        row("leg", 73, true, 0xA, vec![]),
+        row("leg", 74, true, 0xA, vec![]),
+        row("me3", 48, false, 0xB, vec![]),
+        // Card 1: a two-faced card whose artwork is on its faces. Two printings, one front.
+        row("isd", 51, true, 0, vec![face(0xC), face(0xD)]),
+        row("inr", 60, true, 0, vec![face(0xC), face(0xE)]),
+    ];
+    let foreign = vec![row("leg", 73, true, 0xA, vec![]), row("fbb", 9, true, 0xA, vec![])];
+    super::assign_print_counts(&mut cards, &printings, &[0, 3, 5], &foreign, &[0, 2, 2]);
+    let counts = |c: &OracleCard| (c.print_count, c.set_count, c.paper_print_count, c.paper_set_count, c.illustration_count);
+    assert_eq!(counts(&cards[0]), (4, 3, 3, 2, 2), "slots, sets, paper slots, paper sets, artworks");
+    assert_eq!(counts(&cards[1]), (2, 2, 2, 2, 1), "the FRONT face's artwork, counted once");
+
+    // The artist count: the length of the joined `artist_ids` entry, capped at three.
+    let coll_vocab: Vec<String> = ["a", "a,b", "", "a,b,c,d"].map(str::to_owned).to_vec();
+    let mut printings: Vec<Printing> = [0u16, 1, 2, 3, VOCAB_NONE]
+        .iter()
+        .map(|&vid| {
+            let mut p = stub_printing(1, 1, None);
+            p.artist_ids_vid = vid;
+            p.compat.flags = super::COMPAT_FOIL | super::COMPAT_VARIATION;
+            p
+        })
+        .collect();
+    super::assign_artist_counts(&mut printings, &mut [], &coll_vocab);
+    let artists: Vec<u16> = printings.iter().map(|p| (p.compat.flags & super::COMPAT_ARTISTS_MASK) >> super::COMPAT_ARTISTS_SHIFT).collect();
+    assert_eq!(artists, [1, 2, 0, 3, 0]);
+    assert!(printings.iter().all(|p| (p.compat.flags & !super::COMPAT_ARTISTS_MASK) == (super::COMPAT_FOIL | super::COMPAT_VARIATION)), "the other flags stand");
 }
