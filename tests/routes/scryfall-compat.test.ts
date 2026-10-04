@@ -25,6 +25,7 @@ import {
 } from "../../src/engine/rulings-kv";
 import type { CollectionBatch, CollectionSource, Engine, StoreManifest } from "../../src/engine/types";
 import { canonicalStringify, parseScryfallQueryWithDirectives } from "../../src/parser";
+import { foldAccents as foldAccentsForTest } from "../../src/parser/pystr";
 import { setParserForTests } from "../../src/routes/parser-bridge";
 import type { RouteContext } from "../../src/routes/registry";
 import { toScryfallCard } from "../../src/routes/scryfall-compat/objects";
@@ -907,6 +908,58 @@ describe("GET /cards/named", () => {
 			const engine = new FakeEngine();
 			await testDispatch(makeCtx({ engine }), `/cards/named?fuzzy=${encodeURIComponent(needle)}`);
 			expect([needle, engine.lastSearch]).toEqual([needle, null]);
+		}
+	});
+
+	// x74: a word is a run of letters and digits in ANY script. The split was `\w`, which is
+	// ASCII, so a needle with no Latin letter had no words and was answered as a missing
+	// parameter. On api.scryfall.com 2026-10-04 `fuzzy=稲妻` is Lightning Bolt (msc/806, ja),
+	// `Удар молнии` clb/187 (ru), `闪电击` 2x2/117 (zhs), `迷える歌い手、ミク` Azusa sld/1597 by its
+	// flavor name, and `ゴジラ、怪獣王` a 404 `No cards found matching “ゴジラ、怪獣王”`.
+	test("a fuzzy needle with no Latin letter is a lookup, not a missing parameter", async () => {
+		const asked: [string, string[]][] = [];
+		const engine = new FakeEngine();
+		(engine as Engine).scryfallNamedFuzzy = async (folded, words) => {
+			asked.push([folded, words]);
+			return { status: "miss" };
+		};
+		const needles: [string, string, string[]][] = [
+			["稲妻", "稲妻", ["稲妻"]],
+			["ゴジラ、怪獣王", "コシラ、怪獣王", ["コシラ", "怪獣王"]],
+			["Удар молнии", "удар молнии", ["удар", "молнии"]],
+			["闪电击", "闪电击", ["闪电击"]],
+			["번개", foldAccentsForTest("번개"), [foldAccentsForTest("번개")]],
+			["アン コー ル の 電 術 師", "アン コー ル の 電 術 師", ["アン", "コー", "ル", "の", "電", "術", "師"]],
+		];
+		for (const [needle, folded, words] of needles) {
+			asked.length = 0;
+			const res = await testDispatch(makeCtx({ engine }), `/cards/named?fuzzy=${encodeURIComponent(needle)}`);
+			expect([needle, res.status]).toEqual([needle, 404]);
+			const body = await json(res);
+			expect([needle, body.code, body.details]).toEqual([needle, "not_found", `No cards found matching “${needle}”`]);
+			expect(asked).toEqual([[folded, words]]);
+		}
+	});
+
+	test("punctuation alone names the card whose name is punctuation; only an empty needle is missing", async () => {
+		// `fuzzy=-`, `?`, `. .`, `、、` and `…` are each `_____` (unh/23) on api.scryfall.com, as
+		// `fuzzy=_` already was here; `fuzzy=%20` is the missing-parameter 400 on both.
+		const asked: [string, string[]][] = [];
+		const engine = new FakeEngine();
+		(engine as Engine).scryfallNamedFuzzy = async (folded, words) => {
+			asked.push([folded, words]);
+			return { status: "miss" };
+		};
+		for (const needle of ["-", "?", ". .", "、、", "…", "!!!"]) {
+			asked.length = 0;
+			const res = await testDispatch(makeCtx({ engine }), `/cards/named?fuzzy=${encodeURIComponent(needle)}`);
+			expect([needle, res.status, asked]).toEqual([needle, 404, [["_", ["_"]]]]);
+		}
+		for (const needle of [" ", "   ", "\t"]) {
+			asked.length = 0;
+			const res = await testDispatch(makeCtx({ engine }), `/cards/named?fuzzy=${encodeURIComponent(needle)}`);
+			expect([needle, res.status, asked]).toEqual([needle, 400, []]);
+			expect((await json(res)).details).toBe("You must provide a `fuzzy` or `exact` parameter");
 		}
 	});
 

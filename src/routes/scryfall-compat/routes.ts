@@ -950,10 +950,25 @@ async function namedFuzzy(
 	render: { format: string; face: string; version: string; pretty: boolean },
 ): Promise<Response> {
 	const { pretty } = render;
-	const needle = foldAccents(fuzzy.trim().toLowerCase());
-	const words = needle.split(/[^\w']+/u).filter((w) => w.length > 0);
+	let needle = foldAccents(fuzzy.trim().toLowerCase());
+	// A WORD IS A RUN OF LETTERS AND DIGITS IN ANY SCRIPT — the split card_engine's own tests make
+	// (`char::is_alphanumeric`), and the fold above is the store's. This was `\w`, which is ASCII
+	// under any flag, so a needle with no Latin letter had no words and was answered as a MISSING
+	// parameter: `fuzzy=稲妻` a 400 against api.scryfall.com's Lightning Bolt (msc/806, the Japanese
+	// printing), and the same for `Удар молнии` (clb/187, ru), `闪电击` (2x2/117, zhs), `対抗呪文`
+	// and all 27 non-Latin flavor names it holds (`迷える歌い手、ミク` is Azusa, Lost but Seeking
+	// sld/1597), measured 2026-10-04. A needle nothing carries is a 404 there: `ゴジラ、怪獣王`,
+	// `怪獣王`. mtg-seeker read the 400 as a failed call and sent every such request to Scryfall.
+	let words = needle.split(/[^\p{Alphabetic}\p{N}_']+/u).filter((w) => w.length > 0);
 	if (words.length === 0) {
-		return scryfallJson(badRequestError(NAMED_MISSING_PARAM_DETAILS), pretty, CARDS_CACHE);
+		// Only an EMPTY needle is a missing parameter (`fuzzy=%20` is this 400 there too). One of
+		// punctuation alone names the card whose name is punctuation alone: `fuzzy=-`, `?`, `. .`,
+		// `、、` and `…` are each `_____` (unh/23) on api.scryfall.com, as `fuzzy=_` already was here.
+		if (needle.length === 0) {
+			return scryfallJson(badRequestError(NAMED_MISSING_PARAM_DETAILS), pretty, CARDS_CACHE);
+		}
+		needle = "_";
+		words = ["_"];
 	}
 
 	let status = "error";
