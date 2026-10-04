@@ -2110,6 +2110,36 @@
 					}
 				}
 			}
+		},
+		{
+			"name": "search-include-extras-reported",
+			"method": "GET",
+			"path": "/cards/search?q=name%3A%2F%5Ereset%24%2F+include%3Aextras",
+			"note": "x66 R6, reported from mtg-seeker: 200 / 1 card (Reset) on api.scryfall.com 2026-10-03, and `400 Failed to parse query` here. `include:` is a display option — Scryfall's in-query spelling of the `include_*` parameters."
+		},
+		{
+			"name": "search-include-extras-opens-the-gate",
+			"method": "GET",
+			"path": "/cards/search?q=include%3Aextras+t%3Agoblin+cmc%3D0",
+			"note": "THE WITNESS THAT IT DOES SOMETHING: every zero-cost goblin is a token, so `t:goblin cmc=0` is a 404 and this is 20 (2026-10-03) — exactly what `include_extras=true` answers. `include:extra`, `include:all` and `include:everything` are the same 20; `-include:extras` too (a `-` changes nothing on a display option)."
+		},
+		{
+			"name": "search-include-unknown-value-warns",
+			"method": "GET",
+			"path": "/cards/search?q=include%3Afoo+t%3Agoblin",
+			"note": "An unknown value opens nothing and warns with Scryfall's DIRECTION sentence, reused: 561 with `Unknown direction choice “foo” was ignored` (2026-10-03). The value is echoed lower-cased, quotes and all, cut to ten characters with three ASCII dots (`include:extras,variations` → “extras,...”)."
+		},
+		{
+			"name": "search-include-alone-is-all-ignored",
+			"method": "GET",
+			"path": "/cards/search?q=include%3Aextras",
+			"note": "A display option is not a term: alone it is `400 All of your terms were ignored.` with `warnings: null` (2026-10-03)."
+		},
+		{
+			"name": "search-include-equals-is-an-unknown-keyword",
+			"method": "GET",
+			"path": "/cards/search?q=include%3Dextras+t%3Agoblin",
+			"note": "Only `:` makes it an option. Under `=` it is an ordinary keyword Scryfall does not know: 561 with `Invalid expression “include=extras” was ignored. Unknown keyword “include”.`"
 		}
 	]
 }

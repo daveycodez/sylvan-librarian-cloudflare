@@ -566,6 +566,10 @@ export async function cardsSearchHandler(
 		return scryfallJson(badRequestError(ALL_IGNORED_DETAILS, policy.warnings), pretty, CARDS_CACHE);
 	}
 	const warnings: string[] = [...policy.warnings];
+	// `include:` in the query is the same three switches as the `include_*` parameters, and it WINS
+	// over a parameter that says false (`include:extras cmc=3&include_extras=false` is 8,302 on
+	// api.scryfall.com, echoing `include_extras=true`). See INCLUDE_VALUES in query-terms.ts.
+	const includeMultilingual = policy.include.multilingual || asBool(params.include_multilingual);
 
 	// An unrecognized `unique` is Scryfall's default, SILENTLY: `unique=printing`, `unique=card`,
 	// `unique=printings`, `unique=artwork` and `unique=bogus` all come back as the plain
@@ -637,7 +641,10 @@ export async function cardsSearchHandler(
 		engine,
 		filterTree,
 		{ loweredRegexTerms, expandedDerivedTerms },
-		{ includeExtras: asBool(params.include_extras), includeVariations: asBool(params.include_variations) },
+		{
+			includeExtras: policy.include.extras || asBool(params.include_extras),
+			includeVariations: policy.include.variations || asBool(params.include_variations),
+		},
 	);
 	const { includeExtras, includeVariations } = gate;
 	filterTree = gate.tree;
@@ -718,7 +725,7 @@ export async function cardsSearchHandler(
 				fields: [],
 				// Always present, never omitted: false IS Scryfall's default (English/canonical
 				// printings only), and fixing it on the wire keeps "absent" from meaning anything.
-				includeMultilingual: asBool(params.include_multilingual),
+				includeMultilingual,
 			},
 			apiBaseUrl(ctx),
 			{
@@ -763,7 +770,7 @@ export async function cardsSearchHandler(
 						// `include-extras-echo-is-the-parameter-as-sent` is deleted rather than
 						// amended.
 						include_extras: String(includeExtras),
-						include_multilingual: String(asBool(params.include_multilingual)),
+						include_multilingual: String(includeMultilingual),
 						include_variations: String(includeVariations),
 						order: orderEcho,
 						q: qEcho,
@@ -800,7 +807,7 @@ export async function cardsSearchHandler(
 			listPartitions?: string | null;
 		};
 		console.log(
-			`cards/search: shape=${userShape} unique=${unique} order=${orderby} dir=${direction} page=${page} extras=${includeExtras ? 1 : 0} variations=${includeVariations ? 1 : 0} multilingual=${asBool(params.include_multilingual) ? 1 : 0} pin=${partitioned.pinnedAnswer ? 1 : 0} list=${partitioned.listPartitions ?? "-"} calls=${partitioned.partitionCalls ?? -1} gathered=${partitioned.gatheredPartitions ?? "-"} status=${status}`,
+			`cards/search: shape=${userShape} unique=${unique} order=${orderby} dir=${direction} page=${page} extras=${includeExtras ? 1 : 0} variations=${includeVariations ? 1 : 0} multilingual=${includeMultilingual ? 1 : 0} pin=${partitioned.pinnedAnswer ? 1 : 0} list=${partitioned.listPartitions ?? "-"} calls=${partitioned.partitionCalls ?? -1} gathered=${partitioned.gatheredPartitions ?? "-"} status=${status}`,
 		);
 	}
 }
@@ -1063,7 +1070,10 @@ export async function cardsRandomHandler(
 			engine,
 			tree,
 			{ loweredRegexTerms, expandedDerivedTerms },
-			{ includeExtras: asBool(params.include_extras), includeVariations: asBool(params.include_variations) },
+			{
+				includeExtras: policy.include.extras || asBool(params.include_extras),
+				includeVariations: policy.include.variations || asBool(params.include_variations),
+			},
 		);
 		filterTreeJson = canonicalStringify(gate.tree as FilterValue);
 	}

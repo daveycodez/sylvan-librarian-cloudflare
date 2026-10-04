@@ -92,6 +92,7 @@ describe("an apostrophe inside a word is not a quote", () => {
 			warnings: [],
 			allIgnored: false,
 			unclosedParens: false,
+			include: { extras: false, variations: false, multilingual: false },
 		});
 		expect(scryfallTermPolicy("o:urza' e:khm").unclosedParens).toBe(false);
 	});

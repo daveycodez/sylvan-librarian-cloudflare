@@ -115,6 +115,87 @@ export function exceedsScryfallRegexBudget(query: string): boolean {
 export const NESTED_DISPLAY_OPTIONS_DETAILS = "Display options may not be specified inside parentheses.";
 
 /**
+ * `include:` — SCRYFALL'S IN-QUERY SPELLING OF `include_extras` AND ITS TWO SIBLINGS, a display
+ * option like `unique:` and `order:`, and one this port refused outright.
+ *
+ * Reported from mtg-seeker (x66 R6): `name:/^reset$/ include:extras` is 200 / 1 card on
+ * api.scryfall.com and was `400 Failed to parse query` here. Measured 2026-10-03, base `cmc=3` =
+ * 8,089 (8,302 with `include_extras=true`), reading the three flags back out of `next_page`:
+ *
+ *   include:extras    include:extra         8,302   extras=true
+ *   include:variations  include:variation   8,089   variations=true
+ *   include:multilingual                    8,090   multilingual=true
+ *   include:all       include:everything    8,302   extras=true variations=true multilingual=true
+ *   include:funny     include:digital       8,089   accepted, silently, and nothing observable moves
+ *   include:foo  foreign  tokens  any  none  both  prints  true  1
+ *                                           8,089 + `Unknown direction choice “foo” was ignored`
+ *
+ * THE WARNING REALLY DOES SAY "direction choice" — Scryfall's sentence for an unknown `direction:`
+ * value, reused. The value is echoed lower-cased (`include:FOO` → “foo”), quotes and all
+ * (`include:"extras"` is NOT `extras`: it warns about “"extras"”), and cut to ten characters with
+ * three ASCII dots (`include:extras,variations` → “extras,...”), not the 20 and the `…` an ignored
+ * expression gets.
+ *
+ * IT IS A DISPLAY OPTION, with everything that follows from that:
+ *
+ *   -include:extras t:goblin cmc=0     20     a `-` changes nothing (`-include:foo` warns the same)
+ *   include:extras cmc=3 &include_extras=false   8,302   the option beats the parameter
+ *   (include:extras t:goblin) cmc=0    400 `Display options may not be specified inside parentheses.`
+ *   include:extras                     400 `All of your terms were ignored.`, `warnings: null` —
+ *                                          an option is not a term, so nothing is left
+ *   include:extras or t:goblin cmc=0   20     removed before the connectors are read
+ *   include:extras include:variations  both flags
+ *
+ * And only under `:`. `include=extras t:goblin` is 561 with `Unknown keyword “include”.` — an
+ * ordinary unknown keyword — and `include>extras` is the honored-and-empty comparison every
+ * unknown keyword is.
+ *
+ * COST: nothing at query time beyond the flag it sets — the same extras gate conjunct the
+ * `include_extras` parameter already removes.
+ */
+const INCLUDE_KEYWORD = "include";
+
+/** The three `include_*` parameters an in-query `include:` can switch on. */
+export interface IncludeOptions {
+	extras: boolean;
+	variations: boolean;
+	multilingual: boolean;
+}
+
+/** What one `include:` value switches on. An empty list is a value Scryfall accepts and ignores. */
+const INCLUDE_VALUES: ReadonlyMap<string, readonly (keyof IncludeOptions)[]> = new Map<
+	string,
+	readonly (keyof IncludeOptions)[]
+>([
+	["extras", ["extras"]],
+	["extra", ["extras"]],
+	["variations", ["variations"]],
+	["variation", ["variations"]],
+	["multilingual", ["multilingual"]],
+	["all", ["extras", "variations", "multilingual"]],
+	["everything", ["extras", "variations", "multilingual"]],
+	["funny", []],
+	["digital", []],
+]);
+
+/** How much of an unknown display-option value Scryfall echoes: ten characters, dots included. */
+const DISPLAY_VALUE_ECHO_LIMIT = 10;
+
+function unknownIncludeWarning(rawValue: string): string {
+	const chars = [...rawValue.toLowerCase()];
+	const echoed =
+		chars.length > DISPLAY_VALUE_ECHO_LIMIT
+			? `${chars.slice(0, DISPLAY_VALUE_ECHO_LIMIT - 3).join("")}...`
+			: chars.join("");
+	return `Unknown direction choice \u201c${echoed}\u201d was ignored`;
+}
+
+/** The keywords Scryfall reads as display options: this parser's directives, and `include`. */
+function isDisplayKeyword(keyword: string): boolean {
+	return DIRECTIVE_TABLES.has(keyword) || keyword === INCLUDE_KEYWORD;
+}
+
+/**
  * Scryfall rejects display directives inside groups before validating their values.
  * Measured 2026-09-27 for every alias in DIRECTIVE_TABLES, including a negated sort
  * and an unknown value. A dangling `sort:` and `sort=value` are not directives.
@@ -133,7 +214,7 @@ export function hasNestedScryfallDisplayOption(query: string): boolean {
 		const token = tokens[i];
 		if (token?.type === TT.LPAREN) depth++;
 		else if (token?.type === TT.RPAREN) depth--;
-		else if (depth > 0 && token?.type === TT.WORD && DIRECTIVE_TABLES.has(String(token.value).toLowerCase())) {
+		else if (depth > 0 && token?.type === TT.WORD && isDisplayKeyword(String(token.value).toLowerCase())) {
 			const operator = tokens[i + 1];
 			const value = tokens[i + 2];
 			// A field value that happens to read `sort` is not a directive keyword.
@@ -201,7 +282,9 @@ const SCRYFALL_ONLY_KEYWORDS: ReadonlySet<string> = new Set([
 	"not",
 	"stamp",
 	"cheapest",
-	"include",
+	// `include` LEFT THIS TABLE on 2026-10-03: `include:` is a display option this surface now
+	// reads (see INCLUDE_VALUES), and under `=` it is a keyword Scryfall itself does not know —
+	// `include=extras t:goblin` is 561 carrying `Unknown keyword “include”.`
 	"direct",
 ]);
 
@@ -1204,6 +1287,8 @@ export interface TermPolicyResult {
 	warnings: string[];
 	/** Every term was ignored — the caller answers 400 "All of your terms were ignored." */
 	allIgnored: boolean;
+	/** What the query's `include:` options switch on — OR'd with the `include_*` parameters. */
+	include: IncludeOptions;
 }
 
 /**
@@ -1808,7 +1893,11 @@ function numericColumnOf(alias: string): string | null {
 }
 
 /** The verdict on one leaf term: keep it (possibly rewritten), or drop it with Scryfall's reason. */
-type LeafVerdict = { keep: true; text: string } | { keep: false; reason: string };
+type LeafVerdict =
+	| { keep: true; text: string }
+	| { keep: false; reason: string }
+	/** A display option: removed from the query, never a term, with its own warning if any. */
+	| { keep: false; reason: null; include: readonly (keyof IncludeOptions)[]; warning: string | null };
 
 function classifyLeaf(term: string): LeafVerdict {
 	const match = LEAF_RE.exec(term);
@@ -1859,6 +1948,15 @@ function classifyLeaf(term: string): LeafVerdict {
 	// empty result.
 	if (COMPARISON_OPERATORS.has(op) && !COMPARABLE_KEYWORDS.has(keyword)) {
 		return { keep: true, text: NEVER_MATCHES };
+	}
+
+	// `include:` under `:` is a display option, in either polarity — see INCLUDE_VALUES. Under `=`
+	// it falls through to the unknown-keyword rule, which is what Scryfall answers.
+	if (keyword === INCLUDE_KEYWORD && op === ":") {
+		const switches = INCLUDE_VALUES.get(rawValue.toLowerCase());
+		return switches === undefined
+			? { keep: false, reason: null, include: [], warning: unknownIncludeWarning(rawValue) }
+			: { keep: false, reason: null, include: switches, warning: null };
 	}
 
 	if (NOT_SCRYFALL_KEYWORDS.has(keyword) || (!KNOWN_KEYWORDS.has(keyword) && !SCRYFALL_ONLY_KEYWORDS.has(keyword))) {
@@ -2025,6 +2123,7 @@ function classifyLeaf(term: string): LeafVerdict {
  */
 interface PolicyScan {
 	readonly warnings: string[];
+	readonly include: IncludeOptions;
 }
 
 function policyLevel(source: string, scan: PolicyScan): string | null {
@@ -2057,6 +2156,11 @@ function policyLevel(source: string, scan: PolicyScan): string | null {
 			continue;
 		}
 		changed = true;
+		if (verdict.reason === null) {
+			for (const option of verdict.include) scan.include[option] = true;
+			if (verdict.warning !== null) scan.warnings.push(verdict.warning);
+			continue;
+		}
 		scan.warnings.push(ignoredWarning(piece.text, verdict.reason));
 	}
 	if (!changed) return source;
@@ -2087,13 +2191,18 @@ function policyLevel(source: string, scan: PolicyScan): string | null {
  */
 export function scryfallTermPolicy(rawQuery: string): TermPolicyResult {
 	const folded = foldSmartQuotes(rawQuery);
-	if (unbalancedParens(folded)) return { query: folded, warnings: [], allIgnored: false, unclosedParens: true };
-	const scan: PolicyScan = { warnings: [] };
+	const scan: PolicyScan = { warnings: [], include: { extras: false, variations: false, multilingual: false } };
+	const { include } = scan;
+	if (unbalancedParens(folded)) {
+		return { query: folded, warnings: [], allIgnored: false, unclosedParens: true, include };
+	}
 	const query = policyLevel(folded, scan);
 	const warnings = scan.warnings;
-	if (query !== null && query.trim() !== "") return { query, warnings, allIgnored: false, unclosedParens: false };
+	if (query !== null && query.trim() !== "") {
+		return { query, warnings, allIgnored: false, unclosedParens: false, include };
+	}
 	// Nothing survived, and now the only way that happens is a term Scryfall refused: a dangling
 	// operator is REWRITTEN rather than dropped (danglingOperatorTerm), so `q=t:` no longer empties
 	// the query and no longer needs an always-true leaf standing in for it.
-	return { query: folded, warnings, allIgnored: true, unclosedParens: false };
+	return { query: folded, warnings, allIgnored: true, unclosedParens: false, include };
 }
