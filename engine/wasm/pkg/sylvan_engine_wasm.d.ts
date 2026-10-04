@@ -8,9 +8,11 @@
 export function __init_panic_hook(): void;
 
 /**
- * Card names matching a partial name, prefix matches first. Scryfall's autocomplete catalog.
+ * Card names matching a partial name, prefix matches first. Scryfall's autocomplete catalog;
+ * `include_extras` is its parameter of that name (tokens, art series, memorabilia and the like are
+ * offered too).
  */
-export function autocomplete(prefix: string, limit: number): string;
+export function autocomplete(prefix: string, limit: number, include_extras: boolean): string;
 
 /**
  * Start a chunked store load: preallocate the full aligned buffer up front
@@ -370,9 +372,11 @@ export function named_fuzzy_bundle(folded: string, set_code: string, floor: numb
 
 /**
  * Scryfall's autocomplete catalog for the WHOLE corpus, from the loaded names — the answer the
- * partitioned fan-out's merge gives, from one object. Errors when no names are loaded.
+ * partitioned fan-out's merge gives, from one object. Errors when no names are loaded, and — for
+ * `include_extras` — when the blob is format 1, which holds served names only: the router then asks
+ * every partition, whose engines answer the flag.
  */
-export function names_autocomplete(prefix: string, limit: number): string;
+export function names_autocomplete(prefix: string, limit: number, include_extras: boolean): string;
 
 /**
  * The loaded names blob's format: 1 (autocomplete only), 2 (the names index too), 0 when none is

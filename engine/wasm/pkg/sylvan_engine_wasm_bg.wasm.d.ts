@@ -36,10 +36,10 @@ export const collection_name_ranks: (a: number, b: number, c: number, d: number,
 export const card_by_illustration_id: (a: number, b: number, c: number, d: number) => [number, number, number, number];
 export const collection_batch: (a: number, b: number, c: number, d: number, e: number, f: number) => [number, number, number, number];
 export const cards_containing_all_words: (a: number, b: number, c: number, d: number, e: number, f: number, g: number) => [number, number, number, number];
-export const autocomplete: (a: number, b: number, c: number) => [number, number, number, number];
+export const autocomplete: (a: number, b: number, c: number, d: number) => [number, number, number, number];
 export const load_names: (a: number, b: number) => [number, number, number];
 export const names_heap_bytes: () => number;
-export const names_autocomplete: (a: number, b: number, c: number) => [number, number, number, number];
+export const names_autocomplete: (a: number, b: number, c: number, d: number) => [number, number, number, number];
 export const names_format: () => number;
 export const names_search_partitions: (a: number, b: number, c: number) => [number, number, number, number];
 export const names_fuzzy_plan: (a: number, b: number, c: number, d: number, e: number, f: number, g: number) => [number, number, number, number];

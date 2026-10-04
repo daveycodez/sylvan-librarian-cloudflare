@@ -7,18 +7,21 @@ export function __init_panic_hook() {
 }
 
 /**
- * Card names matching a partial name, prefix matches first. Scryfall's autocomplete catalog.
+ * Card names matching a partial name, prefix matches first. Scryfall's autocomplete catalog;
+ * `include_extras` is its parameter of that name (tokens, art series, memorabilia and the like are
+ * offered too).
  * @param {string} prefix
  * @param {number} limit
+ * @param {boolean} include_extras
  * @returns {string}
  */
-export function autocomplete(prefix, limit) {
+export function autocomplete(prefix, limit, include_extras) {
     let deferred3_0;
     let deferred3_1;
     try {
         const ptr0 = passStringToWasm0(prefix, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
         const len0 = WASM_VECTOR_LEN;
-        const ret = wasm.autocomplete(ptr0, len0, limit);
+        const ret = wasm.autocomplete(ptr0, len0, limit, include_extras);
         var ptr2 = ret[0];
         var len2 = ret[1];
         if (ret[3]) {
@@ -861,18 +864,21 @@ export function named_fuzzy_bundle(folded, set_code, floor, lead, weak_below, k,
 
 /**
  * Scryfall's autocomplete catalog for the WHOLE corpus, from the loaded names — the answer the
- * partitioned fan-out's merge gives, from one object. Errors when no names are loaded.
+ * partitioned fan-out's merge gives, from one object. Errors when no names are loaded, and — for
+ * `include_extras` — when the blob is format 1, which holds served names only: the router then asks
+ * every partition, whose engines answer the flag.
  * @param {string} prefix
  * @param {number} limit
+ * @param {boolean} include_extras
  * @returns {string}
  */
-export function names_autocomplete(prefix, limit) {
+export function names_autocomplete(prefix, limit, include_extras) {
     let deferred3_0;
     let deferred3_1;
     try {
         const ptr0 = passStringToWasm0(prefix, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
         const len0 = WASM_VECTOR_LEN;
-        const ret = wasm.names_autocomplete(ptr0, len0, limit);
+        const ret = wasm.names_autocomplete(ptr0, len0, limit, include_extras);
         var ptr2 = ret[0];
         var len2 = ret[1];
         if (ret[3]) {
