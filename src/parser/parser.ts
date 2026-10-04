@@ -264,6 +264,7 @@ export class Parser {
 	// ── top-level ─────────────────────────────────────────────────────────────
 
 	parse(): Query {
+		this.skipStraySlashes();
 		if (this.peek().type === TT.EOF) {
 			return new Query(new TrueNode());
 		}
@@ -288,14 +289,41 @@ export class Parser {
 	// ── and_expr: AND-level with implicit AND ─────────────────────────────────
 
 	parseAndExpr(): QueryNode {
+		this.skipStraySlashes();
 		const operands = [this.parseFactor()];
+		this.skipStraySlashes();
 		while (this.canStartFactor()) {
 			if (this.peek().type === TT.WORD && pyUpper(this.peek().value as string) === "AND") {
 				this.consume();
+				this.skipStraySlashes();
 			}
 			operands.push(this.parseFactor());
+			this.skipStraySlashes();
 		}
 		return operands.length === 1 ? (operands[0] as QueryNode) : new AndNode(operands);
+	}
+
+	/**
+	 * A `/` BETWEEN TERMS IS NOTHING, as a comma is. Measured on api.scryfall.com 2026-10-04: every
+	 * query below answers what it does with the slashes taken out, and carries no `warnings` key.
+	 *
+	 *   fire // ice    fire /ice    fire / ice    fire or // ice    fire / or ice    -fire // ice
+	 *   o:fire /       o:"fire" /   cmc>=3 /      e:khm /           (fire // ice)    ( fire /)
+	 *   // fire        fire //      t:goblin // fire                !fire /          fire or /
+	 *
+	 * A query of nothing but slashes (`/`, `//`) is "All of your terms were ignored." (400), the
+	 * sentence an empty term earns; the compat surface says it before the parser is reached. Every
+	 * one of these was `Failed to parse query` here, and `fire // ice` is what a user gets by pasting
+	 * the name of a double-faced card.
+	 *
+	 * Only a slash the term before it did not take is stray: one glued to a bare name word is consumed
+	 * there (`fire/ice`, parseHyphenatedName), one glued to a text value or an exact name is part of
+	 * it (`o:1/1`, `name:colossus//dark`, `!lightning/bolt`), and arithmetic is parsed inside its own
+	 * term. So a slash that reaches a term boundary was an error before this, and nothing that
+	 * parsed changes.
+	 */
+	private skipStraySlashes(): void {
+		while (this.peek().type === TT.SLASH) this.consume();
 	}
 
 	private canStartFactor(): boolean {
@@ -418,9 +446,17 @@ export class Parser {
 			this.consume();
 			return new ExactNameNode(pyStr(tok.value));
 		}
-		if (tok.type === TT.WORD) {
-			this.consume();
-			return new ExactNameNode(pyStr(tok.value));
+		if (tok.type === TT.WORD || tok.type === TT.SLASH) {
+			// A slash glued to the word is part of the name, which the exact-name collation then
+			// deletes: `!lightning/bolt`, `!lightning//bolt` and `!"lightning/bolt"` are Lightning
+			// Bolt's 2 on api.scryfall.com (2026-10-04), and `!/fire` is `!fire`'s 1.
+			let name = "";
+			if (tok.type === TT.WORD) {
+				this.consume();
+				name = pyStr(tok.value);
+			}
+			name += this.glueSlashes();
+			return new ExactNameNode(name);
 		}
 		throw new InternalParseError(`Expected word or quoted string after '!' at position ${tok.pos}`);
 	}
@@ -803,6 +839,26 @@ export class Parser {
 		throw new InternalParseError(`Unknown parser class ${pc}`);
 	}
 
+	/**
+	 * The slashes glued to what was just read, and the words glued behind them: `fire//ice` after
+	 * `fire`, `/fire` from the start. A slash stays a CHARACTER of a value or an exact name — the
+	 * collation of `name:` and of `!` deletes it, and `o:` and `t:` keep it — and a slash with a
+	 * space before it is not glued (it is stray between terms; skipStraySlashes).
+	 */
+	private glueSlashes(): string {
+		let glued = "";
+		while (this.peek().type === TT.SLASH && !this.peek().spaceBefore) {
+			this.consume();
+			glued += "/";
+			const next = this.peek();
+			if (!next.spaceBefore && (next.type === TT.WORD || next.type === TT.NUMBER)) {
+				this.consume();
+				glued += textOf(next);
+			}
+		}
+		return glued;
+	}
+
 	/** Parse a text value: quoted string, regex, or bare word (with hyphenated continuation). */
 	parseTextValue(attr: string): QueryNode {
 		const tok = this.peek();
@@ -815,9 +871,13 @@ export class Parser {
 			this.consume();
 			return new RegexValueNode(pyStr(tok.value));
 		}
-		if (tok.type === TT.WORD || tok.type === TT.NUMBER || tok.type === TT.STAR) {
-			this.consume();
-			let word = tok.type === TT.STAR ? "*" : textOf(tok);
+		if (tok.type === TT.WORD || tok.type === TT.NUMBER || tok.type === TT.STAR || tok.type === TT.SLASH) {
+			let word = "";
+			if (tok.type !== TT.SLASH) {
+				this.consume();
+				word = tok.type === TT.STAR ? "*" : textOf(tok);
+			}
+			word += this.glueSlashes();
 			// Greedily consume hyphenated and STARRED continuation (no space on either side).
 			//
 			// `*` IS AN ORDINARY CHARACTER IN A VALUE, not a wildcard and not an error. Scryfall
@@ -841,6 +901,10 @@ export class Parser {
 				if (next.type === TT.WORD || next.type === TT.NUMBER) {
 					this.consume();
 					word += textOf(next);
+					continue;
+				}
+				if (next.type === TT.SLASH) {
+					word += this.glueSlashes();
 					continue;
 				}
 				if (

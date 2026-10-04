@@ -530,6 +530,7 @@ class Parser:
 
     def parse(self) -> Query:
         """Parse the full token stream into a Query AST."""
+        self._skip_stray_slashes()
         if self.peek().type == TT.EOF:
             return Query(TrueNode())
         node = self.parse_expr()
@@ -552,12 +553,60 @@ class Parser:
 
     def parse_and_expr(self) -> QueryNode:
         """Parse an AND-level expression, inserting implicit AND between adjacent factors."""
+        self._skip_stray_slashes()
         operands = [self.parse_factor()]
+        self._skip_stray_slashes()
         while self._can_start_factor():
             if self.peek().type == TT.WORD and self.peek().value.upper() == "AND":
                 self.consume()
+                self._skip_stray_slashes()
             operands.append(self.parse_factor())
+            self._skip_stray_slashes()
         return operands[0] if len(operands) == 1 else AndNode(operands)
+
+    def _skip_stray_slashes(self) -> None:
+        """Skip a ``/`` between terms: it is nothing, as a comma is.
+
+        Measured on api.scryfall.com 2026-10-04: every query below answers what it does with the
+        slashes taken out, and carries no ``warnings`` key.
+
+            fire // ice    fire /ice    fire / ice    fire or // ice    fire / or ice    -fire // ice
+            o:fire /       o:"fire" /   cmc>=3 /      e:khm /           (fire // ice)    ( fire /)
+            // fire        fire //      t:goblin // fire                !fire /          fire or /
+
+        A query of nothing but slashes (``/``, ``//``) is "All of your terms were ignored." (400),
+        the sentence an empty term earns; the compat surface says it before the parser is reached.
+        Every one of these was a parse error here, and ``fire // ice`` is what a user gets by pasting
+        the name of a double-faced card.
+
+        Only a slash the term before it did not take is stray: one glued to a bare name word is
+        consumed there (``fire/ice``, parse_hyphenated_name), one glued to a text value or an exact
+        name is part of it (``o:1/1``, ``name:colossus//dark``, ``!lightning/bolt``), and arithmetic
+        is parsed inside its own term. So a slash that reaches a term boundary was an error before
+        this, and nothing that parsed changes.
+
+        LOCAL PATCH (Cloudflare port): upstream's pyparsing grammar rejects an unmatched ``/``
+        (``Unmatched / in regex pattern``, pinned in test_pyparsing_preprocess.py) and is unchanged.
+        """
+        while self.peek().type == TT.SLASH:
+            self.consume()
+
+    def _glue_slashes(self) -> str:
+        """The slashes glued to what was just read, and the words glued behind them.
+
+        ``fire//ice`` after ``fire``, ``/fire`` from the start. A slash stays a CHARACTER of a value
+        or an exact name -- the collation of ``name:`` and of ``!`` deletes it, ``o:`` and ``t:`` keep
+        it -- and a slash with a space before it is not glued (it is stray between terms).
+        """
+        glued = ""
+        while self.peek().type == TT.SLASH and not self.peek().space_before:
+            self.consume()
+            glued += "/"
+            nxt = self.peek()
+            if not nxt.space_before and nxt.type in (TT.WORD, TT.NUMBER):
+                self.consume()
+                glued += nxt.text
+        return glued
 
     def _can_start_factor(self) -> bool:
         tok = self.peek()
@@ -646,9 +695,16 @@ class Parser:
         if tok.type == TT.QUOTED:
             self.consume()
             return ExactNameNode(str(tok.value))
-        if tok.type == TT.WORD:
-            self.consume()
-            return ExactNameNode(str(tok.value))
+        if tok.type in (TT.WORD, TT.SLASH):
+            # A slash glued to the word is part of the name, which the exact-name collation then
+            # deletes: ``!lightning/bolt``, ``!lightning//bolt`` and ``!"lightning/bolt"`` are
+            # Lightning Bolt's 2 on api.scryfall.com (2026-10-04), and ``!/fire`` is ``!fire``'s 1.
+            name = ""
+            if tok.type == TT.WORD:
+                self.consume()
+                name = str(tok.value)
+            name += self._glue_slashes()
+            return ExactNameNode(name)
         msg = f"Expected word or quoted string after '!' at position {tok.pos}"
         raise ParseError(msg)
 
@@ -970,9 +1026,12 @@ class Parser:
         if tok.type == TT.REGEX:
             self.consume()
             return RegexValueNode(str(tok.value))
-        if tok.type in (TT.WORD, TT.NUMBER, TT.STAR):
-            self.consume()
-            word = "*" if tok.type == TT.STAR else tok.text
+        if tok.type in (TT.WORD, TT.NUMBER, TT.STAR, TT.SLASH):
+            word = ""
+            if tok.type != TT.SLASH:
+                self.consume()
+                word = "*" if tok.type == TT.STAR else tok.text
+            word += self._glue_slashes()
             # Greedily consume hyphenated and STARRED continuation (no space on either side).
             #
             # ``*`` IS AN ORDINARY CHARACTER IN A VALUE, not a wildcard and not an error. Scryfall
@@ -996,6 +1055,9 @@ class Parser:
                 if nxt.type in (TT.WORD, TT.NUMBER):
                     self.consume()
                     word += nxt.text
+                    continue
+                if nxt.type == TT.SLASH:
+                    word += self._glue_slashes()
                     continue
                 if nxt.type == TT.MINUS and self.peek(1).type in (TT.WORD, TT.NUMBER) and not self.peek(1).space_before:
                     self.consume()

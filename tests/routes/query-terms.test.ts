@@ -1820,3 +1820,51 @@ describe("a keyword Scryfall honors is never called unknown", () => {
 		}
 	});
 });
+
+describe("a slash between terms is no term", () => {
+	// api.scryfall.com 2026-10-04: `fire // ice` (a double-faced card's pasted name) is `fire ice`'s
+	// 4, `fire /` is `fire`'s 324 and `t:goblin /` is `t:goblin`'s 561 — each with an ABSENT
+	// `warnings` key — and `/` or `//` alone is the 400 "All of your terms were ignored.". Both
+	// parsers skip a stray slash themselves; the policy is what keeps a lone one from standing as a
+	// term of its own, and from emptying nothing.
+	test("a lone slash piece is dropped silently, wherever it stands", () => {
+		for (const [query, kept] of [
+			["fire // ice", "fire ice"],
+			["fire / ice", "fire ice"],
+			["fire /", "fire"],
+			["/ fire", "fire"],
+			["t:goblin /", "t:goblin"],
+			["(fire // ice) t:instant", "(fire ice) t:instant"],
+			["fire / or ice", "fire or ice"],
+			["fire or /", "fire"],
+		] as const) {
+			const result = scryfallTermPolicy(query);
+			expect(result.query).toBe(kept);
+			expect(result.warnings).toEqual([]);
+			expect(result.allIgnored).toBe(false);
+		}
+	});
+
+	test("a query of nothing else is the 400 an emptied query is", () => {
+		for (const query of ["/", "//", "/ //", "(/)"]) {
+			expect(scryfallTermPolicy(query).allIgnored).toBe(true);
+		}
+	});
+
+	test("a slash glued to a term is the parser's, and the policy leaves the query alone", () => {
+		for (const query of [
+			"fire//ice",
+			"name:colossus//dark",
+			"name:fire/ice",
+			"o:1/1",
+			"!lightning/bolt",
+			"/fire",
+			"name:/^x$/ e:khm",
+		]) {
+			const result = scryfallTermPolicy(query);
+			expect(result.query).toBe(query);
+			expect(result.warnings).toEqual([]);
+			expect(parseScryfallQuery(result.query)).toBeDefined();
+		}
+	});
+});

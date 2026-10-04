@@ -8,6 +8,7 @@ from api.parsing import (
     BinaryOperatorNode,
     RegexValueNode,
     generate_sql_query,
+    parse_scryfall_query,
 )
 
 
@@ -78,7 +79,18 @@ class TestRegexPatternParsing:
         name:/bolt/ gives 48, and /^Lightning/ matches nothing because there is no anchoring to
         apply. Giving the bare form regex semantics would be an extension beyond Scryfall, not
         parity with it, so it stays unsupported.
+
+        LOCAL PATCH (Cloudflare port): the hand parser now answers what Scryfall answers, which is
+        the plain name search with the slashes dropped (measured 2026-10-04: ``/fire/`` is
+        ``fire``'s 324, ``//fire`` and ``fire /`` too) -- not a regex. A slash that no
+        comparison operator opens is nothing between terms, so ``fire // ice`` (the pasted name of
+        a double-faced card) parses. The pyparsing grammar is upstream's own and keeps rejecting an
+        unmatched ``/``.
         """
+        if parse_query is parse_scryfall_query:
+            plain = query.replace("/", " ")
+            assert parse_query(query).to_json() == parse_query(plain).to_json()
+            return
         with pytest.raises(ValueError, match=r"(Failed to parse query|Unmatched)"):
             parse_query(query)
 

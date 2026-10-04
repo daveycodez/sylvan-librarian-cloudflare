@@ -3164,6 +3164,42 @@
 			"method": "GET",
 			"path": "/cards/search?q=o%3Ashuffle+%21%22Bloomvine+Regent%22&unique=prints",
 			"note": "2026-10-04. 3 of the card's 4 printings, not tdm/381: that reversible printing prints the front face's text on both sides, and the card's Omen (Claim Territory) is what shuffles. A reversible printing's `o:` reads the faces IT prints. This port answered all 4. NEEDS THE REBUILT ENGINE BLOB."
+		},
+		{
+			"name": "pasted-double-faced-name",
+			"method": "GET",
+			"path": "/cards/search?q=fire+%2F%2F+ice",
+			"note": "2026-10-04. 4 cards, exactly `fire ice`: a slash between terms is nothing (no `warnings` key), so the pasted name of a double-faced card is two name words. This port answered `400 Failed to parse query`. `tuvasa // tuvasa` is 1, `fire // ice t:instant` 2, `o:fire // ice` 2, `-fire // ice` 356, `(fire // ice)` and `fire / ice` 4."
+		},
+		{
+			"name": "stray-slashes-leave-the-term-alone",
+			"method": "GET",
+			"path": "/cards/search?q=t%3Agoblin+%2F",
+			"note": "2026-10-04. 561 = `t:goblin`, with no warning; `fire //` and `// fire` are `fire`'s 324 and `cmc>=3 /` and `cmc>=3/` are 21,822. This port answered `400 Failed to parse query`."
+		},
+		{
+			"name": "slashes-alone-are-all-ignored",
+			"method": "GET",
+			"path": "/cards/search?q=%2F%2F",
+			"note": "2026-10-04. `400 bad_request`, details `All of your terms were ignored.` (`/` and `///` too), with no warnings."
+		},
+		{
+			"name": "slash-glued-to-a-name-value",
+			"method": "GET",
+			"path": "/cards/search?q=name%3Acolossus%2F%2Fdark",
+			"note": "2026-10-04. sld/1081 alone, as `name:colossusdark`: the `name:` collation deletes the slashes a value carries (`name:fire/ice` is Fire // Ice's 1, `name:/fire` is `fire`'s 324), where the QUOTED `name:\"fire/ice\"` is a literal and 404. This port answered `400 Failed to parse query`. The sld/1081 half NEEDS THE REPUBLISHED NAMES BLOB and the rebuilt engine."
+		},
+		{
+			"name": "slash-glued-to-an-oracle-text-value",
+			"method": "GET",
+			"path": "/cards/search?q=o%3A1%2F1",
+			"note": "2026-10-04. 1,432 = `o:\"1/1\"`: an uncollated column keeps the slash, so the unquoted spelling is a search for it (`o:fire/ice` is 404, `o:fire/` and `o:/fire` too). This port answered `400 Failed to parse query`."
+		},
+		{
+			"name": "slash-glued-to-an-exact-name",
+			"method": "GET",
+			"path": "/cards/search?q=%21lightning%2Fbolt",
+			"note": "2026-10-04. 2 = `!\"lightning bolt\"`, not `!lightning` and `bolt`: the exact-name value is the word with its slashes, which the collation deletes (`!lightning//bolt` the same, `!/fire` is `!fire`'s 1, `!fire /` is 1). This port answered `400 Failed to parse query`."
 		}
 	]
 }

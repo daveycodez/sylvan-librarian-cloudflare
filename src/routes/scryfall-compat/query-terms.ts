@@ -4042,6 +4042,9 @@ interface PolicyScan {
 	asksKeywords: "carried" | "catalog" | undefined;
 }
 
+/** A piece of nothing but slashes — see policyLevel. */
+const STRAY_SLASHES_RE = /^\/+$/;
+
 function policyLevel(source: string, scan: PolicyScan): string | null {
 	const pieces = scanPieces(source);
 	if (pieces.length === 0) return null;
@@ -4063,6 +4066,15 @@ function policyLevel(source: string, scan: PolicyScan): string | null {
 			}
 			if (inner !== piece.inner) changed = true;
 			kept.push({ ...piece, text: `${piece.prefix ?? ""}(${inner})` });
+			continue;
+		}
+		// A piece of nothing but slashes is no term, and no warning either: api.scryfall.com
+		// 2026-10-04 answers `fire // ice`, `fire /` and `(fire / ice)` as `fire ice`, `fire` and
+		// `(fire ice)` with an ABSENT `warnings` key, and `/` or `//` alone is "All of your terms
+		// were ignored." — which is what an emptied query becomes below. The parser skips a stray
+		// slash itself (parser.skipStraySlashes), so this is only what keeps `/` from being a term.
+		if (STRAY_SLASHES_RE.test(piece.text)) {
+			changed = true;
 			continue;
 		}
 		// `pow=1a` is two terms — see numericValueSplit. Each is answered as the term it is.

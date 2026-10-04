@@ -1172,14 +1172,82 @@ describe("a bare word's hyphens glue what follows, a trailing one is dropped, an
 		expect(wire("fire/t:instant")).toBe(wire("fire t:instant"));
 	});
 
-	test("arithmetic is untouched, and a value keeps both characters", () => {
+	test("arithmetic is untouched, and a value keeps its hyphen", () => {
 		for (const q of ["power/2>1", "cmc-1<3", "power-cmc>1", "cmc/tou>1"]) {
 			expect(wire(q)).not.toContain("card_name");
 		}
-		// `o:fire-` and `o:fire/ice` are 404 on Scryfall — the characters, not separators — and
-		// stay the errors they were here; so do a hyphen before a group and a leading slash.
-		for (const q of ["o:fire-", "name:fire/ice", "fire-(ice)", "/fire", "fire /ice"]) {
+		// `o:fire-` is 404 on Scryfall — the character, not a separator — and stays the error it was
+		// here; so does a hyphen before a group. (`o:fire/ice` and `/fire` are the next describe's.)
+		for (const q of ["o:fire-", "fire-(ice)"]) {
 			expect(() => parseScryfallQuery(q)).toThrow(ParseError);
 		}
+	});
+});
+
+// ── a slash between terms, and one glued to a value ──────────────────────────────
+
+describe("a slash between terms is nothing, and one glued to a value or an exact name is a character of it", () => {
+	// Measured on api.scryfall.com 2026-10-04, one request per row. `fire // ice` — the pasted name
+	// of a double-faced card — was `Failed to parse query` here and is `fire ice`'s 4 there:
+	//   fire // ice  fire / ice  fire /ice  fire/ ice  // fire  fire //  /fire/     4 / 324, no warning
+	//   (fire // ice)  ( fire /)  -fire // ice  fire or // ice  fire / or ice        the same without them
+	//   t:goblin // fire  o:fire /  o:"fire" /  e:khm /  cmc>=3 /  cmc>=3/  pow>=2/  the term, alone
+	//   name:colossus//dark  name:fire/ice  name:/fire     the collation deletes the slash
+	//   o:1/1 1,432   o:fire/ice 404   !lightning/bolt  !lightning//bolt  !/fire   one value, glued
+	const wire = (query: string): string => canonicalStringify(parseScryfallQuery(query));
+
+	test("a stray slash is dropped wherever a term could start or end", () => {
+		for (const [q, same] of [
+			["fire // ice", "fire ice"],
+			["fire / ice", "fire ice"],
+			["fire /ice", "fire ice"],
+			["fire/ ice", "fire ice"],
+			["//fire", "fire"],
+			["/fire/", "fire"],
+			["fire //", "fire"],
+			["(fire // ice)", "(fire ice)"],
+			["( fire /)", "(fire)"],
+			["-fire // ice", "-fire ice"],
+			["fire or // ice", "fire or ice"],
+			["fire / or ice", "fire or ice"],
+			["t:goblin // fire", "t:goblin fire"],
+			["o:fire /", "o:fire"],
+			['o:"fire" /', 'o:"fire"'],
+			["e:khm /", "e:khm"],
+			["cmc>=3 /", "cmc>=3"],
+			["cmc>=3/", "cmc>=3"],
+			["pow>=2/", "pow>=2"],
+			["!fire /", "!fire"],
+			["!/fire", "!fire"],
+			["/bolt/", "bolt"],
+			["(t:elf) /foo/", "(t:elf) foo"],
+			["tuvasa // tuvasa", "tuvasa tuvasa"],
+		] as const) {
+			expect(wire(q)).toBe(wire(same));
+		}
+		// Nothing but slashes is an empty query here; the compat surface answers it first.
+		expect(wire("//")).toBe(wire(""));
+	});
+
+	test("a slash glued to a value or an exact name is part of it", () => {
+		const folded = (q: string) => wire(q).toLowerCase();
+		expect(folded("name:colossus//dark")).toBe(folded("name:colossusdark"));
+		expect(folded("name:fire/ice")).toBe(folded("name:fireice"));
+		expect(folded("name:/fire")).toBe(folded("name:fire"));
+		expect(folded("!lightning/bolt")).toBe(folded('!"lightning bolt"'));
+		expect(folded("!lightning//bolt")).toBe(folded('!"lightning bolt"'));
+		// An uncollated column keeps the characters, which is why `o:1/1` is a search for them.
+		expect(wire("o:1/1")).toContain('"value":"1/1"');
+		expect(wire("o:fire/ice")).toContain('"value":"fire/ice"');
+		expect(wire("o:fire/")).toContain('"value":"fire/"');
+		expect(wire("o:/fire")).toContain('"value":"/fire"');
+	});
+
+	test("a regex and arithmetic are read as they were", () => {
+		expect(wire("name:/^x$/")).toContain("RegexValueNode");
+		expect(wire("o:/draw.a.card/")).toContain("RegexValueNode");
+		expect(wire("t:/elf|goblin/ // fire")).toContain("RegexValueNode");
+		expect(wire("power/2>1")).not.toContain("card_name");
+		expect(wire("cmc / 2 > 1")).not.toContain("card_name");
 	});
 });
