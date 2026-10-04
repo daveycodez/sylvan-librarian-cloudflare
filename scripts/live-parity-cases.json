@@ -2016,6 +2016,42 @@
 			"method": "GET",
 			"path": "/cards/search?q=fo%3A%2F%28%28sacrifice+%28this+creature%7Cit%29%5B%5E.%5D%2Aend+step%29%7C%28end+step%5B%5E.%5D%2Asacrifice+%28this+creature%7Cit%29%29%29%2F+t%3Acreature",
 			"note": "x66 R33: all 18,760 creatures on api.scryfall.com 2026-10-03 with `Invalid expression “fo:/((sacrifice (th…” was ignored. Too many nested groups.`, where this port answered the 86 the regex matches."
+		},
+		{
+			"name": "search-regex-alternation-under-the-complexity-budget",
+			"method": "GET",
+			"path": "/cards/search?q=t%3Ainstant+o%3A%2Fdestroy+target+%28creature%7Cqazxjkvw%7Cqbzxjkvw%7Cqczxjkvw%7Cqdzxjkvw%7Cqezxjkvw%7Cqfzxjkvw%7Cqgzxjkvw%7Cqhzxjkvw%7Cqizxjkvw%7Cqjzxjkvw%7Cqkzxjkvw%7Cqlzxjkvw%7Cqmzxjkvw%7Cqnzxjkvw%7Cqozxjkvw%7Cqpzxjkvw%7Cqqzxjkvw%7Cqrzxjkvw%7Cqszxjkvw%7Cqtzxjkvw%7Cquzxjkvw%7Cqvzxjkvw%29%2F",
+			"note": "x66 R2, the control: 23 alternatives (22 pipes, a 223-character body) score 89 on Scryfall's complexity sum — `.` and `(` 1, `*` `+` `?` `{` 2, `|` 4, refused at 90 — and RUN: 152 instants on api.scryfall.com 2026-10-03."
+		},
+		{
+			"name": "search-regex-alternation-too-complex-beside-a-term",
+			"method": "GET",
+			"path": "/cards/search?q=t%3Ainstant+o%3A%2Fdestroy+target+%28creature%7Cqazxjkvw%7Cqbzxjkvw%7Cqczxjkvw%7Cqdzxjkvw%7Cqezxjkvw%7Cqfzxjkvw%7Cqgzxjkvw%7Cqhzxjkvw%7Cqizxjkvw%7Cqjzxjkvw%7Cqkzxjkvw%7Cqlzxjkvw%7Cqmzxjkvw%7Cqnzxjkvw%7Cqozxjkvw%7Cqpzxjkvw%7Cqqzxjkvw%7Cqrzxjkvw%7Cqszxjkvw%7Cqtzxjkvw%7Cquzxjkvw%7Cqvzxjkvw%7Cqwzxjkvw%7Cqxzxjkvw%29%2F",
+			"note": "x66 R2a/R2c: 25 alternatives (24 pipes, 241 characters) score 97, and Scryfall drops the regex — all 3,909 of `t:instant` with `Invalid expression “o:/destroy target (…” was ignored. Regular expression too complex.` (2026-10-03). This port ran the pattern up to 256 bytes (377 cards, no warning) and from 257 refused the WHOLE query with its own `400 Search query contains an unsupported regular expression.`"
+		},
+		{
+			"name": "search-regex-alternation-too-complex-alone",
+			"method": "GET",
+			"path": "/cards/search?q=o%3A%2Fdestroy+target+%28creature%7Cqazxjkvw%7Cqbzxjkvw%7Cqczxjkvw%7Cqdzxjkvw%7Cqezxjkvw%7Cqfzxjkvw%7Cqgzxjkvw%7Cqhzxjkvw%7Cqizxjkvw%7Cqjzxjkvw%7Cqkzxjkvw%7Cqlzxjkvw%7Cqmzxjkvw%7Cqnzxjkvw%7Cqozxjkvw%7Cqpzxjkvw%7Cqqzxjkvw%7Cqrzxjkvw%7Cqszxjkvw%7Cqtzxjkvw%7Cquzxjkvw%7Cqvzxjkvw%7Cqwzxjkvw%7Cqxzxjkvw%7Cqyzxjkvw%7Cqzzxjkvw%29%2F",
+			"note": "x66 R2b: alone, nothing is left — `400 bad_request`, `All of your terms were ignored.`, with the too-complex warning (2026-10-03)."
+		},
+		{
+			"name": "search-regex-dots-too-complex",
+			"method": "GET",
+			"path": "/cards/search?q=t%3Ainstant+o%3A%2Fdestroy.......................................................................................................................................creature%2F",
+			"note": "x66 R2d: a 150-character body of mostly `.` — 135 dots, and 90 is the first count Scryfall refuses (`destroy` + 89 dots + `creature` runs). 3,909 with the warning on api.scryfall.com 2026-10-03; this port answered its own 400."
+		},
+		{
+			"name": "search-regex-248-characters-run",
+			"method": "GET",
+			"path": "/cards/search?q=t%3Ainstant+name%3A%2Faaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa%2F",
+			"note": "The LENGTH half of the same sentence: 248 characters run (a 404 here — no instant has that name) and 249 are `Regular expression too complex.`, on every regex keyword, counting a backslash and a double quote twice (measured 2026-10-03)."
+		},
+		{
+			"name": "search-regex-249-characters-too-complex",
+			"method": "GET",
+			"path": "/cards/search?q=t%3Ainstant+name%3A%2Faaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa%2F",
+			"note": "…and the 249th: 3,909 with `Invalid expression “name:/aaaaaaaaaaaaa…” was ignored. Regular expression too complex.`"
 		}
 	]
 }

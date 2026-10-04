@@ -1358,10 +1358,103 @@ function nestsTooDeep(pattern: string): boolean {
 }
 
 /**
+ * `Regular expression too complex.` — SCRYFALL'S OWN BUDGET ON ONE PATTERN, and it is two rules:
+ * a weighted count of six characters, and a length.
+ *
+ * This port had its own bound instead (the parser's `regex-budget`, upstream #1047), and it
+ * failed differently: from 257 bytes it answered `400 Search query contains an unsupported regular
+ * expression.` for the WHOLE query, other terms and all, where Scryfall drops the one term and
+ * answers the rest. And below 257 it ran patterns Scryfall refuses — a 244-character alternation
+ * answered 377 cards here and, beside `t:instant`, all 3,909 instants there.
+ *
+ * ─── THE SCORE ───────────────────────────────────────────────────────────────────────────────
+ *
+ * Measured on api.scryfall.com 2026-10-03 by lengthening one pattern a character at a time under
+ * `t:instant` (3,909 with the warning = dropped). The last pattern that ran, and the first that
+ * did not:
+ *
+ *   `.` ×89 | ×90                 `destroy` + `.`×89 + `creature` | the same with ×90
+ *   `a*` ×44 | ×45                `a+` and `a?` the same 44 | 45
+ *   `|` ×22 | ×23                 alone, between one-letter words, between eight-letter words
+ *   `(a)` ×29 + `.`×60 | ×30      `a{2}` ×14 + `.`×60 | ×15      `(?=a)` ×9 + `.`×60 | ×10
+ *
+ * One sum fits every row — refused at 90:
+ *
+ *   `.` 1      `(` 1      `*` `+` `?` `{` 2 each      `|` 4
+ *
+ * and the mixed rows confirm it is ONE sum and not six caps: 45 dots + 22 `a*` (89) runs and 46
+ * (90) does not; 20 pipes + 9 dots (89) runs and + 10 does not; `.*` ×29 (87) runs and ×30 does
+ * not; `a*?` ×7 + 60 dots (88) runs and ×8 (92) does not. A lookaround costs 3 — its `(` and its
+ * `?` — which is `(?=a)`, `(?!a)`, `(?<=a)`, `(?<!a)` and `(?:a)` all refused at ×10 beside 60 dots.
+ *
+ * Everything else weighs nothing, each measured ×40 or ×50 beside dots: letters and digits (150 of
+ * them), `)`, `[` `]` `^` `$` `}` `-` `~` `#` `,` `:` `!` `=` `<` `>` `&`, the class escapes `\w`
+ * `\d` `\s` `\W`, `\n`, `\\`, and a backreference.
+ *
+ * LIKE THE NESTING RULE, IT COUNTS CHARACTERS AND NOT SYNTAX. An escaped or bracketed operator
+ * costs what a live one does: `\.` ×45 + `.` ×45 is refused and ×44 runs; `[.]` ×30 + 60 dots is
+ * refused; `\|` and `[|]` are refused at ×23; `\*`, `\?`, `\+` and `[*]` at ×45; `\{` ×15 beside
+ * 60 dots. `o:/\(this creature\)/` therefore spends 1, and a mana symbol `{r}` spends 2.
+ *
+ * ─── THE LENGTH ──────────────────────────────────────────────────────────────────────────────
+ *
+ * 248 characters run and 249 do not, whatever they are (`a`, `1`, `A`, `,`, `é` — characters, not
+ * bytes) and whatever the keyword (`o:`, `fo:`, `fulloracle:`, `name:`, `t:`, `ft:` each 248 | 249,
+ * so it is the pattern and not the term). Three things are longer than they look, and they are
+ * exactly what Ruby's `String#inspect` escapes, so the limit reads as "inspect is over 250":
+ *
+ *   `\`   counts 2     `\.` ×82 runs, ×83 is refused (3 × 83 = 249); `\w` `\b` `\s` `\d` `\n` each 3
+ *   `"`   counts 2     ×10 leaves room for 228 more, not 238
+ *   `#{`  counts 3     ×10 leaves room for 218 more
+ *
+ * and one is shorter: `--` counts ONE (ten hyphens leave room for 243 more; 249 of them run).
+ * `'`, `<`, `&`, `~`, `—` and `•` are 1 each.
+ *
+ * ─── WHERE IT SITS ───────────────────────────────────────────────────────────────────────────
+ *
+ * FIRST of the text rules: `(((a)))` + 90 dots and `(((a)))` + 249 letters are "too complex", not
+ * "nested"; `a{60}` + 90 dots is "too complex", not "too much repetition"; and an unbalanced `[`
+ * or `(` in front of 90 dots is "too complex" too, so it precedes the compiler as well.
+ *
+ * NOT REPRODUCED: PostgreSQL's own `Invalid regular expression: regular expression is too
+ * complex.` — a DIFFERENT sentence, from the compiler — which eighteen ADJACENT word boundaries
+ * earn (`\b` ×18, `\y` ×18, `\B` ×18; seventeen run, and so do eighteen with a letter between
+ * each). No query has that shape, and the port runs it.
+ *
+ * COST: one pass over the pattern's characters at parse time. Nothing reaches the engine, and a
+ * pattern this refuses is one the engine no longer compiles or scans with.
+ */
+const TOO_COMPLEX_REASON = "Regular expression too complex.";
+const REGEX_COMPLEXITY_LIMIT = 90;
+const REGEX_INSPECT_LENGTH_LIMIT = 248;
+
+function tooComplex(pattern: string): boolean {
+	let score = 0;
+	let length = 0;
+	const chars = [...pattern];
+	for (let i = 0; i < chars.length; i++) {
+		const ch = chars[i];
+		const next = chars[i + 1];
+		if (ch === "." || ch === "(") score += 1;
+		else if (ch === "*" || ch === "+" || ch === "?" || ch === "{") score += 2;
+		else if (ch === "|") score += 4;
+		if (ch === "-" && next === "-") {
+			// The pair is one character.
+			i++;
+			length += 1;
+		} else if (ch === "\\" || ch === '"') length += 2;
+		else if (ch === "#" && next === "{") length += 2;
+		else length += 1;
+	}
+	return score >= REGEX_COMPLEXITY_LIMIT || length > REGEX_INSPECT_LENGTH_LIMIT;
+}
+
+/**
  * Why Scryfall refuses a regex it has not compiled yet, or null — the checks it runs on the
  * pattern's TEXT, in the order it runs them.
  */
 function regexTextReason(pattern: string): string | null {
+	if (tooComplex(pattern)) return TOO_COMPLEX_REASON;
 	if (nestsTooDeep(pattern)) return NESTED_GROUPS_REASON;
 	return null;
 }

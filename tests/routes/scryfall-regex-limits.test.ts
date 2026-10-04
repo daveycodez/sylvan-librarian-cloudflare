@@ -13,6 +13,142 @@ const ignored = (echo: string, reason: string) => `Invalid expression \u201c${ec
 
 const search = (q: string) => testDispatch(makeCtx(), `/cards/search?q=${encodeURIComponent(q)}`);
 
+describe("a regex over Scryfall's complexity budget is ignored", () => {
+	const COMPLEX = "Regular expression too complex.";
+	const runs = (body: string) => {
+		const q = `t:instant o:/${body}/`;
+		const result = scryfallTermPolicy(q);
+		expect(result.warnings).toEqual([]);
+		expect(result.query).toBe(q);
+	};
+	const refused = (body: string) => {
+		const result = scryfallTermPolicy(`t:instant o:/${body}/`);
+		expect(result.query).toBe("t:instant");
+		expect(result.warnings).toHaveLength(1);
+		expect(result.warnings[0]).toEndWith(`was ignored. ${COMPLEX}`);
+	};
+	const letters = "abcdefghijklmnopqrstuvwxyz";
+	/** `destroy target (creature|qazxjkvw|qbzxjkvw|…)` with `n` junk alternatives — R2a's shape. */
+	const junkAlternation = (n: number) =>
+		`destroy target (${["creature", ...Array.from({ length: n }, (_, i) => `q${letters[i]}zxjkvw`)].join("|")})`;
+
+	test("the score: `.` and `(` cost 1, a quantifier 2, `|` 4, and 90 is refused", () => {
+		runs(".".repeat(89));
+		refused(".".repeat(90));
+		runs(`destroy${".".repeat(89)}creature`);
+		refused(`destroy${".".repeat(90)}creature`);
+		for (const quantified of ["a*", "a+", "a?"]) {
+			runs(quantified.repeat(44));
+			refused(quantified.repeat(45));
+		}
+		runs(`x${"|".repeat(22)}`);
+		refused(`x${"|".repeat(23)}`);
+		runs(`${"(a)".repeat(29)}${".".repeat(60)}`);
+		refused(`${"(a)".repeat(30)}${".".repeat(60)}`);
+		runs(`${"a{2}".repeat(14)}${".".repeat(60)}`);
+		refused(`${"a{2}".repeat(15)}${".".repeat(60)}`);
+	});
+
+	test("it is one sum, not a cap per character", () => {
+		runs(`${".".repeat(45)}${"a*".repeat(22)}`);
+		refused(`${".".repeat(46)}${"a*".repeat(22)}`);
+		runs(`${"|".repeat(20)}${".".repeat(9)}`);
+		refused(`${"|".repeat(20)}${".".repeat(10)}`);
+		runs(".*".repeat(29));
+		refused(".*".repeat(30));
+		runs(`${"a*?".repeat(7)}${".".repeat(60)}`);
+		refused(`${"a*?".repeat(8)}${".".repeat(60)}`);
+	});
+
+	test("a lookaround costs its parenthesis and its question mark", () => {
+		for (const group of ["(?=a)", "(?!a)", "(?<=a)", "(?<!a)", "(?:a)"]) {
+			runs(`${group.repeat(9)}${".".repeat(60)}`);
+			refused(`${group.repeat(10)}${".".repeat(60)}`);
+		}
+	});
+
+	test("an escaped or bracketed operator costs what a live one does", () => {
+		runs(`${"\\.".repeat(44)}${".".repeat(45)}`);
+		refused(`${"\\.".repeat(45)}${".".repeat(45)}`);
+		runs(`${"[.]".repeat(29)}${".".repeat(60)}`);
+		refused(`${"[.]".repeat(30)}${".".repeat(60)}`);
+		runs("[|]".repeat(22));
+		refused("[|]".repeat(23));
+		runs("\\|".repeat(22));
+		refused("\\|".repeat(23));
+		refused("[*]".repeat(45));
+		refused("\\*".repeat(45));
+		refused(`${"\\{".repeat(15)}${".".repeat(60)}`);
+	});
+
+	test("what weighs nothing", () => {
+		for (const free of ["\\s", "\\)", "[a]", "^", "$", "\\w", "\\d", "\\W", "\\n", "-x", "~", "#", ",", ":", "!"]) {
+			runs(`${free.repeat(40)}${".".repeat(89)}`);
+		}
+		runs(`${"a".repeat(150)}${".".repeat(89)}`);
+	});
+
+	test("the length: 248 characters run and 249 do not, on every regex keyword", () => {
+		for (const ch of ["a", "1", "A", ",", "\u00e9"]) {
+			runs(ch.repeat(248));
+			refused(ch.repeat(249));
+		}
+		for (const keyword of ["name", "fo", "fulloracle", "t", "ft"]) {
+			expect(scryfallTermPolicy(`t:instant ${keyword}:/${"a".repeat(248)}/`).warnings).toEqual([]);
+			expect(scryfallTermPolicy(`t:instant ${keyword}:/${"a".repeat(249)}/`).warnings).toHaveLength(1);
+		}
+	});
+
+	test("a backslash and a double quote count twice, `#{` three times, `--` once", () => {
+		runs("\\.".repeat(82));
+		refused("\\.".repeat(83));
+		runs("\\w".repeat(82));
+		refused("\\w".repeat(83));
+		runs(`${'"'.repeat(10)}${"a".repeat(228)}`);
+		refused(`${'"'.repeat(10)}${"a".repeat(229)}`);
+		runs(`${"#{".repeat(10)}${"a".repeat(218)}`);
+		refused(`${"#{".repeat(10)}${"a".repeat(219)}`);
+		runs(`${"-".repeat(10)}${"a".repeat(243)}`);
+		refused(`${"-".repeat(10)}${"a".repeat(244)}`);
+		runs("-".repeat(249));
+		runs(`${"'".repeat(10)}${"a".repeat(238)}`);
+		refused(`${"'".repeat(10)}${"a".repeat(239)}`);
+	});
+
+	test("the reported shapes: a long alternation, and a run of dots", async () => {
+		// R2a/R2b: 23 alternatives run (223 characters); 25 do not (241), nor does anything longer.
+		runs(junkAlternation(22));
+		refused(junkAlternation(24));
+		refused(junkAlternation(26));
+		// R2d: `destroy` + 135 dots + `creature`, a 150-character body.
+		refused(`destroy${".".repeat(135)}creature`);
+		// R2c: beside another term the query ANSWERS — this was a 400 for the whole query.
+		const q = `t:instant o:/${junkAlternation(27)}/`;
+		const response = await search(q);
+		expect(response.status).toBe(200);
+		expect((await json(response)).warnings).toEqual([ignored("o:/destroy target (\u2026", COMPLEX)]);
+		// Alone it is Scryfall's 400, with the warning, and not this port's own sentence.
+		const alone = await search(`o:/${junkAlternation(24)}/`);
+		expect(alone.status).toBe(400);
+		expect(await json(alone)).toMatchObject({
+			code: "bad_request",
+			details: "All of your terms were ignored.",
+			warnings: [ignored("o:/destroy target (\u2026", COMPLEX)],
+		});
+	});
+
+	test("it is decided before the nesting rule and before the compiler", () => {
+		const reasonOf = (body: string) => scryfallTermPolicy(`t:instant o:/${body}/`).warnings[0];
+		expect(reasonOf(`(((a)))${".".repeat(90)}`)).toEndWith(COMPLEX);
+		expect(reasonOf(`(((a)))${"a".repeat(249)}`)).toEndWith(COMPLEX);
+		expect(reasonOf(`[${".".repeat(90)}`)).toEndWith(COMPLEX);
+		expect(reasonOf(`(${".".repeat(90)}`)).toEndWith(COMPLEX);
+		// 88 dots and one group is 89, and runs; the 89th dot makes 90.
+		runs(`${".".repeat(88)}(a)`);
+		refused(`${".".repeat(89)}(a)`);
+	});
+});
+
 describe("a regex whose parentheses nest three deep is ignored", () => {
 	const NESTED = "Too many nested groups.";
 
