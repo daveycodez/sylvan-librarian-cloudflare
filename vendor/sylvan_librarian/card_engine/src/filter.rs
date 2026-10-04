@@ -1837,6 +1837,35 @@ pub(crate) enum FilterExpr {
     /// for them and only the 71 that have one go to their printings.
     PrintsOwnFaces,
 
+    /// LOCAL PATCH (Cloudflare port): THE PRINTINGS THAT PRINT A DIVERGENT RECORD, of the named
+    /// cards — what `bind_divergent_text` grafts onto a name or rules-text leaf whose answer on a
+    /// reversible printing is not the answer on its card.
+    ///
+    /// A reversible printing's name, and the rules text of its faces, are its own: Tuvasa the
+    /// Sunlit's sld/1328 prints "Tuvasa the Sunlit // Tuvasa the Sunlit", Bloomvine Regent's tdm/381
+    /// prints the front face's text on both sides. Scryfall reads those for `name:` and `o:`
+    /// (measured 2026-10-04: `name:colossusdark` and `name:"colossus // dark"` are Darksteel
+    /// Colossus sld/1081 alone; `name:/^tuvasa the sunlit$/` is 2 printings where `!"Tuvasa the
+    /// Sunlit"` is 3; `o:shuffle !"Bloomvine Regent"` is 3 of the card's 4). The leaf itself reads
+    /// the card, which is right for the other 38,555 cards and for every printing of these 72 but
+    /// the reversible one.
+    ///
+    /// `name_ids` are the `card_name_id`s of the cards the graft is for, sorted — the same key
+    /// `NameMatch` is addressed by — and `cids` those cards' ids, sorted, for narrowing. A printing
+    /// is in the set iff its card is named here AND it prints the card's divergent record, which is
+    /// `divergent_of`. At CARD level the leaf is PrintingDep for a named card and False for every
+    /// other, so a tree it sits in settles at card level for the 38,555 cards that have nothing to
+    /// say and only the named few go to their printings.
+    ///
+    /// It never appears in a tree the binder did not graft it onto, and the binder grafts nothing
+    /// unless the needle's answer differs between a card and its own reversible printing — which is
+    /// the seam of a joined name, an anchored regex, or a rules text the reversible printing
+    /// copied from its front face. Every other query's tree is byte-identical to what it was.
+    PrintsOwnIn {
+        name_ids: Vec<u32>,
+        cids: Vec<u32>,
+    },
+
     /// LOCAL PATCH (Cloudflare port): a comparison on a FACE STAT that Scryfall's negation finds
     /// FALSE — what `-(pow>=3)` answers there, which is not the complement of `pow>=3`.
     ///
@@ -2242,6 +2271,8 @@ pub(crate) fn verify_cost_tier(f: &FilterExpr) -> u32 {
         FilterExpr::LorePrinting { .. } => TEXT_SCAN_NS100,
         // One length read on the card, and a layout compare on the 71 cards that pass it.
         FilterExpr::PrintsOwnFaces => MASK_COMPARE_NS100,
+        // A binary search of at most 72 name ids on the card, and a layout compare on the hits.
+        FilterExpr::PrintsOwnIn { .. } => MASK_COMPARE_NS100,
         // A few field reads on the card and its faces.
         FilterExpr::FaceStatCmpFalse { .. } => MASK_COMPARE_NS100,
         // Two mask bits reject all but the creatures, and the survivors read one string: the card's
@@ -2529,7 +2560,7 @@ fn leaf_compares_printing_field(f: &FilterExpr) -> bool {
         // printed text is the row's own language.
         FilterExpr::FieldPresent { .. } | FilterExpr::ImageStatusMatch { .. } | FilterExpr::PrintedTextPresent => true,
         // `lore:`'s printing half: the printing's flavor text, flavor name and own faces.
-        FilterExpr::LorePrinting { .. } | FilterExpr::PrintsOwnFaces => true,
+        FilterExpr::LorePrinting { .. } | FilterExpr::PrintsOwnFaces | FilterExpr::PrintsOwnIn { .. } => true,
         // A reversible printing has two faces where its siblings have one.
         FilterExpr::FaceStatCmpFalse { .. } => true,
         // The cheapest codes are the printing's (CompatFields), and so is the `new:rarity` bit.
@@ -3178,6 +3209,138 @@ impl FilterExpr {
             }
             _ => {}
         }
+    }
+
+    /// Graft the REVERSIBLE PRINTING's own answer onto a `name:` leaf — but only when the
+    /// answer differs between one of the 72 cards that have such a printing and that printing.
+    ///
+    /// A reversible printing prints its own name ("Darksteel Colossus // Darksteel Colossus") and
+    /// the rules text of its own faces, and Scryfall's `name:` and `o:` read what a printing prints.
+    /// Measured on api.scryfall.com 2026-10-04: `usd-a` is 13 printings, the one extra being
+    /// sld/1081, because the doubled name's collation holds `colossusdark`; `name:"colossus //
+    /// dark"` and `name:/colossus \/\/ dark/` are sld/1081 alone; `name:/^tuvasa the sunlit$/` is
+    /// 2 printings where `!"Tuvasa the Sunlit"` is 3 (the third is the reversible sld/1328, which
+    /// prints the doubled name and so does not END where the regex says); and `o:shuffle
+    /// !"Bloomvine Regent"` is 3 of 4, because tdm/381 prints the front face's text on its back and
+    /// the card's Omen is the one that shuffles.
+    ///
+    /// THE COST ARGUMENT IS THE DESIGN, the same one `bind_flavor_names` makes. `name:` and `o:`
+    /// are the hottest predicates in the language, and answering the reversible printing
+    /// unconditionally would make both printing-dependent for every query. So the needle is put to
+    /// the 72 cards' two readings FIRST — the card's and the reversible printing's, a couple of
+    /// hundred short strings — and the tree changes only where the two disagree:
+    ///
+    /// ```text
+    ///   leaf  →  Or( And( leaf, Not(PrintsOwnIn{cards the card satisfies and its printing does not}) ),
+    ///                PrintsOwnIn{cards its printing satisfies and the card does not} )
+    /// ```
+    ///
+    /// with either arm left out when its set is empty. A needle that agrees on every card — which is
+    /// every needle but a joined-name seam, an anchored regex over a name, or a word in an Omen's
+    /// text — leaves the tree byte-identical, and nothing downstream of the binder can tell.
+    ///
+    /// Regexes with a `~` are left alone (the alias is a card's own face name, bound per card
+    /// elsewhere), and `o:` on a face-count over two is searched as empty on both sides, as the
+    /// card's own column is.
+    pub(crate) fn bind_divergent_text<'a>(
+        &mut self,
+        cards: &[AOracleCard],
+        divergent: &[rkyv::Archived<u32>],
+        strings: &AStrings,
+        readings: &dyn Fn() -> &'a crate::DivergentReadings,
+    ) {
+        if divergent.is_empty() {
+            return;
+        }
+        enum Reading<'a> {
+            Contains(TextSearchField, &'a str),
+            Regex(TextField, &'a CompiledRegex),
+        }
+        let reading = match self {
+            FilterExpr::And(children) | FilterExpr::Or(children) => {
+                for c in children.iter_mut() {
+                    c.bind_divergent_text(cards, divergent, strings, readings);
+                }
+                return;
+            }
+            FilterExpr::Not(inner) => {
+                inner.bind_divergent_text(cards, divergent, strings, readings);
+                return;
+            }
+            FilterExpr::TextContains { field: field @ (TextSearchField::NameCollated | TextSearchField::NameLower), word } => {
+                Reading::Contains(*field, word.as_str())
+            }
+            FilterExpr::TextRegex { field: field @ TextField::NameLower, regex } if !regex.has_self_reference() => {
+                Reading::Regex(*field, regex)
+            }
+            _ => return,
+        };
+        let readings = readings();
+        // THE ONE SEARCH THAT SETTLES NEARLY EVERY QUERY: which of the 72 cards' readings hold the
+        // needle at all? A card whose card AND printing both lack it reads False twice and agrees,
+        // so only the cards found are asked. For a name the question is only the printings' names,
+        // since a card's name is nested in its printing's (see `names_nested`) and a needle in the
+        // card's is in the printing's. A regex has no such test and asks all 72.
+        let mut only: Vec<usize> = Vec::new();
+        let all = match &reading {
+            Reading::Contains(TextSearchField::NameCollated, word) if readings.names_nested => {
+                readings.own_collated.lines_with(word, &mut only);
+                false
+            }
+            Reading::Contains(TextSearchField::NameLower, word) if readings.names_nested => {
+                readings.own_lower.lines_with(word, &mut only);
+                false
+            }
+            _ => true,
+        };
+        only.sort_unstable();
+        only.dedup();
+        if !all && only.is_empty() {
+            return;
+        }
+        // (the card's `card_name_id`, card id) for every card the two readings disagree on.
+        let mut gain: Vec<(u32, u32)> = Vec::new();
+        let mut lose: Vec<(u32, u32)> = Vec::new();
+        for i in if all { (0..readings.items.len()).collect::<Vec<_>>() } else { only } {
+            let (cid, own) = (u32::from(divergent[i]), &readings.items[i]);
+            let card = &cards[cid as usize];
+            let (card_hit, own_hit) = match &reading {
+                Reading::Contains(field @ TextSearchField::NameCollated, word) => (
+                    contains_per_face(word, *field, crate::collated_name(card, strings)),
+                    contains_per_face(word, *field, &own.collated),
+                ),
+                Reading::Contains(field @ TextSearchField::NameLower, word) => {
+                    (contains_per_face(word, *field, crate::lower_name(card, strings)), contains_per_face(word, *field, &own.lower))
+                }
+                Reading::Regex(TextField::NameLower, regex) => (
+                    regex_matches_face_split(regex, TextField::NameLower, crate::lower_name(card, strings)),
+                    regex_matches_face_split(regex, TextField::NameLower, &own.lower),
+                ),
+                _ => (false, false),
+            };
+            let key = (u32::from(card.card_name_id), cid);
+            match (card_hit, own_hit) {
+                (false, true) => gain.push(key),
+                (true, false) => lose.push(key),
+                _ => {}
+            }
+        }
+        if gain.is_empty() && lose.is_empty() {
+            return;
+        }
+        let set = |pairs: &[(u32, u32)]| {
+            let mut name_ids: Vec<u32> = pairs.iter().map(|p| p.0).collect();
+            let mut cids: Vec<u32> = pairs.iter().map(|p| p.1).collect();
+            name_ids.sort_unstable();
+            name_ids.dedup();
+            cids.sort_unstable();
+            FilterExpr::PrintsOwnIn { name_ids, cids }
+        };
+        let mut tree = std::mem::replace(self, FilterExpr::True);
+        if !lose.is_empty() {
+            tree = FilterExpr::And(vec![tree, FilterExpr::Not(Box::new(set(&lose)))]);
+        }
+        *self = if gain.is_empty() { tree } else { FilterExpr::Or(vec![tree, set(&gain)]) };
     }
 
     pub(crate) fn bind_type_lines(&mut self, idx: &rkyv::Archived<TypeLineIndex>, strings: &AStrings) {
@@ -3856,6 +4019,16 @@ impl FilterExpr {
                 }
                 let Some(p) = printing else { return Tri::PrintingDep };
                 tri_bool(crate::divergent_of(card, p).is_some())
+            }
+
+            FilterExpr::PrintsOwnIn { name_ids, .. } => {
+                if name_ids.binary_search(&u32::from(card.card_name_id)).is_err() {
+                    return Tri::False;
+                }
+                match printing {
+                    None => Tri::PrintingDep,
+                    Some(p) => tri_bool(crate::divergent_of(card, p).is_some()),
+                }
             }
 
             FilterExpr::SingleSet => tri_bool(card.single_set),

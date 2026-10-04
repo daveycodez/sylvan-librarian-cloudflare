@@ -6141,14 +6141,115 @@ impl FaceFlavorNames {
     }
 }
 
-/// A store's [`FaceFlavorNames`], computed on first use. Held by whoever holds the archive
-/// (`BufferStore`), because the table is a function of the archive alone.
+/// A store's [`FaceFlavorNames`] and [`DivergentReadings`], each computed on first use. Held by
+/// whoever holds the archive (`BufferStore`), because both tables are functions of the archive
+/// alone.
 #[derive(Default)]
-pub(crate) struct FaceFlavorCache(std::sync::OnceLock<FaceFlavorNames>);
+pub(crate) struct FaceFlavorCache {
+    faces: std::sync::OnceLock<FaceFlavorNames>,
+    divergent: std::sync::OnceLock<DivergentReadings>,
+}
 
 impl FaceFlavorCache {
     pub(crate) fn get(&self, data: &Archived<CardData>) -> &FaceFlavorNames {
-        self.0.get_or_init(|| FaceFlavorNames::build(data))
+        self.faces.get_or_init(|| FaceFlavorNames::build(data))
+    }
+
+    /// The reversible printings' own readings — see [`DivergentReadings`].
+    pub(crate) fn divergent(&self, data: &Archived<CardData>) -> &DivergentReadings {
+        self.divergent.get_or_init(|| DivergentReadings::build(data))
+    }
+}
+
+/// What a REVERSIBLE printing's own name reads as, in the forms `name:` compares:
+/// one entry per card in `name_divergent`, in its order. Derived once per store (72 entries, a few
+/// KB), because the binder asks the same question of the same 72 cards on every `name:`
+/// query, and recollating a name or restripping a rules text for each of them would be the cost
+/// the binder exists to avoid — see `FilterExpr::bind_divergent_text`.
+#[derive(Default)]
+pub(crate) struct DivergentReadings {
+    pub(crate) items: Vec<DivergentReading>,
+    /// EVERY card's reading of each form joined into one haystack, a line per card, so the binder
+    /// can ask "which of the 72 does this needle occur in?" with ONE substring search over a few KB
+    /// and look at only those — none, for all but a handful of needles, which is the whole reason a
+    /// `name:` query pays for none of this. A hit on a name is a substring of the card's line, so a
+    /// miss here is a miss everywhere.
+    pub(crate) own_collated: Haystack,
+    pub(crate) own_lower: Haystack,
+    /// Whether every card's name (collated AND lowercase) is a substring of the name its reversible
+    /// printing prints — true of all 72 (a doubled name holds its card's twice, an adventure's three
+    /// parts hold its two) and CHECKED here rather than assumed. When it holds, a substring needle
+    /// that hits a card's name hits its printing's too, so the only readings that can differ are the
+    /// ones a needle hits in the printing's name alone, and one search of `own_*_all` settles them.
+    pub(crate) names_nested: bool,
+}
+
+/// Strings joined a line per card — `\n` between cards, `\u{1}` between a card's faces, neither of
+/// which a name or a rules text holds — with where each line starts.
+#[derive(Default)]
+pub(crate) struct Haystack {
+    text: String,
+    starts: Vec<u32>,
+}
+
+impl Haystack {
+    fn of(lines: impl Iterator<Item = String>) -> Self {
+        let (mut text, mut starts) = (String::new(), Vec::new());
+        for (i, line) in lines.enumerate() {
+            if i > 0 {
+                text.push('\n');
+            }
+            starts.push(text.len() as u32);
+            text.push_str(&line);
+        }
+        Haystack { text, starts }
+    }
+
+    /// The cards (by position) whose line holds `needle`, ascending, each once.
+    pub(crate) fn lines_with(&self, needle: &str, out: &mut Vec<usize>) {
+        let mut last = usize::MAX;
+        for at in memchr::memmem::find_iter(self.text.as_bytes(), needle.as_bytes()) {
+            let line = self.starts.partition_point(|&s| s as usize <= at).saturating_sub(1);
+            if line != last {
+                out.push(line);
+                last = line;
+            }
+        }
+    }
+}
+
+#[derive(Default)]
+pub(crate) struct DivergentReading {
+    /// The name the printing prints, collated (`name:word`) and lowercased as printed (`name:"…"`).
+    pub(crate) collated: String,
+    pub(crate) lower: String,
+}
+
+impl DivergentReadings {
+    fn build(data: &Archived<CardData>) -> Self {
+        let items = data
+            .indexes
+            .name_divergent
+            .iter()
+            .map(|cid| {
+                let Some(own) = data.cards[u32::from(*cid) as usize].divergent.first() else { return DivergentReading::default() };
+                let folded = str_at(&data.strings, u32::from(own.card_name_folded_id)).unwrap_or_default();
+                let lower = str_at(&data.strings, u32::from(own.card_name_id)).unwrap_or_default().to_lowercase();
+                DivergentReading {
+                    collated: collate_name(folded),
+                    lower,
+                }
+            })
+            .collect();
+        let mut out = DivergentReadings { items, names_nested: true, ..Default::default() };
+        for (cid, own) in data.indexes.name_divergent.iter().map(|c| u32::from(*c) as usize).zip(&out.items) {
+            let card = &data.cards[cid];
+            out.names_nested &= collated_name(card, &data.strings).is_empty()
+                || (own.collated.contains(collated_name(card, &data.strings)) && own.lower.contains(lower_name(card, &data.strings)));
+        }
+        out.own_collated = Haystack::of(out.items.iter().map(|o| o.collated.clone()));
+        out.own_lower = Haystack::of(out.items.iter().map(|o| o.lower.clone()));
+        out
     }
 }
 
@@ -10336,6 +10437,10 @@ fn narrow_rec(
             }
             Narrowed::loose(if printing_space { Candidates::PrintingBits(bits) } else { Candidates::CardBits(bits) })
         }
+
+        // A grafted reversible-printing arm (`bind_divergent_text`): exactly the named cards, and
+        // loose — a card is here for ONE of its printings.
+        FilterExpr::PrintsOwnIn { cids, .. } => Narrowed::loose(Candidates::Cards(cids.clone())),
 
         _ => None,
     }
@@ -20724,6 +20829,10 @@ fn bind_and_split_filter_value(
     filter_expr.bind_flavor_names(&data.indexes.flavor_names, &data.indexes.flavor_names_collated, &|| {
         face_flavors.get(data)
     });
+    // A reversible printing's own name and rules text, grafted on only where the needle reads
+    // differently there than on its card — see `bind_divergent_text`. After the flavor arms, so a
+    // flavor-name `Or` around a name leaf stays whole.
+    filter_expr.bind_divergent_text(&data.cards, &data.indexes.name_divergent, &data.strings, &|| face_flavors.divergent(data));
     if let Some(msg) = take_regex_match_failed() {
         return Err(EngineError::unsupported_regex(msg.strip_prefix(REGEX_MATCH_ERR_PREFIX).unwrap_or(&msg)));
     }

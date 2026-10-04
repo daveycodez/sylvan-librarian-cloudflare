@@ -1,0 +1,137 @@
+{
+ "artist": "Eric Deschamps",
+ "artist_ids": [
+  "37970e22-9cee-44c1-af44-5ee27cf26b76"
+ ],
+ "booster": false,
+ "border_color": "black",
+ "card_back_id": "0aeebaf5-8c7d-4636-9e82-8c27447861f7",
+ "cardmarket_id": 361781,
+ "cmc": 3.0,
+ "collector_number": "47",
+ "color_identity": [
+  "G",
+  "U",
+  "W"
+ ],
+ "colors": [
+  "G",
+  "U",
+  "W"
+ ],
+ "digital": false,
+ "edhrec_rank": 8381,
+ "finishes": [
+  "foil"
+ ],
+ "flavor_text": "\"My people have always been here, and here we shall remain.\"",
+ "foil": true,
+ "frame": "2015",
+ "frame_effects": [
+  "legendary"
+ ],
+ "full_art": false,
+ "game_changer": false,
+ "games": [
+  "paper"
+ ],
+ "highres_image": true,
+ "id": "bdda07ac-2f9f-4c8e-b3f6-b54d0afd730c",
+ "illustration_id": "127d89e5-4fde-41dc-ba46-f0e47ff71660",
+ "image_status": "highres_scan",
+ "image_updated_at": "2026-07-13T09:18:47Z",
+ "image_uris": {
+  "art": "https://cards.scryfall.io/art/front/b/d/bdda07ac-2f9f-4c8e-b3f6-b54d0afd730c.webp?1783934327",
+  "art_crop": "https://cards.scryfall.io/art_crop/front/b/d/bdda07ac-2f9f-4c8e-b3f6-b54d0afd730c.jpg?1783934327",
+  "border_crop": "https://cards.scryfall.io/border_crop/front/b/d/bdda07ac-2f9f-4c8e-b3f6-b54d0afd730c.jpg?1783934327",
+  "crop": "https://cards.scryfall.io/crop/front/b/d/bdda07ac-2f9f-4c8e-b3f6-b54d0afd730c.webp?1783934327",
+  "display": "https://cards.scryfall.io/display/front/b/d/bdda07ac-2f9f-4c8e-b3f6-b54d0afd730c.webp?1783934327",
+  "grid": "https://cards.scryfall.io/grid/front/b/d/bdda07ac-2f9f-4c8e-b3f6-b54d0afd730c.webp?1783934327",
+  "large": "https://cards.scryfall.io/large/front/b/d/bdda07ac-2f9f-4c8e-b3f6-b54d0afd730c.jpg?1783934327",
+  "normal": "https://cards.scryfall.io/normal/front/b/d/bdda07ac-2f9f-4c8e-b3f6-b54d0afd730c.jpg?1783934327",
+  "png": "https://cards.scryfall.io/png/front/b/d/bdda07ac-2f9f-4c8e-b3f6-b54d0afd730c.png?1783934327",
+  "small": "https://cards.scryfall.io/small/front/b/d/bdda07ac-2f9f-4c8e-b3f6-b54d0afd730c.jpg?1783934327",
+  "thumb": "https://cards.scryfall.io/thumb/front/b/d/bdda07ac-2f9f-4c8e-b3f6-b54d0afd730c.webp?1783934327"
+ },
+ "keywords": [],
+ "lang": "en",
+ "layout": "normal",
+ "legalities": {
+  "alchemy": "not_legal",
+  "brawl": "not_legal",
+  "commander": "legal",
+  "competitivebrawl": "not_legal",
+  "duel": "legal",
+  "future": "not_legal",
+  "gladiator": "not_legal",
+  "historic": "not_legal",
+  "legacy": "legal",
+  "modern": "not_legal",
+  "oathbreaker": "legal",
+  "oldschool": "not_legal",
+  "pauper": "not_legal",
+  "paupercommander": "not_legal",
+  "penny": "not_legal",
+  "pioneer": "not_legal",
+  "predh": "not_legal",
+  "premodern": "not_legal",
+  "standard": "not_legal",
+  "standardbrawl": "not_legal",
+  "timeless": "not_legal",
+  "tlr": "legal",
+  "vintage": "legal"
+ },
+ "mana_cost": "{G}{W}{U}",
+ "multiverse_ids": [
+  450648
+ ],
+ "name": "Tuvasa the Sunlit",
+ "nonfoil": false,
+ "object": "card",
+ "oracle_id": "6a83d976-8087-48d7-b6f5-63efb8329e99",
+ "oracle_text": "Tuvasa gets +1/+1 for each enchantment you control.\nWhenever you cast your first enchantment spell each turn, draw a card.",
+ "oversized": false,
+ "power": "1",
+ "prices": {
+  "eur": null,
+  "eur_foil": "4.37",
+  "tix": null,
+  "usd": null,
+  "usd_etched": null,
+  "usd_foil": "3.42"
+ },
+ "prints_search_uri": "https://api.scryfall.com/cards/search?order=released&q=oracleid%3A6a83d976-8087-48d7-b6f5-63efb8329e99&unique=prints",
+ "promo": false,
+ "purchase_uris": {
+  "cardhoarder": "https://www.cardhoarder.com/cards?affiliate_id=scryfall&data%5Bsearch%5D=Tuvasa+the+Sunlit&ref=card-profile&utm_campaign=affiliate&utm_medium=card&utm_source=scryfall",
+  "cardmarket": "https://www.cardmarket.com/en/Magic/Products?idProduct=361781&referrer=scryfall&utm_campaign=card_prices&utm_medium=text&utm_source=scryfall",
+  "tcgplayer": "https://partner.tcgplayer.com/c/4931599/1830156/21018?subId1=api&u=https%3A%2F%2Fwww.tcgplayer.com%2Fproduct%2F171056%3Fpage%3D1"
+ },
+ "rarity": "mythic",
+ "related_uris": {
+  "edhrec": "https://edhrec.com/route/?cc=Tuvasa+the+Sunlit",
+  "gatherer": "https://gatherer.wizards.com/Pages/Card/Details.aspx?multiverseid=450648&printed=false",
+  "tcgplayer_infinite_articles": "https://partner.tcgplayer.com/c/4931599/1830156/21018?subId1=api&trafcat=tcgplayer.com%2Fsearch%2Farticles&u=https%3A%2F%2Fwww.tcgplayer.com%2Fsearch%2Farticles%3FproductLineName%3Dmagic%26q%3DTuvasa%2Bthe%2BSunlit",
+  "tcgplayer_infinite_decks": "https://partner.tcgplayer.com/c/4931599/1830156/21018?subId1=api&trafcat=tcgplayer.com%2Fsearch%2Fdecks&u=https%3A%2F%2Fwww.tcgplayer.com%2Fsearch%2Fdecks%3FproductLineName%3Dmagic%26q%3DTuvasa%2Bthe%2BSunlit"
+ },
+ "released_at": "2018-08-10",
+ "reprint": false,
+ "reserved": false,
+ "rulings_uri": "https://api.scryfall.com/cards/bdda07ac-2f9f-4c8e-b3f6-b54d0afd730c/rulings",
+ "scryfall_set_uri": "https://scryfall.com/sets/c18?utm_source=api",
+ "scryfall_uri": "https://scryfall.com/card/c18/47/tuvasa-the-sunlit?utm_source=api",
+ "security_stamp": "oval",
+ "set": "c18",
+ "set_id": "06ce6bc2-85cd-4cca-85b1-8c620d3e0902",
+ "set_name": "Commander 2018",
+ "set_search_uri": "https://api.scryfall.com/cards/search?order=set&q=e%3Ac18&unique=prints",
+ "set_type": "commander",
+ "set_uri": "https://api.scryfall.com/sets/06ce6bc2-85cd-4cca-85b1-8c620d3e0902",
+ "story_spotlight": false,
+ "tcgplayer_id": 171056,
+ "textless": false,
+ "toughness": "1",
+ "type_line": "Legendary Creature — Merfolk Shaman",
+ "uri": "https://api.scryfall.com/cards/bdda07ac-2f9f-4c8e-b3f6-b54d0afd730c",
+ "variation": false
+}

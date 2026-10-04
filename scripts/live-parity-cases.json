@@ -3122,6 +3122,12 @@
 			"method": "GET",
 			"path": "/cards/search?q=new%3Anonsense+e%3Akhm+t%3Agod&unique=prints",
 			"note": "2026-10-04. 25 printings carrying `Invalid expression “new:nonsense” was ignored. Checking if cards have a new “nonsense” is not supported`. A 400 here before."
+		},
+		{
+			"name": "name-anchored-regex-of-a-reversible-card",
+			"method": "GET",
+			"path": "/cards/search?q=name%3A%2F%5Etuvasa+the+sunlit%24%2F&unique=prints",
+			"note": "2026-10-04. 2 printings (c18/47, pz2/70691), not the 3 a card-only read gives: sld/1328 prints `Tuvasa the Sunlit // Tuvasa the Sunlit`, which does not end where the regex says (`name:/^tuvasa the sunlit \\/\\/ tuvasa the sunlit$/` is sld/1328 alone, `!\"Tuvasa the Sunlit\"` is 3). NEEDS THE REBUILT ENGINE BLOB."
 		}
 	]
 }
