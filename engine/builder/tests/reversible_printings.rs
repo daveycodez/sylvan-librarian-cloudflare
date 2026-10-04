@@ -143,6 +143,14 @@ fn reversible() -> Value {
     leaf("card_layout", "layout", "StringValueNode", "reversible_card")
 }
 
+fn oracle(text: &str) -> Value {
+    leaf("oracle_text", "o", "StringValueNode", text)
+}
+
+fn oracle_regex(pattern: &str) -> Value {
+    leaf("oracle_text", "o", "RegexValueNode", pattern)
+}
+
 const NONE: [&str; 0] = [];
 
 #[test]
@@ -280,4 +288,24 @@ fn unique_art_gives_a_bonus_printing_up_to_its_sibling_of_the_same_artwork() {
     // No other group moves: Darksteel Colossus's two printings are different artworks.
     assert_eq!(art(&reversible()), ["sld/1081", "sld/1328", "sld/1453", "tdm/381"]);
     assert_eq!(art(&word("sunlit")), ["c18/47", "sld/1328"]);
+}
+
+#[test]
+fn rules_text_is_the_text_the_reversible_printing_prints() {
+    let store = store();
+    let bloomvine = quoted("bloomvine regent");
+    // The card's Omen shuffles; tdm/381 prints the front face's text, which does not.
+    assert_eq!(printings(&store, &and(&[oracle("shuffle"), bloomvine.clone()])), ["tdm/136"]);
+    assert_eq!(printings(&store, &and(&[oracle_regex("shuffles?"), bloomvine.clone()])), ["tdm/136"]);
+    assert_eq!(printings(&store, &and(&[not(oracle("shuffle")), bloomvine.clone()])), ["tdm/381"]);
+    // Text both sides print is found on both.
+    assert_eq!(
+        printings(&store, &and(&[oracle("whenever this creature or another dragon"), bloomvine.clone()])),
+        ["tdm/136", "tdm/381"]
+    );
+    assert_eq!(printings(&store, &and(&[oracle("flying"), bloomvine])), ["tdm/136", "tdm/381"]);
+    // Everywhere else the card's text is the text: Darksteel Colossus shuffles itself on both its
+    // printings, and the one card whose reversible printing differs is the only one that moves.
+    assert_eq!(printings(&store, &and(&[oracle("shuffle"), word("darksteel")])), ["m10/208", "sld/1081"]);
+    assert_eq!(printings(&store, &oracle("shuffle")), ["m10/208", "sld/1081", "tdm/136"]);
 }

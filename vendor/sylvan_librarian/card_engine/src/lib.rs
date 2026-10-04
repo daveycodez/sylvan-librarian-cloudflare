@@ -6161,9 +6161,9 @@ impl FaceFlavorCache {
     }
 }
 
-/// What a REVERSIBLE printing's own name reads as, in the forms `name:` compares:
+/// What a REVERSIBLE printing's own name and faces read as, in the forms `name:` and `o:` compare:
 /// one entry per card in `name_divergent`, in its order. Derived once per store (72 entries, a few
-/// KB), because the binder asks the same question of the same 72 cards on every `name:`
+/// KB), because the binder asks the same question of the same 72 cards on every `name:` and `o:`
 /// query, and recollating a name or restripping a rules text for each of them would be the cost
 /// the binder exists to avoid — see `FilterExpr::bind_divergent_text`.
 #[derive(Default)]
@@ -6172,10 +6172,14 @@ pub(crate) struct DivergentReadings {
     /// EVERY card's reading of each form joined into one haystack, a line per card, so the binder
     /// can ask "which of the 72 does this needle occur in?" with ONE substring search over a few KB
     /// and look at only those — none, for all but a handful of needles, which is the whole reason a
-    /// `name:` query pays for none of this. A hit on a name is a substring of the card's line, so a
-    /// miss here is a miss everywhere.
+    /// `name:` or `o:` query pays for none of this. A per-face hit is a substring of the card's
+    /// line, so a miss here is a miss everywhere.
     pub(crate) own_collated: Haystack,
     pub(crate) own_lower: Haystack,
+    pub(crate) own_oracle: Haystack,
+    pub(crate) own_full: Haystack,
+    pub(crate) card_oracle: Haystack,
+    pub(crate) card_full: Haystack,
     /// Whether every card's name (collated AND lowercase) is a substring of the name its reversible
     /// printing prints — true of all 72 (a doubled name holds its card's twice, an adventure's three
     /// parts hold its two) and CHECKED here rather than assumed. When it holds, a substring needle
@@ -6223,6 +6227,10 @@ pub(crate) struct DivergentReading {
     /// The name the printing prints, collated (`name:word`) and lowercased as printed (`name:"…"`).
     pub(crate) collated: String,
     pub(crate) lower: String,
+    /// Each face's rules text as `o:` reads it (`searchable_oracle_text`) and as `fo:` does
+    /// (plain lowercase); empty for a card of more than two faces, which is searched as empty.
+    pub(crate) oracle: Vec<String>,
+    pub(crate) full_oracle: Vec<String>,
 }
 
 impl DivergentReadings {
@@ -6235,9 +6243,17 @@ impl DivergentReadings {
                 let Some(own) = data.cards[u32::from(*cid) as usize].divergent.first() else { return DivergentReading::default() };
                 let folded = str_at(&data.strings, u32::from(own.card_name_folded_id)).unwrap_or_default();
                 let lower = str_at(&data.strings, u32::from(own.card_name_id)).unwrap_or_default().to_lowercase();
+                let texts = |f: &dyn Fn(&str) -> String| -> Vec<String> {
+                    if own.faces.len() > 2 {
+                        return Vec::new();
+                    }
+                    own.faces.iter().filter_map(|face| str_at(&data.strings, u32::from(face.oracle_text_id)).map(f)).collect()
+                };
                 DivergentReading {
                     collated: collate_name(folded),
                     lower,
+                    oracle: texts(&|raw| searchable_oracle_text(raw)),
+                    full_oracle: texts(&|raw| raw.to_lowercase()),
                 }
             })
             .collect();
@@ -6249,6 +6265,12 @@ impl DivergentReadings {
         }
         out.own_collated = Haystack::of(out.items.iter().map(|o| o.collated.clone()));
         out.own_lower = Haystack::of(out.items.iter().map(|o| o.lower.clone()));
+        out.own_oracle = Haystack::of(out.items.iter().map(|o| o.oracle.join("\u{1}")));
+        out.own_full = Haystack::of(out.items.iter().map(|o| o.full_oracle.join("\u{1}")));
+        let card_text = |id: u32| str_at(&data.strings, id).unwrap_or_default().to_owned();
+        let cards: Vec<&AOracleCard> = data.indexes.name_divergent.iter().map(|c| &data.cards[u32::from(*c) as usize]).collect();
+        out.card_oracle = Haystack::of(cards.iter().map(|c| card_text(u32::from(c.oracle_text_lower_id))));
+        out.card_full = Haystack::of(cards.iter().map(|c| card_text(u32::from(c.oracle_full_lower_id))));
         out
     }
 }

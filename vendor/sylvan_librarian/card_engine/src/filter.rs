@@ -3211,7 +3211,7 @@ impl FilterExpr {
         }
     }
 
-    /// Graft the REVERSIBLE PRINTING's own answer onto a `name:` leaf — but only when the
+    /// Graft the REVERSIBLE PRINTING's own answer onto a `name:` or `o:` leaf — but only when the
     /// answer differs between one of the 72 cards that have such a printing and that printing.
     ///
     /// A reversible printing prints its own name ("Darksteel Colossus // Darksteel Colossus") and
@@ -3267,10 +3267,17 @@ impl FilterExpr {
                 inner.bind_divergent_text(cards, divergent, strings, readings);
                 return;
             }
-            FilterExpr::TextContains { field: field @ (TextSearchField::NameCollated | TextSearchField::NameLower), word } => {
-                Reading::Contains(*field, word.as_str())
-            }
-            FilterExpr::TextRegex { field: field @ TextField::NameLower, regex } if !regex.has_self_reference() => {
+            FilterExpr::TextContains {
+                field:
+                    field @ (TextSearchField::NameCollated
+                    | TextSearchField::NameLower
+                    | TextSearchField::OracleTextLower
+                    | TextSearchField::FullOracleTextLower),
+                word,
+            } => Reading::Contains(*field, word.as_str()),
+            FilterExpr::TextRegex { field: field @ (TextField::NameLower | TextField::OracleTextLower), regex }
+                if !regex.has_self_reference() =>
+            {
                 Reading::Regex(*field, regex)
             }
             _ => return,
@@ -3291,6 +3298,16 @@ impl FilterExpr {
                 readings.own_lower.lines_with(word, &mut only);
                 false
             }
+            Reading::Contains(TextSearchField::OracleTextLower, word) => {
+                readings.own_oracle.lines_with(word, &mut only);
+                readings.card_oracle.lines_with(word, &mut only);
+                false
+            }
+            Reading::Contains(TextSearchField::FullOracleTextLower, word) => {
+                readings.own_full.lines_with(word, &mut only);
+                readings.card_full.lines_with(word, &mut only);
+                false
+            }
             _ => true,
         };
         only.sort_unstable();
@@ -3304,6 +3321,10 @@ impl FilterExpr {
         for i in if all { (0..readings.items.len()).collect::<Vec<_>>() } else { only } {
             let (cid, own) = (u32::from(divergent[i]), &readings.items[i]);
             let card = &cards[cid as usize];
+            let card_text = |field| match text_search_field_value(card, None, strings, field) {
+                StrVal::Known(s) => Some(s),
+                _ => None,
+            };
             let (card_hit, own_hit) = match &reading {
                 Reading::Contains(field @ TextSearchField::NameCollated, word) => (
                     contains_per_face(word, *field, crate::collated_name(card, strings)),
@@ -3316,7 +3337,17 @@ impl FilterExpr {
                     regex_matches_face_split(regex, TextField::NameLower, crate::lower_name(card, strings)),
                     regex_matches_face_split(regex, TextField::NameLower, &own.lower),
                 ),
-                _ => (false, false),
+                Reading::Contains(field, word) => {
+                    let faces = if *field == TextSearchField::FullOracleTextLower { &own.full_oracle } else { &own.oracle };
+                    (
+                        card_text(*field).is_some_and(|s| contains_per_face(word, *field, s)),
+                        faces.iter().any(|t| t.contains(word)),
+                    )
+                }
+                Reading::Regex(field, regex) => (
+                    card_text(TextSearchField::OracleTextLower).is_some_and(|s| regex_matches_face_split(regex, *field, s)),
+                    own.oracle.iter().any(|t| regex.is_match(t)),
+                ),
             };
             let key = (u32::from(card.card_name_id), cid);
             match (card_hit, own_hit) {
