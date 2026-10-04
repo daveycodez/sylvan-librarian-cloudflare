@@ -2834,6 +2834,18 @@
 			"method": "GET",
 			"path": "/cards/search?q=loy%3D0",
 			"note": "2026-10-04. Four cards: Dakkon, Shadow Slayer and Jeska, Thrice Reborn print `0`, Nissa, Steward of Elements `X` and B.O.B. (Bevy of Beebles) `*`. This port held the last two as absent and answered 2 (`loy>=0` 328 against 330). Generation 63."
+		},
+		{
+			"name": "named-exact-doubled-reversible-name",
+			"method": "GET",
+			"path": "/cards/named?exact=Tuvasa+the+Sunlit+%2F%2F+Tuvasa+the+Sunlit",
+			"note": "2026-10-04. sld/1328: the name a reversible printing prints resolves to that printing (`Ajani Goldmane//Ajani Goldmane` sld/745, `Temple Garden // Temple Garden` ecl/351, `&set=c18` 404, `Fire // Fire` 404). A 404 here before; the search `!\"Tuvasa the Sunlit // Tuvasa the Sunlit\"` already answered it."
+		},
+		{
+			"name": "named-fuzzy-one-name-said-twice",
+			"method": "GET",
+			"path": "/cards/named?fuzzy=ajani+goldmane+ajani+goldmane",
+			"note": "2026-10-04. sld/745, the reversible printing, where this port answered m11's Ajani Goldmane (`Temple Garden Temple Garden` ecl/351, `mechtitan mechtitan` sld/1969; `&set=m11` is m11's). A misspelt doubled name is not reproduced: `Ajani Goldmane // Ajani Goldman` is sld/1453 there."
 		}
 	]
 }

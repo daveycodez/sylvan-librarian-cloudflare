@@ -822,6 +822,94 @@ describe("GET /cards/named", () => {
 		expect(body.details).toContain("No cards found matching");
 	});
 
+	// A reversible printing prints its name twice (`Tuvasa the Sunlit // Tuvasa the Sunlit`), and
+	// api.scryfall.com resolves that name back to the printing: `exact=Tuvasa the Sunlit // Tuvasa
+	// the Sunlit` is sld/1328 there (2026-10-04) and was a 404 here, where the search `!"Tuvasa
+	// the Sunlit // Tuvasa the Sunlit"` already answered the same printing.
+	test("a doubled name that misses is asked once more, as the name a reversible printing prints", async () => {
+		const wire = (query: string) => canonicalStringify(parseScryfallQueryWithDirectives(query).tree);
+		const ask = async (name: string, set = "") => {
+			const engine = new FakeEngine();
+			const res = await testDispatch(
+				makeCtx({ engine }),
+				`/cards/named?exact=${encodeURIComponent(name)}${set === "" ? "" : `&set=${set}`}`,
+			);
+			return { engine, res };
+		};
+
+		const doubled = await ask("Tuvasa the Sunlit // Tuvasa the Sunlit");
+		expect(doubled.res.status).toBe(200);
+		expect((await json(doubled.res)).object).toBe("card");
+		expect(doubled.engine.lastSearch).toMatchObject({
+			filterTreeJson: wire('!"tuvasa the sunlit // tuvasa the sunlit"'),
+			unique: "card",
+			prefer: "default",
+			limit: 1,
+			offset: 0,
+		});
+		// Case and the spaces around `//` are immaterial (`exact=Ajani Goldmane//Ajani Goldmane`
+		// is sld/745), and `set=` scopes the printing (`&set=sld` is sld/745, `&set=c18` a 404).
+		expect((await ask("AJANI GOLDMANE//ajani goldmane")).engine.lastSearch?.filterTreeJson).toBe(
+			wire('!"Ajani Goldmane // Ajani Goldmane"'),
+		);
+		expect((await ask("Ajani Goldmane // Ajani Goldmane", "sld")).engine.lastSearch?.filterTreeJson).toBe(
+			wire('!"Ajani Goldmane // Ajani Goldmane" e:sld'),
+		);
+
+		// No printing prints it: the 404 this route always gave, naming what was asked.
+		const engine = new FakeEngine();
+		engine.cards = [];
+		const none = await testDispatch(makeCtx({ engine }), "/cards/named?exact=Fire%20%2F%2F%20Fire");
+		expect(none.status).toBe(404);
+		expect((await json(none)).details).toBe("No cards found matching “Fire // Fire”");
+	});
+
+	test("no other exact lookup pays for it: a hit, a plain miss and a two-name miss search nothing", async () => {
+		for (const name of ["Llanowar Elves", "Not A Card", "Fire // Ice", "Fire //", "// Fire", "A // A // A"]) {
+			const engine = new FakeEngine();
+			await testDispatch(makeCtx({ engine }), `/cards/named?exact=${encodeURIComponent(name)}`);
+			expect([name, engine.lastSearch]).toEqual([name, null]);
+		}
+		// A name or a set that could not be written into the query is not asked about either.
+		for (const url of ['/cards/named?exact=a"b%20%2F%2F%20a"b', "/cards/named?exact=a%20%2F%2F%20a&set=x%20y"]) {
+			const engine = new FakeEngine();
+			expect((await testDispatch(makeCtx({ engine }), url)).status).toBe(404);
+			expect(engine.lastSearch).toBeNull();
+		}
+	});
+
+	// `fuzzy=` with one name said twice is the same printing, before any stage runs: on
+	// api.scryfall.com 2026-10-04 `fuzzy=ajani goldmane ajani goldmane` is sld/745, `fuzzy=Temple
+	// Garden Temple Garden` ecl/351, `fuzzy=mechtitan mechtitan` sld/1969 — and `&set=m11`, where
+	// no printing prints the doubled name, is m11's own Ajani Goldmane.
+	test("a fuzzy needle of one name said twice is the reversible printing, and the stages when there is none", async () => {
+		const wire = (query: string) => canonicalStringify(parseScryfallQueryWithDirectives(query).tree);
+		for (const needle of ["ajani goldmane ajani goldmane", "Ajani Goldmane // Ajani Goldmane"]) {
+			const engine = new FakeEngine();
+			const res = await testDispatch(makeCtx({ engine }), `/cards/named?fuzzy=${encodeURIComponent(needle)}`);
+			expect(res.status).toBe(200);
+			expect(engine.lastSearch?.filterTreeJson).toBe(wire('!"ajani goldmane // ajani goldmane"'));
+		}
+		const scoped = new FakeEngine();
+		await testDispatch(makeCtx({ engine: scoped }), "/cards/named?fuzzy=mechtitan%20mechtitan&set=sld");
+		expect(scoped.lastSearch?.filterTreeJson).toBe(wire('!"mechtitan // mechtitan" e:sld'));
+
+		// No printing prints it: the three stages answer, as they did.
+		const none = new FakeEngine();
+		none.cards = [];
+		none.scryfallFuzzyStatus = "ambiguous";
+		none.scryfallExactNames = [];
+		const res = await testDispatch(makeCtx({ engine: none }), "/cards/named?fuzzy=zzzz%20zzzz");
+		expect((await json(res)).type).toBe("ambiguous");
+
+		// A needle that is not two equal halves searches nothing first.
+		for (const needle of ["llanowar elves", "fire ice", "bolt", "a b a", "a b b a"]) {
+			const engine = new FakeEngine();
+			await testDispatch(makeCtx({ engine }), `/cards/named?fuzzy=${encodeURIComponent(needle)}`);
+			expect([needle, engine.lastSearch]).toEqual([needle, null]);
+		}
+	});
+
 	test("ambiguous is a not_found carrying a type, exactly as Scryfall spells it", async () => {
 		const engine = new FakeEngine();
 		engine.scryfallExactNames = [];

@@ -839,7 +839,14 @@ export async function cardsNamedHandler(
 		// ignores case AND diacritics, and resolves a single face of a "Front // Back" card.
 		let card: Record<string, unknown> | null;
 		try {
-			card = await engine.scryfallExactName(foldAccents(exact.trim().toLowerCase()), setCode, baseUrl);
+			const folded = foldAccents(exact.trim().toLowerCase());
+			card = await engine.scryfallExactName(folded, setCode, baseUrl);
+			// A miss on a DOUBLED name (`Tuvasa the Sunlit // Tuvasa the Sunlit`) is asked once
+			// more, as the name a reversible printing prints — see reversiblePrintingNamed.
+			if (!card) {
+				const doubled = doubledNameQuery(folded, setCode);
+				if (doubled !== null) card = await reversiblePrintingNamed(engine, doubled, baseUrl);
+			}
 		} catch (err) {
 			return engineFailure(err, pretty);
 		}
@@ -848,6 +855,65 @@ export async function cardsNamedHandler(
 	}
 
 	return namedFuzzy(engine, fuzzy ?? "", setCode, baseUrl, { format, face, version, pretty });
+}
+
+/**
+ * `exact=` WITH THE NAME A REVERSIBLE PRINTING PRINTS — `Tuvasa the Sunlit // Tuvasa the Sunlit`.
+ *
+ * A reversible printing's card object carries the doubled name, and api.scryfall.com resolves
+ * that name back to the printing. Measured 2026-10-04, this port answering each 200 with a 404
+ * (`No cards found matching “…”`):
+ *
+ *   exact=Tuvasa the Sunlit // Tuvasa the Sunlit     sld/1328, the reversible printing
+ *   exact=tuvasa the sunlit // tuvasa the sunlit     the same — case is immaterial
+ *   exact=Ajani Goldmane//Ajani Goldmane             sld/745 — and so are the spaces
+ *   exact=Ajani Goldmane // Ajani Goldmane           sld/745 of its two (sld/745, sld/1453)
+ *   exact=Temple Garden // Temple Garden             ecl/351        exact=Mechtitan // Mechtitan  sld/1969
+ *   …&set=sld                                        sld/745        …&set=c18                    404
+ *   exact=Fire // Fire   exact=Delver of Secrets // Delver of Secrets   exact=Lightning Bolt // Lightning Bolt   404
+ *
+ * while `exact=Tuvasa the Sunlit` stays the card's own c18/47. So the doubled name names the
+ * printings that PRINT it and nothing else — which is exactly what the search `!"Name // Name"`
+ * answers here already (the engine's exact-name leaf reads a printing's own name), with the same
+ * printing first for all six rows above and the same 404s. The names index `scryfallExactName`
+ * routes by holds a card's name, not a printing's, so that search is what is asked.
+ *
+ * COST: nothing on a hit, and nothing on a miss whose name is not two equal halves around `//` —
+ * the only requests that reach the second call are ones this route answered 404.
+ */
+function doubledNameQuery(folded: string, setCode: string): string | null {
+	const halves = folded.split("//").map((half) => half.trim());
+	if (halves.length !== 2 || halves[0] === "" || halves[0] !== halves[1]) return null;
+	// The query is assembled as text, so a name or a set code that could close the quotes or open
+	// another term is not one this asks about. No card name holds either character.
+	if (/["\\]/.test(halves[0] as string)) return null;
+	if (setCode !== "" && !/^[0-9a-z]{1,8}$/i.test(setCode)) return null;
+	return `!"${halves[0]} // ${halves[1]}"${setCode === "" ? "" : ` e:${setCode}`}`;
+}
+
+/** The first printing the search `query` answers, as a card object, or null. */
+async function reversiblePrintingNamed(
+	engine: Engine,
+	query: string,
+	baseUrl: string,
+): Promise<Record<string, unknown> | null> {
+	const parser = await loadParser();
+	const found = await engine.scryfallSearch(
+		{
+			filterTreeJson: canonicalStringify(parser.parseScryfallQuery(query) as FilterValue),
+			unique: "card",
+			prefer: "default",
+			orderby: "name",
+			direction: "asc",
+			limit: 1,
+			offset: 0,
+			fields: [],
+		},
+		baseUrl,
+	);
+	if (found.rowCount === 0) return null;
+	const cards = JSON.parse(new TextDecoder().decode(found.cardsBytes)) as Record<string, unknown>[];
+	return cards[0] ?? null;
 }
 
 /**
@@ -892,6 +958,29 @@ async function namedFuzzy(
 
 	let status = "error";
 	try {
+		// ONE NAME SAID TWICE is the name a reversible printing prints, and the printing answers
+		// before any stage runs. Measured on api.scryfall.com 2026-10-04, this port answering each
+		// with the card's ordinary printing: `fuzzy=Tuvasa the Sunlit // Tuvasa the Sunlit`
+		// sld/1328, `fuzzy=ajani goldmane ajani goldmane` sld/745, `fuzzy=Temple Garden Temple
+		// Garden` ecl/351, `fuzzy=mechtitan mechtitan` sld/1969 — and with `&set=m11`, where no
+		// printing prints it, m11's own Ajani Goldmane, which is the stages below. A name no
+		// printing doubles falls through the same way (`fuzzy=lightning bolt lightning bolt` is
+		// Lightning Bolt on both). See doubledNameQuery; only a needle of two equal halves pays.
+		//
+		// NOT REPRODUCED: a MISSPELT doubled name. `fuzzy=Ajani Goldmane // Ajani Goldman` is
+		// sld/1453 there — the reversible printing still, and the other of its two — so Scryfall's
+		// typo race holds the doubled names as names of their own. The names index here holds a
+		// card's name, and that needle answers m11's Ajani Goldmane.
+		const half = words.length / 2;
+		const first = words.slice(0, half).join(" ");
+		if (words.length % 2 === 0 && first === words.slice(half).join(" ")) {
+			const doubled = doubledNameQuery(`${first} // ${first}`, setCode);
+			const printing = doubled === null ? null : await reversiblePrintingNamed(engine, doubled, baseUrl);
+			if (printing !== null) {
+				status = "card";
+				return renderCard(printing, render.format, render.face, render.version, pretty, CARDS_CACHE);
+			}
+		}
 		// The partitioned engine resolves all three stages in one round of partition calls (backlog
 		// n7), asked of only the partitions its names index plans (n15); any other engine is asked
 		// them one after another. The answer is the same either way.
