@@ -86,6 +86,13 @@ const UNCONDITIONAL_EXTRAS_IS_TAGS: ReadonlySet<string> = new Set([
 	// `-is:playtest or cmc=3` true (polarity-blind, unlike `is:funny`), bare 796 = with the flag
 	// 796; controls the same day `is:convention` false and `is:glossy` true.
 	"playtest",
+	// THE SAME SHAPE AGAIN, 2026-10-04: every content-warning printing is an extra (`extras_class`
+	// in the builder), so the tag stored with generation 61 would have answered nothing by
+	// default against api.scryfall.com's 7. The echo fires in both polarities — `is:contentwarning
+	// or cmc=3` and `-is:contentwarning or cmc=3` both true. The five `promo_types` tags stored the
+	// same day (`premiereshop`, `schinesealtart`, `setextension`, `singularityfoil`, `themepack`)
+	// were probed the same way and all echo false; controls `is:glossy` true and `is:foil` false.
+	"contentwarning",
 	// A STORED tag since 2026-09-08 — it was `is:funny -> st:funny` in the rewrite and fired from
 	// `EXTRAS_DERIVED_TRIGGERS` as a derived term; now the builder writes it per printing
 	// (`FUNNY_IS_TAG`) and it reaches this walk as a leaf like the others. Same verdict either way:

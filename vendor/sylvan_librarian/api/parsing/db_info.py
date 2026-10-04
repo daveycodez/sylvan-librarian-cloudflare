@@ -541,6 +541,9 @@ FORMAT_CODE_TO_NAME = {
 BOOLEAN_IS_TAGS: dict[str, str] = {
     # -- plain top-level booleans on the bulk card object --------------------------------
     "booster": "cards.raw_card_blob->'booster' = 'true'::jsonb",
+    # LOCAL PATCH (Cloudflare port): Scryfall's `is:contentwarning`, 7 cards / 28 printings
+    # (2026-10-04), every one carrying the flag.
+    "contentwarning": "cards.raw_card_blob->'content_warning' = 'true'::jsonb",
     "digital": "cards.raw_card_blob->'digital' = 'true'::jsonb",
     "foil": "cards.raw_card_blob->'foil' = 'true'::jsonb",
     "fullart": "cards.raw_card_blob->'full_art' = 'true'::jsonb",
@@ -589,6 +592,13 @@ BOOLEAN_IS_TAGS: dict[str, str] = {
     "set_promo": "cards.raw_card_blob->'promo_types' @> '\"setpromo\"'",
     "stamped": "cards.raw_card_blob->'promo_types' @> '\"stamped\"'",
     "universesbeyond": "cards.raw_card_blob->'promo_types' @> '\"universesbeyond\"'",
+    # LOCAL PATCH (Cloudflare port): five promo_types members Scryfall answers `is:` for,
+    # each read off the printings it returns (2026-10-04; see the port's db-info.ts).
+    "premiereshop": "cards.raw_card_blob->'promo_types' @> '\"premiereshop\"'",
+    "schinesealtart": "cards.raw_card_blob->'promo_types' @> '\"schinesealtart\"'",
+    "setextension": "cards.raw_card_blob->'promo_types' @> '\"setextension\"'",
+    "singularityfoil": "cards.raw_card_blob->'promo_types' @> '\"singularityfoil\"'",
+    "themepack": "cards.raw_card_blob->'promo_types' @> '\"themepack\"'",
     # -- single-field lookups: shapes the old {tag: blob key} table could not express -----
     "scryfallpreview": "cards.raw_card_blob->'preview'->>'source' = 'Scryfall'",
     # -- mana-symbol classes (#1001, corrected by #1011) ---------------------------------

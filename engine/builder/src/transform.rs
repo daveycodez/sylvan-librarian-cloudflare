@@ -67,6 +67,9 @@ use crate::tags::TagData;
 /// `_sync_is_tags` can express in SQL.
 const BOOLEAN_IS_TAGS: &[(&str, &str)] = &[
     ("booster", "booster"),
+    // `is:contentwarning` — Scryfall's `content_warning` flag, 7 cards / 28 printings on
+    // api.scryfall.com (2026-10-04). See db-info.ts BOOLEAN_IS_TAGS for the measurement.
+    ("contentwarning", "content_warning"),
     ("digital", "digital"),
     ("foil", "foil"),
     ("fullart", "full_art"),
@@ -184,6 +187,7 @@ const ARRAY_IS_TAGS: &[(&str, &str, &str)] = &[
     ("playtest", "promo_types", "playtest"),
     ("portrait", "promo_types", "portrait"),
     ("poster", "promo_types", "poster"),
+    ("premiereshop", "promo_types", "premiereshop"),
     ("prerelease", "promo_types", "prerelease"),
     ("promopack", "promo_types", "promopack"),
     ("rainbowfoil", "promo_types", "rainbowfoil"),
@@ -193,11 +197,14 @@ const ARRAY_IS_TAGS: &[(&str, &str, &str)] = &[
     ("release", "promo_types", "release"),
     ("resale", "promo_types", "resale"),
     ("ripplefoil", "promo_types", "ripplefoil"),
+    ("schinesealtart", "promo_types", "schinesealtart"),
     ("scroll", "promo_types", "scroll"),
     ("serialized", "promo_types", "serialized"),
     ("set_promo", "promo_types", "setpromo"),
+    ("setextension", "promo_types", "setextension"),
     ("silverfoil", "promo_types", "silverfoil"),
     ("silverscroll", "promo_types", "silverscroll"),
+    ("singularityfoil", "promo_types", "singularityfoil"),
     ("sldbonus", "promo_types", "sldbonus"),
     ("sourcematerial", "promo_types", "sourcematerial"),
     ("stamped", "promo_types", "stamped"),
@@ -208,6 +215,7 @@ const ARRAY_IS_TAGS: &[(&str, &str, &str)] = &[
     ("storechampionship", "promo_types", "storechampionship"),
     ("surgefoil", "promo_types", "surgefoil"),
     ("textured", "promo_types", "textured"),
+    ("themepack", "promo_types", "themepack"),
     ("thick", "promo_types", "thick"),
     ("tourney", "promo_types", "tourney"),
     ("universesbeyond", "promo_types", "universesbeyond"),
@@ -5035,6 +5043,35 @@ mod tests {
         ]);
         let draft = transform(&none).unwrap().unwrap();
         assert_eq!(draft.type_line.as_deref(), Some("Artifact // Land"), "no card line, so the join stands");
+    }
+
+    /// The six `is:` values the 2026-10-04 sweep found Scryfall answering from a bulk field no
+    /// row here carried as a tag. One assertion per tag, each from the field its printings carry
+    /// on api.scryfall.com (the measurements are at db-info.ts BOOLEAN_IS_TAGS / ARRAY_IS_TAGS).
+    #[test]
+    fn the_six_swept_is_tags_come_from_their_bulk_fields() {
+        let tags_of = |card: &Value| -> Vec<String> {
+            let mut tags = transform(card).unwrap().unwrap().card_is_tags;
+            tags.retain(|t| t != SPELL_IS_TAG && !t.starts_with("game_"));
+            tags.sort();
+            tags
+        };
+
+        // A content-warning printing is also an EXTRA (`extras_class`), which is why the term has
+        // to open extras to answer at all — extras-gate.ts lists it.
+        let mut warned = minimal_card("Warned");
+        warned["content_warning"] = json!(true);
+        assert_eq!(tags_of(&warned), ["contentwarning", EXTRA_IS_TAG]);
+        // Exactly `true`, like every boolean tag: an absent or false flag writes nothing.
+        let mut unwarned = minimal_card("Unwarned");
+        unwarned["content_warning"] = json!(false);
+        assert!(tags_of(&unwarned).is_empty());
+
+        for member in ["premiereshop", "schinesealtart", "setextension", "singularityfoil", "themepack"] {
+            let mut card = minimal_card(member);
+            card["promo_types"] = json!([member]);
+            assert_eq!(tags_of(&card), [member], "promo_types member {member} is its own is: tag");
+        }
     }
 
     #[test]

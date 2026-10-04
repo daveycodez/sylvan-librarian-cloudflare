@@ -1835,8 +1835,18 @@ export async function gzipBytes(bytes: Uint8Array): Promise<Uint8Array> {
  *      four above its finishes. Computed in card_engine's build, after grouping, like the counts
  *      of generation 58, from the prices the row already carries — so the codes are exact for
  *      the prices this store serves, and each nightly rebuild recomputes them.
+ *
+ *   62 (2026-10-04): SIX MORE `is:` TAGS. A sweep of 619 candidate `is:` values against
+ *      api.scryfall.com found six it answers from a bulk field no row here carried as a tag:
+ *      `is:contentwarning` (the `content_warning` flag, 7 cards) and the `promo_types` members
+ *      `premiereshop`, `schinesealtart`, `setextension`, `singularityfoil` and `themepack` (6 /
+ *      37 / 46 / 1 / 30 cards). Each answered a warned no-match. They ride the existing
+ *      BOOLEAN_IS_TAGS / ARRAY_IS_TAGS tables (db-info.ts, the builder's transform.rs).
+ *
+ *      GENERATION-ONLY: six more values in the `card_is_tags` collection index, a few hundred
+ *      printings between them. No layout, no format version, neither row touched.
  */
-export const STORE_CONTENT_GENERATION = 61;
+export const STORE_CONTENT_GENERATION = 62;
 
 /**
  * Chunk key for a store. Keyed by store_key, so publishes never collide.

@@ -2673,6 +2673,42 @@
 			"name": "block-name-with-a-colon-names-nothing",
 			"method": "GET",
 			"path": "/cards/search?q=block%3A%22kamigawa%3A+neon+dynasty%22+t%3Agoblin"
+		},
+		{
+			"name": "is-value-read-without-its-separators",
+			"method": "GET",
+			"path": "/cards/search?q=is%3Afull_art+e%3Azen+t%3Aland",
+			"note": "2026-10-04. Scryfall drops `-` and `_` from an `is:` value before looking it up: `is:full_art` is `is:fullart`'s 825, `is:fo-il` is `is:foil`. 24 of the 107 `is:` values that were a warned no-match here were spelled with one."
+		},
+		{
+			"name": "is-synonym-of-a-stored-value",
+			"method": "GET",
+			"path": "/cards/search?q=is%3Aetchedfoil+e%3Acmr+t%3Agoblin",
+			"note": "2026-10-04. One of 53 words Scryfall answers for a value this port already had (`etchedfoil` = `etched`, `bab` = `buyabox`, `ub` = `universesbeyond` …), each measured as an empty symmetric difference over printings with extras in. SCRYFALL_IS_SYNONYMS in query-terms.ts."
+		},
+		{
+			"name": "is-set-type",
+			"method": "GET",
+			"path": "/cards/search?q=is%3Astarter+t%3Agoblin",
+			"note": "2026-10-04. `is:starter` is `st:starter` (740), and so for eleven more set types; `is:spellbook` is NOT `st:spellbook` (99 printings apart) and stays unanswered."
+		},
+		{
+			"name": "is-stamp-is-any-security-stamp",
+			"method": "GET",
+			"path": "/cards/search?q=is%3Astamp+e%3Akhm+t%3Agod",
+			"note": "2026-10-04. `is:stamp` / `is:security_stamp` is a printing with any of the six stamps: 42,825 printings on both sides."
+		},
+		{
+			"name": "is-contentwarning-opens-extras",
+			"method": "GET",
+			"path": "/cards/search?q=is%3Acontentwarning",
+			"note": "2026-10-04, generation 61. The `content_warning` flag as a stored tag: 7 cards, every one an extra, so the term opens extras as it does on Scryfall (`is:contentwarning or cmc=3` echoes include_extras=true)."
+		},
+		{
+			"name": "is-themepack-promo-type",
+			"method": "GET",
+			"path": "/cards/search?q=is%3Athemepack",
+			"note": "2026-10-04, generation 61. One of five `promo_types` members stored that day (premiereshop, schinesealtart, setextension, singularityfoil, themepack): 30 cards."
 		}
 	]
 }

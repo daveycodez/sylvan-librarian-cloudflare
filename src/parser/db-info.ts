@@ -624,6 +624,11 @@ export const COMPUTED_IS_TAGS: ReadonlySet<string> = new Set([
 
 export const BOOLEAN_IS_TAGS: ReadonlyMap<string, string> = new Map([
 	["booster", "booster"],
+	// `is:contentwarning` (and `is:content_warning`: Scryfall drops `_` and `-` from an `is:` value)
+	// is the bulk card's `content_warning` flag. Measured 2026-10-04: 7 cards / 28 printings on
+	// api.scryfall.com, every one carrying the flag, and the 8,111 printings production serves
+	// from the same 20 sets hold exactly those 28 with it — the same ids.
+	["contentwarning", "content_warning"],
 	["digital", "digital"],
 	["foil", "foil"],
 	["fullart", "full_art"],
@@ -678,6 +683,15 @@ export const BOOLEAN_IS_TAGS: ReadonlyMap<string, string> = new Map([
  * The KEY is the word a player types, which is Scryfall's own syntax-page spelling
  * (`is:judge_gift`, `is:set_promo`); the concatenated form is the promo_types MEMBER. `rewrite.ts`
  * carries `is:judge` as an alias onto `judge_gift` rather than storing those rows twice.
+ *
+ * ─── FIVE MORE, 2026-10-04 ───────────────────────────────────────────────────────────────────
+ *
+ * `premiereshop`, `schinesealtart`, `setextension`, `singularityfoil` and `themepack` are
+ * `promo_types` members the 2026-09-03 enumeration never saw (its eight queries did not page
+ * them), found by sweeping 619 candidate `is:` values against api.scryfall.com. Each was
+ * established in BOTH directions, over printings with extras in: every printing Scryfall returns
+ * carries the member (51 / 61 / 50 / 1 / 33 printings), and of the printings production serves
+ * from the sets those answers touch, the ones carrying the member are exactly the same ids.
  */
 export const ARRAY_IS_TAGS: ReadonlyMap<string, readonly [string, string]> = new Map([
 	["arena_league", ["promo_types", "arenaleague"]],
@@ -764,6 +778,7 @@ export const ARRAY_IS_TAGS: ReadonlyMap<string, readonly [string, string]> = new
 	["playtest", ["promo_types", "playtest"]],
 	["portrait", ["promo_types", "portrait"]],
 	["poster", ["promo_types", "poster"]],
+	["premiereshop", ["promo_types", "premiereshop"]],
 	["prerelease", ["promo_types", "prerelease"]],
 	["promopack", ["promo_types", "promopack"]],
 	["rainbowfoil", ["promo_types", "rainbowfoil"]],
@@ -773,11 +788,14 @@ export const ARRAY_IS_TAGS: ReadonlyMap<string, readonly [string, string]> = new
 	["release", ["promo_types", "release"]],
 	["resale", ["promo_types", "resale"]],
 	["ripplefoil", ["promo_types", "ripplefoil"]],
+	["schinesealtart", ["promo_types", "schinesealtart"]],
 	["scroll", ["promo_types", "scroll"]],
 	["serialized", ["promo_types", "serialized"]],
 	["set_promo", ["promo_types", "setpromo"]],
+	["setextension", ["promo_types", "setextension"]],
 	["silverfoil", ["promo_types", "silverfoil"]],
 	["silverscroll", ["promo_types", "silverscroll"]],
+	["singularityfoil", ["promo_types", "singularityfoil"]],
 	["sldbonus", ["promo_types", "sldbonus"]],
 	["sourcematerial", ["promo_types", "sourcematerial"]],
 	["stamped", ["promo_types", "stamped"]],
@@ -788,6 +806,7 @@ export const ARRAY_IS_TAGS: ReadonlyMap<string, readonly [string, string]> = new
 	["storechampionship", ["promo_types", "storechampionship"]],
 	["surgefoil", ["promo_types", "surgefoil"]],
 	["textured", ["promo_types", "textured"]],
+	["themepack", ["promo_types", "themepack"]],
 	["thick", ["promo_types", "thick"]],
 	["tourney", ["promo_types", "tourney"]],
 	["universesbeyond", ["promo_types", "universesbeyond"]],

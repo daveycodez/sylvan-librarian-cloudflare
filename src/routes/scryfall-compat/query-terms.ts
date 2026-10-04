@@ -55,6 +55,7 @@ import {
 import { LexError } from "../../parser/errors";
 import type { DirectiveFound } from "../../parser/nodes";
 import { patternExceedsBudget, toJsValidationPattern } from "../../parser/regex-budget";
+import { SUPPORTED_HAS_VALUES, SUPPORTED_IS_VALUES } from "../../parser/rewrite";
 import { isKnownSetCode } from "../../parser/set-dates.gen";
 import { isWordCont, type Token, TT, tokenize } from "../../parser/tokenizer";
 import { DIRECTIVE_TABLES } from "../enums";
@@ -1593,6 +1594,247 @@ const IS_KEYWORDS: ReadonlySet<string> = new Set(["is", "has", "not"]);
 const NOT_SCRYFALL_IS_VALUES: ReadonlySet<string> = new Set(GAME_IS_TAGS.values());
 
 /**
+ * AN `is:` VALUE IS READ WITH ITS `-` AND `_` REMOVED, and Scryfall answers many values this port
+ * knew under another word or another keyword.
+ *
+ * Found by sweeping 619 candidate values — every `is:`/`has:`/`not:` value on Scryfall's syntax
+ * page, every value this parser supports, every `promo_types` member, layout, set type, frame and
+ * card-object field name, and the land-cycle and treatment nicknames — one `is:<value>` request
+ * each against api.scryfall.com and against production, 2026-10-04. Scryfall answered 327 of
+ * them; 135 answered a different count here, and 107 of those were a warned no-match.
+ *
+ * SCRYFALL'S VOCABULARY IS HAND-KEPT AND NOT PUBLISHED, and no rule generates it: `is:confetti`,
+ * `is:halo`, `is:ripple` and `is:emboss` answer for `confettifoil`, `halofoil`, `ripplefoil` and
+ * `embossed`, while `is:galaxy`, `is:cosmic`, `is:texture` and `is:gild` are unknown. So two more
+ * sweeps asked 328 short forms of the values already known — each promo type cut at its natural
+ * joints, the acronyms, more land names — and found 33 more that answer. 947 candidates in all,
+ * 360 answered. A fourth sweep would find a few more.
+ *
+ * ─── THE SEPARATORS ──────────────────────────────────────────────────────────────────────────
+ *
+ * `is:fo-il` and `is:f_o-il` are `is:foil` (12 of Kaldheim's 12 gods, no warning), `is:full_art`
+ * is `is:fullart`'s 825 and `is:judge-gift` is `is:judge_gift`'s 164: both characters are dropped
+ * before the value is looked up. 24 of the 107 were spelled with one — `is:art_series`,
+ * `is:buy_a_box`, `is:french_vanilla`, `is:modal_dfc`, `is:universes_beyond` … — and this parser
+ * keys its tags by exact spelling, so the value is respelled here to the one it stores.
+ *
+ * ─── THE SYNONYMS ────────────────────────────────────────────────────────────────────────────
+ *
+ * Each row of SCRYFALL_IS_SYNONYMS is a value Scryfall answers and the term this port already
+ * answers the same printings with. Every one was measured as a symmetric difference on
+ * api.scryfall.com over printings with extras in — `(is:A -B) or (B -is:A)` with
+ * `unique=prints&include_extras=true` — and all are 404, the empty set:
+ *
+ *   another word for a value answered here    artcard bab confetti doublesided etchedfoil extras
+ *                                             halo highres horizonland pwdeck story ub …
+ *   a set type                                `is:core` is `st:core`, and eleven more. NOT
+ *                                             `is:spellbook` (99 printings apart from
+ *                                             `st:spellbook`), and `is:commander`, `is:funny`,
+ *                                             `is:promo` and `is:token` are their own classes.
+ *   a frame                                   `is:future` is `frame:future`, `is:modern` `frame:2003`
+ *   a field that is present                   `is:artist`, `is:flavor`, `is:stamp`: at the printing
+ *                                             grain 117,609 / 56,525 / 42,825 on both sides
+ *
+ * REWRITTEN ON THE QUERY TEXT, before the parser, so the term that reaches the extras gate is the
+ * spelling its measured tables already hold: `is:artcard` opens extras because `is:artseries`
+ * does (both 2,243 by default on Scryfall), and `is:extras` because `is:extra` does.
+ *
+ * WHAT IS STILL UNANSWERED is SCRYFALL_UNANSWERED_IS_VALUES below, with the reason for each.
+ *
+ * COST: one or two map lookups per `is:` term, at parse time; nothing at query time, and a query
+ * with no `is:` term never reaches it.
+ */
+const IS_VALUE_WORD_RE = /^[A-Za-z0-9_-]+$/;
+const IS_VALUE_SEPARATORS_RE = /[-_]/g;
+
+const SECURITY_STAMP_PRESENT = `(${[...SECURITY_STAMPS].map((stamp) => `stamp:${stamp}`).join(" or ")})`;
+
+const FINAL_FANTASY_GAMES = `(${"i ii iii iv v vi vii viii ix x xi xii xiii xiv xv xvi"
+	.split(" ")
+	.map((game) => `is:ff${game}`)
+	.join(" or ")})`;
+
+const SCRYFALL_IS_SYNONYMS: ReadonlyMap<string, string> = new Map([
+	// Another word for a value this port stores, derives or computes.
+	["artcard", "is:artseries"],
+	["augment", "is:augmentation"],
+	["bab", "is:buyabox"],
+	["battlebondland", "is:bondland"],
+	["canopy", "is:canopyland"],
+	["chocobotrack", "is:chocobotrackfoil"],
+	["compleat", "is:stepandcompleat"],
+	["confetti", "is:confettifoil"],
+	["crowdland", "is:bondland"],
+	["doublefaced", "is:dfc"],
+	["doublesided", "is:dfc"],
+	["dracula", "is:draculaseries"],
+	["dragonscale", "is:dragonscalefoil"],
+	["emboss", "is:embossed"],
+	["etch", "is:etched"],
+	["etchedfoil", "is:etched"],
+	["extended", "is:extendedart"],
+	["extension", "is:setextension"],
+	["extras", "is:extra"],
+	// The sixteen Final Fantasy games' tags together: 741 cards.
+	["ff", FINAL_FANTASY_GAMES],
+	["finalfantasy", FINAL_FANTASY_GAMES],
+	["firstplace", "is:firstplacefoil"],
+	["fracture", "is:fracturefoil"],
+	["gc", "is:gamechanger"],
+	["gleaming", "is:gleaminggold"],
+	["gloss", "is:glossy"],
+	["godzilla", "is:godzillaseries"],
+	["halo", "is:halofoil"],
+	["highres", "is:hires"],
+	["horizon", "is:canopyland"],
+	["horizonland", "is:canopyland"],
+	["insert", "is:media_insert"],
+	["modaldfc", "is:mdfc"],
+	["normal", "is:default"],
+	["onlyprint", "is:unique"],
+	["pack", "is:booster"],
+	["planeswalkerstamp", "is:stamped"],
+	["planeswalkerstamped", "is:stamped"],
+	["premium", "is:foil"],
+	["printedname", "is:localizedname"],
+	["pwdeck", "is:planeswalker_deck"],
+	["pwstamped", "is:stamped"],
+	["raised", "is:raisedfoil"],
+	["reservedlist", "is:reserved"],
+	["ripple", "is:ripplefoil"],
+	["splitmana", "is:hybrid"],
+	["story", "is:spotlight"],
+	["storyspotlight", "is:spotlight"],
+	["surge", "is:surgefoil"],
+	["tournament", "is:tourney"],
+	["trikeland", "is:tricycleland"],
+	["ub", "is:universesbeyond"],
+	["wpn", "is:wizardsplaynetwork"],
+	// A set type.
+	["archenemy", "st:archenemy"],
+	["arsenal", "st:arsenal"],
+	["box", "st:box"],
+	["core", "st:core"],
+	["eternal", "st:eternal"],
+	["expansion", "st:expansion"],
+	["masters", "st:masters"],
+	["memorabilia", "st:memorabilia"],
+	["planechase", "st:planechase"],
+	["premiumdeck", "st:premium_deck"],
+	["starter", "st:starter"],
+	// A frame.
+	["future", "frame:future"],
+	["futureshifted", "frame:future"],
+	["modern", "frame:2003"],
+	// A field that is present. `has:` and not the regex it lowers to: `a:` opens extras and
+	// `has:artist` does not.
+	["artist", "has:artist"],
+	["flavor", "has:flavor"],
+	["flavortext", "has:flavor"],
+	["securitystamp", SECURITY_STAMP_PRESENT],
+	["stamp", SECURITY_STAMP_PRESENT],
+]);
+
+/**
+ * THE `is:` VALUES SCRYFALL ANSWERS AND THIS PORT CANNOT — the rest of the 2026-10-04 sweep, keyed
+ * with the separators removed. Each is kept in the query and matches nothing, under the parser's
+ * own "no data for that predicate" warning: narrower than Scryfall, never wider.
+ *
+ *   an id or a field that is present, with no presence test in the engine
+ *       arenaid mtgoid multiverse multiverseid tcgplayer tcgplayerid cardmarket cardmarketid
+ *       illustration illustrationid image back printedtext related placeholderimage
+ *       indicator ci colorindicator attractionlights lights
+ *     `-mtgoid:0` is not `is:mtgoid` (15,872 on production against Scryfall's 30,744): the
+ *     engine's id match is a comparison, and its negation is not "has one".
+ *   a class of Scryfall's own, with no rule found
+ *       beginner covered cube displaycommander englishart paperart fbb fwb intro invitational
+ *       jumpstart misprint moonlitland vergeland spellbook spikey timeshifted tron unset
+ *     Five guesses were measured as symmetric differences over printings and refuted:
+ *     `is:unset` against `st:funny` (922 apart), `is:jumpstart` against its three sets (1,322),
+ *     `is:fbb` against `e:fbb or e:4bb` (316), `is:spellbook` against `st:spellbook` (99),
+ *     `is:intro` (= `is:beginner`, 191) against the intro-pack, beginner-box and starter-deck
+ *     tags together (564).
+ *   accepted by Scryfall and answering nothing by default there either
+ *       dueldeck fromthevault gateway lair minigame treasurechest vanguard
+ */
+export const SCRYFALL_UNANSWERED_IS_VALUES: ReadonlySet<string> = new Set([
+	"arenaid",
+	"attractionlights",
+	"back",
+	"beginner",
+	"cardmarket",
+	"cardmarketid",
+	"ci",
+	"colorindicator",
+	"covered",
+	"cube",
+	"displaycommander",
+	"dueldeck",
+	"englishart",
+	"fbb",
+	"fromthevault",
+	"fwb",
+	"gateway",
+	"illustration",
+	"illustrationid",
+	"image",
+	"indicator",
+	"intro",
+	"invitational",
+	"jumpstart",
+	"lair",
+	"lights",
+	"minigame",
+	"misprint",
+	"moonlitland",
+	"mtgoid",
+	"multiverse",
+	"multiverseid",
+	"paperart",
+	"placeholderimage",
+	"printedtext",
+	"related",
+	"spellbook",
+	"spikey",
+	"tcgplayer",
+	"tcgplayerid",
+	"timeshifted",
+	"treasurechest",
+	"tron",
+	"unset",
+	"vanguard",
+	"vergeland",
+]);
+
+/** The spelling this parser stores a value under, by the value with its separators removed. */
+const IS_VALUE_SPELLINGS: ReadonlyMap<string, string> = (() => {
+	const spellings = new Map<string, string>();
+	for (const value of SUPPORTED_IS_VALUES) {
+		const key = value.replace(IS_VALUE_SEPARATORS_RE, "");
+		// The separator-free spelling wins where both exist (`arenaleague` beside `arena_league`):
+		// it is the one the key itself spells.
+		if (!spellings.has(key) || value === key) spellings.set(key, value);
+	}
+	return spellings;
+})();
+
+/**
+ * The term an `is:` / `has:` / `not:` value Scryfall spells differently is answered with here, or
+ * null when the value needs no respelling (or has no answer at all). `polarity` is the `-` the
+ * rewritten term carries: the one written, flipped once for `not:`.
+ */
+function scryfallIsTerm(keyword: string, negated: boolean, loweredValue: string): string | null {
+	const supported = keyword === "has" ? SUPPORTED_HAS_VALUES : SUPPORTED_IS_VALUES;
+	if (supported.has(loweredValue)) return null;
+	const key = loweredValue.replace(IS_VALUE_SEPARATORS_RE, "");
+	const polarity = negated !== (keyword === "not") ? "-" : "";
+	const spelling = supported.has(key) ? key : IS_VALUE_SPELLINGS.get(key);
+	if (spelling !== undefined) return `${polarity}${keyword === "has" ? "has" : "is"}:${spelling}`;
+	const synonym = SCRYFALL_IS_SYNONYMS.get(key);
+	return synonym === undefined ? null : `${polarity}${synonym}`;
+}
+
+/**
  * Every keyword this file may NOT call unknown: the parser's own aliases, the in-query directives,
  * and the ones the validators below have rules for.
  *
@@ -2804,6 +3046,13 @@ function classifyLeaf(term: string): LeafVerdict {
 	// The `game_*` tags under this port's own spelling — see NOT_SCRYFALL_IS_VALUES.
 	if (IS_KEYWORDS.has(keyword) && NOT_SCRYFALL_IS_VALUES.has(loweredValue)) {
 		return { keep: false, reason: `Checking if cards are \u201c${loweredValue}\u201d is not supported` };
+	}
+	// An `is:` value Scryfall spells with separators, or answers under a word this port has
+	// another term for — see SCRYFALL_IS_SYNONYMS. A bare word only: a quoted value is not an
+	// `is:` value on Scryfall at all.
+	if (IS_KEYWORDS.has(keyword) && rawValue === value && IS_VALUE_WORD_RE.test(value)) {
+		const respelled = scryfallIsTerm(keyword, negated, loweredValue);
+		if (respelled !== null) return { keep: true, text: respelled };
 	}
 	if (UUID_KEYWORDS.has(keyword) && !UUID_V4_RE.test(value)) {
 		return { keep: false, reason: "You must provide a valid v4 UUID." };
