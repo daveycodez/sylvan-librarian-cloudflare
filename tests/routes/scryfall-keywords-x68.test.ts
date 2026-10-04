@@ -10,6 +10,7 @@ import { canonicalStringify, EMPTY_TAG_ALIASES, parseScryfallQueryWithDirectives
 import type { FilterValue } from "../../src/parser/nodes";
 import { applyExtrasGate } from "../../src/routes/extras-gate";
 import { scryfallTermPolicy } from "../../src/routes/scryfall-compat/query-terms";
+import { blockSetCodes } from "../../src/routes/scryfall-compat/set-blocks.gen";
 
 const ignored = (echo: string, reason: string) => `Invalid expression “${echo}” was ignored. ${reason}`;
 
@@ -448,5 +449,84 @@ describe("the six counts: prints, sets, paperprints, papersets, illustrations, a
 		expect(scryfallTermPolicy('artists:"1" e:khm').warnings).toEqual([
 			ignored('artists:"1"', "Unknown keyword “artists”."),
 		]);
+	});
+});
+
+describe("block: and b: are the sets of a block", () => {
+	const ZENDIKAR = "(e:proe or e:pwwk or e:pzen or e:roe or e:troe or e:twwk or e:tzen or e:wwk or e:zen)";
+
+	test("the set table answers Scryfall's measured families", () => {
+		// block:zen = block:wwk = block:roe = block:tzen = block:pzen = 629.
+		const zendikar = ["proe", "pwwk", "pzen", "roe", "troe", "twwk", "tzen", "wwk", "zen"];
+		for (const code of ["zen", "wwk", "roe", "tzen", "pzen", "ZEN"]) expect(blockSetCodes(code)).toEqual(zendikar);
+		// No block and no parent: the set alone (block:khm = e:khm = 305).
+		expect(blockSetCodes("khm")).toEqual(["khm"]);
+		// No block of its own: the set and its PARENT (block:tkhm 328, block:akhm = `e:akhm or e:khm`),
+		// and the parent does not answer with its children.
+		expect(blockSetCodes("tkhm")).toEqual(["khm", "tkhm"]);
+		expect(blockSetCodes("akhm")).toEqual(["akhm", "khm"]);
+		// The parent's block is not followed: block:pbig is `e:pbig or e:big`, not Thunder Junction.
+		expect(blockSetCodes("pbig")).toEqual(["big", "pbig"]);
+		expect(blockSetCodes("big")).toEqual(blockSetCodes("otj"));
+		expect(blockSetCodes("otj")).toEqual(["big", "otj", "otp"]);
+		// A set in a block AND with a parent outside it: both (block:khc is 7,558 = cmd ∪ khm ∪ khc).
+		const khc = blockSetCodes("khc");
+		expect(khc).toContain("khm");
+		expect(khc).toContain("cmd");
+		expect(khc).toContain("c21");
+		expect(khc.length).toBe(blockSetCodes("cmd").length + 1);
+		// `dbl` is a block code and a set that is not IN the block: block:dbl 728, block:mid 727.
+		expect(blockSetCodes("dbl")).toEqual([...blockSetCodes("mid"), "dbl"].sort());
+		// A block code that is no set's code: block:htr 31.
+		expect(blockSetCodes("htr").filter((c) => c !== "htr")).toEqual(
+			["ph17", "ph18", "ph19", "ph20", "ph21", "ph22", "ph23", "phtr"].sort(),
+		);
+		// A code the table has never seen is that set alone.
+		expect(blockSetCodes("zzzz")).toEqual(["zzzz"]);
+	});
+
+	test.each(["block:wwk", "b:wwk", "block=wwk", "BLOCK:WWK", 'block:"wwk"', "b=roe"])("%s", (term) => {
+		const policy = scryfallTermPolicy(`${term} t:goblin`);
+		expect(policy.warnings).toEqual([]);
+		expect(policy.query).toBe(`${ZENDIKAR} t:goblin`);
+		expect(policy.include.extras).toBe(true);
+		expect(() => parseScryfallQueryWithDirectives(policy.query, EMPTY_TAG_ALIASES)).not.toThrow();
+	});
+
+	test("it is the tree the spelled-out sets write", () => {
+		expect(wire("block:khm t:god")).toBe(wire("(e:khm) t:god"));
+		expect(wire("b:wwk t:goblin")).toBe(wire(`${ZENDIKAR} t:goblin`));
+	});
+
+	test("negated, it is the complement", () => {
+		// `-block:khm t:god` is 100: every god not in Kaldheim, over a corpus with extras in it.
+		const policy = scryfallTermPolicy("-block:khm t:god");
+		expect([policy.query, policy.warnings, policy.include.extras]).toEqual(["-(e:khm) t:god", [], true]);
+		expect(wire("-block:khm t:god")).toBe(wire("-e:khm t:god"));
+	});
+
+	test("it opens extras, in a group and under or too", () => {
+		expect(scryfallTermPolicy("block:zen or cmc=3").include.extras).toBe(true);
+		expect(scryfallTermPolicy("(block:zen t:goblin) or cmc=3").include.extras).toBe(true);
+		// ...where `e:` does not: `e:zen or cmc=3` echoes include_extras=false.
+		expect(scryfallTermPolicy("e:zen or cmc=3").include.extras).toBe(false);
+	});
+
+	test("a value that names no set code is honored and matches nothing", () => {
+		// `block:nonsense t:god` is 404 with no warnings. So is a set NAME here, which Scryfall resolves.
+		for (const term of ["block:nonsensevalue", 'block:"time spiral"', "b:ice-age"]) {
+			const policy = scryfallTermPolicy(`${term} t:god`);
+			expect([term, policy.query, policy.warnings]).toEqual([term, "cmc<0 t:god", []]);
+		}
+		expect(scryfallTermPolicy('-block:"time spiral" t:god').query).toBe("-cmc<0 t:god");
+	});
+
+	test("a comparison matches nothing and a regex is the regex-keyword sentence", () => {
+		expect(scryfallTermPolicy("block!=khm t:god").query).toBe("cmc<0 t:god");
+		expect(scryfallTermPolicy("block>khm t:god").query).toBe("cmc<0 t:god");
+		expect(scryfallTermPolicy("block:/khm/ t:god").warnings).toEqual([
+			ignored("block:/khm/", "Unknown regular expression keyword “block”."),
+		]);
+		expect(scryfallTermPolicy("block!=khm t:god").include.extras).toBe(false);
 	});
 });

@@ -2247,16 +2247,62 @@
 			"note": "…while a printing whose artwork lives on its FACES (no top-level illustration id) is a real False and survives the negation: all 98 modal DFCs (2026-10-03; `layout:transform` 393 of 394, `layout:art_series` all 2,243, `layout:split` none of 137)."
 		},
 		{
-			"name": "search-block-keyword-is-scryfalls-not-unknown",
+			"name": "search-block-is-the-sets-of-a-block",
 			"method": "GET",
-			"path": "/cards/search?q=block%3Akhm+e%3Akhm+t%3Agod",
+			"path": "/cards/search?q=block%3Akhm+t%3Agod",
+			"note": "x68. `block:`/`b:` is rewritten into the sets of the block (src/routes/scryfall-compat/set-blocks.gen.ts): Kaldheim has no block and no parent, so `block:khm t:god` is `e:khm t:god`'s 12 (2026-10-03). x66 had recorded this as a known deviation — a 400 here."
+		},
+		{
+			"name": "search-block-zendikar-by-any-of-its-sets",
+			"method": "GET",
+			"path": "/cards/search?q=b%3Awwk+t%3Agoblin",
+			"note": "x68. `block:zen` = `block:wwk` = `block:roe` = `block:tzen` = `block:pzen` = 629 (2026-10-03): any set code of the block names it, and its token and promo sets are members — the term opens extras, so `block:zen -t:token -t:emblem` is the 607 its three expansions hold. 18 goblins."
+		},
+		{
+			"name": "search-block-of-a-token-set-is-it-and-its-parent",
+			"method": "GET",
+			"path": "/cards/search?q=block%3Atkhm+t%3Agod",
+			"note": "x68. A set with no block of its own answers with its parent: `block:tkhm` is 328 = e:khm ∪ e:tkhm, where `block:khm` is 305 — the parent does not answer with its children (2026-10-03)."
+		},
+		{
+			"name": "search-block-negated-opens-extras",
+			"method": "GET",
+			"path": "/cards/search?q=-block%3Akhm+t%3Agod",
+			"note": "x68. 100, where `-e:khm t:god` is 95: `block:` opens extras unconditionally and in either polarity, which `e:` does not (2026-10-03)."
+		},
+		{
+			"name": "search-block-by-set-name-is-scryfalls-only",
+			"method": "GET",
+			"path": "/cards/search?q=block%3Azendikar+t%3Agoblin",
 			"known_deviation": {
-				"reason": "A KEYWORD SCRYFALL HONORS AND THIS PORT CANNOT ANSWER IS REFUSED, NOT CALLED UNKNOWN (x66). `block:`/`b:` is a Scryfall keyword — this query is the 12 Kaldheim gods there (2026-10-03) — and the port has no block column. It used to DROP the term with `Unknown keyword “block”.`, which answers wider than Scryfall under a sentence saying Scryfall would have ignored the term too; a client validating queries here and shipping them there read that as safe. Eighteen keywords were in that state, each probed as `<keyword>:<value> e:khm t:god`: block, b, edition, lore, artists, mtgoid, multiverseid, arenaid, tcgplayerid, prints, sets, paperprints, papersets, illustrations, edhrec, usdfoil, collector, collectornumber. They now fail to parse, as cube:, new:, stamp: and cheapest: already did, until the port can answer them.",
+				"reason": "A SET NAME WHERE A SET CODE GOES (x68). Scryfall resolves `block:zendikar`, `block:\"time spiral\"` and `block:timespiral` through the set resolver its `e:` uses (`e:zendikar` is 234 there, and the nicknames `masques`, `kamigawa`, `ravnica` resolve while the block names `urza` and `alara` do not). This port's `e:` and `block:` take set CODES only, so a name is honored and matches nothing — narrower than Scryfall, never wider. The documented spelling, `b:wwk`, answers on both.",
 				"scryfall": {
 					"status": 200,
 					"expect": {
 						"object": "list",
-						"total_cards": 12
+						"total_cards": 18
+					}
+				},
+				"ours": {
+					"status": 404,
+					"expect": {
+						"object": "error",
+						"code": "not_found"
+					}
+				}
+			}
+		},
+		{
+			"name": "search-cube-keyword-is-scryfalls-not-unknown",
+			"method": "GET",
+			"path": "/cards/search?q=cube%3Avintage+t%3Agod",
+			"known_deviation": {
+				"reason": "A KEYWORD SCRYFALL HONORS AND THIS PORT CANNOT ANSWER IS REFUSED, NOT CALLED UNKNOWN (x66, narrowed by x68). `cube:vintage t:god` is 2 cards there (2026-10-03): membership of Scryfall's curated cube lists, which are in no bulk file and behind no API endpoint, so the import cannot obtain them. `lore:`, `new:` and `cheapest:` are the other three keywords still refused, each with its reason at SCRYFALL_ONLY_KEYWORDS; the eighteen x66 found beside them are answered since x68. Refusing is deliberate: dropping the term with `Unknown keyword` would answer wider than Scryfall under a sentence saying Scryfall ignores it too.",
+				"scryfall": {
+					"status": 200,
+					"expect": {
+						"object": "list",
+						"total_cards": 2
 					}
 				},
 				"ours": {

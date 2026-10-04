@@ -1780,10 +1780,9 @@ describe("a keyword Scryfall honors is never called unknown", () => {
 	// `edhrec`, `collector` and `collectornumber` are spellings of columns the parser had; the four
 	// external ids, `usdfoil` and `stamp` read fields the store already held; and the six counts
 	// (`prints`, `sets`, `paperprints`, `papersets`, `illustrations`, `artists`) are stored since
-	// generation 58.
+	// generation 58; `block`/`b` are rewritten into the sets of the block. What is left is listed,
+	// with the reason for each, at SCRYFALL_ONLY_KEYWORDS.
 	const HONORED_THERE = [
-		"block:khm",
-		"b:khm",
 		"lore:x",
 		// Three of the five that were already here.
 		"cube:vintage",

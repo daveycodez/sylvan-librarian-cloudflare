@@ -817,6 +817,24 @@ The complete list of intentional differences:
   while `pow+tou` is compared over every pairing of a card's faces, as `pow`
   and `tou` each are. Recorded as a KNOWN_DEVIATION in the live-parity corpus
   (`search-pow-plus-tou-arithmetic-is-not-scryfalls`).
+- **Four Scryfall keywords are refused, and a set is named by its code only.**
+  `cube:`, `lore:`, `new:` and `cheapest:` answer `400 Failed to parse query`
+  on `/cards/search`: Scryfall honors each, and dropping the term with "Unknown
+  keyword" would answer wider than Scryfall under a sentence saying it ignores
+  the term too. `cube:` cannot be answered at all — the cube lists are in no
+  bulk file and behind no endpoint; the other three need a measured rule and
+  (for `new:`/`cheapest:`) a stored per-printing tag, and are written down at
+  `SCRYFALL_ONLY_KEYWORDS` in `src/routes/scryfall-compat/query-terms.ts`.
+  The other eighteen keywords found in that state on 2026-10-03 (`block`,
+  `edhrec`, `mtgoid`, `prints`, `artists` …) are answered. Separately,
+  `e:`/`edition:`/`block:` take a set CODE where Scryfall also resolves a set
+  name (`e:zendikar`, `block:"time spiral"`): a name is honored and matches
+  nothing here. `block:` is a table of Scryfall's set objects
+  (`src/routes/scryfall-compat/set-blocks.gen.ts`, refreshed with
+  `bun run set-blocks`), and exists on `/cards/search` only. Both are
+  KNOWN_DEVIATIONs in the live-parity corpus
+  (`search-cube-keyword-is-scryfalls-not-unknown`,
+  `search-block-by-set-name-is-scryfalls-only`).
 - **Card images come from Scryfall's CDN**, not upstream's CloudFront mirror.
   That mirror is filled by `scripts/copy_images_to_s3.py` against upstream's
   Postgres and S3, neither of which this deployment has — so it was reading a

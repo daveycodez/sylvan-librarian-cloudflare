@@ -58,6 +58,7 @@ import { patternExceedsBudget, toJsValidationPattern } from "../../parser/regex-
 import { isKnownSetCode } from "../../parser/set-dates.gen";
 import { isWordCont, type Token, TT, tokenize } from "../../parser/tokenizer";
 import { DIRECTIVE_TABLES } from "../enums";
+import { blockSetCodes } from "./set-blocks.gen";
 
 /** Scryfall's syntax budget, independent of the engine's post-rewrite safety budget. */
 export const TOO_MANY_REGEX_DETAILS = "Too many regular expression operators used";
@@ -414,11 +415,68 @@ const SCRYFALL_ONLY_KEYWORDS: ReadonlySet<string> = new Set([
 	// `multiverseid`, `arenaid`, `tcgplayerid` and `usdfoil` left second: the engine answers them
 	// from fields the store already held for the card object. `prints`, `sets`, `paperprints`,
 	// `papersets`, `illustrations` and `artists` left third, with store generation 58, which
-	// holds the counts they compare.
-	"block",
-	"b",
+	// holds the counts they compare. `block` and `b` left fourth: a block is a list of sets, and
+	// BLOCK_KEYWORDS below rewrites the term into them.
+	//
+	// WHAT IS LEFT, AND WHY, each measured the same day:
+	//
+	//   lore      `lore:jace` is 171: name, flavor text, rules text and type line (Space Beleren
+	//             by its `Jace` subtype), extras included. `(name:X or ft:X or o:X or t:X)` agrees
+	//             on nine of twelve probes inside Kaldheim and DISAGREES on short values —
+	//             `lore:ft e:khm` 22 against the union's 41, `lore:sh` 88 against 94, `lore:if`
+	//             152 against 153 — and a rewrite that answers wider than Scryfall is the thing
+	//             this table exists to prevent. Not understood well enough to answer.
+	//   cube      `cube:vintage` 540, `cube:legacy` 600, `cube:arena` 550 … membership of
+	//             Scryfall's curated cube lists, which are in no bulk file and have no API
+	//             endpoint. Not obtainable by the import.
+	//   new       `new:art`, `new:artist`, `new:flavor`, `new:frame`, `new:language`,
+	//             `new:rarity`, `new:card` (anything else: `Checking if cards have a new “x” is
+	//             not supported`). Per-printing "first time this card had this" flags over a
+	//             card's release history; each needs its own measured rule and a stored tag.
+	//   cheapest  `cheapest:usd|eur|tix` (anything else: `Unknown currency “x”`). The cheapest
+	//             printing(s) of each card — ties included, `-cheapest:usd e:khm` 5 against the
+	//             positive's 220 — a stored per-printing tag over daily prices.
 	"lore",
 ]);
+
+/**
+ * `block:` / `b:` — every card in a Magic block, named by any set code of it.
+ *
+ * NOT A COLUMN. A block is a list of SETS, and which sets is a function of two fields of
+ * Scryfall's set objects that no card object carries; `set-blocks.gen.ts` holds them (its
+ * generator carries the measured rule), and the term is rewritten here into the `e:` terms it
+ * means: `block:wwk` → `(e:proe or e:pwwk or e:pzen or e:roe or e:troe or e:twwk or e:tzen or
+ * e:wwk or e:zen)`. A set with no block and no parent, or a code the table has never seen, is
+ * that set alone — `block:khm` is `e:khm`'s 305.
+ *
+ * Measured on api.scryfall.com 2026-10-03/04:
+ *
+ *   block:khm t:god = b:khm t:god = block=khm t:god = block:KHM   12
+ *   block:nonsense t:god                 404, no warning — honored, and naming no set
+ *   block!=khm t:god, block>khm t:god    404 (the comparison rule)
+ *   -block:khm t:god                     100 — the complement, over a corpus with extras in it
+ *   block:/khm/ t:god                    95 + Unknown regular expression keyword “block”.
+ *   block:zen or cmc=3                   8,819, echoing include_extras=true
+ *
+ * IT OPENS EXTRAS UNCONDITIONALLY, which `e:` does not (`e:zen or cmc=3` echoes false): the
+ * block's token sets are members and `block:zen` is 629 where its three expansions are 607. So
+ * the verdict carries `include: extras` — the mechanism `include:extras` uses — rather than
+ * leaving it to the conditional rule the rewritten `e:` terms would get.
+ *
+ * A value that is not shaped like a set code is one Scryfall resolves as a set NAME
+ * (`block:"time spiral"`, `block:zendikar`), by the resolver its `e:` uses and this port's does
+ * not have; it answers nothing here. Narrower than Scryfall, never wider.
+ */
+const BLOCK_KEYWORDS: ReadonlySet<string> = new Set(["block", "b"]);
+const SET_CODE_SHAPE_RE = /^[0-9a-z]{1,8}$/i;
+
+/** The `e:` terms a `block:` value means, as one group — or the term that matches nothing. */
+function blockTerm(value: string): string {
+	if (!SET_CODE_SHAPE_RE.test(value)) return NEVER_MATCHES;
+	return `(${blockSetCodes(value)
+		.map((code) => `e:${code}`)
+		.join(" or ")})`;
+}
 
 /**
  * Scryfall cannot express a NEGATED numeric EQUALITY, and says so in two different sentences.
@@ -1473,6 +1531,7 @@ const KNOWN_KEYWORDS: ReadonlySet<string> = new Set([
 	...UUID_KEYWORDS,
 	...COLOR_KEYWORDS,
 	...GAME_KEYWORDS,
+	...BLOCK_KEYWORDS,
 ]);
 
 /**
@@ -2427,7 +2486,8 @@ function numericColumnOf(alias: string): string | null {
 
 /** The verdict on one leaf term: keep it (possibly rewritten), or drop it with Scryfall's reason. */
 type LeafVerdict =
-	| { keep: true; text: string }
+	/** Kept, possibly rewritten; `include` is what the term switches on besides (see BLOCK_KEYWORDS). */
+	| { keep: true; text: string; include?: readonly (keyof IncludeOptions)[] }
 	| { keep: false; reason: string }
 	/** A display option: removed from the query, never a term, with its own warning if any. */
 	| {
@@ -2623,6 +2683,11 @@ function classifyLeaf(term: string): LeafVerdict {
 	if (GAME_KEYWORDS.has(keyword) && !GAME_IS_TAGS.has(loweredValue)) {
 		return { keep: false, reason: `Unknown game \`${loweredValue}\`` };
 	}
+	// `block:` / `b:` become the sets of the block, and open extras — see BLOCK_KEYWORDS. Equality
+	// only reaches here, as for `stamp:` below.
+	if (BLOCK_KEYWORDS.has(keyword)) {
+		return { keep: true, text: `${match[1]}${blockTerm(value)}`, include: ["extras"] };
+	}
 	// `stamp:` checks its value in both polarities — see STAMP_KEYWORDS. Equality only reaches
 	// here: a comparison was answered by the COMPARABLE_KEYWORDS rule above.
 	if (STAMP_KEYWORDS.has(keyword) && !SECURITY_STAMPS.has(loweredValue)) {
@@ -2721,6 +2786,7 @@ function policyLevel(source: string, scan: PolicyScan): string | null {
 		}
 		const verdict = classifyLeaf(piece.text);
 		if (verdict.keep) {
+			for (const option of verdict.include ?? []) scan.include[option] = true;
 			if (verdict.text !== piece.text) changed = true;
 			kept.push({ ...piece, text: verdict.text });
 			continue;
