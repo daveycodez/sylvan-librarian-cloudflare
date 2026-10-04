@@ -235,7 +235,7 @@ export interface AbandonedEngine {
 }
 
 /**
- * The objects no stub is built for. EMPTY: the lever ships unpulled.
+ * The objects no stub is built for.
  *
  * An entry looks like this (DeckGen's engine-wnam-p10 as of 2026-10-03):
  *
@@ -246,7 +246,17 @@ export interface AbandonedEngine {
  *     why: "x56: 1,470 of its 4,073 gathers stalled on 10-03; every other wnam coordinator 44–78",
  *   },
  */
-export const ABANDONED_ENGINES: readonly AbandonedEngine[] = [];
+export const ABANDONED_ENGINES: readonly AbandonedEngine[] = [
+	// DeckGen's engine-wnam-p8, alone: engine-wnam-p10 is left in place as the live reproduction
+	// for cloudflare/workerd#7607. Read the replacement's `placement: colo=` line and a day of
+	// `slow gather` counts under `engine-wnam-p8-e1` before deciding on p10.
+	{
+		id: "977e77a7bd4e8d4da79e3df14ae9c3059a01d9ec8b9e9324fd8c35411b8ff447",
+		name: "engine-wnam-p8",
+		since: "2026-10-04T02:00:00Z",
+		why: "x56: 1,327 of its 3,949 gathers stalled on 10-03 (every other wnam coordinator but p10: 44–78); it has shared an isolate with engine-wnam-p10 since 10-02 12:57 UTC",
+	},
+];
 
 /** No name is followed past this many abandoned objects: a longer chain is a list gone wrong. */
 export const MAX_ENGINE_EPOCH = 8;
