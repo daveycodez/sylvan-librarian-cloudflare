@@ -1845,8 +1845,24 @@ export async function gzipBytes(bytes: Uint8Array): Promise<Uint8Array> {
  *
  *      GENERATION-ONLY: six more values in the `card_is_tags` collection index, a few hundred
  *      printings between them. No layout, no format version, neither row touched.
+ *
+ *   63 (2026-10-04): A PRINTED `∞` POWER AND A PRINTED `X` OR `*` LOYALTY ARE NUMBERS. Three cards
+ *      whose printed stat was held as ABSENT, which no comparison matches: Infinity Elemental
+ *      (∞/5) and the planeswalkers Nissa, Steward of Elements (`X`) and B.O.B. (Bevy of Beebles)
+ *      (`*`). Measured on api.scryfall.com: `pow>=0` is 18,978 there against 18,977 here,
+ *      `pt>usd` 17,026 against 17,025, `loy=0` 4 against 2, `loy>=0` 330 against 328.
+ *
+ *      `∞` is above every value a query can name and FINITE — `!"Infinity Elemental"
+ *      pow>2461449600` is 1 (the largest value Scryfall compares with; one more is `Value out of
+ *      range`) and so is `pt>pow`, which an IEEE infinity cannot answer — so the column holds
+ *      2^32 (card_engine's `INFINITE_STAT`). `X` and `*` loyalty are 0 (`loyalty_str_to_num`);
+ *      Dungeon Master's `1d4+1` stays absent, as measured.
+ *
+ *      GENERATION-ONLY: the same `Option<f32>` and `Option<u8>` hold a value where they held
+ *      none, on three cards. No layout, no format version, neither row touched, and nothing on
+ *      the query path — the printed strings the card object serves are unchanged.
  */
-export const STORE_CONTENT_GENERATION = 62;
+export const STORE_CONTENT_GENERATION = 63;
 
 /**
  * Chunk key for a store. Keyed by store_key, so publishes never collide.

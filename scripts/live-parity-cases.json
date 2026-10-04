@@ -2816,6 +2816,24 @@
 			"method": "GET",
 			"path": "/cards/search?q=usd%3C2461449600+e%3Akhm+t%3Agod",
 			"note": "2026-10-04. 12 with no warning: 2,461,449,600 itself is inside the range (`pow>2461449600 e:khm t:god` is a plain 404)."
+		},
+		{
+			"name": "infinite-power-is-above-every-value",
+			"method": "GET",
+			"path": "/cards/search?q=pow%3E1000",
+			"note": "2026-10-04. Infinity Elemental alone: its printed `∞` is a number above every value a query can name (`pow>2461449600` is 1 too, and `pow>=0` 18,978). Held as absent here, so this was a 404 and `pow>=0` 18,977. Generation 63."
+		},
+		{
+			"name": "infinite-power-is-finite-under-pt",
+			"method": "GET",
+			"path": "/cards/search?q=%21%22Infinity+Elemental%22+pt%3Epow",
+			"note": "2026-10-04. 1, and `pow>=pt` / `pow=pt` are 404: power plus toughness is above the power, so the value is finite. Generation 63."
+		},
+		{
+			"name": "loyalty-x-and-star-are-zero",
+			"method": "GET",
+			"path": "/cards/search?q=loy%3D0",
+			"note": "2026-10-04. Four cards: Dakkon, Shadow Slayer and Jeska, Thrice Reborn print `0`, Nissa, Steward of Elements `X` and B.O.B. (Bevy of Beebles) `*`. This port held the last two as absent and answered 2 (`loy>=0` 328 against 330). Generation 63."
 		}
 	]
 }

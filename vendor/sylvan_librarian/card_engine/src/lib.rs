@@ -344,6 +344,70 @@ fn stat_str_to_int(s: Option<&str>) -> Option<f64> {
     if v.is_finite() { Some(v) } else { None }
 }
 
+/// The one printed stat that is not a number and is not zero: Infinity Elemental's power.
+pub const INFINITE_STAT_TEXT: &str = "\u{221e}";
+
+/// WHAT A PRINTED `∞` COMPARES AS: a number above every value a query can name, and still a
+/// NUMBER — not IEEE infinity.
+///
+/// Measured on api.scryfall.com 2026-10-04, each row scoped `!"Infinity Elemental"` (∞/5), so the
+/// answer is 1 or 404. This port held the power as ABSENT, which answered 404 to every row and
+/// was the whole of `pow>=0` 18,977 against 18,978 (and `pt>usd` 17,025 against 17,026):
+///
+/// ```text
+///   pow>=0  pow>0  pow!=0  pow>1000  pow>1000000000  pow>2147483648  pow>2461449600      1
+///   pow=0   pow<0  pow<2147483648  pow=2147483648                                         404
+///   pow>tou  pow>cmc  pow>usd                                                             1
+///   pt>=0  pt>5  pt>1000  1        pt=5  404          tou=5  1
+///   pt>pow  1        pow>pt  pow>=pt  pow=pt  404
+/// ```
+///
+/// and `order:power direction:desc` lists it first, ahead of B.F.M.'s 99.
+///
+/// The last row is why this is finite. `pt` is the front face's power PLUS its toughness, and
+/// Scryfall answers that the sum is strictly greater than the power: with an infinity the two
+/// would be equal. And 2,461,449,600 is the largest value Scryfall lets a query name at all — one
+/// more is `Value out of range`, the term ignored — so "above every in-range value" is everything
+/// a comparison against a constant can observe.
+///
+/// 2^32 is the value: above that bound, exact in the `f32` the column stores, and with 21 bits of
+/// headroom in the `f64` the comparisons run in, so the engine's own sum (`f64(power) +
+/// f64(toughness)`, see `front_power_plus_toughness`) still differs from it.
+///
+/// Only `∞` exactly. The builder's `maybe_stat_num` is the card-level twin and reads this constant.
+pub const INFINITE_STAT: f64 = 4_294_967_296.0;
+
+// The three properties the paragraph above rests on, held at compile time: above Scryfall's bound,
+// exact in the column's f32, and still below its own sum with a toughness.
+const _: () = assert!(
+    INFINITE_STAT > 2_461_449_600.0
+        && (INFINITE_STAT as f32) as f64 == INFINITE_STAT
+        && INFINITE_STAT + 1.0 > INFINITE_STAT
+);
+
+/// A printed LOYALTY, where `X` AND `*` ARE ZERO and nothing else that is not a number is anything.
+///
+/// Measured on api.scryfall.com 2026-10-04: `loy=0`, `loy<1`, `loy=x` and `loy=*` each answer
+/// the same four cards — Dakkon, Shadow Slayer and Jeska, Thrice Reborn (printed `0`), Nissa,
+/// Steward of Elements (printed `X`) and B.O.B. (Bevy of Beebles) (printed `*`) — and `loy>=0` is
+/// 330. This port held the last two as ABSENT and answered 2 and 328.
+///
+/// Dungeon Master's `1d4+1` is the form that stays absent, also measured: `!"Dungeon Master"
+/// loy>=0`, `loy=0` and `loy=1` are all 404. So this is the two exact strings and not
+/// power/toughness's star arithmetic — no loyalty in the corpus prints a sum.
+///
+/// (This used to say both starred loyalty cards were in sets api.scryfall.com would not answer
+/// for. B.O.B. is answered now.)
+///
+/// `pub` for the builder, whose card-level column must hold what the face does.
+pub fn loyalty_str_to_num(s: Option<&str>) -> Option<f64> {
+    let s = s?.trim();
+    if matches!(s, "X" | "*") {
+        return Some(0.0);
+    }
+    stat_str_to_int(Some(s))
+}
+
 /// The same rule for a printed POWER or TOUGHNESS, where `*` AND `?` ARE ZERO and the arithmetic
 /// printed around a star still runs — `1+*` is 1, `7-*` is 7, and `*`, `*²` and `?` are 0.
 ///
@@ -358,13 +422,14 @@ fn stat_str_to_int(s: Option<&str>) -> Option<f64> {
 /// (`face_stat_values`), so a face that read `*` as absent while the column read 0 would narrow
 /// `tou=0` away from the very cards this rule exists to include.
 ///
-/// Loyalty deliberately keeps `stat_str_to_int`: the corpus prints `*` on two loyalty cards and
-/// both are funny-set cards api.scryfall.com will not answer for at all, so there is no
-/// measurement to follow and an unmeasured column is not extended.
+/// Loyalty has its own rule — see `loyalty_str_to_num`.
 fn stat_str_to_int_star(s: Option<&str>) -> Option<f64> {
     let s = s?.trim();
     if let Some(v) = stat_str_to_int(Some(s)) {
         return Some(v);
+    }
+    if s == INFINITE_STAT_TEXT {
+        return Some(INFINITE_STAT);
     }
     if !s.contains(['*', '?']) {
         return None;
@@ -429,7 +494,7 @@ pub(crate) fn face_stat_nums(
     } else {
         (None, None)
     };
-    (p, tough, stat_str_to_int(loyalty).map(|v| v as u8))
+    (p, tough, loyalty_str_to_num(loyalty).map(|v| v as u8))
 }
 
 /// One face's own mana cost, packed the way `ManaCostCmp` compares.

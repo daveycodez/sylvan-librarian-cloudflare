@@ -17277,11 +17277,22 @@ fn front_face_stats_match_card_columns() {
     // prints it on both sides and api.scryfall.com answers `tou=0` 1, `tou>=0` 1, `tou>0` 0.
     // Read as absent it satisfied no comparison at all, which was the last row of `toughness<1`.
     assert_eq!(face_stat_nums(creature, Some("*\u{b2}"), Some("?"), None), (Some(0.0), Some(0.0), None));
-    // `∞` stays absent — `Infinity Elemental` is `ulst`, unanswerable there, so nothing measured.
-    assert_eq!(face_stat_nums(creature, Some("\u{221e}"), None, None), (None, None, None));
-    // Loyalty keeps the old rule: the two cards printing `*` there are funny-set cards
-    // api.scryfall.com will not answer for at all, so there is nothing measured to follow.
-    assert_eq!(face_stat_nums(Some("Planeswalker — Duck"), None, None, Some("*")), (None, None, None));
+    // `∞` IS A NUMBER ABOVE EVERY ONE A QUERY CAN NAME, and a finite one — see `INFINITE_STAT`
+    // for the api.scryfall.com rows (`!"Infinity Elemental" pow>2461449600` is 1, and so is
+    // `pt>pow`). Exact in the f32 the face stores, and only the one string.
+    assert_eq!(
+        face_stat_nums(creature, Some("\u{221e}"), Some("5"), None),
+        (Some(super::INFINITE_STAT as f32), Some(5.0), None)
+    );
+    assert_eq!(f64::from(super::INFINITE_STAT as f32), super::INFINITE_STAT);
+    assert_eq!(face_stat_nums(creature, Some("\u{221e}+1"), Some("inf"), None), (None, None, None));
+    // LOYALTY: a printed `X` or `*` is zero — `loy=0` answers Nissa, Steward of Elements and
+    // B.O.B. on api.scryfall.com beside the two cards that print `0` — and `1d4+1` (Dungeon
+    // Master, `loy>=0` 404) is still nothing. See `loyalty_str_to_num`.
+    assert_eq!(face_stat_nums(Some("Planeswalker — Duck"), None, None, Some("*")), (None, None, Some(0)));
+    assert_eq!(face_stat_nums(Some("Legendary Planeswalker — Nissa"), None, None, Some("X")), (None, None, Some(0)));
+    assert_eq!(face_stat_nums(Some("Legendary Planeswalker — Dungeon Master"), None, None, Some("1d4+1")), (None, None, None));
+    assert_eq!(face_stat_nums(Some("Legendary Planeswalker — Nissa"), None, None, Some("x")), (None, None, None));
     assert_eq!(face_stat_nums(creature, Some("-1"), Some("0"), None), (Some(-1.0), Some(0.0), None));
     // A PRINTED HALF IS KEPT, which is the whole reason this pair is f32 rather than i8. Eleven
     // Unhinged cards print one and truncation made each ANSWER its floor: `pow=2` was 5733 here

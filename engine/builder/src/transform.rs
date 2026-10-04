@@ -637,6 +637,17 @@ fn maybe_int(v: Option<&Value>) -> Option<i64> {
     if !f.is_finite() { None } else { Some(f.trunc() as i64) }
 }
 
+/// `maybe_int` for a printed LOYALTY, where `X` and `*` are zero and nothing else that is not a
+/// number is anything (`1d4+1` stays absent). The rule and its measurements live in
+/// `card_engine::loyalty_str_to_num`, which reads a face's own string with it — the card-level
+/// column and the face must hold the same number, so there is one implementation.
+fn maybe_loyalty(v: Option<&Value>) -> Option<i64> {
+    match v? {
+        Value::String(s) => card_engine::loyalty_str_to_num(Some(s)).map(|n| n.trunc() as i64),
+        other => maybe_int(Some(other)),
+    }
+}
+
 /// `maybe_int` for a printed POWER or TOUGHNESS, where `*` IS A NUMBER AND IT IS ZERO.
 ///
 /// `maybe_int` reads `*` as absent, and absent compares false against everything — so `tou<1`
@@ -670,8 +681,10 @@ fn maybe_int(v: Option<&Value>) -> Option<i64> {
 /// not_rounded`, and the same fix upstream applied to `cmc` in
 /// api/db/2026-08-12-01-fractional-mana-value.sql.
 ///
-/// `∞` (Infinity Elemental) stays absent: it is `ulst`, which api.scryfall.com does not answer for
-/// at all, so there is no measurement to follow and an unmeasured form is not extended.
+/// `∞` (Infinity Elemental) IS A NUMBER ABOVE EVERY ONE A QUERY CAN NAME, and a finite one:
+/// `card_engine::INFINITE_STAT`, whose doc comment carries the api.scryfall.com measurements
+/// (2026-10-04 — `pow>=0` and `pow>2461449600` match it, and so does `pt>pow`). It used to stay
+/// absent here because the card was unanswerable there; it is answered now.
 fn maybe_stat_num(v: Option<&Value>) -> Option<f64> {
     // `is_finite` is the guard `maybe_int` used to supply on the way past: Rust parses "inf" and
     // "NaN" out of a string where Python's int() would raise, and neither belongs in a column the
@@ -683,6 +696,9 @@ fn maybe_stat_num(v: Option<&Value>) -> Option<f64> {
         Value::String(s) => s.trim(),
         _ => return None,
     };
+    if s == card_engine::INFINITE_STAT_TEXT {
+        return Some(card_engine::INFINITE_STAT);
+    }
     if !s.contains(['*', '?']) {
         return None;
     }
@@ -710,9 +726,7 @@ fn maybe_stat_num(v: Option<&Value>) -> Option<f64> {
         // prints `?` on three cards (Shellephant, `Loopy Lobster` cmb1, `Catch of the Day` mb2)
         // and only Shellephant is in a set api.scryfall.com answers for at all.
         //
-        // `∞` is NOT here, deliberately: `Infinity Elemental` is `ulst`, which Scryfall does not
-        // answer for either, so there is no measurement to follow — the same rule that keeps
-        // loyalty's two starred cards out of `stat_str_to_int_star`.
+        // `∞` is not a term of a sum: it is answered whole, above — see `INFINITE_STAT`.
         if matches!(t.as_str(), "*" | "*\u{b2}" | "?") {
             return true;
         }
@@ -1695,7 +1709,9 @@ fn build_draft(card: &Map<String, Value>, card_name: &str) -> Result<RowDraft, T
 
     // Line 175: planeswalker loyalty (maybe_int of the printed loyalty), and line 408: the
     // printed STRING itself, verbatim, as its own column.
-    let planeswalker_loyalty = maybe_int(card.get("loyalty"));
+    // `maybe_loyalty` and not `maybe_int`: a printed `X` or `*` is ZERO in a loyalty comparison —
+    // see `card_engine::loyalty_str_to_num` for the four cards `loy=0` answers.
+    let planeswalker_loyalty = maybe_loyalty(card.get("loyalty"));
     let planeswalker_loyalty_text = s(card, "loyalty");
 
     // Lines 176-189 ordinarily attach stats only to creatures/Vehicles/Spacecraft. The raw
@@ -3986,11 +4002,8 @@ mod tests {
         // `toughness<1` answering 433 against 434 — read as ABSENT, it satisfied no comparison at
         // all.
         assert_eq!(maybe_stat_num(Some(&json!("?"))), Some(0.0));
-        // Everything else that is not a number stays absent. `∞` is deliberately among them:
-        // `Infinity Elemental` is `ulst`, which api.scryfall.com does not answer for, so there is
-        // no measurement to follow and an unmeasured value is not extended.
+        // Everything else that is not a number stays absent.
         assert_eq!(maybe_stat_num(Some(&json!("X"))), None);
-        assert_eq!(maybe_stat_num(Some(&json!("\u{221e}"))), None);
         assert_eq!(maybe_stat_num(Some(&json!("*?"))), None);
         // And it reaches the row: the column is what `pow=`/`tou=` compares, the text beside it is
         // what the card object serves.
@@ -4003,6 +4016,64 @@ mod tests {
         assert_eq!(draft.creature_toughness, Some(1.0));
         assert_eq!(draft.creature_power_text.as_deref(), Some("*"));
         assert_eq!(draft.creature_toughness_text.as_deref(), Some("1+*"));
+    }
+
+    /// Infinity Elemental's `∞` is a number above every one a query can name — measured on
+    /// api.scryfall.com 2026-10-04, scoped `!"Infinity Elemental"`: `pow>=0`, `pow>1000`,
+    /// `pow>2461449600` (the largest value Scryfall compares with), `pow>tou` and `pt>pow` are
+    /// each 1, and `pow=0`, `pow<0` and `pow=pt` each 404. Held as absent it answered none of
+    /// them, which was `pow>=0` 18,977 against 18,978.
+    #[test]
+    fn a_printed_infinity_is_above_every_value_a_query_can_name() {
+        let infinite = maybe_stat_num(Some(&json!("\u{221e}"))).expect("\u{221e} is a number");
+        assert_eq!(infinite, card_engine::INFINITE_STAT);
+        // Above Scryfall's `Value out of range` bound, so above everything a constant can be.
+        assert!(infinite > 2_461_449_600.0);
+        // FINITE, and exact in the f32 the column stores: `pt` is power + toughness and Scryfall
+        // answers `pt>pow`, which an IEEE infinity cannot.
+        assert!(infinite.is_finite());
+        assert_eq!(f64::from(infinite as f32), infinite);
+        assert!(f64::from(infinite as f32) + 5.0 > f64::from(infinite as f32));
+        // Only the one string: nothing merely containing it, and never as a term of a sum.
+        assert_eq!(maybe_stat_num(Some(&json!("\u{221e}+1"))), None);
+        assert_eq!(maybe_stat_num(Some(&json!("1+\u{221e}"))), None);
+        assert_eq!(maybe_stat_num(Some(&json!("inf"))), None);
+        // And it reaches the row beside the printed string the card object serves.
+        let mut card = minimal_card("Infinity Elemental");
+        card["type_line"] = json!("Creature \u{2014} Elemental");
+        card["power"] = json!("\u{221e}");
+        card["toughness"] = json!("5");
+        let draft = transform(&card).unwrap().unwrap();
+        assert_eq!(draft.creature_power, Some(card_engine::INFINITE_STAT));
+        assert_eq!(draft.creature_toughness, Some(5.0));
+        assert_eq!(draft.creature_power_text.as_deref(), Some("\u{221e}"));
+    }
+
+    /// A printed loyalty of `X` or `*` is ZERO — measured on api.scryfall.com 2026-10-04: `loy=0`,
+    /// `loy<1` and `loy=x` each answer Dakkon, Shadow Slayer and Jeska, Thrice Reborn (`0`),
+    /// Nissa, Steward of Elements (`X`) and B.O.B. (Bevy of Beebles) (`*`), where this port
+    /// answered the first two. Dungeon Master's `1d4+1` stays absent: `loy>=0` is 404 for it.
+    #[test]
+    fn a_printed_loyalty_of_x_or_star_is_zero() {
+        assert_eq!(maybe_loyalty(Some(&json!("X"))), Some(0));
+        assert_eq!(maybe_loyalty(Some(&json!("*"))), Some(0));
+        assert_eq!(maybe_loyalty(Some(&json!("0"))), Some(0));
+        assert_eq!(maybe_loyalty(Some(&json!("3"))), Some(3));
+        assert_eq!(maybe_loyalty(Some(&json!(4))), Some(4));
+        assert_eq!(maybe_loyalty(Some(&json!("1d4+1"))), None);
+        // The two exact strings, not power's star arithmetic and not the letter in any case.
+        assert_eq!(maybe_loyalty(Some(&json!("x"))), None);
+        assert_eq!(maybe_loyalty(Some(&json!("1+*"))), None);
+        assert_eq!(maybe_loyalty(Some(&json!("?"))), None);
+        assert_eq!(maybe_loyalty(Some(&Value::Null)), None);
+        assert_eq!(maybe_loyalty(None), None);
+        // And it reaches the row beside the printed string the card object serves.
+        let mut card = minimal_card("Nissa, Steward of Elements");
+        card["type_line"] = json!("Legendary Planeswalker \u{2014} Nissa");
+        card["loyalty"] = json!("X");
+        let draft = transform(&card).unwrap().unwrap();
+        assert_eq!(draft.planeswalker_loyalty, Some(0));
+        assert_eq!(draft.planeswalker_loyalty_text.as_deref(), Some("X"));
     }
 
     /// An explicitly printed stat is searchable even when the historical/joke type line does not
