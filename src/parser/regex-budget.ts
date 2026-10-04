@@ -311,10 +311,13 @@ function analyzePattern(pattern: string): PatternMetrics {
 }
 
 /**
- * The pattern as JS `RegExp` can VALIDATE it. JS is not the dialect being validated — Scryfall's
- * Onigmo and this engine's Rust `regex` (falling back to `fancy_regex`) both accept inline flags
- * `(?i)`, `(?P<name>…)` groups, possessive `a++` and atomic `(?>…)` groups, and comments `(?#…)`,
- * none of which V8 parses. Each is rewritten to its JS spelling, or dropped when it has none,
+ * The pattern as JS `RegExp` can VALIDATE it. JS is not the dialect being validated — this
+ * engine's Rust `regex` (falling back to `fancy_regex`) accepts inline flags `(?i)`,
+ * `(?P<name>…)` groups, possessive `a++` and atomic `(?>…)` groups, and comments `(?#…)`,
+ * none of which V8 parses. (Scryfall's own dialect is PostgreSQL's, which refuses all of those
+ * but the comment — measured 2026-10-03; the Scryfall-compat term policy drops such a pattern
+ * with PostgreSQL's sentence before it gets here, so this leniency is `/search`'s alone.)
+ * Each is rewritten to its JS spelling, or dropped when it has none,
  * for the check only; the engine still receives the original and has the final say (a pattern
  * this accepts and the engine refuses is the engine's 400, see the caller). Escapes and character
  * classes are stepped over so their contents are never rewritten.

@@ -113,31 +113,125 @@ describe("an apostrophe inside a word is not a quote", () => {
 	});
 });
 
-describe("regex dialect features JS lacks are validated, not refused", () => {
-	// Scryfall's Onigmo and the engine's Rust regex both accept these; V8 does not parse them, and
-	// the policy used JS RegExp as the oracle, so `o:/(?i)flying/` was ignored with a warning —
-	// and the wrong warning, since `(?` read as a quantifier with no operand.
-	test("inline flags, named groups, possessive and atomic groups, comments are kept", () => {
-		for (const q of [
-			"o:/(?i)flying/ e:khm",
-			"o:/(?i:fly)ing/ e:khm",
-			"o:/(?P<x>a)b/ e:khm",
-			"o:/a++b/ e:khm",
-			"o:/(?>a+)b/ e:khm",
-			"o:/(?#c)a+/ e:khm",
-			"o:/[+]+/ e:khm",
-		]) {
-			const result = scryfallTermPolicy(q);
-			expect(result.warnings).toEqual([]);
-			expect(result.query).toBe(q);
+describe("Scryfall's regex dialect is PostgreSQL's: what its compiler refuses is ignored in its words", () => {
+	// THIS BLOCK USED TO ASSERT THE OPPOSITE — that inline flags, named and atomic groups and
+	// possessive quantifiers are "kept", on the belief that Scryfall compiles with Onigmo. Measured
+	// on api.scryfall.com 2026-10-03 (x66), each of them is ignored with PostgreSQL's
+	// `quantifier operand invalid`, which is exactly the sentence the old comment called "the wrong
+	// warning". The requests are beside `postgresSyntaxReason` in query-terms.ts.
+	const QUANTIFIER = "Invalid regular expression: quantifier operand invalid.";
+	const ESCAPE = "Invalid regular expression: invalid escape \\ sequence.";
+	const reasonOf = (body: string) => {
+		const result = scryfallTermPolicy(`o:/${body}/ t:instant`);
+		return result.warnings.map((w) => w.slice(w.indexOf("was ignored. ") + "was ignored. ".length));
+	};
+
+	test.each([
+		"(?i)destroy target creature",
+		"destroy(?i) target creature",
+		"(?-i)destroy target creature",
+		"(?i:destroy) target creature",
+		"(?s:destroy) target creature",
+		"(?<a>destroy) target creature",
+		"(?P<a>destroy) target creature",
+		"(?'n'destroy) target creature",
+		"(?>destroy) target creature",
+		"(?|destroy) target creature",
+		"destroy++ target creature",
+		"destroy*+ target creature",
+		"destroy?+ target creature",
+		"destroy+* target creature",
+		"destroy{1}+ target creature",
+		"destroy{1}{2} target creature",
+		"destroy??? target creature",
+		"^*destroy",
+		"destroy$* target",
+		"destroy\\y+ target creature",
+		"destroy target creature\\b{2}",
+		"(?=d)*destroy target creature",
+		"destroy(*) target",
+		"destroy |* target",
+		"{2}a",
+		"a|{2}",
+		"(?#x)*a",
+		"(?<x",
+		"(a++",
+		"a++[",
+	])("quantifier operand invalid: %s", (body) => {
+		expect(reasonOf(body)).toEqual([QUANTIFIER]);
+	});
+
+	test.each([
+		"\\p{L}estroy target creature",
+		"destroy\\htarget creature",
+		"destroy target creature\\z",
+		"destroy target creature\\Z",
+		"destroy target creature\\k",
+		"(o)\\g1",
+		"destroy \\Qtarget\\E creature",
+		"destro[\\p{L}] target creature",
+		"\\x",
+		"\\xg",
+		"\\u12",
+		"\\c",
+		"\\p[",
+	])("invalid escape: %s", (body) => {
+		expect(reasonOf(body)).toEqual([ESCAPE]);
+	});
+
+	test("every letter that runs after a backslash, and every letter that does not", () => {
+		for (const letter of "abdefmnrstvwyABDEFMNRSTVWY")
+			expect(reasonOf(`destroy target creature\\${letter}`)).toEqual([]);
+		for (const letter of "cghijklopquxzCGHIJKLOPQUXZ") {
+			expect(reasonOf(`destroy target creature\\${letter}`)).toEqual([ESCAPE]);
 		}
 	});
 
-	test("a genuinely malformed group extension is refused with an honest reason", () => {
-		const result = scryfallTermPolicy("o:/(?<x/ e:khm");
-		expect(result.query).toBe("e:khm");
-		expect(result.warnings[0]).toContain("Invalid regular expression");
-		expect(result.warnings[0]).not.toContain("quantifier operand invalid");
+	test.each([
+		"(?:destroy) target creature",
+		"destroy target creature(?=\\.)",
+		"(?<=destroy )target creature",
+		"(?<!x(y))destroy target creature",
+		"destroy target (?#comment)creature",
+		"a(?#x)*",
+		"destroy*? target creature",
+		"destroy+? target creature",
+		"destroy?? target creature",
+		"destroy{1}? target creature",
+		"destroy target creature{1,}?",
+		"destroy target creature{1}",
+		"destroy target creature{,2}",
+		"{r}",
+		"[[:alpha:]]estroy target creature",
+		"destroy target [[:word:]]+",
+		"destroy target [\\w]+",
+		"destroy \\ytarget\\y creature",
+		"destroy \\mtarget\\M creature",
+		"destroy\\x20target creature",
+		"destroy\\u0020target creature",
+		"destroy \\cA?target creature",
+		"destroy(|x) target creature",
+		"(?:)*a",
+		"()*a",
+		"[+]+",
+		"\\(this creature",
+		"\\+1\\/\\+1",
+	])("runs: %s", (body) => {
+		expect(reasonOf(body)).toEqual([]);
+	});
+
+	test("the first error, left to right, is the one reported", () => {
+		expect(reasonOf("a)++")).toEqual(["Invalid regular expression: parentheses () not balanced."]);
+		expect(reasonOf("[a++")).toEqual(["Invalid regular expression: brackets [] not balanced."]);
+		expect(reasonOf("a{2,1}++")).toEqual(["Invalid regular expression: invalid repetition count(s)."]);
+		expect(reasonOf("[\\p]")).toEqual([ESCAPE]);
+		expect(reasonOf("a{51")).toEqual(["Invalid regular expression: braces {} not balanced."]);
+		expect(reasonOf("a{256,}")).toEqual(["Invalid regular expression: invalid repetition count(s)."]);
+		expect(reasonOf("a{255,}")).toEqual(["Regular expression too complex."]); // the engine's own budget, not Scryfall's
+	});
+
+	test("the colour columns never read a regex, so `c:/(?i)w/` is a colour value's business", () => {
+		expect(scryfallTermPolicy("c:/w/ e:khm").warnings).toEqual([]);
 	});
 });
 

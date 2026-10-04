@@ -2273,6 +2273,36 @@
 			"method": "GET",
 			"path": "/cards/search?q=direct%3Ax+e%3Akhm+t%3Agod",
 			"note": "The opposite case: `direct:` is NOT a Scryfall keyword — 12 with `Invalid expression “direct:x” was ignored. Unknown keyword “direct”.` (2026-10-03) — and the port's table of Scryfall-only keywords listed it, answering `400 Failed to parse query`."
+		},
+		{
+			"name": "search-regex-inline-flag-is-refused",
+			"method": "GET",
+			"path": "/cards/search?q=o%3A%2F%28%3Fi%29destroy+target+creature%2F+t%3Ainstant",
+			"note": "x66: Scryfall's regex dialect is PostgreSQL's, and an inline flag is refused wherever it sits — all 3,909 instants with `Invalid expression “o:/(?i)destroy targ…” was ignored. Invalid regular expression: quantifier operand invalid.` (2026-10-03). `(?i:…)`, `(?<name>…)`, `(?P<name>…)`, `(?>…)` and a possessive `a++` earn the same sentence. This port ran all of them (152 instants here), so a query using one was validated here and lost its regex there."
+		},
+		{
+			"name": "search-regex-named-group-is-refused",
+			"method": "GET",
+			"path": "/cards/search?q=o%3A%2F%28%3F%3Ca%3Edestroy%29+target+creature%2F+t%3Ainstant",
+			"note": "A named group: 3,909 with the quantifier sentence. Only `(?:`, `(?=`, `(?!`, `(?<=`, `(?<!` and `(?#` may follow `(?`."
+		},
+		{
+			"name": "search-regex-possessive-quantifier-is-refused",
+			"method": "GET",
+			"path": "/cards/search?q=o%3A%2Fdestroy%2B%2B+target+creature%2F+t%3Ainstant",
+			"note": "A quantified quantifier: 3,909 with the quantifier sentence (`*+`, `?+`, `+*`, `{1}+`, `{1}{2}` and `???` the same). One lazy `?` is fine: `destroy+?`, `destroy??` and `destroy{1}?` each run, 152."
+		},
+		{
+			"name": "search-regex-unicode-property-is-an-invalid-escape",
+			"method": "GET",
+			"path": "/cards/search?q=o%3A%2F%5Cp%7BL%7Destroy+target+creature%2F+t%3Ainstant",
+			"note": "`\\p{…}` is not PostgreSQL's: 3,909 with `Invalid regular expression: invalid escape \\ sequence.` The letters that run after a backslash are a b d e f m n r s t v w y, in either case; `\\h`, `\\z`, `\\Z`, `\\k`, `\\g`, `\\Q`, a bare `\\x`, `\\u` or `\\c` are refused (every letter probed 2026-10-03)."
+		},
+		{
+			"name": "search-regex-lazy-quantifier-runs",
+			"method": "GET",
+			"path": "/cards/search?q=o%3A%2Fdestroy%2B%3F+target+creature%5Cb%2F+t%3Ainstant",
+			"note": "The control: a lazy quantifier and a word boundary run."
 		}
 	]
 }

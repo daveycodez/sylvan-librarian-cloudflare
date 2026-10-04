@@ -1519,10 +1519,225 @@ function ignoredWarning(term: string, reason: string): string {
 }
 
 /**
- * Onigmo's wording for the malformations a pasted regex actually has.
+ * SCRYFALL'S REGEX DIALECT IS POSTGRESQL'S, and what PostgreSQL's compiler refuses, Scryfall
+ * ignores with the compiler's own sentence.
  *
- * Scryfall compiles the pattern in Ruby and reports its engine's message, so the four classes
- * below were read off api.scryfall.com rather than translated from V8's:
+ * This file used to say Scryfall compiles in Ruby (Onigmo) and accepts what Onigmo accepts —
+ * inline flags, named and atomic groups, possessive quantifiers, `\p{…}`. The sentences it was
+ * already quoting say otherwise: "brackets [] not balanced", "quantifier operand invalid",
+ * "invalid repetition count(s)" and "invalid escape \ sequence" are PostgreSQL's regex error
+ * strings word for word (regerrs.h: REG_EBRACK, REG_BADRPT, REG_BADBR, REG_EESCAPE), and so is
+ * "regular expression is too complex". Measured on api.scryfall.com 2026-10-03, anchor
+ * `t:instant` = 3,909, pattern `destroy target creature` = 152 — a row at 3,909 was dropped:
+ *
+ *   `Invalid regular expression: quantifier operand invalid.`
+ *     (?i)destroy…   destroy(?i) …   (?-i)…   (?i:destroy)   (?s:destroy)      inline flags, anywhere
+ *     (?<a>destroy)  (?P<a>destroy)  (?'n'destroy)  (?>destroy)  (?|destroy)   named, atomic, reset
+ *     destroy++  destroy*+  destroy?+  destroy+*  destroy{1}+  destroy{1}{2}   a quantified quantifier
+ *     destroy???                                                               (one lazy `?` is fine)
+ *     ^*destroy  destroy$*  destroy\y+  …creature\b{2}  (?=d)*destroy            a quantified constraint
+ *     destroy(*)  destroy |*  {2}a  a|{2}  (?#x)*a                             nothing to quantify
+ *
+ *   `Invalid regular expression: invalid escape \ sequence.`
+ *     \p{L}  \h  \z  \Z  \k  \g1  \Q…\E  [\p{L}]  bare \x  \xg  \u12  bare \c
+ *     — every letter probed, one request each: the escapes that RUN are a b d e f m n r s t v w y
+ *     in either case (the pattern is lower-cased before it is compiled), `\x` + hex, `\u` + four
+ *     hex, `\c` + a character, and a backslash before anything that is not a letter.
+ *
+ *   RUN: (?:…) (?=…) (?!…) (?<=…) (?<!…) (?#…)   a*? a+? a?? a{1}? a{2,}?   [[:alpha:]] [[:word:]]
+ *        \y \m \M \b \B   \x20 \u0020 \cA   {,2} and {r} (a `{` not followed by a digit is literal)
+ *
+ * This port ran every row of the first two groups — the engine's Rust `regex` and `fancy_regex`
+ * take them — so a query using `(?i)` or a named group was validated here and silently lost its
+ * regex on Scryfall.
+ *
+ * THE FIRST ERROR, LEFT TO RIGHT, IS THE ONE REPORTED, as a compiler reports it: `(a++` is the
+ * quantifier sentence and `a)++` the parenthesis one; `[a++` is "brackets" (the class swallowed
+ * the rest) and `a++[` the quantifier; `(?<x` is the quantifier sentence, not "not balanced";
+ * `a{2,1}++` is the repetition count. One scan reproduces that order, which the two-pass check it
+ * replaces (balance first, then shape) could not.
+ *
+ * NOT REPRODUCED, each a sentence this scan does not try to earn: `[a-\w]` (`invalid character
+ * range`), and anything PostgreSQL rejects that is not listed above. Those fall through to the
+ * older check below and, failing that, run.
+ *
+ * COST: one pass over the pattern at parse time.
+ */
+const QUANTIFIER_OPERAND_REASON = "Invalid regular expression: quantifier operand invalid.";
+const INVALID_ESCAPE_REASON = "Invalid regular expression: invalid escape \\ sequence.";
+const PARENS_REASON = "Invalid regular expression: parentheses () not balanced.";
+const BRACKETS_REASON = "Invalid regular expression: brackets [] not balanced.";
+const BRACES_REASON = "Invalid regular expression: braces {} not balanced.";
+const REPETITION_COUNT_REASON = "Invalid regular expression: invalid repetition count(s).";
+
+/** PostgreSQL's DUPMAX: `a{255,}` runs and `a{256,}` is `invalid repetition count(s)`. */
+const MAX_REPETITION_COUNT = 255;
+
+/** The letters that may follow a backslash on their own. Lower case: Scryfall lower-cases first. */
+const VALID_ESCAPE_LETTERS: ReadonlySet<string> = new Set("abdefmnrstvwy");
+/** Of those, the zero-width ones — a quantifier cannot follow them. */
+const CONSTRAINT_ESCAPE_LETTERS: ReadonlySet<string> = new Set("bmy");
+
+const HEX_DIGIT_RE = /^[0-9a-fA-F]$/;
+
+/** The length of the escape starting at `pattern[i]` (a backslash), or -1 when PostgreSQL refuses it. */
+function escapeLength(pattern: string, i: number): number {
+	const next = pattern[i + 1];
+	if (next === undefined) return 1;
+	if (!/^[A-Za-z]$/.test(next)) return 2;
+	const letter = next.toLowerCase();
+	if (letter === "x") {
+		let end = i + 2;
+		while (end < pattern.length && HEX_DIGIT_RE.test(pattern[end] as string)) end++;
+		return end > i + 2 ? end - i : -1;
+	}
+	if (letter === "u") {
+		for (let k = i + 2; k < i + 6; k++) {
+			if (!HEX_DIGIT_RE.test(pattern[k] ?? "")) return -1;
+		}
+		return 6;
+	}
+	if (letter === "c") return i + 2 < pattern.length ? 3 : -1;
+	return VALID_ESCAPE_LETTERS.has(letter) ? 2 : -1;
+}
+
+/**
+ * The first thing PostgreSQL's compiler would refuse in `pattern`, as Scryfall words it, or null.
+ * See the block comment above for the measurements.
+ */
+function postgresSyntaxReason(pattern: string): string | null {
+	// What a quantifier would apply to: nothing yet, an atom, a quantifier, a quantifier already
+	// made lazy, or a zero-width constraint.
+	type Kind = "none" | "atom" | "quantifier" | "lazy" | "constraint";
+	const state: { kind: Kind } = { kind: "none" };
+	/** One entry per open group: whether it is a lookaround (a constraint once closed). */
+	const groups: boolean[] = [];
+	const quantify = (): string | null => {
+		if (state.kind !== "atom") return QUANTIFIER_OPERAND_REASON;
+		state.kind = "quantifier";
+		return null;
+	};
+	let i = 0;
+	while (i < pattern.length) {
+		const ch = pattern[i] as string;
+		if (ch === "\\") {
+			const length = escapeLength(pattern, i);
+			if (length < 0) return INVALID_ESCAPE_REASON;
+			const letter = (pattern[i + 1] ?? "").toLowerCase();
+			state.kind = length === 2 && CONSTRAINT_ESCAPE_LETTERS.has(letter) ? "constraint" : "atom";
+			i += length;
+			continue;
+		}
+		if (ch === "[") {
+			let j = i + 1;
+			if (pattern[j] === "^") j++;
+			if (pattern[j] === "]") j++;
+			let closed = false;
+			while (j < pattern.length) {
+				const c = pattern[j] as string;
+				if (c === "\\") {
+					const length = escapeLength(pattern, j);
+					if (length < 0) return INVALID_ESCAPE_REASON;
+					j += length;
+				} else if (c === "[" && (pattern[j + 1] === ":" || pattern[j + 1] === "." || pattern[j + 1] === "=")) {
+					const close = pattern.indexOf(`${pattern[j + 1]}]`, j + 2);
+					if (close === -1) return BRACKETS_REASON;
+					j = close + 2;
+				} else if (c === "]") {
+					closed = true;
+					break;
+				} else j++;
+			}
+			if (!closed) return BRACKETS_REASON;
+			state.kind = "atom";
+			i = j + 1;
+			continue;
+		}
+		if (ch === "(") {
+			if (pattern[i + 1] !== "?") {
+				groups.push(false);
+				state.kind = "none";
+				i += 1;
+				continue;
+			}
+			const c2 = pattern[i + 2];
+			if (c2 === "#") {
+				// A comment is transparent: `a(?#x)*` runs and `(?#x)*a` has nothing to quantify.
+				const close = pattern.indexOf(")", i + 3);
+				if (close === -1) return PARENS_REASON;
+				i = close + 1;
+				continue;
+			}
+			if (c2 === ":") {
+				groups.push(false);
+				i += 3;
+			} else if (c2 === "=" || c2 === "!") {
+				groups.push(true);
+				i += 3;
+			} else if (c2 === "<" && (pattern[i + 3] === "=" || pattern[i + 3] === "!")) {
+				groups.push(true);
+				i += 4;
+			} else return QUANTIFIER_OPERAND_REASON;
+			state.kind = "none";
+			continue;
+		}
+		if (ch === ")") {
+			const lookaround = groups.pop();
+			if (lookaround === undefined) return PARENS_REASON;
+			state.kind = lookaround ? "constraint" : "atom";
+			i += 1;
+			continue;
+		}
+		if (ch === "|") {
+			state.kind = "none";
+			i += 1;
+			continue;
+		}
+		if (ch === "^" || ch === "$") {
+			state.kind = "constraint";
+			i += 1;
+			continue;
+		}
+		if (ch === "*" || ch === "+") {
+			const reason = quantify();
+			if (reason !== null) return reason;
+			i += 1;
+			continue;
+		}
+		if (ch === "?") {
+			if (state.kind === "quantifier") state.kind = "lazy";
+			else {
+				const reason = quantify();
+				if (reason !== null) return reason;
+			}
+			i += 1;
+			continue;
+		}
+		if (ch === "{" && /^[0-9]$/.test(pattern[i + 1] ?? "")) {
+			// A bound. A `{` not followed by a digit is a literal brace (`{,2}`, `{r}`).
+			const bound = /^\{(\d+)(?:(,)(\d*))?/.exec(pattern.slice(i));
+			const end = bound === null ? -1 : i + bound[0].length;
+			if (bound === null || pattern[end] !== "}") return BRACES_REASON;
+			const low = Number(bound[1]);
+			const high = bound[2] === undefined ? low : bound[3] === "" ? null : Number(bound[3]);
+			if (low > MAX_REPETITION_COUNT || (high !== null && (high > MAX_REPETITION_COUNT || high < low))) {
+				return REPETITION_COUNT_REASON;
+			}
+			const reason = quantify();
+			if (reason !== null) return reason;
+			i = end + 1;
+			continue;
+		}
+		state.kind = "atom";
+		i += 1;
+	}
+	return groups.length > 0 ? PARENS_REASON : null;
+}
+
+/**
+ * The older, two-pass check, kept as the fallback for what the scan above does not model.
+ *
+ * It reports four classes, read off api.scryfall.com rather than translated from V8's:
  * `/[unclosed/` and `/[a-/` → brackets, `/(unclosed/` and `/a)/` → parentheses, `/a{2,1}/` →
  * repetition, a bare leading `*` → quantifier. Anything else gets the generic sentence; the
  * alternative is
@@ -2276,6 +2491,10 @@ function classifyLeaf(term: string): LeafVerdict {
 		if (readsRegex) {
 			const textReason = scryfallRegexTextReason(pattern);
 			if (textReason !== null) return { keep: false, reason: textReason };
+		}
+		if (readsRegex) {
+			const syntaxReason = postgresSyntaxReason(pattern);
+			if (syntaxReason !== null) return { keep: false, reason: syntaxReason };
 		}
 		try {
 			new RegExp(toJsValidationPattern(pattern));
