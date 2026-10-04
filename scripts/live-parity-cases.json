@@ -2170,6 +2170,27 @@
 			"method": "GET",
 			"path": "/cards/search?q=display%3Achecklist+t%3Agoblin",
 			"note": "`display:`/`as:` choose a page layout no API response shows: `grid`, `checklist`, `full`, `text` and `images` are accepted with no warning (561), an unknown value is `Unknown display mode “…” was ignored`. This port called the keyword unknown."
+		},
+		{
+			"name": "search-unique-art-option-switches-extras-on",
+			"method": "GET",
+			"path": "/cards/search?q=unique%3Aart+t%3Agoblin",
+			"known_deviation": {
+				"reason": "`unique:art` WRITTEN IN THE QUERY switches `include_extras` on; the `unique=art` PARAMETER does not. Measured on api.scryfall.com 2026-10-03: `unique:art t:goblin` is 831 echoing `include_extras=true` where `t:goblin&unique=art` is 772 echoing false, and `unique:art cmc=3` is 11,081 against 10,977 (`-unique:art` the same; `unique:prints` echoes false). The port now opens the gate for the option, so the EXTRAS half agrees. The TOTAL is recorded apart because unique=art itself is a ledgered deviation (cross-partition artwork dedupe — see `search-unique-art-khm-gods`): the port's count of artworks runs a little over Scryfall's with or without extras.",
+				"scryfall": {
+					"status": 200,
+					"expect": {
+						"object": "list",
+						"total_cards": 831
+					}
+				},
+				"ours": {
+					"status": 200,
+					"expect": {
+						"object": "list"
+					}
+				}
+			}
 		}
 	]
 }

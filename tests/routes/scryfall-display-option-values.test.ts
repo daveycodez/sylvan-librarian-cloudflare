@@ -158,3 +158,23 @@ describe("under `=` a display keyword is a keyword Scryfall does not know", () =
 		expect(scryfallTermPolicy("order>cmc t:goblin").query).toBe("cmc<0 t:goblin");
 	});
 });
+
+describe("unique:art in the query switches extras on; the unique=art parameter does not", () => {
+	const extrasGateClosed = async (path: string) => {
+		const engine = new FakeEngine();
+		await testDispatch(makeCtx({ engine }), path);
+		return (engine.lastSearch?.filterTreeJson ?? "").includes('"rhs":["extra"]');
+	};
+
+	test("the option opens the gate, in either polarity", async () => {
+		expect(scryfallTermPolicy("unique:art cmc=3").include.extras).toBe(true);
+		expect(scryfallTermPolicy("-unique:art cmc=3").include.extras).toBe(true);
+		expect(await extrasGateClosed("/cards/search?q=elf+unique%3Aart")).toBe(false);
+	});
+
+	test("the parameter, and unique:prints, leave it closed", async () => {
+		expect(scryfallTermPolicy("unique:prints cmc=3").include.extras).toBe(false);
+		expect(await extrasGateClosed("/cards/search?q=elf&unique=art")).toBe(true);
+		expect(await extrasGateClosed("/cards/search?q=elf+unique%3Aprints")).toBe(true);
+	});
+});

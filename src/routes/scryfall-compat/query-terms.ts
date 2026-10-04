@@ -228,6 +228,11 @@ function unknownIncludeWarning(rawValue: string): string {
  * `display:`/`as:` change nothing an API response shows; `grid`, `checklist`, `full`, `text` and
  * `images` are accepted silently and this port called the keyword unknown.
  *
+ * AND `unique:art` SWITCHES EXTRAS ON, which the `unique=art` PARAMETER does not: `unique:art
+ * cmc=3` is 11,081 echoing `include_extras=true` where `cmc=3&unique=art` is 10,977 echoing false
+ * (`-unique:art` the same 11,081; `unique:prints cmc=3` echoes false). One more syntactic trigger
+ * in the family extras-gate.ts tabulates, and the only one that is a display option.
+ *
  * WHAT STAYS THIS PORT'S OWN: the values its tables hold that Scryfall's do not — `unique:artwork`
  * / `card` / `printing`, `order:cubecobra`, `prefer:borderless` — are honored where Scryfall warns
  * (each measured as "Unknown … was ignored" there), the same superset the `order=` parameter
@@ -277,6 +282,7 @@ function classifyDisplayOption(keyword: string, rawValue: string): LeafVerdict {
 	if (resolved !== undefined) {
 		return {
 			...none,
+			include: spec.param === "unique" && resolved === "artwork" ? ["extras"] : [],
 			warning: null,
 			directive: { name: keyword, value, nested: false },
 		};
