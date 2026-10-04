@@ -141,6 +141,12 @@ const PORT_ONLY_TREES: ReadonlyMap<string, string> = new Map([
 	["is:duelcommander", isTagTree("duelcommander")],
 	["is:oathbreaker", isTagTree("oathbreaker")],
 	["is:spell", isTagTree("spell")],
+	// Stored tags since generation 64, each a rule measured on api.scryfall.com; upstream keeps a
+	// rewrite for each on purpose (`t:creature pow=2 tou=2 cmc=2` and three community `otag:`s).
+	["is:bear", isTagTree("bear")],
+	["is:frenchvanilla", isTagTree("frenchvanilla")],
+	["is:gainland", isTagTree("gainland")],
+	["is:modal", isTagTree("modal")],
 	[
 		"is:permanent",
 		`{"kwargs":{"operands":[${[

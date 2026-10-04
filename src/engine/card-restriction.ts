@@ -38,9 +38,10 @@
  *       name in the whole corpus (`!"Pradesh Gypsies" -is:extra&include_multilingual=true` matches
  *       Pradesh Wanderers' foreign rows, in a partition whose only key for it is an extra's).
  *
- * WIDENED is the engine's own rule (`query_widens`): include_multilingual, or a `lang:`,
- * `is:localizedname` or `is:flavorname` leaf anywhere in the tree — spotted here by its attribute or
- * tag in the wire text, which can only err towards "widened".
+ * WIDENED is the engine's own rule (`query_widens`): include_multilingual, or a `lang:` or
+ * `is:localizedname` leaf anywhere in the tree — spotted here by its attribute or tag in the wire
+ * text, which can only err towards "widened". (`is:flavorname` was a third until 2026-10-04, when
+ * it was measured NOT to widen on api.scryfall.com; card_engine's `FlavorNamePresent` has it.)
  *
  * A served hint without the gate (include_extras) or on a widened query, an undecidable one (255),
  * a key that reads null, a non-ASCII name (`nameKey` refuses it) or a filter without name keys: ALL.
@@ -61,10 +62,10 @@ const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 /**
  * A leaf that widens the query to the foreign annex (card_engine `widens_to_annex`): `lang:` is the
- * `card_lang` attribute, `is:localizedname` / `is:flavorname` are `card_is_tags` values. Matched as
- * quoted JSON strings, so a name that merely contains one of the words is a false "widened" at worst.
+ * `card_lang` attribute, `is:localizedname` is a `card_is_tags` value. Matched as quoted JSON
+ * strings, so a name that merely contains one of the words is a false "widened" at worst.
  */
-const WIDENING = /"(card_lang|localizedname|flavorname)"/;
+const WIDENING = /"(card_lang|localizedname)"/;
 
 /** Deeper than any query the parser admits; past it a subtree restricts nothing. */
 const MAX_DEPTH = 32;

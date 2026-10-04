@@ -1,0 +1,186 @@
+{
+ "artist": "Allen Douglas",
+ "artist_ids": [
+  "e17f248e-6a47-4889-b048-a646739923b0"
+ ],
+ "booster": false,
+ "border_color": "borderless",
+ "card_faces": [
+  {
+   "artist": "Allen Douglas",
+   "artist_id": "e17f248e-6a47-4889-b048-a646739923b0",
+   "cmc": 4.0,
+   "colors": [
+    "B"
+   ],
+   "illustration_id": "77ac677b-3be7-4716-86a9-2928ad512969",
+   "image_uris": {
+    "art": "https://cards.scryfall.io/art/front/9/c/9cf54062-7b5b-4e46-ae1e-fab7e419a9fa.webp?1783907227",
+    "art_crop": "https://cards.scryfall.io/art_crop/front/9/c/9cf54062-7b5b-4e46-ae1e-fab7e419a9fa.jpg?1783907227",
+    "border_crop": "https://cards.scryfall.io/border_crop/front/9/c/9cf54062-7b5b-4e46-ae1e-fab7e419a9fa.jpg?1783907227",
+    "crop": "https://cards.scryfall.io/crop/front/9/c/9cf54062-7b5b-4e46-ae1e-fab7e419a9fa.webp?1783907227",
+    "display": "https://cards.scryfall.io/display/front/9/c/9cf54062-7b5b-4e46-ae1e-fab7e419a9fa.webp?1783907227",
+    "grid": "https://cards.scryfall.io/grid/front/9/c/9cf54062-7b5b-4e46-ae1e-fab7e419a9fa.webp?1783907227",
+    "large": "https://cards.scryfall.io/large/front/9/c/9cf54062-7b5b-4e46-ae1e-fab7e419a9fa.jpg?1783907227",
+    "normal": "https://cards.scryfall.io/normal/front/9/c/9cf54062-7b5b-4e46-ae1e-fab7e419a9fa.jpg?1783907227",
+    "png": "https://cards.scryfall.io/png/front/9/c/9cf54062-7b5b-4e46-ae1e-fab7e419a9fa.png?1783907227",
+    "small": "https://cards.scryfall.io/small/front/9/c/9cf54062-7b5b-4e46-ae1e-fab7e419a9fa.jpg?1783907227",
+    "thumb": "https://cards.scryfall.io/thumb/front/9/c/9cf54062-7b5b-4e46-ae1e-fab7e419a9fa.webp?1783907227"
+   },
+   "layout": "adventure",
+   "mana_cost": "{3}{B}",
+   "name": "Scavenger Regent",
+   "object": "card_face",
+   "oracle_id": "7e97a242-0bac-4f18-9228-e98ecca36254",
+   "oracle_text": "Flying\nWard—Discard a card.",
+   "power": "4",
+   "toughness": "4",
+   "type_line": "Creature — Dragon"
+  },
+  {
+   "artist": "Allen Douglas",
+   "artist_id": "e17f248e-6a47-4889-b048-a646739923b0",
+   "cmc": 4.0,
+   "colors": [
+    "B"
+   ],
+   "illustration_id": "7adfbf6c-5aef-4f06-a45b-57b3e2b39c5b",
+   "image_uris": {
+    "art": "https://cards.scryfall.io/art/back/9/c/9cf54062-7b5b-4e46-ae1e-fab7e419a9fa.webp?1783907227",
+    "art_crop": "https://cards.scryfall.io/art_crop/back/9/c/9cf54062-7b5b-4e46-ae1e-fab7e419a9fa.jpg?1783907227",
+    "border_crop": "https://cards.scryfall.io/border_crop/back/9/c/9cf54062-7b5b-4e46-ae1e-fab7e419a9fa.jpg?1783907227",
+    "crop": "https://cards.scryfall.io/crop/back/9/c/9cf54062-7b5b-4e46-ae1e-fab7e419a9fa.webp?1783907227",
+    "display": "https://cards.scryfall.io/display/back/9/c/9cf54062-7b5b-4e46-ae1e-fab7e419a9fa.webp?1783907227",
+    "grid": "https://cards.scryfall.io/grid/back/9/c/9cf54062-7b5b-4e46-ae1e-fab7e419a9fa.webp?1783907227",
+    "large": "https://cards.scryfall.io/large/back/9/c/9cf54062-7b5b-4e46-ae1e-fab7e419a9fa.jpg?1783907227",
+    "normal": "https://cards.scryfall.io/normal/back/9/c/9cf54062-7b5b-4e46-ae1e-fab7e419a9fa.jpg?1783907227",
+    "png": "https://cards.scryfall.io/png/back/9/c/9cf54062-7b5b-4e46-ae1e-fab7e419a9fa.png?1783907227",
+    "small": "https://cards.scryfall.io/small/back/9/c/9cf54062-7b5b-4e46-ae1e-fab7e419a9fa.jpg?1783907227",
+    "thumb": "https://cards.scryfall.io/thumb/back/9/c/9cf54062-7b5b-4e46-ae1e-fab7e419a9fa.webp?1783907227"
+   },
+   "layout": "adventure",
+   "mana_cost": "{X}{B}{B}",
+   "name": "Exude Toxin",
+   "object": "card_face",
+   "oracle_id": "7e97a242-0bac-4f18-9228-e98ecca36254",
+   "oracle_text": "Flying\nWard—Discard a card.",
+   "power": "4",
+   "toughness": "4",
+   "type_line": "Sorcery — Omen"
+  }
+ ],
+ "cardmarket_id": 818660,
+ "collector_number": "379",
+ "color_identity": [
+  "B"
+ ],
+ "digital": false,
+ "edhrec_rank": 6092,
+ "finishes": [
+  "nonfoil",
+  "foil"
+ ],
+ "foil": true,
+ "frame": "2015",
+ "frame_effects": [
+  "inverted"
+ ],
+ "full_art": false,
+ "game_changer": false,
+ "games": [
+  "paper",
+  "mtgo"
+ ],
+ "highres_image": false,
+ "id": "9cf54062-7b5b-4e46-ae1e-fab7e419a9fa",
+ "image_status": "lowres",
+ "image_updated_at": "2026-07-13T01:47:07Z",
+ "keywords": [
+  "Flying",
+  "Ward"
+ ],
+ "lang": "en",
+ "layout": "reversible_card",
+ "legalities": {
+  "alchemy": "legal",
+  "brawl": "legal",
+  "commander": "legal",
+  "competitivebrawl": "legal",
+  "duel": "legal",
+  "future": "legal",
+  "gladiator": "legal",
+  "historic": "legal",
+  "legacy": "legal",
+  "modern": "legal",
+  "oathbreaker": "legal",
+  "oldschool": "not_legal",
+  "pauper": "not_legal",
+  "paupercommander": "not_legal",
+  "penny": "legal",
+  "pioneer": "legal",
+  "predh": "not_legal",
+  "premodern": "not_legal",
+  "standard": "legal",
+  "standardbrawl": "legal",
+  "timeless": "legal",
+  "tlr": "not_legal",
+  "vintage": "legal"
+ },
+ "mtgo_id": 139613,
+ "multiverse_ids": [
+  695121
+ ],
+ "name": "Scavenger Regent // Exude Toxin // Scavenger Regent",
+ "nonfoil": true,
+ "object": "card",
+ "oversized": false,
+ "penny_rank": 3384,
+ "preview": {
+  "previewed_at": "2025-03-24",
+  "source": "Numot The Nummy",
+  "source_uri": "https://x.com/NumotTheNummy/status/1904202239729922499"
+ },
+ "prices": {
+  "eur": "0.89",
+  "eur_foil": "1.40",
+  "tix": "0.35",
+  "usd": "0.80",
+  "usd_etched": null,
+  "usd_foil": "1.63"
+ },
+ "prints_search_uri": "https://api.scryfall.com/cards/search?order=released&q=oracleid%3A7e97a242-0bac-4f18-9228-e98ecca36254&unique=prints",
+ "promo": false,
+ "promo_types": [
+  "boosterfun"
+ ],
+ "purchase_uris": {
+  "cardhoarder": "https://www.cardhoarder.com/cards/139613?affiliate_id=scryfall&ref=card-profile&utm_campaign=affiliate&utm_medium=card&utm_source=scryfall",
+  "cardmarket": "https://www.cardmarket.com/en/Magic/Products?idProduct=818660&referrer=scryfall&utm_campaign=card_prices&utm_medium=text&utm_source=scryfall",
+  "tcgplayer": "https://partner.tcgplayer.com/c/4931599/1830156/21018?subId1=api&u=https%3A%2F%2Fwww.tcgplayer.com%2Fproduct%2F624731%3Fpage%3D1"
+ },
+ "rarity": "rare",
+ "related_uris": {
+  "edhrec": "https://edhrec.com/route/?cc=Scavenger+Regent",
+  "gatherer": "https://gatherer.wizards.com/Pages/Card/Details.aspx?multiverseid=695121&printed=false",
+  "tcgplayer_infinite_articles": "https://partner.tcgplayer.com/c/4931599/1830156/21018?subId1=api&trafcat=tcgplayer.com%2Fsearch%2Farticles&u=https%3A%2F%2Fwww.tcgplayer.com%2Fsearch%2Farticles%3FproductLineName%3Dmagic%26q%3DScavenger%2BRegent%2B%252F%252F%2BExude%2BToxin%2B%252F%252F%2BScavenger%2BRegent",
+  "tcgplayer_infinite_decks": "https://partner.tcgplayer.com/c/4931599/1830156/21018?subId1=api&trafcat=tcgplayer.com%2Fsearch%2Fdecks&u=https%3A%2F%2Fwww.tcgplayer.com%2Fsearch%2Fdecks%3FproductLineName%3Dmagic%26q%3DScavenger%2BRegent%2B%252F%252F%2BExude%2BToxin%2B%252F%252F%2BScavenger%2BRegent"
+ },
+ "released_at": "2025-04-11",
+ "reprint": false,
+ "reserved": false,
+ "rulings_uri": "https://api.scryfall.com/cards/9cf54062-7b5b-4e46-ae1e-fab7e419a9fa/rulings",
+ "scryfall_set_uri": "https://scryfall.com/sets/tdm?utm_source=api",
+ "scryfall_uri": "https://scryfall.com/card/tdm/379/scavenger-regent-exude-toxin-scavenger-regent?utm_source=api",
+ "security_stamp": "oval",
+ "set": "tdm",
+ "set_id": "1361ca81-1304-49a8-b2e6-e76a4aa4a8c3",
+ "set_name": "Tarkir: Dragonstorm",
+ "set_search_uri": "https://api.scryfall.com/cards/search?order=set&q=e%3Atdm&unique=prints",
+ "set_type": "expansion",
+ "set_uri": "https://api.scryfall.com/sets/1361ca81-1304-49a8-b2e6-e76a4aa4a8c3",
+ "story_spotlight": false,
+ "tcgplayer_id": 624731,
+ "textless": false,
+ "uri": "https://api.scryfall.com/cards/9cf54062-7b5b-4e46-ae1e-fab7e419a9fa",
+ "variation": false
+}

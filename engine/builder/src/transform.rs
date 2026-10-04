@@ -245,14 +245,6 @@ const GAME_IS_TAGS: &[(&str, &str)] = &[
     ("sega", "game_sega"),
 ];
 
-/// `is:` values that read a NESTED single field rather than a top-level boolean or an array, as
-/// `(card_is_tags key, outer blob key, inner key, value)`. Mirrors db_info.BOOLEAN_IS_TAGS'
-/// single-field-lookup entries; upstream expresses the same question as a SQL expression
-/// (`raw_card_blob->'preview'->>'source' = 'Scryfall'`), which a Rust builder has no equivalent
-/// of, so the one shape it actually uses gets its own small table instead of an expression
-/// evaluator.
-const FIELD_IS_TAGS: &[(&str, &str, &str, &str)] = &[("scryfallpreview", "preview", "source", "Scryfall")];
-
 /// Scryfall's set_type for products that are collectible objects rather than tournament-legal
 /// printings. Mirrors api/card_processing.py's MEMORABILIA_SET_TYPE.
 const MEMORABILIA_SET_TYPE: &str = "memorabilia";
@@ -1229,6 +1221,313 @@ fn commander_role_tags(card: &Map<String, Value>) -> Vec<&'static str> {
     tags
 }
 
+/// `is:bear` — "a 2/2 for two", and on api.scryfall.com not a creature test at all.
+///
+/// Measured 2026-10-04 by reading all 2,884 printings Scryfall returns (`unique=prints`, extras
+/// in) and simulating rules over the same day's `default_cards`: the FRONT's printed power is
+/// `2`, its printed toughness `2`, and the card's mana value 2 — 2,884 of 2,884 and nothing else.
+/// The rewrite this replaces (`t:creature pow=2 tou=2 cmc=2` over the merged row) answered 2,917:
+/// it lost the 2/2 Vehicles for two (High-Speed Hoverbike, Shadowed Caravel, Wurmwall Sweeper —
+/// no creature type), and it kept fourteen two-faced cards whose 2 power and 2 toughness are on
+/// DIFFERENT faces (Nezumi Graverobber is 2/1 and flips into a 4/2).
+pub const BEAR_IS_TAG: &str = "bear";
+
+/// `is:frenchvanilla` — a creature whose every line of rules text OPENS with a keyword ability.
+///
+/// Measured 2026-10-04 on all 3,946 printings Scryfall returns: the rule below is 3,946 of 3,946
+/// and nothing else, where the community `otag:french-vanilla` this replaces answered 4,508
+/// (23 missing, 585 extra). It is a test of the text's SHAPE, line by line, and each clause is
+/// what a card showed:
+///
+///   - the card's type line (every face's, joined) names a Creature, and the text is every
+///     face's joined by newlines — so an adventure, a transform back or a Treasure on a
+///     double-faced token's other side disqualifies (Twining Twins // Swift Spiral is out), and so
+///     does an EMPTY line anywhere but the end: `Snake // Zombie` ("Deathtouch" then nothing) is
+///     in, `Copy // Horror` (nothing, then "Flying") is out. No text at all is `is:vanilla`.
+///   - a line is its text with one trailing reminder removed, and must START with one of the
+///     card's keyword ABILITIES — Scryfall's `/catalog/keyword-abilities`, which is the card's own
+///     `keywords` less its `/catalog/keyword-actions`: Djinn of Fool's Fall ("Flying", then
+///     "Plot {3}{U}") is out because Scryfall files Plot under actions.
+///   - after that keyword: nothing; a mana cost (`Cycling {2}`, `Prototype {2}{U} — 3/2`); an
+///     unspaced em dash and anything (`Ward—Pay 2 life.`, `Escape—{3}{R}{G}, Exile three other
+///     cards from your graveyard.`); or a comma and more keywords (`Flying, protection from
+///     Demons and from Dragons`). So a keyword with a NUMBER or words after it at the start of a
+///     line is out — `Bloodthirst 2`, `Toxic 1`, `Affinity for artifacts`, and `Protection from
+///     white` alone on a line (Black Knight, 23 printings) — as is a `;` list (Mesa Pegasus), an
+///     ability word (`Landfall — …`) and a line that is only reminder text (Vault Skirge).
+///   - a reversible card's faces are each the whole card, so every one must be a creature:
+///     tdm/379's second face is its Omen half carrying the creature's text.
+pub const FRENCH_VANILLA_IS_TAG: &str = "frenchvanilla";
+
+/// `is:modal` — the card offers modes. Measured 2026-10-04 on all 2,596 printings Scryfall
+/// returns: a bullet (`•`) anywhere in its text, the Spree keyword (whose modes are `+ {cost} —`
+/// lines) or Bloomburrow's Seasons (`{P} worth of modes`) — 2,596 of 2,596 and nothing else.
+/// `otag:modal`, which this replaces, missed 40 printings and added 12.
+pub const MODAL_IS_TAG: &str = "modal";
+
+/// `is:gainland` — fifteen cards by NAME: Khans of Tarkir's ten and Zendikar's five Refuges.
+///
+/// Measured 2026-10-04 (244 printings, exactly these names). It is a list and not a text rule:
+/// every card with their exact text — a land, "enters tapped", "you gain 1 life", "{T}: Add {X}
+/// or {Y}." — is one of the fifteen or one of fifteen newer lands Scryfall does not count
+/// (Stark Industries, Mutant Town, Hell's Kitchen …). `otag:gainland`, which this replaces,
+/// answered 299 printings of 43 cards.
+pub const GAINLAND_IS_TAG: &str = "gainland";
+const GAINLANDS: &[&str] = &[
+    "Akoum Refuge",
+    "Bloodfell Caves",
+    "Blossoming Sands",
+    "Dismal Backwater",
+    "Graypelt Refuge",
+    "Jungle Hollow",
+    "Jwar Isle Refuge",
+    "Kazandu Refuge",
+    "Rugged Highlands",
+    "Scoured Barrens",
+    "Sejiri Refuge",
+    "Swiftwater Cliffs",
+    "Thornwood Falls",
+    "Tranquil Cove",
+    "Wind-Scarred Crag",
+];
+
+/// `is:scryfallpreview` — the cards Scryfall itself previewed: 7 printings on 2026-10-04.
+///
+/// NOT `preview.source = "Scryfall"`, which is what this tag read (and upstream's does): 325
+/// printings carry that source today, 321 of them the 2026 `slz` set, whose `source_uri` is the
+/// set page or nothing, and Scryfall's answer holds none of those. The four that are in it carry
+/// the card's OWN page as the source (`https://scryfall.com/card/…`: war/165, war/176, sta/23,
+/// h1r/7); the other three carry no `preview` object at all and are listed here by set and
+/// collector number — the two 2018 previews and the List reprint of one of them.
+pub const SCRYFALL_PREVIEW_IS_TAG: &str = "scryfallpreview";
+const SCRYFALL_PREVIEW_CARD_PAGE: &str = "https://scryfall.com/card/";
+const SCRYFALL_PREVIEWS_WITHOUT_A_PREVIEW: &[(&str, &str)] = &[("uma", "50"), ("grn", "103"), ("plst", "GRN-103")];
+
+/// Scryfall's `/catalog/keyword-actions`, lowercased (80 on 2026-10-04) — the members of a card's
+/// `keywords` that are not keyword ABILITIES, for [`FRENCH_VANILLA_IS_TAG`]. Listed as the
+/// exclusion, not the 223 abilities as the inclusion, so a keyword ability printed after this
+/// list was written still opens a line.
+const KEYWORD_ACTIONS: &[&str] = &[
+    "abandon",
+    "activate",
+    "adapt",
+    "airbend",
+    "amass",
+    "assemble",
+    "assimilate",
+    "attach",
+    "behold",
+    "blight",
+    "bolster",
+    "cast",
+    "clash",
+    "cloak",
+    "collect evidence",
+    "conjure",
+    "connive",
+    "convert",
+    "counter",
+    "create",
+    "destroy",
+    "detain",
+    "discard",
+    "discover",
+    "double",
+    "draft from a spellbook",
+    "earthbend",
+    "empower jace",
+    "endure",
+    "exchange",
+    "exert",
+    "exile",
+    "explore",
+    "face a dilemma",
+    "fateseal",
+    "fight",
+    "food",
+    "forage",
+    "goad",
+    "harness",
+    "heal",
+    "heist",
+    "incorporate",
+    "incubate",
+    "investigate",
+    "learn",
+    "manifest",
+    "manifest dread",
+    "meld",
+    "mill",
+    "monstrosity",
+    "open an attraction",
+    "planeswalk",
+    "play",
+    "plot",
+    "populate",
+    "prepared",
+    "proliferate",
+    "recruit",
+    "regenerate",
+    "reveal",
+    "role token",
+    "roll to visit your attractions",
+    "sacrifice",
+    "scry",
+    "seek",
+    "set in motion",
+    "shuffle",
+    "support",
+    "surveil",
+    "suspect",
+    "tap",
+    "time travel",
+    "transform",
+    "treasure",
+    "triple",
+    "untap",
+    "venture into the dungeon",
+    "vote",
+    "waterbend",
+];
+
+/// Every face of the card as Scryfall sent it, or none for a card without `card_faces`.
+fn face_objects(card: &Map<String, Value>) -> Vec<&Map<String, Value>> {
+    card.get("card_faces")
+        .and_then(Value::as_array)
+        .map(|f| f.iter().filter_map(Value::as_object).collect())
+        .unwrap_or_default()
+}
+
+/// The card's whole rules text: its own `oracle_text`, or every face's joined by a newline on
+/// the layouts that carry the text on their faces alone.
+fn whole_oracle_text(card: &Map<String, Value>) -> String {
+    match card.get("oracle_text").and_then(Value::as_str) {
+        Some(text) => text.to_owned(),
+        None => face_objects(card)
+            .iter()
+            .map(|f| f.get("oracle_text").and_then(Value::as_str).unwrap_or(""))
+            .collect::<Vec<_>>()
+            .join("\n"),
+    }
+}
+
+/// See [`BEAR_IS_TAG`]. A key the card does not carry itself is read off its first face.
+fn is_bear(card: &Map<String, Value>) -> bool {
+    let faces = face_objects(card);
+    let field =
+        |key: &str| card.get(key).filter(|v| !v.is_null()).or_else(|| faces.first().and_then(|f| f.get(key)));
+    field("power").and_then(Value::as_str) == Some("2")
+        && field("toughness").and_then(Value::as_str) == Some("2")
+        && field("cmc").and_then(Value::as_f64) == Some(2.0)
+}
+
+/// A line with its one trailing reminder — ` (…)` holding no other closing parenthesis — removed.
+fn without_trailing_reminder(line: &str) -> &str {
+    let Some(body) = line.strip_suffix(')') else { return line };
+    let from = body.rfind(')').map_or(0, |i| i + 1);
+    match body[from..].find(" (") {
+        Some(i) => &line[..from + i],
+        None => line,
+    }
+}
+
+/// The length of a leading mana cost — a space, then one or more `{…}` symbols — or 0.
+fn leading_cost_len(rest: &str) -> usize {
+    let Some(mut tail) = rest.strip_prefix(' ') else { return 0 };
+    let mut len = 0;
+    while let Some(inner) = tail.strip_prefix('{') {
+        match inner.find('}') {
+            Some(close) if close > 0 => {
+                len += close + 2;
+                tail = &inner[close + 1..];
+            }
+            _ => break,
+        }
+    }
+    if len == 0 { 0 } else { len + 1 }
+}
+
+/// See [`FRENCH_VANILLA_IS_TAG`].
+fn is_french_vanilla(card: &Map<String, Value>) -> bool {
+    let faces = face_objects(card);
+    let type_of = |obj: &Map<String, Value>| obj.get("type_line").and_then(Value::as_str).unwrap_or("").to_owned();
+    let creature = match type_of(card) {
+        own if !own.is_empty() => own.contains("Creature"),
+        _ => faces.iter().any(|f| type_of(f).contains("Creature")),
+    };
+    let reversible = card.get("layout").and_then(Value::as_str) == Some("reversible_card");
+    if !creature || (reversible && !faces.iter().all(|f| type_of(f).contains("Creature"))) {
+        return false;
+    }
+    let mut abilities: Vec<String> = str_array(card, "keywords")
+        .iter()
+        .map(|k| k.to_lowercase())
+        .filter(|k| !KEYWORD_ACTIONS.contains(&k.as_str()))
+        .collect();
+    abilities.sort_by_key(|k| std::cmp::Reverse(k.len()));
+    let opens_with_ability = |text: &str| abilities.iter().find(|k| text.starts_with(k.as_str())).map(|k| k.len());
+    let text = whole_oracle_text(card);
+    let text = text.strip_suffix('\n').unwrap_or(&text);
+    if abilities.is_empty() || text.is_empty() {
+        return false;
+    }
+    text.split('\n').all(|line| {
+        let line = without_trailing_reminder(line).to_lowercase();
+        let Some(keyword) = opens_with_ability(&line) else { return false };
+        let rest = &line[keyword..];
+        let cost = leading_cost_len(rest);
+        let tail = &rest[cost..];
+        if tail.is_empty() || tail.starts_with('\u{2014}') || (cost > 0 && tail.starts_with(" \u{2014} ")) {
+            return true;
+        }
+        match tail.strip_prefix(',') {
+            Some(more) => more.split(',').all(|piece| opens_with_ability(piece.trim()).is_some()),
+            None => false,
+        }
+    })
+}
+
+/// See [`MODAL_IS_TAG`].
+fn is_modal(card: &Map<String, Value>) -> bool {
+    let text = whole_oracle_text(card);
+    text.contains('\u{2022}') || text.contains("{P} worth of modes") || array_contains(card, "keywords", "Spree")
+}
+
+/// See [`SCRYFALL_PREVIEW_IS_TAG`].
+fn is_scryfall_preview(card: &Map<String, Value>) -> bool {
+    let preview = |key: &str| card.get("preview").and_then(|p| p.get(key)).and_then(Value::as_str);
+    if preview("source") == Some("Scryfall")
+        && preview("source_uri").is_some_and(|uri| uri.starts_with(SCRYFALL_PREVIEW_CARD_PAGE))
+    {
+        return true;
+    }
+    let (set, number) = (s(card, "set").unwrap_or_default(), s(card, "collector_number").unwrap_or_default());
+    SCRYFALL_PREVIEWS_WITHOUT_A_PREVIEW.iter().any(|(s, n)| *s == set && *n == number)
+}
+
+/// The CLASS tags a printing carries — the `is:` values that are a rule over the card as
+/// Scryfall sent it rather than one of its fields. Decided once per printing from the whole
+/// card, like [`commander_role_tags`], because each reads the faces separately.
+fn class_tags(card: &Map<String, Value>) -> Vec<&'static str> {
+    let mut tags = Vec::new();
+    if is_bear(card) {
+        tags.push(BEAR_IS_TAG);
+    }
+    if is_french_vanilla(card) {
+        tags.push(FRENCH_VANILLA_IS_TAG);
+    }
+    if is_modal(card) {
+        tags.push(MODAL_IS_TAG);
+    }
+    if s(card, "name").is_some_and(|name| GAINLANDS.contains(&name.as_str())) {
+        tags.push(GAINLAND_IS_TAG);
+    }
+    if is_scryfall_preview(card) {
+        tags.push(SCRYFALL_PREVIEW_IS_TAG);
+    }
+    tags
+}
+
 /// The layouts that are two pieces of cardboard, for [`hybrid_cost_of`]. A split, adventure or
 /// flip card is ONE face with two halves printed on it, so its whole cost counts; a transform,
 /// modal-DFC, reversible or `prepare` card has a genuine back, and only the front counts.
@@ -1792,14 +2091,6 @@ fn build_draft(card: &Map<String, Value>, card_name: &str) -> Result<RowDraft, T
                 .map(|(_, tag)| (*tag).to_owned()),
         )
         .chain(meld_is_tag(card).map(str::to_owned))
-        .chain(
-            FIELD_IS_TAGS
-                .iter()
-                .filter(|(_, outer, inner, want)| {
-                    card.get(*outer).and_then(|v| v.get(*inner)).and_then(Value::as_str) == Some(*want)
-                })
-                .map(|(tag, _, _, _)| (*tag).to_owned()),
-        )
         .collect();
 
     // Line 197: edhrec_rank passes through (bulk_upsert casts to integer).
@@ -2354,6 +2645,7 @@ pub fn transform_row(bulk_card: &Value, is_canonical: bool) -> Result<Option<Row
         // Likewise the commander classes and `is:spell`: the merged row is every face's union,
         // and who can lead a deck or be cast is a question about ONE face.
         row.set_roles(&commander_role_tags(card));
+        row.set_roles(&class_tags(card));
         return Ok(Some(row));
     }
 
@@ -2370,6 +2662,7 @@ pub fn transform_row(bulk_card: &Value, is_canonical: bool) -> Result<Option<Row
     row.is_canonical = is_canonical;
     row.set_hybrid(has_hybrid_cost(card, None));
     row.set_roles(&commander_role_tags(card));
+    row.set_roles(&class_tags(card));
     Ok(Some(row))
 }
 

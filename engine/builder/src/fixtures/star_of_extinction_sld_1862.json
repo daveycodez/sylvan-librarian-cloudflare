@@ -1,0 +1,136 @@
+{
+ "artist": "Joshua Raphael",
+ "artist_ids": [
+  "553b2a73-780f-414b-b2d7-3b7888821082"
+ ],
+ "booster": false,
+ "border_color": "borderless",
+ "card_back_id": "0aeebaf5-8c7d-4636-9e82-8c27447861f7",
+ "cardmarket_id": 825260,
+ "cmc": 7.0,
+ "collector_number": "1862",
+ "color_identity": [
+  "R"
+ ],
+ "colors": [
+  "R"
+ ],
+ "digital": false,
+ "edhrec_rank": 3878,
+ "finishes": [
+  "nonfoil",
+  "foil"
+ ],
+ "flavor_name": "Meteorfall",
+ "flavor_text": "\"What would happen if there was an injury that threatened the very life of the planet?\"",
+ "foil": true,
+ "frame": "2015",
+ "frame_effects": [
+  "inverted"
+ ],
+ "full_art": false,
+ "game_changer": false,
+ "games": [
+  "paper"
+ ],
+ "highres_image": true,
+ "id": "4fdb466a-0a48-424a-b835-43c7980a95b4",
+ "illustration_id": "e4a7b436-bd48-424b-8257-3453f3b2ba7d",
+ "image_status": "highres_scan",
+ "image_updated_at": "2026-09-13T07:12:49Z",
+ "image_uris": {
+  "art": "https://cards.scryfall.io/art/front/4/f/4fdb466a-0a48-424a-b835-43c7980a95b4.webp?1789283569",
+  "art_crop": "https://cards.scryfall.io/art_crop/front/4/f/4fdb466a-0a48-424a-b835-43c7980a95b4.jpg?1789283569",
+  "border_crop": "https://cards.scryfall.io/border_crop/front/4/f/4fdb466a-0a48-424a-b835-43c7980a95b4.jpg?1789283569",
+  "crop": "https://cards.scryfall.io/crop/front/4/f/4fdb466a-0a48-424a-b835-43c7980a95b4.webp?1789283569",
+  "display": "https://cards.scryfall.io/display/front/4/f/4fdb466a-0a48-424a-b835-43c7980a95b4.webp?1789283569",
+  "grid": "https://cards.scryfall.io/grid/front/4/f/4fdb466a-0a48-424a-b835-43c7980a95b4.webp?1789283569",
+  "large": "https://cards.scryfall.io/large/front/4/f/4fdb466a-0a48-424a-b835-43c7980a95b4.jpg?1789283569",
+  "normal": "https://cards.scryfall.io/normal/front/4/f/4fdb466a-0a48-424a-b835-43c7980a95b4.jpg?1789283569",
+  "png": "https://cards.scryfall.io/png/front/4/f/4fdb466a-0a48-424a-b835-43c7980a95b4.png?1789283569",
+  "small": "https://cards.scryfall.io/small/front/4/f/4fdb466a-0a48-424a-b835-43c7980a95b4.jpg?1789283569",
+  "thumb": "https://cards.scryfall.io/thumb/front/4/f/4fdb466a-0a48-424a-b835-43c7980a95b4.webp?1789283569"
+ },
+ "keywords": [],
+ "lang": "en",
+ "layout": "normal",
+ "legalities": {
+  "alchemy": "not_legal",
+  "brawl": "legal",
+  "commander": "legal",
+  "competitivebrawl": "legal",
+  "duel": "legal",
+  "future": "not_legal",
+  "gladiator": "legal",
+  "historic": "legal",
+  "legacy": "legal",
+  "modern": "legal",
+  "oathbreaker": "legal",
+  "oldschool": "not_legal",
+  "pauper": "not_legal",
+  "paupercommander": "not_legal",
+  "penny": "legal",
+  "pioneer": "legal",
+  "predh": "not_legal",
+  "premodern": "not_legal",
+  "standard": "not_legal",
+  "standardbrawl": "not_legal",
+  "timeless": "legal",
+  "tlr": "not_legal",
+  "vintage": "legal"
+ },
+ "mana_cost": "{5}{R}{R}",
+ "multiverse_ids": [],
+ "name": "Star of Extinction",
+ "nonfoil": true,
+ "object": "card",
+ "oracle_id": "48220e6c-5752-46e0-9b7f-f0eef274d929",
+ "oracle_text": "Destroy target land. Star of Extinction deals 20 damage to each creature and each planeswalker.",
+ "oversized": false,
+ "penny_rank": 4795,
+ "prices": {
+  "eur": "7.88",
+  "eur_foil": "6.76",
+  "tix": null,
+  "usd": "8.68",
+  "usd_etched": null,
+  "usd_foil": null
+ },
+ "printed_text": "Destroy target land. Meteorfall deals 20 damage to each creature and each planeswalker.",
+ "prints_search_uri": "https://api.scryfall.com/cards/search?order=released&q=oracleid%3A48220e6c-5752-46e0-9b7f-f0eef274d929&unique=prints",
+ "promo": false,
+ "promo_types": [
+  "universesbeyond",
+  "ffvii"
+ ],
+ "purchase_uris": {
+  "cardhoarder": "https://www.cardhoarder.com/cards?affiliate_id=scryfall&data%5Bsearch%5D=Star+of+Extinction&ref=card-profile&utm_campaign=affiliate&utm_medium=card&utm_source=scryfall",
+  "cardmarket": "https://www.cardmarket.com/en/Magic/Products?idProduct=825260&referrer=scryfall&utm_campaign=card_prices&utm_medium=text&utm_source=scryfall",
+  "tcgplayer": "https://partner.tcgplayer.com/c/4931599/1830156/21018?subId1=api&u=https%3A%2F%2Fwww.tcgplayer.com%2Fproduct%2F632104%3Fpage%3D1"
+ },
+ "rarity": "rare",
+ "related_uris": {
+  "edhrec": "https://edhrec.com/route/?cc=Star+of+Extinction",
+  "tcgplayer_infinite_articles": "https://partner.tcgplayer.com/c/4931599/1830156/21018?subId1=api&trafcat=tcgplayer.com%2Fsearch%2Farticles&u=https%3A%2F%2Fwww.tcgplayer.com%2Fsearch%2Farticles%3FproductLineName%3Dmagic%26q%3DStar%2Bof%2BExtinction",
+  "tcgplayer_infinite_decks": "https://partner.tcgplayer.com/c/4931599/1830156/21018?subId1=api&trafcat=tcgplayer.com%2Fsearch%2Fdecks&u=https%3A%2F%2Fwww.tcgplayer.com%2Fsearch%2Fdecks%3FproductLineName%3Dmagic%26q%3DStar%2Bof%2BExtinction"
+ },
+ "released_at": "2025-06-09",
+ "reprint": true,
+ "reserved": false,
+ "rulings_uri": "https://api.scryfall.com/cards/4fdb466a-0a48-424a-b835-43c7980a95b4/rulings",
+ "scryfall_set_uri": "https://scryfall.com/sets/sld?utm_source=api",
+ "scryfall_uri": "https://scryfall.com/card/sld/1862/star-of-extinction?utm_source=api",
+ "security_stamp": "triangle",
+ "set": "sld",
+ "set_id": "4d92a8a7-ccb0-437d-abdc-9d70fc5ed672",
+ "set_name": "Secret Lair Drop",
+ "set_search_uri": "https://api.scryfall.com/cards/search?order=set&q=e%3Asld&unique=prints",
+ "set_type": "box",
+ "set_uri": "https://api.scryfall.com/sets/4d92a8a7-ccb0-437d-abdc-9d70fc5ed672",
+ "story_spotlight": false,
+ "tcgplayer_id": 632104,
+ "textless": false,
+ "type_line": "Sorcery",
+ "uri": "https://api.scryfall.com/cards/4fdb466a-0a48-424a-b835-43c7980a95b4",
+ "variation": false
+}

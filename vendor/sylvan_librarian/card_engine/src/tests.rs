@@ -17766,6 +17766,80 @@ fn is_atypical_is_the_same_class_the_prefer_ranks_by() {
     assert_eq!(ids(&data, atypical()), vec![3]);
 }
 
+/// The members of the atypical class that only reading the WHOLE class shows — api.scryfall.com's
+/// `is:atypical`, 30,837 printings, 2026-10-04 (see `PreferClassIds`): a gold border, an oversized
+/// card, a masterpiece set, the colorshifted frame, seven promo treatments on any finish, and
+/// ripple foil where the printing has no nonfoil finish. Each alone moves the one plain printing
+/// into the class, for the filter and for the prefer; ripple foil beside a nonfoil finish does not.
+#[test]
+fn the_atypical_class_has_the_members_a_prefer_probe_could_not_see() {
+    fn class_of(data: &CardData) -> (Vec<u128>, u128) {
+        let bytes = rkyv::to_bytes::<Error>(data).expect("serialize");
+        let a = rkyv::access::<Archived<CardData>, Error>(&bytes).expect("access");
+        let mut filter = FilterExpr::Atypical(super::PreferClassIds::UNBOUND);
+        filter.bind(&a.coll_vocab, &a.coll_vocab_sorted, &a.artist_vocab, &a.artist_vocab_collated, &a.artist_entities, &a.mana_vocab, &a.indexes.flavor, &a.strings);
+        let (_, page) = run_query(&QueryCtx::from(a), &mut filter, None, "printing", "default", "name", "asc", 100, 0);
+        let mut out: Vec<u128> = page.iter().map(|r| u128::from(r.1.scryfall_id)).collect();
+        out.sort_unstable();
+        (out, representative(data, "atypical", "name", "asc"))
+    }
+    // Four plain printings: the fixture with its three markers taken off.
+    let plain = || {
+        let mut data = class_prefer_store();
+        let (black, legendary) = (data.printings[0].card_border_id, data.printings[0].compat.frame_effects[0]);
+        for p in &mut data.printings {
+            p.card_border_id = black;
+            p.compat.frame_effects = vec![legendary];
+            p.compat.promo_types = vec![];
+            p.compat.finishes = FINISH_NONFOIL | FINISH_FOIL;
+        }
+        data
+    };
+    let word = |data: &mut CardData, text: &str| -> u16 {
+        data.coll_vocab.push(text.to_owned());
+        (data.coll_vocab.len() - 1) as u16
+    };
+    assert_eq!(class_of(&plain()), (vec![], 1), "nothing atypical: the prefer keeps the default pick");
+
+    let mut data = plain();
+    data.strings.push("gold".to_owned());
+    data.printings[2].card_border_id = (data.strings.len() - 1) as u32;
+    assert_eq!(class_of(&data), (vec![3], 3), "a gold border");
+
+    let mut data = plain();
+    data.printings[2].compat.flags = super::COMPAT_OVERSIZED;
+    assert_eq!(class_of(&data), (vec![3], 3), "an oversized card");
+
+    let mut data = plain();
+    let masterpiece = word(&mut data, "masterpiece");
+    data.printings[2].compat.set_type_id = masterpiece;
+    assert_eq!(class_of(&data), (vec![3], 3), "a masterpiece set");
+
+    let mut data = plain();
+    let colorshifted = word(&mut data, "colorshifted");
+    data.printings[2].compat.frame_effects.push(colorshifted);
+    assert_eq!(class_of(&data), (vec![3], 3), "the colorshifted frame");
+
+    for treatment in ["playtest", "serialized", "doublerainbow", "galaxyfoil", "rainbowfoil", "thick", "upsidedown"] {
+        let mut data = plain();
+        let id = word(&mut data, treatment);
+        data.printings[2].compat.promo_types = vec![id];
+        assert_eq!(class_of(&data), (vec![3], 3), "{treatment}, on a printing that also comes nonfoil");
+    }
+
+    // Ripple foil is the surge-foil shape: a treatment where the printing has no nonfoil finish
+    // (foil-only in Modern Horizons 3, etched-only in its commander set), the set's ordinary
+    // word beside one.
+    let mut data = plain();
+    let ripplefoil = word(&mut data, "ripplefoil");
+    for p in &mut data.printings[1..] {
+        p.compat.promo_types = vec![ripplefoil];
+    }
+    data.printings[2].compat.finishes = FINISH_FOIL;
+    data.printings[3].compat.finishes = super::FINISH_ETCHED;
+    assert_eq!(class_of(&data), (vec![3, 4], 3));
+}
+
 /// `prefer:borderless` is "the best-looking printing that is still this card": Najeela's shape.
 /// Four printings in default order — the plain original, a borderless CROSSOVER (a flavor
 /// name: Spider-Gwen), an etched inverted same-named variant, and a same-named borderless one
@@ -17911,9 +17985,10 @@ fn prefer_borderless_ranks_a_text_box_above_full_art_inside_a_tier() {
 
 /// `colorshifted` — the Planar Chaos timeshifted frame — is a tier of its own, the LAST one above
 /// plain: below borderless and below every other frame variant. Essence Warden's shape: seven
-/// printings, none borderless, and plc/145 the one that looks different. The tier belongs to
-/// `prefer:borderless` alone — `prefer:atypical` keeps Scryfall's measured class, which does
-/// not count the frame.
+/// printings, none borderless, and plc/145 the one that looks different. The TIER belongs to
+/// `prefer:borderless` alone; the frame is in Scryfall's atypical class too (64 of 64, and
+/// `!"Essence Warden" prefer:atypical` answers plc/145 there — 2026-10-04), which an earlier
+/// reading of that class through prefer picks had missed.
 #[test]
 fn prefer_borderless_ranks_colorshifted_last_among_the_variants() {
     let mut data = class_prefer_store();
@@ -17946,9 +18021,9 @@ fn prefer_borderless_ranks_colorshifted_last_among_the_variants() {
     data.printings[3].card_border_id = borderless;
     assert_eq!(representative(&data, "borderless", "name", "asc"), 4, "borderless over colorshifted");
     data.printings[3].card_border_id = black;
-    // Not the atypical class: with no other variant in the store, `prefer:atypical` has no member
-    // to prefer and falls back to the default pick, not the colorshifted id 3.
-    assert_eq!(representative(&data, "atypical", "name", "asc"), 1, "colorshifted is not atypical");
+    // The atypical class holds it too: with no other variant in the store, `prefer:atypical`
+    // answers the colorshifted id 3, as api.scryfall.com does for Essence Warden's plc/145.
+    assert_eq!(representative(&data, "atypical", "name", "asc"), 3, "colorshifted is atypical");
     assert_eq!(representative(&data, "default_frame", "name", "asc"), 1);
 }
 

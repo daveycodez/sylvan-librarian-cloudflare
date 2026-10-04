@@ -132,7 +132,7 @@ describe("the restriction rule", () => {
 		expect(at(and(list, isTag("extra")))).toBeNull();
 	});
 
-	test("a WIDENED query trusts sole hints alone: include_multilingual, `lang:`, is:localizedname/flavorname", () => {
+	test("a WIDENED query trusts sole hints alone: include_multilingual, `lang:`, is:localizedname", () => {
 		const list = gated(or(bang("bolt"), bang("brainstorm")));
 		const sole = gated(or(bang("bolt"), bang("counterspell")));
 		expect(cardRestrictionOf(JSON.stringify(list), N, hint, true)).toBeNull();
@@ -145,10 +145,13 @@ describe("the restriction rule", () => {
 				rhs: { node_type: "StringValueNode", kwargs: { value: "ja" } },
 			},
 		};
-		for (const widening of [lang, isTag("localizedname"), not(isTag("flavorname"))]) {
+		for (const widening of [lang, isTag("localizedname"), not(isTag("localizedname"))]) {
 			expect(at(and(list, widening))).toBeNull();
 			expect(at(and(sole, widening))?.partitions).toEqual([2, 7]);
 		}
+		// `is:flavorname` does NOT widen (measured 2026-10-04: 686 printings on api.scryfall.com of
+		// the 742 rows of every language that carry one), so a served hint under it is still exact.
+		expect(at(and(list, isTag("flavorname")))?.partitions).toEqual([2, 4]);
 	});
 
 	test("the whole corpus is no restriction; a tree that does not parse is none", () => {

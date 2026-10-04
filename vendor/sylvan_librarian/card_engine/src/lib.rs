@@ -10257,6 +10257,36 @@ fn narrow_rec(
 /// the two `prefer:default` misses are the two no-prefer misses, Lightning Bolt and Seething
 /// Song, where this store's default order already differs from Scryfall's.
 ///
+/// THE CLASS, READ WHOLE (2026-10-04, LOCAL PATCH, Cloudflare port). That probe saw the class
+/// through the ONE printing a prefer picks, so every member a better-ranked member hides was
+/// invisible to it. `is:atypical` answers the class itself — 30,837 printings with
+/// `unique=prints` and extras in — and read against the same day's bulk file the rule above was
+/// 27,369 of them and nothing else: no wrong member, 3,468 missing. What they are, each a field
+/// every one of whose printings is in Scryfall's list:
+///
+///   - `border_color: gold` (1,373 of 1,373 — the World Championship decks and Collectors'
+///     Edition) and `oversized` (726 of 726 — planes, schemes, the oversized commanders);
+///   - set type `masterpiece` (1,780 of 1,780);
+///   - frame effect `colorshifted` (64 of 64) — the note on `colorshifted` below used to say
+///     Scryfall's class does not count it, which was the prefer probe not seeing it;
+///   - promo types `playtest` (951), `serialized` (299), `doublerainbow` (289), `galaxyfoil`
+///     (376), `rainbowfoil` (193), `thick` (97) and `upsidedown`, on any finish;
+///   - `ripplefoil` on a printing with no nonfoil finish (37 of 37), the surge-foil shape:
+///     beside a nonfoil finish it is 39 of 316.
+///
+/// AND THE PREFER RANKS BY THE SAME WIDER CLASS: thirteen cards whose only atypical printings
+/// are in those additions were asked `prefer:atypical` — Ichor Wellspring answers brr/21, Fire-Lit
+/// Thicket exp/29, Essence Warden plc/145, Sinew Sliver plc/30, and with extras in Fallen Askari
+/// its gold-bordered wc97/js59 — thirteen of thirteen the added printing, where the rule above
+/// kept the default one.
+///
+/// 30,784 of 30,837 now and still nothing Scryfall lacks. NOT EXACT: 53 printings are in
+/// Scryfall's class by no field the bulk data carries — 43 Secret Lair printings in five drops
+/// (sld/254–258, 585, 821–824, 904, 1657–1666, 2121–2132, 2514–2519, 2523, 7039, 7126, 7128, whose
+/// frame, border, finishes and promo types are those of 558 Secret Lair printings that are NOT
+/// in it), three plastic `wmkm` tokens, slp/15, one reversible card, and five printings newer
+/// than the bulk file.
+///
 /// `prefer:universesbeyond` / `notuniversesbeyond` read the `universesbeyond` `is:` tag, which
 /// is `promo_types` membership (see db-info ARRAY_IS_TAGS): 99 and 94 of 100 red instants agree,
 /// the misses again order differences inside the class.
@@ -10268,6 +10298,13 @@ pub(crate) struct PreferClassIds {
     promo_types: [u16; 4],
     /// `promo_types` member that counts only on a foil-only printing.
     surgefoil: u16,
+    /// `promo_types` members that are a treatment on ANY finish: playtest, serialized,
+    /// doublerainbow, galaxyfoil, rainbowfoil, thick, upsidedown.
+    treatments: [u16; 7],
+    /// `promo_types` member that counts on a printing with no nonfoil finish.
+    ripplefoil: u16,
+    /// `CompatFields.set_type_id` for `masterpiece`.
+    masterpiece: u16,
     /// `Printing.card_frame_data` member "Future" (the builder title-cases the frame).
     future_frame: u16,
     /// `Printing.card_is_tags` member `universesbeyond`.
@@ -10276,13 +10313,15 @@ pub(crate) struct PreferClassIds {
     /// above every non-English one, so a Japanese-only promo answers only under `lang:ja`.
     lang_en: u16,
     /// `CompatFields.frame_effects` member `colorshifted` — the Planar Chaos timeshifted frame.
-    /// `prefer:borderless`'s OWN tier, the last one above plain, and NOT part of the atypical
-    /// class: Scryfall's measured class does not count it, and `is:atypical` must keep agreeing.
+    /// `prefer:borderless`'s OWN tier, the last one above plain; in the atypical class too (64 of
+    /// 64 on api.scryfall.com), which `printing_is_atypical` adds beside the frame variants and
+    /// `printing_is_frame_variant` — what the borderless ladder reads — does not.
     colorshifted: u16,
     /// `Printing.card_frame_data` members "1997" and "1993" — the retro frame (Secret Lair and
     /// Time Spiral Remastered reprints, the retro Booster Fun sheets) and the original Alpha-to-
     /// Revised frame it descends from. `prefer:borderless`'s bottom variant tier, below
-    /// colorshifted; not in the atypical class for the same reason.
+    /// colorshifted; and NOT in the atypical class (the 1997 frame is 1,675 of 12,316 printings
+    /// in Scryfall's `is:atypical`, each of those by another member).
     retro_frame: u16,
     frame_1993: u16,
     /// `CompatFields.frame_effects` member `showcase`, on its own — the same id `frame_effects`
@@ -10313,6 +10352,9 @@ impl PreferClassIds {
         frame_effects: [VOCAB_NONE; 5],
         promo_types: [VOCAB_NONE; 4],
         surgefoil: VOCAB_NONE,
+        treatments: [VOCAB_NONE; 7],
+        ripplefoil: VOCAB_NONE,
+        masterpiece: VOCAB_NONE,
         future_frame: VOCAB_NONE,
         universesbeyond: VOCAB_NONE,
         lang_en: VOCAB_NONE,
@@ -10334,6 +10376,17 @@ impl PreferClassIds {
             frame_effects: [id("inverted"), id("showcase"), id("extendedart"), id("etched"), id("shatteredglass")],
             promo_types: [id("boosterfun"), id("datestamped"), id("stamped"), id("embossed")],
             surgefoil: id("surgefoil"),
+            treatments: [
+                id("playtest"),
+                id("serialized"),
+                id("doublerainbow"),
+                id("galaxyfoil"),
+                id("rainbowfoil"),
+                id("thick"),
+                id("upsidedown"),
+            ],
+            ripplefoil: id("ripplefoil"),
+            masterpiece: id("masterpiece"),
             future_frame: id("Future"),
             universesbeyond: id("universesbeyond"),
             lang_en: id("en"),
@@ -10357,12 +10410,25 @@ pub(crate) fn printing_is_atypical(p: &APrinting, ids: &PreferClassIds, strings:
     if printing_is_frame_variant(p, ids, strings) {
         return true;
     }
-    if ids.promo_types.iter().any(|&pt| has(&p.compat.promo_types, pt)) {
+    if ids.promo_types.iter().chain(ids.treatments.iter()).any(|&pt| has(&p.compat.promo_types, pt)) {
+        return true;
+    }
+    // The members only the whole class shows (see `PreferClassIds`): a gold border, an oversized
+    // card, a masterpiece set, the colorshifted frame.
+    if compat_flag(&p.compat, COMPAT_OVERSIZED)
+        || str_at(strings, u32::from(p.card_border_id)) == Some("gold")
+        || (ids.masterpiece != VOCAB_NONE && u16::from(p.compat.set_type_id) == ids.masterpiece)
+        || has(&p.compat.frame_effects, ids.colorshifted)
+    {
         return true;
     }
     // Surge foil is a variant only where it is the printing's ONLY finish — a set's ordinary
-    // nonfoil rows carry the same promo_type and are the default frame.
-    p.compat.finishes & FINISH_MASK == FINISH_FOIL && has(&p.compat.promo_types, ids.surgefoil)
+    // nonfoil rows carry the same promo_type and are the default frame. Ripple foil likewise,
+    // on any printing with no nonfoil finish (Modern Horizons 3's are foil, its commander's
+    // etched).
+    let finishes = p.compat.finishes & FINISH_MASK;
+    (finishes == FINISH_FOIL && has(&p.compat.promo_types, ids.surgefoil))
+        || (finishes & FINISH_NONFOIL == 0 && has(&p.compat.promo_types, ids.ripplefoil))
 }
 
 /// The FRAME half of the atypical class: a border, a frame effect, full art, textless or the
@@ -10606,8 +10672,8 @@ fn borderless_steps_down(p: &APrinting, siblings: &[APrinting], ids: &PreferClas
         })
 }
 
-/// The Planar Chaos timeshifted frame. A tier of `prefer:borderless` alone — see
-/// `PreferClassIds::colorshifted` for why it is not in the atypical class.
+/// The Planar Chaos timeshifted frame. A TIER of `prefer:borderless` alone; `printing_is_atypical`
+/// counts the frame too — see `PreferClassIds::colorshifted`.
 fn printing_is_colorshifted(p: &APrinting, ids: &PreferClassIds) -> bool {
     ids.colorshifted != VOCAB_NONE && p.compat.frame_effects.iter().any(|v| u16::from(*v) == ids.colorshifted)
 }

@@ -21,13 +21,7 @@ import { describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import * as dbInfo from "../../src/parser/db-info";
-import {
-	ARRAY_IS_TAGS,
-	BOOLEAN_IS_TAGS,
-	COMPUTED_IS_TAGS,
-	FIELD_IS_TAGS,
-	GAME_IS_TAGS,
-} from "../../src/parser/db-info";
+import { ARRAY_IS_TAGS, BOOLEAN_IS_TAGS, COMPUTED_IS_TAGS, GAME_IS_TAGS } from "../../src/parser/db-info";
 
 const REPO_ROOT = join(import.meta.dir, "..", "..");
 const TRANSFORM_RS = readFileSync(join(REPO_ROOT, "engine/builder/src/transform.rs"), "utf8");
@@ -71,8 +65,9 @@ function stripLineComments(src: string): string {
 /**
  * The string tuples of a `const NAME: &[...] = &[ ... ];` table, in source
  * order. The array is spanned by bracket depth rather than by a lazy regex
- * because FIELD_IS_TAGS is declared on ONE line, and a match terminated on the
- * first `];` ran straight past it into the rest of the file.
+ * because a table declared on ONE line (FIELD_IS_TAGS was, until its one row became a
+ * computed tag) has no `];` of its own, and a match terminated on the first one ran
+ * straight past it into the rest of the file.
  */
 function rustTable(name: string): string[][] {
 	const src = stripLineComments(TRANSFORM_RS);
@@ -112,11 +107,6 @@ describe("the is: tag tables agree across TypeScript and Rust", () => {
 		expect(sorted(rustTable("ARRAY_IS_TAGS"))).toEqual(sorted(ts));
 	});
 
-	test("FIELD_IS_TAGS: same tags, each testing the same nested field for the same value", () => {
-		const ts = [...FIELD_IS_TAGS].map(([tag, [outer, inner, value]]) => [tag, outer, inner, value]);
-		expect(sorted(rustTable("FIELD_IS_TAGS"))).toEqual(sorted(ts));
-	});
-
 	/**
 	 * `game:` reaches `card_is_tags` through the same one door, and through it harder: the tag key
 	 * is PREFIXED (`paper` -> `game_paper`), so a disagreement here is not merely a tag the builder
@@ -152,9 +142,8 @@ describe("the is: tag tables agree across TypeScript and Rust", () => {
 	test("the tables are non-trivial, so a broken extractor cannot pass by matching nothing", () => {
 		expect(rustTable("BOOLEAN_IS_TAGS").length).toBeGreaterThan(10);
 		expect(rustTable("ARRAY_IS_TAGS").length).toBeGreaterThan(20);
-		expect(rustTable("FIELD_IS_TAGS").length).toBe(1);
 		expect(rustTable("GAME_IS_TAGS").length).toBe(5);
-		for (const table of ["BOOLEAN_IS_TAGS", "ARRAY_IS_TAGS", "FIELD_IS_TAGS", "GAME_IS_TAGS"]) {
+		for (const table of ["BOOLEAN_IS_TAGS", "ARRAY_IS_TAGS", "GAME_IS_TAGS"]) {
 			for (const row of rustTable(table)) {
 				expect(row.length, `${table} row ${JSON.stringify(row)} should be string literals`).toBeGreaterThan(1);
 			}
@@ -191,12 +180,7 @@ describe("the stored vocabulary still matches the vendored Python it is ported f
 	const DELIBERATE_DIVERGENCES = new Set(["phyrexian", "partner"]);
 
 	test("every upstream tag is either stored here, computed here, or a named divergence", () => {
-		const ours = new Set([
-			...BOOLEAN_IS_TAGS.keys(),
-			...ARRAY_IS_TAGS.keys(),
-			...FIELD_IS_TAGS.keys(),
-			...COMPUTED_IS_TAGS,
-		]);
+		const ours = new Set([...BOOLEAN_IS_TAGS.keys(), ...ARRAY_IS_TAGS.keys(), ...COMPUTED_IS_TAGS]);
 		expect([...pythonTags].filter((tag) => !ours.has(tag) && !DELIBERATE_DIVERGENCES.has(tag))).toEqual([]);
 	});
 

@@ -94,7 +94,8 @@ const EQUIVALENCES: Array<[string, string]> = [
 	// was `t:creature` exactly (18,753 on api.scryfall.com too — `o=""` is a tautology on both
 	// sides), and `t:creature -o:/./` answered 352 against Scryfall's 363, because the question is
 	// about the FRONT FACE and every rewrite here reads the merged row.
-	["is:bear", "t:creature pow=2 tou=2 cmc=2"],
+	// NO `is:bear` row either: it was `t:creature pow=2 tou=2 cmc=2`, which read the merged row
+	// (2,917 printings against api.scryfall.com's 2,884), and is a stored tag since generation 64.
 	["is:split", "layout:split"],
 	["is:flip", "layout:flip"],
 	["is:transform", "layout:transform"],
@@ -376,6 +377,25 @@ describe("has: aliases is:", () => {
 		expect(tree("has:watermark")).toBe(tree("watermark:/./"));
 		expect(tree("has:artist")).toBe(tree("artist:/./"));
 	});
+});
+
+// ── the class tags the importer decides ──────────────────────────────────────
+//
+// `is:bear` was a rewrite over the merged row and `is:frenchvanilla`, `is:modal` and `is:gainland`
+// community `otag:`s; each answered a different list than api.scryfall.com (2026-10-04: 2,917 /
+// 4,508 / 2,568 / 299 printings against 2,884 / 3,946 / 2,596 / 244). They reach the engine as the
+// stored tag of the same name now, and the builder's `class_tags` carries each rule.
+describe("the class tags are stored, not rewritten", () => {
+	for (const value of ["bear", "frenchvanilla", "modal", "gainland", "scryfallpreview"]) {
+		test(`is:${value} is the card_is_tags value`, () => {
+			expect(SUPPORTED_IS_VALUES.has(value)).toBe(true);
+			const parsed = tree(`is:${value}`);
+			expect(parsed).toContain('"attribute_name":"card_is_tags"');
+			expect(parsed).toContain(`"rhs":["${value}"]`);
+			expect(parsed).not.toContain("card_oracle_tags");
+			expect(parsed).not.toContain("creature_power");
+		});
+	}
 });
 
 // ── plain-literal regex lowering (upstream #734 cases) ───────────────────────

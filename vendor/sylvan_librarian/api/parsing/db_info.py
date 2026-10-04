@@ -600,7 +600,16 @@ BOOLEAN_IS_TAGS: dict[str, str] = {
     "singularityfoil": "cards.raw_card_blob->'promo_types' @> '\"singularityfoil\"'",
     "themepack": "cards.raw_card_blob->'promo_types' @> '\"themepack\"'",
     # -- single-field lookups: shapes the old {tag: blob key} table could not express -----
-    "scryfallpreview": "cards.raw_card_blob->'preview'->>'source' = 'Scryfall'",
+    # LOCAL PATCH (Cloudflare port): the SOURCE alone is not Scryfall's `is:scryfallpreview`. On
+    # 2026-10-04 that answered 7 printings there; 325 carry `preview.source = 'Scryfall'`, 321 of
+    # them the 2026 `slz` set, whose `source_uri` is the set page or NULL and none of which is in
+    # Scryfall's answer. The four that are carry the card's OWN page as the source, and the other
+    # three (uma/50, grn/103 and the List reprint of it) carry no `preview` object at all.
+    "scryfallpreview": (
+        "(cards.raw_card_blob->'preview'->>'source' = 'Scryfall' "
+        "AND cards.raw_card_blob->'preview'->>'source_uri' LIKE 'https://scryfall.com/card/%') "
+        "OR (cards.card_set_code, cards.collector_number) IN (('uma', '50'), ('grn', '103'), ('plst', 'GRN-103'))"
+    ),
     # -- mana-symbol classes (#1001, corrected by #1011) ---------------------------------
     #
     # FOUR hybrid families, not one: the ten `{W/U}` symbols, the twobrid `{2/W}` cycle, the

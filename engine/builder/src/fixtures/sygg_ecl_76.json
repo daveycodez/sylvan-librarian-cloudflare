@@ -1,0 +1,178 @@
+{
+ "arena_id": 98394,
+ "artist": "Justin Gerard",
+ "artist_ids": [
+  "7548479e-1d37-42e1-ade0-9d88748f2f47"
+ ],
+ "booster": true,
+ "border_color": "black",
+ "card_faces": [
+  {
+   "artist": "Justin Gerard",
+   "artist_id": "7548479e-1d37-42e1-ade0-9d88748f2f47",
+   "colors": [
+    "U"
+   ],
+   "illustration_id": "0d52277b-7f39-481c-b55e-69140c709e4f",
+   "image_uris": {
+    "art": "https://cards.scryfall.io/art/front/7/0/70adc870-f0db-4d4b-863b-673c2c258751.webp?1783904483",
+    "art_crop": "https://cards.scryfall.io/art_crop/front/7/0/70adc870-f0db-4d4b-863b-673c2c258751.jpg?1783904483",
+    "border_crop": "https://cards.scryfall.io/border_crop/front/7/0/70adc870-f0db-4d4b-863b-673c2c258751.jpg?1783904483",
+    "crop": "https://cards.scryfall.io/crop/front/7/0/70adc870-f0db-4d4b-863b-673c2c258751.webp?1783904483",
+    "display": "https://cards.scryfall.io/display/front/7/0/70adc870-f0db-4d4b-863b-673c2c258751.webp?1783904483",
+    "grid": "https://cards.scryfall.io/grid/front/7/0/70adc870-f0db-4d4b-863b-673c2c258751.webp?1783904483",
+    "large": "https://cards.scryfall.io/large/front/7/0/70adc870-f0db-4d4b-863b-673c2c258751.jpg?1783904483",
+    "normal": "https://cards.scryfall.io/normal/front/7/0/70adc870-f0db-4d4b-863b-673c2c258751.jpg?1783904483",
+    "png": "https://cards.scryfall.io/png/front/7/0/70adc870-f0db-4d4b-863b-673c2c258751.png?1783904483",
+    "small": "https://cards.scryfall.io/small/front/7/0/70adc870-f0db-4d4b-863b-673c2c258751.jpg?1783904483",
+    "thumb": "https://cards.scryfall.io/thumb/front/7/0/70adc870-f0db-4d4b-863b-673c2c258751.webp?1783904483"
+   },
+   "mana_cost": "{1}{U}",
+   "name": "Sygg, Wanderwine Wisdom",
+   "object": "card_face",
+   "oracle_text": "Sygg can't be blocked.\nWhenever this creature enters or transforms into Sygg, Wanderwine Wisdom, target creature gains \"Whenever this creature deals combat damage to a player or planeswalker, draw a card\" until end of turn.\nAt the beginning of your first main phase, you may pay {W}. If you do, transform Sygg.",
+   "power": "2",
+   "toughness": "2",
+   "type_line": "Legendary Creature — Merfolk Wizard"
+  },
+  {
+   "artist": "Justin Gerard",
+   "artist_id": "7548479e-1d37-42e1-ade0-9d88748f2f47",
+   "color_indicator": [
+    "W"
+   ],
+   "colors": [
+    "W"
+   ],
+   "illustration_id": "99cad805-3f8d-4088-94c0-8e31e8867f1e",
+   "image_uris": {
+    "art": "https://cards.scryfall.io/art/back/7/0/70adc870-f0db-4d4b-863b-673c2c258751.webp?1783904483",
+    "art_crop": "https://cards.scryfall.io/art_crop/back/7/0/70adc870-f0db-4d4b-863b-673c2c258751.jpg?1783904483",
+    "border_crop": "https://cards.scryfall.io/border_crop/back/7/0/70adc870-f0db-4d4b-863b-673c2c258751.jpg?1783904483",
+    "crop": "https://cards.scryfall.io/crop/back/7/0/70adc870-f0db-4d4b-863b-673c2c258751.webp?1783904483",
+    "display": "https://cards.scryfall.io/display/back/7/0/70adc870-f0db-4d4b-863b-673c2c258751.webp?1783904483",
+    "grid": "https://cards.scryfall.io/grid/back/7/0/70adc870-f0db-4d4b-863b-673c2c258751.webp?1783904483",
+    "large": "https://cards.scryfall.io/large/back/7/0/70adc870-f0db-4d4b-863b-673c2c258751.jpg?1783904483",
+    "normal": "https://cards.scryfall.io/normal/back/7/0/70adc870-f0db-4d4b-863b-673c2c258751.jpg?1783904483",
+    "png": "https://cards.scryfall.io/png/back/7/0/70adc870-f0db-4d4b-863b-673c2c258751.png?1783904483",
+    "small": "https://cards.scryfall.io/small/back/7/0/70adc870-f0db-4d4b-863b-673c2c258751.jpg?1783904483",
+    "thumb": "https://cards.scryfall.io/thumb/back/7/0/70adc870-f0db-4d4b-863b-673c2c258751.webp?1783904483"
+   },
+   "mana_cost": "",
+   "name": "Sygg, Wanderbrine Shield",
+   "object": "card_face",
+   "oracle_text": "Sygg can't be blocked.\nWhenever this creature transforms into Sygg, Wanderbrine Shield, target creature you control gains protection from each color until your next turn.\nAt the beginning of your first main phase, you may pay {U}. If you do, transform Sygg.",
+   "power": "2",
+   "toughness": "2",
+   "type_line": "Legendary Creature — Merfolk Rogue"
+  }
+ ],
+ "cardmarket_id": 862569,
+ "cmc": 2.0,
+ "collector_number": "76",
+ "color_identity": [
+  "U",
+  "W"
+ ],
+ "digital": false,
+ "edhrec_rank": 11551,
+ "finishes": [
+  "nonfoil",
+  "foil"
+ ],
+ "foil": true,
+ "frame": "2015",
+ "frame_effects": [
+  "legendary"
+ ],
+ "full_art": false,
+ "game_changer": false,
+ "games": [
+  "paper",
+  "arena",
+  "mtgo"
+ ],
+ "highres_image": true,
+ "id": "70adc870-f0db-4d4b-863b-673c2c258751",
+ "image_status": "highres_scan",
+ "image_updated_at": "2026-07-13T01:01:23Z",
+ "keywords": [
+  "Transform"
+ ],
+ "lang": "en",
+ "layout": "transform",
+ "legalities": {
+  "alchemy": "legal",
+  "brawl": "legal",
+  "commander": "legal",
+  "competitivebrawl": "legal",
+  "duel": "legal",
+  "future": "legal",
+  "gladiator": "legal",
+  "historic": "legal",
+  "legacy": "legal",
+  "modern": "legal",
+  "oathbreaker": "legal",
+  "oldschool": "not_legal",
+  "pauper": "not_legal",
+  "paupercommander": "not_legal",
+  "penny": "legal",
+  "pioneer": "legal",
+  "predh": "not_legal",
+  "premodern": "not_legal",
+  "standard": "legal",
+  "standardbrawl": "legal",
+  "timeless": "legal",
+  "tlr": "legal",
+  "vintage": "legal"
+ },
+ "mtgo_id": 146537,
+ "multiverse_ids": [],
+ "name": "Sygg, Wanderwine Wisdom // Sygg, Wanderbrine Shield",
+ "nonfoil": true,
+ "object": "card",
+ "oracle_id": "9cc91ac5-6f2b-4fc0-b810-cdc92eebe6de",
+ "oversized": false,
+ "penny_rank": 1713,
+ "prices": {
+  "eur": "0.28",
+  "eur_foil": "0.50",
+  "tix": "0.02",
+  "usd": "0.25",
+  "usd_etched": null,
+  "usd_foil": "0.35"
+ },
+ "prints_search_uri": "https://api.scryfall.com/cards/search?order=released&q=oracleid%3A9cc91ac5-6f2b-4fc0-b810-cdc92eebe6de&unique=prints",
+ "promo": false,
+ "purchase_uris": {
+  "cardhoarder": "https://www.cardhoarder.com/cards/146537?affiliate_id=scryfall&ref=card-profile&utm_campaign=affiliate&utm_medium=card&utm_source=scryfall",
+  "cardmarket": "https://www.cardmarket.com/en/Magic/Products?idProduct=862569&referrer=scryfall&utm_campaign=card_prices&utm_medium=text&utm_source=scryfall",
+  "tcgplayer": "https://partner.tcgplayer.com/c/4931599/1830156/21018?subId1=api&u=https%3A%2F%2Fwww.tcgplayer.com%2Fproduct%2F656570%3Fpage%3D1"
+ },
+ "rarity": "rare",
+ "related_uris": {
+  "edhrec": "https://edhrec.com/route/?cc=Sygg%2C+Wanderwine+Wisdom",
+  "tcgplayer_infinite_articles": "https://partner.tcgplayer.com/c/4931599/1830156/21018?subId1=api&trafcat=tcgplayer.com%2Fsearch%2Farticles&u=https%3A%2F%2Fwww.tcgplayer.com%2Fsearch%2Farticles%3FproductLineName%3Dmagic%26q%3DSygg%252C%2BWanderwine%2BWisdom%2B%252F%252F%2BSygg%252C%2BWanderbrine%2BShield",
+  "tcgplayer_infinite_decks": "https://partner.tcgplayer.com/c/4931599/1830156/21018?subId1=api&trafcat=tcgplayer.com%2Fsearch%2Fdecks&u=https%3A%2F%2Fwww.tcgplayer.com%2Fsearch%2Fdecks%3FproductLineName%3Dmagic%26q%3DSygg%252C%2BWanderwine%2BWisdom%2B%252F%252F%2BSygg%252C%2BWanderbrine%2BShield"
+ },
+ "released_at": "2026-01-23",
+ "reprint": false,
+ "reserved": false,
+ "resource_id": "942E175A49745963299AC3B57E26AADC89E33C0E7ADAA9416791955BABF7C007",
+ "rulings_uri": "https://api.scryfall.com/cards/70adc870-f0db-4d4b-863b-673c2c258751/rulings",
+ "scryfall_set_uri": "https://scryfall.com/sets/ecl?utm_source=api",
+ "scryfall_uri": "https://scryfall.com/card/ecl/76/sygg-wanderwine-wisdom-sygg-wanderbrine-shield?utm_source=api",
+ "security_stamp": "oval",
+ "set": "ecl",
+ "set_id": "5d293ad8-a749-4725-bd5c-c4e1db828bd0",
+ "set_name": "Lorwyn Eclipsed",
+ "set_search_uri": "https://api.scryfall.com/cards/search?order=set&q=e%3Aecl&unique=prints",
+ "set_type": "expansion",
+ "set_uri": "https://api.scryfall.com/sets/5d293ad8-a749-4725-bd5c-c4e1db828bd0",
+ "story_spotlight": false,
+ "tcgplayer_id": 656570,
+ "textless": false,
+ "type_line": "Legendary Creature — Merfolk Wizard // Legendary Creature — Merfolk Rogue",
+ "uri": "https://api.scryfall.com/cards/70adc870-f0db-4d4b-863b-673c2c258751",
+ "variation": false
+}

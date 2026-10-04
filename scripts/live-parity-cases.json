@@ -2924,6 +2924,60 @@
 			"method": "GET",
 			"path": "/cards/search?q=t%3Aplaneswalker+-%28loy%3E%3D4%29",
 			"note": "2026-10-04. 4, each a printing with loyalty on two faces all under 4 (Estrid sld/1327, Garruk Wildspeaker sld/749, Jace Beleren sld/746, Oko ecl/61) — where `t:planeswalker loy<4` is 90 and `t:planeswalker -(loy>=1)` a 404. Scryfall compares pow/tou/loy over two faces in three-valued logic, and NOT answers only the FALSE ones. This port answered the complement. NEEDS THE REBUILT ENGINE BLOB (a `ScryfallNotNode` the committed one does not read)."
+		},
+		{
+			"name": "is-bear-is-not-a-creature-test",
+			"method": "GET",
+			"path": "/cards/search?q=is%3Abear+t%3Avehicle",
+			"note": "2026-10-04. 3: High-Speed Hoverbike, Shadowed Caravel and Wurmwall Sweeper are 2/2 for two and not creatures. `is:bear` is the FRONT's printed power 2, toughness 2 and mana value 2 (2,884 printings, the rule simulated on the same day's bulk file gives exactly that list); this port rewrote it to `t:creature pow=2 tou=2 cmc=2` over the merged row and answered a 404 here. Generation 64."
+		},
+		{
+			"name": "is-bear-reads-the-front-face",
+			"method": "GET",
+			"path": "/cards/search?q=%21%22Nezumi+Graverobber%22+is%3Abear",
+			"note": "2026-10-04. 404: a 2/1 that flips into a 4/2. The merged row holds a 2 power and a 2 toughness, so this port answered the card, with thirteen two-faced cards like it. Generation 64."
+		},
+		{
+			"name": "is-frenchvanilla-line-shape",
+			"method": "GET",
+			"path": "/cards/search?q=is%3Afrenchvanilla+e%3Ahml",
+			"note": "2026-10-04. 7: every line of the text opens with a keyword ability (`Flying, protection from red` is in). This port asked the community `otag:french-vanilla` and answered 10; over the corpus 4,508 printings against 3,946, 23 missing and 585 extra. Generation 64."
+		},
+		{
+			"name": "is-frenchvanilla-protection-opening-a-line",
+			"method": "GET",
+			"path": "/cards/search?q=%21%22Black+Knight%22+is%3Afrenchvanilla",
+			"note": "2026-10-04. 404: `First strike`, then `Protection from white` OPENING a line. After a comma it counts, at the start of a line it does not — nor does any keyword followed by a number or words (`Bloodthirst 2`, `Affinity for artifacts`). Answered here before. Generation 64."
+		},
+		{
+			"name": "is-gainland-is-fifteen-names",
+			"method": "GET",
+			"path": "/cards/search?q=is%3Againland",
+			"note": "2026-10-04. 15 cards: Khans of Tarkir's ten and Zendikar's five Refuges, by name — Stark Industries and fourteen more lands with the identical text are not counted. This port asked `otag:gainland` and answered 43. Generation 64."
+		},
+		{
+			"name": "is-scryfallpreview-is-not-the-source-field",
+			"method": "GET",
+			"path": "/cards/search?q=is%3Ascryfallpreview",
+			"note": "2026-10-04. 6 cards / 7 printings. 325 printings carry `preview.source: Scryfall` (321 of them the 2026 slz set) and this port answered their 111 cards; Scryfall's are the four whose source is the card's own page, and three with no preview object. Generation 64."
+		},
+		{
+			"name": "is-flavorname-does-not-widen",
+			"method": "GET",
+			"path": "/cards/search?q=is%3Aflavorname+e%3Asld+cn%3A1862&unique=prints",
+			"note": "2026-10-04. 1 row, the English one: sld/1862 is \"Meteorfall\" in English and in Japanese. `is:flavorname` is 686 printings of the 742 rows of every language that carry one; this port widened the search as `is:localizedname` does and answered 740, two rows here."
+		},
+		{
+			"name": "is-atypical-colorshifted-frame",
+			"method": "GET",
+			"path": "/cards/search?q=is%3Aatypical+e%3Aplc+t%3Ainstant",
+			"note": "2026-10-04. Planar Chaos's colorshifted instants: the colorshifted frame is atypical (64 of 64). A 404 here before — the class was fitted through `prefer:atypical` picks, which show one member a card. `is:atypical&unique=prints` with extras is 30,837 there and was 27,369 here; 30,784 now."
+		},
+		{
+			"name": "prefer-atypical-masterpiece",
+			"method": "GET",
+			"path": "/cards/search?q=%21%22Fire-Lit+Thicket%22+prefer%3Aatypical",
+			"note": "2026-10-04. exp/29, the Zendikar Expedition: a masterpiece set is atypical (1,780 of 1,780) and the prefer ranks by the same class — thirteen of thirteen cards probed. This port answered the default 2xm/317."
 		}
 	]
 }

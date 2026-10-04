@@ -1861,8 +1861,24 @@ export async function gzipBytes(bytes: Uint8Array): Promise<Uint8Array> {
  *      GENERATION-ONLY: the same `Option<f32>` and `Option<u8>` hold a value where they held
  *      none, on three cards. No layout, no format version, neither row touched, and nothing on
  *      the query path — the printed strings the card object serves are unchanged.
+ *
+ *   64 (2026-10-04): FIVE `is:` VALUES ANSWERED A DIFFERENT LIST THAN SCRYFALL'S (x72). Not drift:
+ *      a different rule. Each was measured by reading every printing api.scryfall.com returns for
+ *      it (`unique=prints`, extras in) and simulating rules over the same day's bulk file until
+ *      one gave exactly that list, and each is a tag the importer now decides (the builder's
+ *      `class_tags`): `is:bear` 2,884 printings where the merged-row rewrite answered 2,917,
+ *      `is:frenchvanilla` 3,946 against a community tag's 4,508, `is:modal` 2,596 against 2,568,
+ *      `is:gainland` 244 (fifteen cards by name) against 299, and `is:scryfallpreview` 7 against
+ *      the 325 printings whose preview SOURCE says Scryfall. The builder run over the whole
+ *      2026-10-04 `default_cards` file tags exactly Scryfall's list for all five.
+ *
+ *      GENERATION-ONLY: four new values in the `card_is_tags` collection index and one whose rows
+ *      change, about ten thousand printings between them. No layout, no format version, neither
+ *      row touched. (The same commit stops `is:flavorname` widening a search to every language
+ *      and widens the `is:atypical` class — both are code on the query path reading fields the
+ *      store already holds, and need no rebuild.)
  */
-export const STORE_CONTENT_GENERATION = 63;
+export const STORE_CONTENT_GENERATION = 64;
 
 /**
  * Chunk key for a store. Keyed by store_key, so publishes never collide.

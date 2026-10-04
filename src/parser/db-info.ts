@@ -609,7 +609,43 @@ export const OATHBREAKER_IS_TAG = "oathbreaker";
  */
 export const SPELL_IS_TAG = "spell";
 
+/**
+ * FIVE CLASSES SCRYFALL DECIDES BY A RULE OVER THE WHOLE CARD, each measured 2026-10-04 by reading
+ * every printing api.scryfall.com returns for it (`unique=prints`, extras in) and simulating rules
+ * over the same day's bulk file until one gave exactly that list. The rules are written at the
+ * builder's constants of the same names; what each replaced, and by how much it was off:
+ *
+ *   `is:bear`            2,884 printings. The front's printed power `2`, toughness `2`, mana value
+ *                        2 — and no creature test (the 2/2 Vehicles for two are in). It was the
+ *                        rewrite `t:creature pow=2 tou=2 cmc=2` over the MERGED row: 2,917, with
+ *                        fourteen two-faced cards whose 2 and 2 sit on different faces.
+ *   `is:frenchvanilla`   3,946. A creature whose every line of text opens with a keyword ability.
+ *                        It was `otag:french-vanilla`, a community tag: 4,508, 23 missing and 585
+ *                        extra (`Protection from white` alone on a line is NOT french vanilla
+ *                        there; `Flying, protection from red` is).
+ *   `is:modal`           2,596. A bullet in the text, Spree, or a Season's `{P} worth of modes`.
+ *                        It was `otag:modal`: 2,568, 40 missing and 12 extra.
+ *   `is:gainland`        244, fifteen cards by name. It was `otag:gainland`: 299, 43 cards.
+ *   `is:scryfallpreview` 7. It was `preview.source = "Scryfall"`: 325, of which 321 are one 2026
+ *                        set Scryfall's answer holds none of.
+ *
+ * Stored tags and not rewrites because none is a predicate over the merged row: three read the
+ * faces apart, one is a list, one reads a field no column holds. The vendored Python keeps
+ * upstream's rewrites for the first four — upstream's choice, written there — and
+ * tests/parser/parity.test.ts names their trees in PORT_ONLY_TREES.
+ */
+export const BEAR_IS_TAG = "bear";
+export const FRENCH_VANILLA_IS_TAG = "frenchvanilla";
+export const MODAL_IS_TAG = "modal";
+export const GAINLAND_IS_TAG = "gainland";
+export const SCRYFALL_PREVIEW_IS_TAG = "scryfallpreview";
+
 export const COMPUTED_IS_TAGS: ReadonlySet<string> = new Set([
+	BEAR_IS_TAG,
+	FRENCH_VANILLA_IS_TAG,
+	MODAL_IS_TAG,
+	GAINLAND_IS_TAG,
+	SCRYFALL_PREVIEW_IS_TAG,
 	EXTRA_IS_TAG,
 	FUNNY_IS_TAG,
 	HYBRID_IS_TAG,
@@ -875,19 +911,6 @@ export const GAME_IS_TAGS: ReadonlyMap<string, string> = new Map([
 export function gameTagKey(value: string): string {
 	return GAME_IS_TAGS.get(value) ?? `game_${value}`;
 }
-
-/**
- * The `is:` values that read a NESTED single field rather than a top-level boolean or an array, as
- * `card_is_tags key -> [outer blob key, inner key, value]`. Mirrors the builder's `FIELD_IS_TAGS`.
- *
- * Upstream expresses the same question as a SQL expression
- * (`raw_card_blob->'preview'->>'source' = 'Scryfall'`), which neither the Rust builder nor this
- * table has an equivalent of, so the one shape it actually uses gets its own small table rather
- * than an expression evaluator.
- */
-export const FIELD_IS_TAGS: ReadonlyMap<string, readonly [string, string, string]> = new Map([
-	["scryfallpreview", ["preview", "source", "Scryfall"]],
-] as [string, readonly [string, string, string]][]);
 
 export const CARD_SUPERTYPES: ReadonlySet<string> = new Set(["Basic", "Legendary", "Snow", "World"]);
 

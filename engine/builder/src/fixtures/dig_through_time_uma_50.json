@@ -1,0 +1,133 @@
+{
+ "artist": "Ryan Yee",
+ "artist_ids": [
+  "8955dca7-3e37-42b4-83a9-167c78a2178f"
+ ],
+ "booster": true,
+ "border_color": "black",
+ "card_back_id": "0aeebaf5-8c7d-4636-9e82-8c27447861f7",
+ "cardmarket_id": 366872,
+ "cmc": 8.0,
+ "collector_number": "50",
+ "color_identity": [
+  "U"
+ ],
+ "colors": [
+  "U"
+ ],
+ "digital": false,
+ "edhrec_rank": 626,
+ "finishes": [
+  "nonfoil",
+  "foil"
+ ],
+ "foil": true,
+ "frame": "2015",
+ "full_art": false,
+ "game_changer": false,
+ "games": [
+  "paper",
+  "mtgo"
+ ],
+ "highres_image": true,
+ "id": "01cd4184-93ce-4005-b6d1-140afa3dd429",
+ "illustration_id": "4324b35c-f758-4bfb-95f0-f464edc7513f",
+ "image_status": "highres_scan",
+ "image_updated_at": "2026-07-13T09:10:48Z",
+ "image_uris": {
+  "art": "https://cards.scryfall.io/art/front/0/1/01cd4184-93ce-4005-b6d1-140afa3dd429.webp?1783933848",
+  "art_crop": "https://cards.scryfall.io/art_crop/front/0/1/01cd4184-93ce-4005-b6d1-140afa3dd429.jpg?1783933848",
+  "border_crop": "https://cards.scryfall.io/border_crop/front/0/1/01cd4184-93ce-4005-b6d1-140afa3dd429.jpg?1783933848",
+  "crop": "https://cards.scryfall.io/crop/front/0/1/01cd4184-93ce-4005-b6d1-140afa3dd429.webp?1783933848",
+  "display": "https://cards.scryfall.io/display/front/0/1/01cd4184-93ce-4005-b6d1-140afa3dd429.webp?1783933848",
+  "grid": "https://cards.scryfall.io/grid/front/0/1/01cd4184-93ce-4005-b6d1-140afa3dd429.webp?1783933848",
+  "large": "https://cards.scryfall.io/large/front/0/1/01cd4184-93ce-4005-b6d1-140afa3dd429.jpg?1783933848",
+  "normal": "https://cards.scryfall.io/normal/front/0/1/01cd4184-93ce-4005-b6d1-140afa3dd429.jpg?1783933848",
+  "png": "https://cards.scryfall.io/png/front/0/1/01cd4184-93ce-4005-b6d1-140afa3dd429.png?1783933848",
+  "small": "https://cards.scryfall.io/small/front/0/1/01cd4184-93ce-4005-b6d1-140afa3dd429.jpg?1783933848",
+  "thumb": "https://cards.scryfall.io/thumb/front/0/1/01cd4184-93ce-4005-b6d1-140afa3dd429.webp?1783933848"
+ },
+ "keywords": [
+  "Delve"
+ ],
+ "lang": "en",
+ "layout": "normal",
+ "legalities": {
+  "alchemy": "not_legal",
+  "brawl": "legal",
+  "commander": "legal",
+  "competitivebrawl": "legal",
+  "duel": "banned",
+  "future": "not_legal",
+  "gladiator": "legal",
+  "historic": "legal",
+  "legacy": "banned",
+  "modern": "banned",
+  "oathbreaker": "legal",
+  "oldschool": "not_legal",
+  "pauper": "not_legal",
+  "paupercommander": "not_legal",
+  "penny": "legal",
+  "pioneer": "legal",
+  "predh": "not_legal",
+  "premodern": "not_legal",
+  "standard": "not_legal",
+  "standardbrawl": "not_legal",
+  "timeless": "legal",
+  "tlr": "not_legal",
+  "vintage": "restricted"
+ },
+ "mana_cost": "{6}{U}{U}",
+ "mtgo_id": 70173,
+ "multiverse_ids": [
+  456646
+ ],
+ "name": "Dig Through Time",
+ "nonfoil": true,
+ "object": "card",
+ "oracle_id": "f8b17b89-26ce-4208-874a-9e1d66514640",
+ "oracle_text": "Delve (Each card you exile from your graveyard while casting this spell pays for {1}.)\nLook at the top seven cards of your library. Put two of them into your hand and the rest on the bottom of your library in any order.",
+ "oversized": false,
+ "penny_rank": 35,
+ "prices": {
+  "eur": "0.27",
+  "eur_foil": "1.93",
+  "tix": "0.46",
+  "usd": "0.40",
+  "usd_etched": null,
+  "usd_foil": "1.86"
+ },
+ "prints_search_uri": "https://api.scryfall.com/cards/search?order=released&q=oracleid%3Af8b17b89-26ce-4208-874a-9e1d66514640&unique=prints",
+ "promo": false,
+ "purchase_uris": {
+  "cardhoarder": "https://www.cardhoarder.com/cards/70173?affiliate_id=scryfall&ref=card-profile&utm_campaign=affiliate&utm_medium=card&utm_source=scryfall",
+  "cardmarket": "https://www.cardmarket.com/en/Magic/Products?idProduct=366872&referrer=scryfall&utm_campaign=card_prices&utm_medium=text&utm_source=scryfall",
+  "tcgplayer": "https://partner.tcgplayer.com/c/4931599/1830156/21018?subId1=api&u=https%3A%2F%2Fwww.tcgplayer.com%2Fproduct%2F180836%3Fpage%3D1"
+ },
+ "rarity": "rare",
+ "related_uris": {
+  "edhrec": "https://edhrec.com/route/?cc=Dig+Through+Time",
+  "gatherer": "https://gatherer.wizards.com/Pages/Card/Details.aspx?multiverseid=456646&printed=false",
+  "tcgplayer_infinite_articles": "https://partner.tcgplayer.com/c/4931599/1830156/21018?subId1=api&trafcat=tcgplayer.com%2Fsearch%2Farticles&u=https%3A%2F%2Fwww.tcgplayer.com%2Fsearch%2Farticles%3FproductLineName%3Dmagic%26q%3DDig%2BThrough%2BTime",
+  "tcgplayer_infinite_decks": "https://partner.tcgplayer.com/c/4931599/1830156/21018?subId1=api&trafcat=tcgplayer.com%2Fsearch%2Fdecks&u=https%3A%2F%2Fwww.tcgplayer.com%2Fsearch%2Fdecks%3FproductLineName%3Dmagic%26q%3DDig%2BThrough%2BTime"
+ },
+ "released_at": "2018-12-07",
+ "reprint": true,
+ "reserved": false,
+ "rulings_uri": "https://api.scryfall.com/cards/01cd4184-93ce-4005-b6d1-140afa3dd429/rulings",
+ "scryfall_set_uri": "https://scryfall.com/sets/uma?utm_source=api",
+ "scryfall_uri": "https://scryfall.com/card/uma/50/dig-through-time?utm_source=api",
+ "security_stamp": "oval",
+ "set": "uma",
+ "set_id": "2ec77b94-6d47-4891-a480-5d0b4e5c9372",
+ "set_name": "Ultimate Masters",
+ "set_search_uri": "https://api.scryfall.com/cards/search?order=set&q=e%3Auma&unique=prints",
+ "set_type": "masters",
+ "set_uri": "https://api.scryfall.com/sets/2ec77b94-6d47-4891-a480-5d0b4e5c9372",
+ "story_spotlight": false,
+ "tcgplayer_id": 180836,
+ "textless": false,
+ "type_line": "Instant",
+ "uri": "https://api.scryfall.com/cards/01cd4184-93ce-4005-b6d1-140afa3dd429",
+ "variation": false
+}

@@ -1744,9 +1744,14 @@ pub(crate) enum FilterExpr {
     /// "Chucky" on the front face only), and none carrying neither. A printing-level read alone
     /// would have answered 646 and called it the whole set.
     ///
-    /// Its presence WIDENS the query, exactly as `PrintedNamePresent`'s does: 6 of the 661 are
-    /// Japanese rows (iko/387 ja prints "Mechagodzilla, the Weapon" over 結晶の巨人) and
-    /// api.scryfall.com returns them with no `lang:` term written.
+    /// IT DOES NOT WIDEN THE QUERY (LOCAL PATCH, Cloudflare port, 2026-10-04). It was listed in
+    /// `widens_to_annex` beside `PrintedNamePresent` because 6 of those 661 rows are Japanese and
+    /// came back with no `lang:` written — but those six are printings that exist ONLY in
+    /// Japanese (iko/387, "Mechagodzilla, the Weapon"), so their Japanese row is the canonical
+    /// one and no widening was needed to reach it. Measured over every row of every language:
+    /// 742 rows carry a flavor name, `is:flavorname` is 686 printings and `is:flavorname lang:any`
+    /// 741; sld/1862 carries "Meteorfall" in English and in Japanese and `is:flavorname e:sld
+    /// cn:1862` is ONE row. Widened, this port answered 740 — the 55 non-canonical rows too.
     FlavorNamePresent,
 
     /// A PRINTING whose `flavor_name` satisfies the `name:` predicate that produced this leaf.
@@ -1898,18 +1903,14 @@ pub(crate) enum FilterExpr {
     /// 33,267 — exact complements per printing, which is what makes `default` a `Not` rather
     /// than a second class table that could drift from this one.
     ///
-    /// RESIDUAL, MEASURED AND NOT CLOSED. Against a store built the same day: `is:atypical`
-    /// 10,319 here (99.0%), `is:default` 33,284 (100.05%), and the two exact complements here
-    /// too; `is:default e:khm` 323 = 323, `is:atypical e:khm` 91 = 91, `is:default t:goblin`
-    /// 559 = 559, `is:atypical is:borderless` 3,612 against 3,611. The 1% is the CLASS, not the
-    /// plumbing: subtract every marker `PreferClassIds` knows from `is:atypical` and Scryfall
-    /// still answers 3,045 cards where this answers 933, and asking those 3,045 what they carry
-    /// says `is:reprint` 1,818, `is:foil` 1,258, `frame:1997` 549, `-lang:en` 452,
-    /// `-is:nonfoil` 421, `frame:2003` 420, `frame:legendary` 160, `frame:1993` 149 — the shape
-    /// of a rule that is partly RELATIVE to the card's own default printing (an old-frame,
-    /// foreign-only or foil-only row of a card whose default is none of those), which the class
-    /// as fitted on 100 red instants for the prefer never had to model. Closing it is a study
-    /// with a holdout, the same kind that produced the class, and it moves the prefer too.
+    /// THE RESIDUAL THAT NOTE LEFT OPEN IS CLOSED TO 53 PRINTINGS (2026-10-04). It read as a rule
+    /// "partly relative to the card's own default printing"; read printing by printing —
+    /// `is:atypical&unique=prints` with extras, 30,837 rows, against the same day's bulk file — it
+    /// is not relative at all. The class simply had more members than a prefer probe can see:
+    /// gold borders, oversized cards, masterpiece sets, the colorshifted frame and eight more
+    /// promo treatments. `PreferClassIds` lists them with their counts; with them this answers
+    /// 30,784 of the 30,837 and nothing Scryfall lacks, where it answered 27,369. The 53 left are
+    /// in Scryfall's class by no field the bulk data carries (43 of them five Secret Lair drops).
     Atypical(super::PreferClassIds),
 
     /// `oracleid:<uuid>` — the oracle card whose `oracle_id` equals `id` (`parse_uuid_or_hash`'s
@@ -3456,16 +3457,15 @@ impl FilterExpr {
     /// `run_query_routed`. Detected here, on the compiled tree, so the operators and the
     /// `include_multilingual` flag cannot widen differently.
     ///
-    /// Three leaves qualify. `LangMatch` is the obvious one. `PrintedNamePresent` is the second,
+    /// Two leaves qualify. `LangMatch` is the obvious one. `PrintedNamePresent` is the second,
     /// and it is not a design choice — it is Scryfall's measured behaviour: `is:localizedname`
     /// with no `lang:` term in sight answers 31,294 cards there, and `&unique=prints` shows the
     /// rows it returns are German, French, Japanese… A canonical-only reading would answer 182
     /// (the English printings that carry a printed name) and call it the whole set.
-    /// `FlavorNamePresent` is the third, on the same measurement: `is:flavorname&unique=prints`
-    /// is 661 rows there and 6 of them are Japanese (2026-09-01).
+    /// `FlavorNamePresent` was a third and is NOT one: see the variant for the measurement.
     pub(crate) fn widens_to_annex(&self) -> bool {
         match self {
-            FilterExpr::LangMatch { .. } | FilterExpr::PrintedNamePresent | FilterExpr::FlavorNamePresent => true,
+            FilterExpr::LangMatch { .. } | FilterExpr::PrintedNamePresent => true,
             FilterExpr::And(children) | FilterExpr::Or(children) => children.iter().any(Self::widens_to_annex),
             FilterExpr::Not(inner) => inner.widens_to_annex(),
             _ => false,

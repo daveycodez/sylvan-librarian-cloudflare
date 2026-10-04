@@ -243,9 +243,19 @@ class TestBooleanIsTags:
 
     def test_scryfallpreview_source_lands_as_is_tag(self, api_resource: APIResource) -> None:
         card = make_raw_card(name="Scryfall Preview Import Test")
-        card["preview"] = {"source": "Scryfall"}
+        # LOCAL PATCH (Cloudflare port): the source AND the card's own page as its URI -- see
+        # db_info.BOOLEAN_IS_TAGS["scryfallpreview"].
+        card["preview"] = {"source": "Scryfall", "source_uri": "https://scryfall.com/card/war/176/snarespinner"}
         api_resource.admin._upsert_cards([card])
         assert _is_tags_for(api_resource, card["id"]).get("scryfallpreview") is True
+
+    def test_scryfall_source_without_a_card_page_does_not_set_scryfallpreview(self, api_resource: APIResource) -> None:
+        # LOCAL PATCH (Cloudflare port): the 2026 `slz` shape -- 321 printings Scryfall's own
+        # `is:scryfallpreview` does not hold.
+        card = make_raw_card(name="Scryfall Set Page Preview Test")
+        card["preview"] = {"source": "Scryfall", "source_uri": "https://scryfall.com/sets/slz?order=spoiled"}
+        api_resource.admin._upsert_cards([card])
+        assert "scryfallpreview" not in _is_tags_for(api_resource, card["id"])
 
     def test_other_preview_source_does_not_set_scryfallpreview(self, api_resource: APIResource) -> None:
         card = make_raw_card(name="Other Preview Source Test")

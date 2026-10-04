@@ -1,0 +1,162 @@
+{
+ "artist": "Clint Cearley & Adam Paquette",
+ "artist_ids": [
+  "03b75350-d5a0-4e3a-b3b4-8d4a5554385b",
+  "89023dad-e6c0-41e0-83fb-eb2bfbbdc3f2"
+ ],
+ "booster": false,
+ "border_color": "black",
+ "card_faces": [
+  {
+   "artist": "Clint Cearley",
+   "artist_id": "03b75350-d5a0-4e3a-b3b4-8d4a5554385b",
+   "colors": [],
+   "illustration_id": "d148b80c-e09d-4700-bb35-8d76c1f52ec5",
+   "image_uris": {
+    "art": "https://cards.scryfall.io/art/front/a/0/a020dc47-3747-4123-9954-f0e87a858b8c.webp?1783934010",
+    "art_crop": "https://cards.scryfall.io/art_crop/front/a/0/a020dc47-3747-4123-9954-f0e87a858b8c.jpg?1783934010",
+    "border_crop": "https://cards.scryfall.io/border_crop/front/a/0/a020dc47-3747-4123-9954-f0e87a858b8c.jpg?1783934010",
+    "crop": "https://cards.scryfall.io/crop/front/a/0/a020dc47-3747-4123-9954-f0e87a858b8c.webp?1783934010",
+    "display": "https://cards.scryfall.io/display/front/a/0/a020dc47-3747-4123-9954-f0e87a858b8c.webp?1783934010",
+    "grid": "https://cards.scryfall.io/grid/front/a/0/a020dc47-3747-4123-9954-f0e87a858b8c.webp?1783934010",
+    "large": "https://cards.scryfall.io/large/front/a/0/a020dc47-3747-4123-9954-f0e87a858b8c.jpg?1783934010",
+    "normal": "https://cards.scryfall.io/normal/front/a/0/a020dc47-3747-4123-9954-f0e87a858b8c.jpg?1783934010",
+    "png": "https://cards.scryfall.io/png/front/a/0/a020dc47-3747-4123-9954-f0e87a858b8c.png?1783934010",
+    "small": "https://cards.scryfall.io/small/front/a/0/a020dc47-3747-4123-9954-f0e87a858b8c.jpg?1783934010",
+    "thumb": "https://cards.scryfall.io/thumb/front/a/0/a020dc47-3747-4123-9954-f0e87a858b8c.webp?1783934010"
+   },
+   "mana_cost": "",
+   "name": "Copy",
+   "object": "card_face",
+   "oracle_text": "",
+   "type_line": "Token",
+   "watermark": "dimir"
+  },
+  {
+   "artist": "Adam Paquette",
+   "artist_id": "89023dad-e6c0-41e0-83fb-eb2bfbbdc3f2",
+   "colors": [
+    "B",
+    "U"
+   ],
+   "illustration_id": "68a409c2-7903-4d22-bfc4-787d2411facb",
+   "image_uris": {
+    "art": "https://cards.scryfall.io/art/back/a/0/a020dc47-3747-4123-9954-f0e87a858b8c.webp?1783934010",
+    "art_crop": "https://cards.scryfall.io/art_crop/back/a/0/a020dc47-3747-4123-9954-f0e87a858b8c.jpg?1783934010",
+    "border_crop": "https://cards.scryfall.io/border_crop/back/a/0/a020dc47-3747-4123-9954-f0e87a858b8c.jpg?1783934010",
+    "crop": "https://cards.scryfall.io/crop/back/a/0/a020dc47-3747-4123-9954-f0e87a858b8c.webp?1783934010",
+    "display": "https://cards.scryfall.io/display/back/a/0/a020dc47-3747-4123-9954-f0e87a858b8c.webp?1783934010",
+    "grid": "https://cards.scryfall.io/grid/back/a/0/a020dc47-3747-4123-9954-f0e87a858b8c.webp?1783934010",
+    "large": "https://cards.scryfall.io/large/back/a/0/a020dc47-3747-4123-9954-f0e87a858b8c.jpg?1783934010",
+    "normal": "https://cards.scryfall.io/normal/back/a/0/a020dc47-3747-4123-9954-f0e87a858b8c.jpg?1783934010",
+    "png": "https://cards.scryfall.io/png/back/a/0/a020dc47-3747-4123-9954-f0e87a858b8c.png?1783934010",
+    "small": "https://cards.scryfall.io/small/back/a/0/a020dc47-3747-4123-9954-f0e87a858b8c.jpg?1783934010",
+    "thumb": "https://cards.scryfall.io/thumb/back/a/0/a020dc47-3747-4123-9954-f0e87a858b8c.webp?1783934010"
+   },
+   "mana_cost": "",
+   "name": "Horror",
+   "object": "card_face",
+   "oracle_text": "Flying",
+   "power": "1",
+   "toughness": "1",
+   "type_line": "Token Creature — Horror",
+   "watermark": "dimir"
+  }
+ ],
+ "cardmarket_id": 366022,
+ "cmc": 0.0,
+ "collector_number": "1",
+ "color_identity": [
+  "B",
+  "U"
+ ],
+ "digital": false,
+ "finishes": [
+  "nonfoil"
+ ],
+ "foil": false,
+ "frame": "2015",
+ "full_art": false,
+ "game_changer": false,
+ "games": [
+  "paper"
+ ],
+ "highres_image": true,
+ "id": "a020dc47-3747-4123-9954-f0e87a858b8c",
+ "image_status": "highres_scan",
+ "image_updated_at": "2026-07-13T09:13:30Z",
+ "keywords": [
+  "Flying"
+ ],
+ "lang": "en",
+ "layout": "double_faced_token",
+ "legalities": {
+  "alchemy": "not_legal",
+  "brawl": "not_legal",
+  "commander": "not_legal",
+  "competitivebrawl": "not_legal",
+  "duel": "not_legal",
+  "future": "not_legal",
+  "gladiator": "not_legal",
+  "historic": "not_legal",
+  "legacy": "not_legal",
+  "modern": "not_legal",
+  "oathbreaker": "not_legal",
+  "oldschool": "not_legal",
+  "pauper": "not_legal",
+  "paupercommander": "not_legal",
+  "penny": "not_legal",
+  "pioneer": "not_legal",
+  "predh": "not_legal",
+  "premodern": "not_legal",
+  "standard": "not_legal",
+  "standardbrawl": "not_legal",
+  "timeless": "not_legal",
+  "tlr": "not_legal",
+  "vintage": "not_legal"
+ },
+ "multiverse_ids": [],
+ "name": "Copy // Horror",
+ "nonfoil": true,
+ "object": "card",
+ "oracle_id": "307fef57-1d3f-4904-8fc2-089b4149779e",
+ "oversized": false,
+ "prices": {
+  "eur": "0.60",
+  "eur_foil": null,
+  "tix": null,
+  "usd": null,
+  "usd_etched": null,
+  "usd_foil": null
+ },
+ "prints_search_uri": "https://api.scryfall.com/cards/search?order=released&q=oracleid%3A307fef57-1d3f-4904-8fc2-089b4149779e&unique=prints",
+ "promo": false,
+ "purchase_uris": {
+  "cardhoarder": "https://www.cardhoarder.com/cards?affiliate_id=scryfall&data%5Bsearch%5D=Copy+%2F%2F+Horror&ref=card-profile&utm_campaign=affiliate&utm_medium=card&utm_source=scryfall",
+  "cardmarket": "https://www.cardmarket.com/en/Magic/Products?idProduct=366022&referrer=scryfall&utm_campaign=card_prices&utm_medium=text&utm_source=scryfall",
+  "tcgplayer": "https://partner.tcgplayer.com/c/4931599/1830156/21018?subId1=api&u=https%3A%2F%2Fwww.tcgplayer.com%2Fsearch%2Fmagic%2Fproduct%3FproductLineName%3Dmagic%26q%3DCopy%2B%252F%252F%2BHorror%26view%3Dgrid"
+ },
+ "rarity": "common",
+ "related_uris": {
+  "edhrec": "https://edhrec.com/route/?cc=Copy+%2F%2F+Horror",
+  "tcgplayer_infinite_articles": "https://partner.tcgplayer.com/c/4931599/1830156/21018?subId1=api&trafcat=tcgplayer.com%2Fsearch%2Farticles&u=https%3A%2F%2Fwww.tcgplayer.com%2Fsearch%2Farticles%3FproductLineName%3Dmagic%26q%3DCopy%2B%252F%252F%2BHorror",
+  "tcgplayer_infinite_decks": "https://partner.tcgplayer.com/c/4931599/1830156/21018?subId1=api&trafcat=tcgplayer.com%2Fsearch%2Fdecks&u=https%3A%2F%2Fwww.tcgplayer.com%2Fsearch%2Fdecks%3FproductLineName%3Dmagic%26q%3DCopy%2B%252F%252F%2BHorror"
+ },
+ "released_at": "2018-11-02",
+ "reprint": false,
+ "reserved": false,
+ "rulings_uri": "https://api.scryfall.com/cards/a020dc47-3747-4123-9954-f0e87a858b8c/rulings",
+ "scryfall_set_uri": "https://scryfall.com/sets/tgk1?utm_source=api",
+ "scryfall_uri": "https://scryfall.com/card/tgk1/1/copy-horror?utm_source=api",
+ "set": "tgk1",
+ "set_id": "9cabda5f-97cd-4eb3-93b9-83d1e9a191cb",
+ "set_name": "GRN Guild Kit Tokens",
+ "set_search_uri": "https://api.scryfall.com/cards/search?order=set&q=e%3Atgk1&unique=prints",
+ "set_type": "token",
+ "set_uri": "https://api.scryfall.com/sets/9cabda5f-97cd-4eb3-93b9-83d1e9a191cb",
+ "story_spotlight": false,
+ "textless": false,
+ "type_line": "Token // Token Creature — Horror",
+ "uri": "https://api.scryfall.com/cards/a020dc47-3747-4123-9954-f0e87a858b8c",
+ "variation": false
+}

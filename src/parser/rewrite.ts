@@ -8,15 +8,7 @@
  */
 
 import { CardAttributeNode, CardBinaryOperatorNode, ExactNameNode } from "./card-query-nodes";
-import {
-	ARRAY_IS_TAGS,
-	BOOLEAN_IS_TAGS,
-	COMPUTED_IS_TAGS,
-	FIELD_IS_TAGS,
-	GAME_IS_TAGS,
-	gameTagKey,
-	ParserClass,
-} from "./db-info";
+import { ARRAY_IS_TAGS, BOOLEAN_IS_TAGS, COMPUTED_IS_TAGS, GAME_IS_TAGS, gameTagKey, ParserClass } from "./db-info";
 import {
 	AndNode,
 	BinaryOperatorNode,
@@ -86,7 +78,11 @@ const DERIVED_EXPANSIONS: ReadonlyMap<string, string> = new Map([
 	// never vanilla there. +12 − 1 = the 11, and the engine's set is now Scryfall's own 363 card for
 	// card, not merely the same size.
 	["is\u0000watermark", "has:watermark"], // Scryfall accepts both spellings; 4,656 = 4,656
-	["is\u0000bear", "t:creature pow=2 tou=2 cmc=2"],
+	// NO `is:bear`, `is:frenchvanilla`, `is:modal` or `is:gainland` HERE any more: all four are
+	// STORED tags since generation 64 (db-info.ts BEAR_IS_TAG and its neighbours). Their rewrites
+	// were `t:creature pow=2 tou=2 cmc=2` over the merged row and three community `otag:`s, and
+	// answered 2,917 / 4,508 / 2,568 / 299 printings against api.scryfall.com's 2,884 / 3,946 /
+	// 2,596 / 244 (2026-10-04). The vendored Python keeps upstream's rewrites.
 	["is\u0000split", "layout:split"],
 	["is\u0000flip", "layout:flip"],
 	["is\u0000transform", "layout:transform"],
@@ -151,8 +147,8 @@ const DERIVED_EXPANSIONS: ReadonlyMap<string, string> = new Map([
 	// export; ancestor propagation makes parent slugs self-updating as new
 	// cycles are tagged. Plain parent tags preferred where they exist. Upstream
 	// accepts deviations from Scryfall's own is: membership as community
-	// sentiment -- otag:shockland includes Multiversal Passage, otag:gainland
-	// reaches newer enters-tapped-gain-life cycles Scryfall's list lacks.
+	// sentiment -- otag:shockland includes Multiversal Passage. (`is:gainland` was
+	// `otag:gainland` here, 43 cards against Scryfall's 15; it is a stored tag now.)
 	["is\u0000battleland", "otag:cycle-tangoland"], // 10
 	// The Amonkhet/Hour cycling duals. Scryfall spells them three ways; all three are 10.
 	["is\u0000bicycleland", "otag:cycle-dual-cycling-land"], // 10, exact
@@ -168,7 +164,6 @@ const DERIVED_EXPANSIONS: ReadonlyMap<string, string> = new Map([
 	["is\u0000fastland", "otag:cycle-fastland"], // 10, exact
 	["is\u0000fetchland", "otag:cycle-fetchland"], // 10, exact
 	["is\u0000filterland", "otag:cycle-hybrid-filterland or otag:cycle-ody-filterland"], // 20 vs 22
-	["is\u0000gainland", "otag:gainland"], // 42, self-updating superset of Scryfall's 15
 	["is\u0000karoo", "otag:bounceland"], // 17; Scryfall's other spelling of bounceland
 	["is\u0000manland", "t:land o:become o:creature o:/still a.* land/"],
 	["is\u0000pathway", "otag:cycle-pathway"], // 10, exact
@@ -224,12 +219,6 @@ const DERIVED_EXPANSIONS: ReadonlyMap<string, string> = new Map([
 	// `t:adventure or t:omen` there (164 = 164; Omen cards use the adventure
 	// layout with an Omen-typed face), so layout is the faithful mirror.
 	["is\u0000adventure", "layout:adventure"],
-	["is\u0000frenchvanilla", "otag:french-vanilla"], // community tag, ~+233 looser than "keywords only"
-	// The community tag tracks is:modal far better than the mode-introducing
-	// wording did, and is cheaper to evaluate: scored on Scryfall's corpus
-	// against their own is:modal (800 cards), otag:modal disagrees on 9 while
-	// the 'o:"choose one" or ...' union it replaces disagrees on 197.
-	["is\u0000modal", "otag:modal"],
 	// ── Set types (the `st:` operator, added alongside) ──────────────────────
 	// `is:masterpiece` and `is:alchemy` ARE their set types: both set differences against
 	// `st:masterpiece` / `st:alchemy` are empty on api.scryfall.com (2026-08-16).
@@ -404,8 +393,11 @@ const HAS_EXPANSIONS: ReadonlyMap<string, string> = new Map([
  * Secret Lair crossovers) — a presence test on `Printing.flavor_name_id` OR any of its faces'.
  * Per-PRINTING, like `localizedname`: Command Tower's sld/1864 row matches and its other 111 do
  * not. Measured against api.scryfall.com on 2026-09-01: 476 cards / 661 printings, 15 of them
- * carrying the key on their faces alone (vow/341, sld/1807) and 6 of them Japanese rows returned
- * with no `lang:` written — so, like `localizedname`, its presence WIDENS the query to the annex.
+ * carrying the key on their faces alone (vow/341, sld/1807). UNLIKE `localizedname` IT DOES NOT
+ * WIDEN the query to the annex: 6 of those rows are Japanese, which was read as widening, but they
+ * are printings that exist only in Japanese — the canonical row. Measured 2026-10-04: 742 rows of
+ * every language carry a flavor name, `is:flavorname` is 686 printings there, and this port,
+ * widening, answered 740 (the Japanese row of sld/1862 beside its English one).
  * Before it was listed here it parsed, reached the engine as a tag no row carries, and answered a
  * 404 for `clive is:flavorname` where Scryfall answers the three alternate-name Clives.
  *
@@ -418,6 +410,13 @@ const HAS_EXPANSIONS: ReadonlyMap<string, string> = new Map([
  * and `is:atypical` 10,423, `is:atypical is:default` 0 and `is:default -is:atypical` 33,267 —
  * exact complements per printing, so `default` is `Not(Atypical)` in the engine. Both were the
  * largest `is:` values this port answered nothing for.
+ *
+ * THE CLASS WAS WIDENED 2026-10-04, read whole: `is:atypical&unique=prints` with extras is 30,837
+ * printings there and was 27,369 here — every one right and 3,468 missing (gold borders,
+ * oversized cards, masterpiece sets, the colorshifted frame, eight promo treatments). 30,784 now,
+ * still nothing Scryfall lacks; the 53 left are in its class by no field the bulk data carries.
+ * card_engine's `PreferClassIds` has the members, the counts and the thirteen `prefer:atypical`
+ * probes that say the prefer ranks by the same wider class.
  */
 export const ENGINE_IS_VALUES: ReadonlySet<string> = new Set([
 	"localizedname",
@@ -442,7 +441,6 @@ for (const [value, dsl] of HAS_EXPANSIONS) {
 export const SUPPORTED_IS_VALUES: ReadonlySet<string> = new Set([
 	...BOOLEAN_IS_TAGS.keys(),
 	...ARRAY_IS_TAGS.keys(),
-	...FIELD_IS_TAGS.keys(),
 	// The `game_*` keys `prefixGameValues` writes. Here so `game:paper` — which IS one of these by
 	// the time anything downstream reads it — is not reported as a predicate with no data behind
 	// it. They are also spellable directly as `is:game_paper`, which Scryfall has no equivalent of;
