@@ -1777,9 +1777,17 @@ export async function gzipBytes(bytes: Uint8Array): Promise<Uint8Array> {
  *      `fo:` is unchanged, the printed text. The rule and its probes are on the engine's
  *      `searchable_oracle_text`.
  *
- *      GENERATION-ONLY: a longer string in the stripped-oracle column the archive already has,
- *      about 2.5 KB across the whole store, and every text predicate, bound substring set and
- *      trigram posting is built from that string as before. Nothing on the query path moves.
+ *      In the same generation, never published apart: A CARD WITH MORE THAN TWO FACES HAS NO
+ *      SEARCHABLE RULES TEXT. Who // What // When // Where // Why is 404 on api.scryfall.com for
+ *      `o:target`, `o:/./` and `fo:target` and 1 for `o:/^$/`; this store searched all five faces.
+ *      Three cards (it, Smelt // Herd // Saw, There // They're // Their) hold the empty string in
+ *      both oracle search columns; the faces the card object prints are untouched. The rule is
+ *      on the engine's `searched_oracle_text`.
+ *
+ *      GENERATION-ONLY: a longer string (or, for the three, an empty one) in the oracle search
+ *      columns the archive already has, about 2.5 KB across the whole store, and every text
+ *      predicate, bound substring set and trigram posting is built from those strings as before.
+ *      Nothing on the query path moves.
  */
 export const STORE_CONTENT_GENERATION = 57;
 

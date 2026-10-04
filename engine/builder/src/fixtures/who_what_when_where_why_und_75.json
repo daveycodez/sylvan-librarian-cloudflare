@@ -1,0 +1,169 @@
+{
+ "artist": "Dan Frazier",
+ "artist_ids": [
+  "059bba56-5feb-42e4-8c2e-e2f1e6ba11f9"
+ ],
+ "booster": false,
+ "border_color": "silver",
+ "card_back_id": "0aeebaf5-8c7d-4636-9e82-8c27447861f7",
+ "card_faces": [
+  {
+   "mana_cost": "{X}{W}",
+   "name": "Who",
+   "object": "card_face",
+   "oracle_text": "Target player gains X life.",
+   "type_line": "Instant"
+  },
+  {
+   "mana_cost": "{2}{R}",
+   "name": "What",
+   "object": "card_face",
+   "oracle_text": "Destroy target artifact.",
+   "type_line": "Instant"
+  },
+  {
+   "mana_cost": "{2}{U}",
+   "name": "When",
+   "object": "card_face",
+   "oracle_text": "Counter target creature spell.",
+   "type_line": "Instant"
+  },
+  {
+   "mana_cost": "{3}{B}",
+   "name": "Where",
+   "object": "card_face",
+   "oracle_text": "Destroy target land.",
+   "type_line": "Instant"
+  },
+  {
+   "mana_cost": "{1}{G}",
+   "name": "Why",
+   "object": "card_face",
+   "oracle_text": "Destroy target enchantment.",
+   "type_line": "Instant"
+  }
+ ],
+ "cardmarket_id": 438469,
+ "cmc": 13.0,
+ "collector_number": "75",
+ "color_identity": [
+  "B",
+  "G",
+  "R",
+  "U",
+  "W"
+ ],
+ "colors": [
+  "B",
+  "G",
+  "R",
+  "U",
+  "W"
+ ],
+ "digital": false,
+ "finishes": [
+  "nonfoil"
+ ],
+ "foil": false,
+ "frame": "2015",
+ "full_art": false,
+ "game_changer": false,
+ "games": [
+  "paper"
+ ],
+ "highres_image": true,
+ "id": "fea4a077-718b-44af-87be-90df61aab643",
+ "illustration_id": "4d1ca4ab-db58-4280-b854-e8bf22a964cb",
+ "image_status": "highres_scan",
+ "image_updated_at": "2026-07-13T08:28:41Z",
+ "image_uris": {
+  "art": "https://cards.scryfall.io/art/front/f/e/fea4a077-718b-44af-87be-90df61aab643.webp?1783931321",
+  "art_crop": "https://cards.scryfall.io/art_crop/front/f/e/fea4a077-718b-44af-87be-90df61aab643.jpg?1783931321",
+  "border_crop": "https://cards.scryfall.io/border_crop/front/f/e/fea4a077-718b-44af-87be-90df61aab643.jpg?1783931321",
+  "crop": "https://cards.scryfall.io/crop/front/f/e/fea4a077-718b-44af-87be-90df61aab643.webp?1783931321",
+  "display": "https://cards.scryfall.io/display/front/f/e/fea4a077-718b-44af-87be-90df61aab643.webp?1783931321",
+  "grid": "https://cards.scryfall.io/grid/front/f/e/fea4a077-718b-44af-87be-90df61aab643.webp?1783931321",
+  "large": "https://cards.scryfall.io/large/front/f/e/fea4a077-718b-44af-87be-90df61aab643.jpg?1783931321",
+  "normal": "https://cards.scryfall.io/normal/front/f/e/fea4a077-718b-44af-87be-90df61aab643.jpg?1783931321",
+  "png": "https://cards.scryfall.io/png/front/f/e/fea4a077-718b-44af-87be-90df61aab643.png?1783931321",
+  "small": "https://cards.scryfall.io/small/front/f/e/fea4a077-718b-44af-87be-90df61aab643.jpg?1783931321",
+  "thumb": "https://cards.scryfall.io/thumb/front/f/e/fea4a077-718b-44af-87be-90df61aab643.webp?1783931321"
+ },
+ "keywords": [],
+ "lang": "en",
+ "layout": "split",
+ "legalities": {
+  "alchemy": "not_legal",
+  "brawl": "not_legal",
+  "commander": "not_legal",
+  "competitivebrawl": "not_legal",
+  "duel": "not_legal",
+  "future": "not_legal",
+  "gladiator": "not_legal",
+  "historic": "not_legal",
+  "legacy": "not_legal",
+  "modern": "not_legal",
+  "oathbreaker": "not_legal",
+  "oldschool": "not_legal",
+  "pauper": "not_legal",
+  "paupercommander": "not_legal",
+  "penny": "not_legal",
+  "pioneer": "not_legal",
+  "predh": "not_legal",
+  "premodern": "not_legal",
+  "standard": "not_legal",
+  "standardbrawl": "not_legal",
+  "timeless": "not_legal",
+  "tlr": "not_legal",
+  "vintage": "not_legal"
+ },
+ "mana_cost": "{X}{W} // {2}{R} // {2}{U} // {3}{B} // {1}{G}",
+ "multiverse_ids": [
+  479463
+ ],
+ "name": "Who // What // When // Where // Why",
+ "nonfoil": true,
+ "object": "card",
+ "oracle_id": "adfe1b07-dd82-4c39-a7a6-ded0b1c39761",
+ "oversized": false,
+ "prices": {
+  "eur": "0.26",
+  "eur_foil": null,
+  "tix": null,
+  "usd": "0.26",
+  "usd_etched": null,
+  "usd_foil": null
+ },
+ "prints_search_uri": "https://api.scryfall.com/cards/search?order=released&q=oracleid%3Aadfe1b07-dd82-4c39-a7a6-ded0b1c39761&unique=prints",
+ "promo": false,
+ "purchase_uris": {
+  "cardhoarder": "https://www.cardhoarder.com/cards?affiliate_id=scryfall&data%5Bsearch%5D=Who+%2F%2F+What+%2F%2F+When+%2F%2F+Where+%2F%2F+Why&ref=card-profile&utm_campaign=affiliate&utm_medium=card&utm_source=scryfall",
+  "cardmarket": "https://www.cardmarket.com/en/Magic/Products?idProduct=438469&referrer=scryfall&utm_campaign=card_prices&utm_medium=text&utm_source=scryfall",
+  "tcgplayer": "https://partner.tcgplayer.com/c/4931599/1830156/21018?subId1=api&u=https%3A%2F%2Fwww.tcgplayer.com%2Fproduct%2F208535%3Fpage%3D1"
+ },
+ "rarity": "rare",
+ "related_uris": {
+  "edhrec": "https://edhrec.com/route/?cc=Who+%2F%2F+What+%2F%2F+When+%2F%2F+Where+%2F%2F+Why",
+  "gatherer": "https://gatherer.wizards.com/Pages/Card/Details.aspx?multiverseid=479463&printed=false",
+  "tcgplayer_infinite_articles": "https://partner.tcgplayer.com/c/4931599/1830156/21018?subId1=api&trafcat=tcgplayer.com%2Fsearch%2Farticles&u=https%3A%2F%2Fwww.tcgplayer.com%2Fsearch%2Farticles%3FproductLineName%3Dmagic%26q%3DWho%2B%252F%252F%2BWhat%2B%252F%252F%2BWhen%2B%252F%252F%2BWhere%2B%252F%252F%2BWhy",
+  "tcgplayer_infinite_decks": "https://partner.tcgplayer.com/c/4931599/1830156/21018?subId1=api&trafcat=tcgplayer.com%2Fsearch%2Fdecks&u=https%3A%2F%2Fwww.tcgplayer.com%2Fsearch%2Fdecks%3FproductLineName%3Dmagic%26q%3DWho%2B%252F%252F%2BWhat%2B%252F%252F%2BWhen%2B%252F%252F%2BWhere%2B%252F%252F%2BWhy"
+ },
+ "released_at": "2020-02-29",
+ "reprint": true,
+ "reserved": false,
+ "rulings_uri": "https://api.scryfall.com/cards/fea4a077-718b-44af-87be-90df61aab643/rulings",
+ "scryfall_set_uri": "https://scryfall.com/sets/und?utm_source=api",
+ "scryfall_uri": "https://scryfall.com/card/und/75/who-what-when-where-why?utm_source=api",
+ "set": "und",
+ "set_id": "fccfdf97-f5f2-43b4-9be9-9255414e6633",
+ "set_name": "Unsanctioned",
+ "set_search_uri": "https://api.scryfall.com/cards/search?order=set&q=e%3Aund&unique=prints",
+ "set_type": "funny",
+ "set_uri": "https://api.scryfall.com/sets/fccfdf97-f5f2-43b4-9be9-9255414e6633",
+ "story_spotlight": false,
+ "tcgplayer_id": 208535,
+ "textless": false,
+ "type_line": "Instant",
+ "uri": "https://api.scryfall.com/cards/fea4a077-718b-44af-87be-90df61aab643",
+ "variation": false
+}

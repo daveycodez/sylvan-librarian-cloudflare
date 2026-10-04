@@ -1727,6 +1727,32 @@ pub(crate) fn searchable_oracle_text(oracle_text: &str) -> String {
     format!("{printed}\n{unbracketed}\n{cleaved}")
 }
 
+/// The oracle text `o:` and `fo:` get to search, given how many faces the card has: all of it,
+/// or — for a card with MORE THAN TWO faces — none.
+///
+/// api.scryfall.com searches no rules text at all on a card with three or more faces. Measured
+/// 2026-10-04 on Who // What // When // Where // Why, whose five faces read "Target player gains
+/// X life.", "Destroy target artifact.", "Counter target creature spell.", "Destroy target land."
+/// and "Destroy target enchantment.", each scoped `!"Who // What // When // Where // Why"`:
+///
+/// | query | answer |
+/// |---|---|
+/// | (the name alone), `t:instant`, `name:/what/` | 1 |
+/// | `o:target`, `o:destroy`, `o:"destroy target artifact"`, `o:/target/`, `o:/./` | 404 |
+/// | `fo:target`, `fo:/target/` | 404 |
+/// | `o:/^$/`, `fo:/^$/` | 1 — the text is there, and empty |
+///
+/// and the three-faced Smelt // Herd // Saw is the same (`include:extras o:/./` 404, `o:/^$/` 1).
+/// A two-faced split card is searched face by face as ever (`!"Fire // Ice" o:/^tap target
+/// permanent\.$/` is 1). Three cards in the corpus have more than two faces — these two and
+/// There // They're // Their — and the first is not an extra, so it answered seven of mtg-seeker's
+/// 2026-10-04 reports here and none on Scryfall.
+///
+/// The text the card object PRINTS is untouched: each face keeps its `oracle_text`.
+pub(crate) fn searched_oracle_text(oracle_text: &str, face_count: usize) -> &str {
+    if face_count > 2 { "" } else { oracle_text }
+}
+
 /// Build-time hash-consing interner; `strings` becomes CardData.strings.
 struct Interner {
     map: HashMap<String, u32>,
@@ -2400,8 +2426,16 @@ fn card_from_pydict(d: &Bound<PyDict>, it: &mut Interner, vocab: &mut VocabInter
     // Already lowercased + accent-folded in Python (fold_accents(), #649); read as-is.
     let card_name_folded = opt_str(d, "card_name_folded").unwrap_or_default();
     let oracle_text = opt_str(d, "oracle_text").unwrap_or_default();
-    let oracle_text_lower_id = it.intern(searchable_oracle_text(&oracle_text));
-    let oracle_full_lower_id = it.intern(oracle_text.to_lowercase());
+    // A card with more than two faces is searched as if it had no text — see `searched_oracle_text`.
+    let face_count = d
+        .get_item("card_faces")
+        .ok()
+        .flatten()
+        .and_then(|v| v.cast::<PyList>().ok().map(|l| l.len()))
+        .unwrap_or(0);
+    let searched = searched_oracle_text(&oracle_text, face_count);
+    let oracle_text_lower_id = it.intern(searchable_oracle_text(searched));
+    let oracle_full_lower_id = it.intern(searched.to_lowercase());
     let flavor_text = opt_str(d, "flavor_text").unwrap_or_default();
     let flavor_text_lower_id = it.intern(flavor_text.to_lowercase());
     // Lowercased into the artist vocab for search, original case into the string table for the

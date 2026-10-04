@@ -33,7 +33,7 @@ use super::{
     count_common_keywords, count_common_types, format_shift_or_assign, identity_letters,
     iso8601_utc_to_epoch_secs, lane_add,
     legality_bits_to_json, legality_code, mana_lane, parse_uuid_or_hash, rarity_int_to_text,
-    frame_of, released_int_to_iso, run_query_routed, sorted_strs, searchable_oracle_text, str_at, sync_format_shifts, uuid_from_u128,
+    frame_of, released_int_to_iso, run_query_routed, sorted_strs, searchable_oracle_text, searched_oracle_text, str_at, sync_format_shifts, uuid_from_u128,
     write_archive,
     DEFAULT_FIELDS,
     // The compat residue's flag bits and bitset vocabularies, shared with FIELD_TABLE's twins.
@@ -650,8 +650,11 @@ pub(crate) fn card_from_json(
     // Already lowercased + accent-folded upstream (fold_accents(), #649); read as-is.
     let card_name_folded = jv_opt_str(d, "card_name_folded").unwrap_or_default();
     let oracle_text = jv_opt_str(d, "oracle_text").unwrap_or_default();
-    let oracle_text_lower_id = it.intern(searchable_oracle_text(&oracle_text));
-    let oracle_full_lower_id = it.intern(oracle_text.to_lowercase());
+    // A card with more than two faces is searched as if it had no text — see `searched_oracle_text`.
+    let face_count = d.get("card_faces").and_then(Value::as_array).map_or(0, Vec::len);
+    let searched = searched_oracle_text(&oracle_text, face_count);
+    let oracle_text_lower_id = it.intern(searchable_oracle_text(searched));
+    let oracle_full_lower_id = it.intern(searched.to_lowercase());
     let flavor_text = jv_opt_str(d, "flavor_text").unwrap_or_default();
     let flavor_text_lower_id = it.intern(flavor_text.to_lowercase());
     // Lowercased into the artist vocab for search, original case into the string table for the

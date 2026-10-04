@@ -1897,6 +1897,60 @@
 			"method": "GET",
 			"path": "/cards/search?q=o%3A%2FReturn+target+%28%5C%5B%5B%5E%5C%5D%5D%2B%5C%5D+%29%3F%5C%5B%3F%28creature%7C%28nonland+%29%3Fpermanent%29%28+you+control%29%3F%5C%5D%3F+to+its+owner.s+hand%2F+OR+%28layout%3Anormal+is%3Apermanent+-o%3A%22this+card%22+-o%3Agraveyard+o%3A%2FReturn+%28~%7Cthis+%5Cw%2B%29+to+its+owner.s+hand%2F%29",
 			"note": "R31, second form, written to step over the brackets. Scryfall 312; this port 311 — Alchemist's Retrieval: the pattern allows ` you control` and then `\\]?`, which fits the unbracketed reading and not the printed \" [you control]\"."
+		},
+		{
+			"name": "search-five-faced-card-has-no-rules-text",
+			"method": "GET",
+			"path": "/cards/search?q=%21%22Who+%2F%2F+What+%2F%2F+When+%2F%2F+Where+%2F%2F+Why%22+%28o%3Atarget+or+o%3Adestroy+or+o%3A%22destroy+target+artifact%22+or+o%3A%2Ftarget%2F+or+o%3A%2F.%2F+or+fo%3Atarget+or+fo%3A%2Ftarget%2F%29",
+			"note": "THE RULE ISOLATED. A card with more than two faces has no searchable rules text on api.scryfall.com. Who // What // When // Where // Why's five faces read \"Target player gains X life.\", \"Destroy target artifact.\", \"Counter target creature spell.\", \"Destroy target land.\" and \"Destroy target enchantment.\", and each of these seven terms is 404 scoped to it (2026-10-04), as is the case as written. The three-faced Smelt // Herd // Saw is the same under include:extras. Before generation 57 this port answered the card for all seven."
+		},
+		{
+			"name": "search-five-faced-card-text-is-empty-not-absent",
+			"method": "GET",
+			"path": "/cards/search?q=%21%22Who+%2F%2F+What+%2F%2F+When+%2F%2F+Where+%2F%2F+Why%22+o%3A%2F%5E%24%2F+fo%3A%2F%5E%24%2F+t%3Ainstant+name%3A%2Fwhat%2F",
+			"note": "The control: the card is still found by name and type, and its text matches the empty pattern — 1 on both sides. A two-faced split card is searched face by face as ever (`!\"Fire // Ice\" o:/^tap target permanent\\.$/` is 1)."
+		},
+		{
+			"name": "search-report-r09-lifegain",
+			"method": "GET",
+			"path": "/cards/search?q=fo%3A%2Ftokens%3F+with.%2Alifelink%7Cyou+gain+life+equal%7Centers%2C+create.%2AFood%7CFood+artifact%7Clife+total+become%7Cexchange+your+life%7Clife+totals%7Cit+becomes+equal%7Cplayer+gains+%5B1-9X%5D%7Cventure+into+the+dungeon%5C.%2F+-o%3Alowest+-o%3A%22isn%27t%22+-o%3A%22enters+under%22",
+			"note": "mtg-seeker report R09 (2026-10-04). Scryfall 393; this port 394 — Who // What // When // Where // Why, through `player gains [1-9X]` on its first face."
+		},
+		{
+			"name": "search-report-r11-removal-aura",
+			"method": "GET",
+			"path": "/cards/search?q=o%3A%2F%28destroy%7Cexile%7Creturn%29%5B%5E.%5Cn%3A%5D%7B0%2C20%7D%28target%7Call%7Ceach%29+%28%28%3F%21until%7Cif%7Cyou%7Cwith%29%5B%5Cw%2C%5C%2F-%5D%2B+%29%7B0%2C6%7D%28enchantments%3F%7CAuras%3F%29%5Cb%28%3F%21+cards%3F%7C+creatures%3F%7C+you+%28control%7Cown%29%7C%5B%5E.%5Cn%5D%2Agraveyard%29%2F+-o%3A%22non-Aura%22+OR+o%3A%22sacrifices+an+enchantment%22",
+			"note": "R11. Scryfall 408; this port 409 — Who // What // When // Where // Why (\"Destroy target enchantment.\")."
+		},
+		{
+			"name": "search-report-r13-removal-equipment",
+			"method": "GET",
+			"path": "/cards/search?q=o%3A%2F%28destroy%7Cexile%7Creturn%29+%28all%7Ceach%7C%28%5B%5Cw-%5D%2B+%29%7B0%2C4%7Dtarget%29+%28%5B%5Cw%2C-%5D%2B+%29%7B0%2C3%7D%28artifacts%3F%7CEquipment%29%28%3F%21%5B%5E.%3A%5D%2Ayou+%28control%7Cown%29%29%2F+-o%3A%2F%28artifact%7CEquipment%29%5B%5E.%5D%2Acard%7Creturn%5B%5E.%5D%2Abattlefield%2F+OR+o%3A%22each+opponent+sacrifices+an+artifact%22",
+			"note": "R13. Scryfall 514; this port 515 — Who // What // When // Where // Why (\"Destroy target artifact.\")."
+		},
+		{
+			"name": "search-report-r14-removal-vehicle",
+			"method": "GET",
+			"path": "/cards/search?q=o%3A%2F%28destroy%7Cexile%7Creturn%29%5B%5E.%5Cn%3A%5D%2A%28target%7Call%7Ceach%29+%28%28%3F%21until%7Cif%7Cyou%7Cwith%29%5B%5Cw%2C%5C%2F-%5D%2B+%29%7B0%2C6%7D%28artifacts%3F%7CVehicles%3F%29%5Cb%28%3F%21+cards%3F%7C%5B%5E.%5Cn%5D%2Ayou+%28control%7Cown%29%7C%5B%5E.%5Cn%5D%2Agraveyard%29%2F+-o%3A%22except+for+artifacts%22+OR+o%3A%22destroy+target+creature%22",
+			"note": "R14. 892 on both sides with different cards: this port had Who // What // When // Where // Why and lacked Fierce Retribution, whose cleaved reading is \"Destroy target creature.\" Two rules, both in generation 57."
+		},
+		{
+			"name": "search-report-r15-removal-spacecraft",
+			"method": "GET",
+			"path": "/cards/search?q=o%3A%2Fdestroy+target+%28creature%5C.%7Cartifact%28%3F%21%5B%5E.%5D%2Ayou%29%29%2F+OR+o%3A%22exile+target+creature.%22+-o%3Areturn+OR+o%3A%2Fdeals%3F+%28%5B1-9X%5D%7Cthat+much%7Cdamage+equal%29%5B%5E.%5D%2Ato+%28any%28+other%29%3F+target%7Ctarget+creature%5B.%2C%5D%29%2F+OR+o%3A%22target+creature+to+its%22",
+			"note": "R15. Scryfall 1,621; this port 1,619 — it had Who // What // When // Where // Why and lacked Fierce Retribution, Lunar Rejection and Parasitic Grasp (cleaved readings)."
+		},
+		{
+			"name": "search-report-r22-spot-removal",
+			"method": "GET",
+			"path": "/cards/search?q=o%3A%22Destroy+target+creature.%22+OR+o%3A%22Destroy+target+artifact.%22+OR+o%3A%22Destroy+target+enchantment.%22+OR+o%3A%22Exile+target+creature.%22+OR+o%3A%22Destroy+target+Equipment+attached+to+it.%22+OR+o%3A%22Destroy+target+Attraction.%22",
+			"note": "R22. 378 on both sides with different cards: Who // What // When // Where // Why here, Fierce Retribution there."
+		},
+		{
+			"name": "search-report-r24-single-target-spell",
+			"method": "GET",
+			"path": "/cards/search?q=o%3A%2F%5E%28%E2%80%A2+%29%3F%28Counter%7CDestroy%7CExile%7CReturn%29%3F+%3Ftarget+%28%5B%5Cw-%5D%2B+%29%3F%28spell%7Ccreature%7Cartifact%7Cenchantment%7Cpermanent%7Cland%7Ccard%7Cplayer%7Copponent%29%5Cb%2F+-o%3A%2F%5Cbtargets%3F%5Cb%28.%7C%5Cn%29%2A%5Cbtargets%3F%5Cb%2F+%28t%3Ainstant+OR+t%3Asorcery%29",
+			"note": "R24. Scryfall 2,173; this port 2,177 — Who // What // When // Where // Why, and three cleave spells (Alchemist's Retrieval, Dread Fugue, Wash Away) that Scryfall's `-o:/\\btargets?\\b(.|\\n)*\\btargets?\\b/` drops because their text is searched three times over."
 		}
 	]
 }
