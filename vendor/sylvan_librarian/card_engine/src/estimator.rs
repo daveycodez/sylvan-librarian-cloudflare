@@ -126,7 +126,7 @@ pub(crate) fn has_printing_varying_leaf(f: &FilterExpr) -> bool {
         // (Printing.flavor_name_id, or a PrintingFace's).
         FilterExpr::PrintedNamePresent | FilterExpr::FlavorNameIn { .. } | FilterExpr::FlavorNamePresent => true,
         // ...and `lore:`'s printing half: the flavor text, the flavor name, the faces of its own.
-        FilterExpr::LorePrinting { .. } | FilterExpr::PrintsOwnFaces => true,
+        FilterExpr::LorePrinting { .. } | FilterExpr::PrintsOwnFaces | FilterExpr::FaceStatCmpFalse { .. } => true,
         // ...and the cheapest codes.
         FilterExpr::Cheapest { .. } => true,
         // ...and so is the frame class (`is:atypical` / `is:default`): flags, border and promo
@@ -533,6 +533,8 @@ fn estimate_leaf(f: &FilterExpr, indexes: &Archived<CardIndexes>, n_cards: u32, 
         // reversible printing's own faces; no index counts any of it.
         | FilterExpr::LorePrinting { .. }
         | FilterExpr::PrintsOwnFaces
+        // No index answers "the comparison is false on two faces"; it is read off each candidate.
+        | FilterExpr::FaceStatCmpFalse { .. }
         // No index answers `cheapest:`; it is two bits read off each candidate printing.
         | FilterExpr::Cheapest { .. } => unknown(n),
 

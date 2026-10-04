@@ -85,3 +85,68 @@ export function setAndCollectorNumber(setCode: string, collectorNumber: string, 
 // for put it first. The identifier is an exact NAME lookup with its own key rule and its own
 // ranking, neither of which a filter tree can express — it goes through the engine's
 // `collection_card_by_name` instead. See `resolveIdentifiers`.
+
+/** The three stats a FACE prints, by the column the parser names them with. */
+const FACE_STAT_COLUMNS: ReadonlySet<string> = new Set([
+	"creature_power",
+	"creature_toughness",
+	"planeswalker_loyalty",
+]);
+
+/** Whether `value` holds a `CardAttributeNode` naming a face stat, anywhere under it. */
+function namesFaceStat(value: unknown): boolean {
+	if (Array.isArray(value)) return value.some(namesFaceStat);
+	if (value === null || typeof value !== "object") return false;
+	const node = value as Node;
+	const kwargs = node.kwargs as Node | undefined;
+	if (node.node_type === "CardAttributeNode") return FACE_STAT_COLUMNS.has(String(kwargs?.attribute_name));
+	return kwargs !== undefined && Object.values(kwargs).some(namesFaceStat);
+}
+
+/**
+ * A NEGATED GROUP THAT COMPARES A FACE STAT IS ASKED AS SCRYFALL ANSWERS IT — `-(loy>=1)`.
+ *
+ * On api.scryfall.com `pow`, `tou` and `loy` are compared over a printing's two faces in SQL's
+ * three-valued logic, so `NOT` over one is not the complement: it answers only the printings
+ * BOTH of whose faces carry the stat and fail the comparison. `t:planeswalker -(loy>=1)` is a 404
+ * where `t:planeswalker loy<1` is 4, and `t:creature -(pow>=3)` 39 (2026-10-04; card_engine's
+ * `FaceStatCmpFalse` carries the measurements). The engine answers that for a `ScryfallNotNode`,
+ * and this is where a `NotNode` becomes one: only when a face stat is compared under it, so every
+ * other tree is handed over exactly as the parser built it.
+ *
+ * COMPAT SURFACE ONLY. `/search` keeps the upstream `NotNode`, which is the complement, as
+ * upstream's SQL answers it. (A negated LEAF never gets here: `-pow>=3` is Scryfall's silent
+ * tautology, and the term policy has already answered it.)
+ *
+ * COST: one walk of the tree, which stops at the first `NotNode`-free subtree it can — a tree
+ * with no `NotNode` is returned as the same object.
+ */
+export function scryfallNegations<T>(tree: T): T {
+	if (Array.isArray(tree)) {
+		let changed = false;
+		const out = tree.map((item) => {
+			const next = scryfallNegations(item);
+			if (next !== item) changed = true;
+			return next;
+		});
+		return (changed ? out : tree) as T;
+	}
+	if (tree === null || typeof tree !== "object") return tree;
+	const node = tree as unknown as Node;
+	const kwargs = node.kwargs;
+	if (kwargs === null || typeof kwargs !== "object") return tree;
+	let changed = false;
+	const nextKwargs: Node = {};
+	for (const [key, value] of Object.entries(kwargs as Node)) {
+		const next = scryfallNegations(value);
+		if (next !== value) changed = true;
+		nextKwargs[key] = next;
+	}
+	const renamed = node.node_type === "NotNode" && namesFaceStat(node);
+	if (!changed && !renamed) return tree;
+	return {
+		...node,
+		node_type: renamed ? "ScryfallNotNode" : node.node_type,
+		kwargs: changed ? nextKwargs : kwargs,
+	} as T;
+}

@@ -2918,6 +2918,12 @@
 			"method": "GET",
 			"path": "/cards/search?q=ft%3Adunkelheit+lang%3Ade&unique=prints",
 			"note": "2026-10-04. 213 German printings (`ft:schatten lang:de` 264, `ft:ombre lang:fr` 755, `lang:de e:m21 has:flavor` 199; `ft:dunkelheit` with no language is a 404). A 404 here: the flavor index holds the canonical printings' texts only, so the bound `ft:` leaf was False for every foreign row. A query that walks the annex now reads the printing's own text. NEEDS THE REBUILT ENGINE BLOB."
+		},
+		{
+			"name": "negated-group-over-a-face-stat",
+			"method": "GET",
+			"path": "/cards/search?q=t%3Aplaneswalker+-%28loy%3E%3D4%29",
+			"note": "2026-10-04. 4, each a printing with loyalty on two faces all under 4 (Estrid sld/1327, Garruk Wildspeaker sld/749, Jace Beleren sld/746, Oko ecl/61) — where `t:planeswalker loy<4` is 90 and `t:planeswalker -(loy>=1)` a 404. Scryfall compares pow/tou/loy over two faces in three-valued logic, and NOT answers only the FALSE ones. This port answered the complement. NEEDS THE REBUILT ENGINE BLOB (a `ScryfallNotNode` the committed one does not read)."
 		}
 	]
 }

@@ -1,0 +1,175 @@
+{
+ "artist": "Fay Dalton & Scott Okumura",
+ "artist_ids": [
+  "db096429-0266-4342-8a53-4ad566060216",
+  "f4ec7a06-c25b-41f1-8ae3-6c51ac063cdd"
+ ],
+ "booster": false,
+ "border_color": "borderless",
+ "card_faces": [
+  {
+   "artist": "Fay Dalton",
+   "artist_id": "db096429-0266-4342-8a53-4ad566060216",
+   "cmc": 3.0,
+   "colors": [
+    "U"
+   ],
+   "flavor_text": "Pitcher",
+   "illustration_id": "43a8491e-32bd-4065-9e65-a749a027b5c9",
+   "image_uris": {
+    "art": "https://cards.scryfall.io/art/front/4/6/4696f5de-fe5b-40df-a194-1a73b4c5150f.webp?1783914812",
+    "art_crop": "https://cards.scryfall.io/art_crop/front/4/6/4696f5de-fe5b-40df-a194-1a73b4c5150f.jpg?1783914812",
+    "border_crop": "https://cards.scryfall.io/border_crop/front/4/6/4696f5de-fe5b-40df-a194-1a73b4c5150f.jpg?1783914812",
+    "crop": "https://cards.scryfall.io/crop/front/4/6/4696f5de-fe5b-40df-a194-1a73b4c5150f.webp?1783914812",
+    "display": "https://cards.scryfall.io/display/front/4/6/4696f5de-fe5b-40df-a194-1a73b4c5150f.webp?1783914812",
+    "grid": "https://cards.scryfall.io/grid/front/4/6/4696f5de-fe5b-40df-a194-1a73b4c5150f.webp?1783914812",
+    "large": "https://cards.scryfall.io/large/front/4/6/4696f5de-fe5b-40df-a194-1a73b4c5150f.jpg?1783914812",
+    "normal": "https://cards.scryfall.io/normal/front/4/6/4696f5de-fe5b-40df-a194-1a73b4c5150f.jpg?1783914812",
+    "png": "https://cards.scryfall.io/png/front/4/6/4696f5de-fe5b-40df-a194-1a73b4c5150f.png?1783914812",
+    "small": "https://cards.scryfall.io/small/front/4/6/4696f5de-fe5b-40df-a194-1a73b4c5150f.jpg?1783914812",
+    "thumb": "https://cards.scryfall.io/thumb/front/4/6/4696f5de-fe5b-40df-a194-1a73b4c5150f.webp?1783914812"
+   },
+   "layout": "normal",
+   "loyalty": "3",
+   "mana_cost": "{1}{U}{U}",
+   "name": "Jace Beleren",
+   "object": "card_face",
+   "oracle_id": "cc2b6e58-2d6f-495e-95f3-9496105c4cba",
+   "oracle_text": "+2: Each player draws a card.\n−1: Target player draws a card.\n−10: Target player mills twenty cards.",
+   "type_line": "Legendary Planeswalker — Jace"
+  },
+  {
+   "artist": "Scott Okumura",
+   "artist_id": "f4ec7a06-c25b-41f1-8ae3-6c51ac063cdd",
+   "cmc": 3.0,
+   "colors": [
+    "U"
+   ],
+   "illustration_id": "2c4f38b4-731e-4d49-b47e-3fee73d2cf15",
+   "image_uris": {
+    "art": "https://cards.scryfall.io/art/back/4/6/4696f5de-fe5b-40df-a194-1a73b4c5150f.webp?1783914812",
+    "art_crop": "https://cards.scryfall.io/art_crop/back/4/6/4696f5de-fe5b-40df-a194-1a73b4c5150f.jpg?1783914812",
+    "border_crop": "https://cards.scryfall.io/border_crop/back/4/6/4696f5de-fe5b-40df-a194-1a73b4c5150f.jpg?1783914812",
+    "crop": "https://cards.scryfall.io/crop/back/4/6/4696f5de-fe5b-40df-a194-1a73b4c5150f.webp?1783914812",
+    "display": "https://cards.scryfall.io/display/back/4/6/4696f5de-fe5b-40df-a194-1a73b4c5150f.webp?1783914812",
+    "grid": "https://cards.scryfall.io/grid/back/4/6/4696f5de-fe5b-40df-a194-1a73b4c5150f.webp?1783914812",
+    "large": "https://cards.scryfall.io/large/back/4/6/4696f5de-fe5b-40df-a194-1a73b4c5150f.jpg?1783914812",
+    "normal": "https://cards.scryfall.io/normal/back/4/6/4696f5de-fe5b-40df-a194-1a73b4c5150f.jpg?1783914812",
+    "png": "https://cards.scryfall.io/png/back/4/6/4696f5de-fe5b-40df-a194-1a73b4c5150f.png?1783914812",
+    "small": "https://cards.scryfall.io/small/back/4/6/4696f5de-fe5b-40df-a194-1a73b4c5150f.jpg?1783914812",
+    "thumb": "https://cards.scryfall.io/thumb/back/4/6/4696f5de-fe5b-40df-a194-1a73b4c5150f.webp?1783914812"
+   },
+   "layout": "normal",
+   "loyalty": "3",
+   "mana_cost": "{1}{U}{U}",
+   "name": "Jace Beleren",
+   "object": "card_face",
+   "oracle_id": "cc2b6e58-2d6f-495e-95f3-9496105c4cba",
+   "oracle_text": "+2: Each player draws a card.\n−1: Target player draws a card.\n−10: Target player mills twenty cards.",
+   "type_line": "Legendary Planeswalker — Jace"
+  }
+ ],
+ "cardmarket_id": 750290,
+ "collector_number": "746",
+ "color_identity": [
+  "U"
+ ],
+ "digital": false,
+ "edhrec_rank": 3540,
+ "finishes": [
+  "foil"
+ ],
+ "foil": true,
+ "frame": "2015",
+ "frame_effects": [
+  "fullart"
+ ],
+ "full_art": true,
+ "game_changer": false,
+ "games": [
+  "paper"
+ ],
+ "highres_image": true,
+ "id": "4696f5de-fe5b-40df-a194-1a73b4c5150f",
+ "image_status": "highres_scan",
+ "image_updated_at": "2026-07-13T03:53:32Z",
+ "keywords": [
+  "Mill"
+ ],
+ "lang": "en",
+ "layout": "reversible_card",
+ "legalities": {
+  "alchemy": "not_legal",
+  "brawl": "not_legal",
+  "commander": "legal",
+  "competitivebrawl": "not_legal",
+  "duel": "legal",
+  "future": "not_legal",
+  "gladiator": "not_legal",
+  "historic": "not_legal",
+  "legacy": "legal",
+  "modern": "legal",
+  "oathbreaker": "legal",
+  "oldschool": "not_legal",
+  "pauper": "not_legal",
+  "paupercommander": "not_legal",
+  "penny": "legal",
+  "pioneer": "not_legal",
+  "predh": "legal",
+  "premodern": "not_legal",
+  "standard": "not_legal",
+  "standardbrawl": "not_legal",
+  "timeless": "not_legal",
+  "tlr": "legal",
+  "vintage": "legal"
+ },
+ "multiverse_ids": [],
+ "name": "Jace Beleren // Jace Beleren",
+ "nonfoil": false,
+ "object": "card",
+ "oversized": false,
+ "penny_rank": 1387,
+ "prices": {
+  "eur": null,
+  "eur_foil": "483.00",
+  "tix": null,
+  "usd": null,
+  "usd_etched": null,
+  "usd_foil": "498.34"
+ },
+ "prints_search_uri": "https://api.scryfall.com/cards/search?order=released&q=oracleid%3Acc2b6e58-2d6f-495e-95f3-9496105c4cba&unique=prints",
+ "promo": false,
+ "promo_types": [
+  "poster",
+  "sldbonus"
+ ],
+ "purchase_uris": {
+  "cardhoarder": "https://www.cardhoarder.com/cards?affiliate_id=scryfall&data%5Bsearch%5D=Jace+Beleren+%2F%2F+Jace+Beleren&ref=card-profile&utm_campaign=affiliate&utm_medium=card&utm_source=scryfall",
+  "cardmarket": "https://www.cardmarket.com/en/Magic/Products?idProduct=750290&referrer=scryfall&utm_campaign=card_prices&utm_medium=text&utm_source=scryfall",
+  "tcgplayer": "https://partner.tcgplayer.com/c/4931599/1830156/21018?subId1=api&u=https%3A%2F%2Fwww.tcgplayer.com%2Fproduct%2F517502%3Fpage%3D1"
+ },
+ "rarity": "mythic",
+ "related_uris": {
+  "edhrec": "https://edhrec.com/route/?cc=Jace+Beleren+%2F%2F+Jace+Beleren",
+  "tcgplayer_infinite_articles": "https://partner.tcgplayer.com/c/4931599/1830156/21018?subId1=api&trafcat=tcgplayer.com%2Fsearch%2Farticles&u=https%3A%2F%2Fwww.tcgplayer.com%2Fsearch%2Farticles%3FproductLineName%3Dmagic%26q%3DJace%2BBeleren%2B%252F%252F%2BJace%2BBeleren",
+  "tcgplayer_infinite_decks": "https://partner.tcgplayer.com/c/4931599/1830156/21018?subId1=api&trafcat=tcgplayer.com%2Fsearch%2Fdecks&u=https%3A%2F%2Fwww.tcgplayer.com%2Fsearch%2Fdecks%3FproductLineName%3Dmagic%26q%3DJace%2BBeleren%2B%252F%252F%2BJace%2BBeleren"
+ },
+ "released_at": "2023-09-15",
+ "reprint": true,
+ "reserved": false,
+ "rulings_uri": "https://api.scryfall.com/cards/4696f5de-fe5b-40df-a194-1a73b4c5150f/rulings",
+ "scryfall_set_uri": "https://scryfall.com/sets/sld?utm_source=api",
+ "scryfall_uri": "https://scryfall.com/card/sld/746/jace-beleren-jace-beleren?utm_source=api",
+ "security_stamp": "oval",
+ "set": "sld",
+ "set_id": "4d92a8a7-ccb0-437d-abdc-9d70fc5ed672",
+ "set_name": "Secret Lair Drop",
+ "set_search_uri": "https://api.scryfall.com/cards/search?order=set&q=e%3Asld&unique=prints",
+ "set_type": "box",
+ "set_uri": "https://api.scryfall.com/sets/4d92a8a7-ccb0-437d-abdc-9d70fc5ed672",
+ "story_spotlight": false,
+ "tcgplayer_id": 517502,
+ "textless": false,
+ "uri": "https://api.scryfall.com/cards/4696f5de-fe5b-40df-a194-1a73b4c5150f",
+ "variation": false
+}

@@ -400,6 +400,55 @@ fn num_expr_touches_face_field(e: &NumExpr) -> bool {
     }
 }
 
+/// Whether the expression reads this column — see `FilterExpr::FaceStatCmpFalse`.
+fn num_expr_reads(e: &NumExpr, field: NumField) -> bool {
+    match e {
+        NumExpr::Const(_) => false,
+        NumExpr::Field(f) => *f == field,
+        NumExpr::Arith(l, _, r) => num_expr_reads(l, field) || num_expr_reads(r, field),
+    }
+}
+
+/// LOCAL PATCH (Cloudflare port): `NOT` as api.scryfall.com answers it over a group that compares
+/// a face stat — see `FilterExpr::FaceStatCmpFalse` for the measurements.
+///
+/// De Morgan holds in three-valued logic, so the negation is pushed to the leaves and only the
+/// leaf Scryfall evaluates differently is replaced: `NOT (pow>=3)` becomes "the comparison is
+/// FALSE", which a NULL is not. Every other leaf keeps the `Not` it had. A group with no such
+/// comparison in it is returned as the plain `Not` it always was — no query that does not negate
+/// a face stat is built differently.
+///
+/// Only the `ScryfallNotNode` the compat surface emits reaches this; the upstream `NotNode`
+/// (`/search`) is the complement, as upstream's SQL answers it.
+fn scryfall_not(expr: FilterExpr) -> FilterExpr {
+    fn compares_face_stat(f: &FilterExpr) -> bool {
+        match f {
+            FilterExpr::And(children) | FilterExpr::Or(children) => children.iter().any(compares_face_stat),
+            FilterExpr::Not(inner) => compares_face_stat(inner),
+            FilterExpr::NumericCmp { lhs, rhs, .. } => num_expr_touches_face_field(lhs) || num_expr_touches_face_field(rhs),
+            // An inner negated group already rewritten: `-(-(pow>=3))`.
+            FilterExpr::FaceStatCmpFalse { .. } => true,
+            _ => false,
+        }
+    }
+    if !compares_face_stat(&expr) {
+        return FilterExpr::Not(Box::new(expr));
+    }
+    match expr {
+        FilterExpr::And(children) => FilterExpr::Or(children.into_iter().map(scryfall_not).collect()),
+        FilterExpr::Or(children) => FilterExpr::And(children.into_iter().map(scryfall_not).collect()),
+        FilterExpr::Not(inner) => *inner,
+        FilterExpr::NumericCmp { lhs, op, rhs }
+            if num_expr_touches_face_field(&lhs) || num_expr_touches_face_field(&rhs) =>
+        {
+            FilterExpr::FaceStatCmpFalse { lhs, op, rhs }
+        }
+        // NOT NOT A is A: `-(-(pow>=3)) e:khm` is `pow>=3 e:khm`'s 78.
+        FilterExpr::FaceStatCmpFalse { lhs, op, rhs } => FilterExpr::NumericCmp { lhs, op, rhs },
+        other => FilterExpr::Not(Box::new(other)),
+    }
+}
+
 /// The distinct values this card holds for one face-scoped column, card value first.
 ///
 /// The card value is always one of the faces' (the merge copies a whole `_FACE_STAT_GROUPS`
@@ -1759,6 +1808,44 @@ pub(crate) enum FilterExpr {
     /// for them and only the 71 that have one go to their printings.
     PrintsOwnFaces,
 
+    /// LOCAL PATCH (Cloudflare port): a comparison on a FACE STAT that Scryfall's negation finds
+    /// FALSE — what `-(pow>=3)` answers there, which is not the complement of `pow>=3`.
+    ///
+    /// Scryfall evaluates `pow`, `tou` and `loy` over a printing's two faces in SQL's three-valued
+    /// logic: TRUE when a face satisfies the comparison, FALSE only when BOTH faces carry the stat
+    /// and neither does, and NULL otherwise — which is every ordinary single-faced card. A NULL
+    /// under `NOT` is still NULL, so a negated group answers only the two-faced printings.
+    /// Measured on api.scryfall.com 2026-10-04:
+    ///
+    ///   t:planeswalker 330, loy>=0 330, loy=0 4, loy<1 4 — and
+    ///   t:planeswalker -(loy>=1)  404       -(loy>0)  404      -(loy>=0)  404
+    ///   t:planeswalker -(loy=0)   10        -(loy<1)  10       -(loy>=4)  4   (loy<4 is 90)
+    ///   t:creature -(pow>=0) 404   -(pow>=1) 2   -(tou>=1) 1   -(pow>=3) 39  (pow<1 is 1,044)
+    ///
+    /// The ten are the printings with loyalty on two faces: the reversible Secret Lair
+    /// planeswalkers (sld/745–749, 1327, tdm/382), Arlinn, the Pack's Hope // Arlinn, the Moon's
+    /// Fury, Oko, Lorwyn Liege // Oko, Shadowmoor Scion and Rowan // Will; and `-(loy>=4)` drops
+    /// Rowan (2) // Will (4), a face of which satisfies it. Jace Beleren's m11 printing (3) answers
+    /// neither; his reversible sld/746 answers both. Valki // Tibalt, one face of which has no
+    /// loyalty, answers neither. The faces are compared as the positive leaf compares them — the
+    /// cross product — so `-(pow>tou) e:khm` is Cosima // The Omenkeel alone (2/4 and 3/3) and not
+    /// Alrund // Hakka (1/1 and 2/3: Hakka's 2 is above Alrund's 1).
+    ///
+    /// It is three-valued through a whole group, which De Morgan carries to the leaves:
+    /// `-(pow>=3 t:elf) e:khm` is 289 (every non-elf), `-(pow>=3 or t:elf) e:khm` 1 (Alrund),
+    /// `-(-(pow>=3)) e:khm` 78 = `pow>=3 e:khm`. See `scryfall_not`, which builds this leaf.
+    ///
+    /// ONLY THE THREE FACE STATS. `-(cmc>=3) e:khm t:elf` is 7 = `cmc<3`, `-(usd>=1)` 14 = `usd<1`,
+    /// `-(cn>=100)` 3 = `cn<100`, and `-(pt>=5) e:khm` 50 — `pt` is a card-level sum.
+    ///
+    /// TWO-VALUED: it is only ever built in positive position, with every `Not` already pushed
+    /// below it.
+    FaceStatCmpFalse {
+        lhs: NumExpr,
+        op: CmpOp,
+        rhs: NumExpr,
+    },
+
     /// LOCAL PATCH (Cloudflare port): Scryfall's `cheapest:usd` / `cheapest:eur` / `cheapest:tix` —
     /// the printing carries its card's cheapest price in that currency. Answered from the codes
     /// `assign_cheapest_codes` stores on the printing, which carries the measured rule.
@@ -2062,6 +2149,8 @@ pub(crate) fn verify_cost_tier(f: &FilterExpr) -> u32 {
         FilterExpr::LorePrinting { .. } => TEXT_SCAN_NS100,
         // One length read on the card, and a layout compare on the 71 cards that pass it.
         FilterExpr::PrintsOwnFaces => MASK_COMPARE_NS100,
+        // A few field reads on the card and its faces.
+        FilterExpr::FaceStatCmpFalse { .. } => MASK_COMPARE_NS100,
         // Two mask bits reject all but the creatures, and the survivors read one string: the card's
         // already-stripped column, or the FRONT face's printed text through `strip_reminder_text`.
         // That last case is a scan, so it is ranked as one — the model must not under-charge a
@@ -2340,6 +2429,8 @@ fn leaf_compares_printing_field(f: &FilterExpr) -> bool {
         FilterExpr::FlavorNameIn { .. } | FilterExpr::FlavorNamePresent => true,
         // `lore:`'s printing half: the printing's flavor text, flavor name and own faces.
         FilterExpr::LorePrinting { .. } | FilterExpr::PrintsOwnFaces => true,
+        // A reversible printing has two faces where its siblings have one.
+        FilterExpr::FaceStatCmpFalse { .. } => true,
         // The cheapest codes are the printing's (CompatFields).
         FilterExpr::Cheapest { .. } => true,
         // The frame class is read entirely off the PRINTING (its compat flags, border, frame
@@ -3554,6 +3645,64 @@ impl FilterExpr {
                 super::printing_is_cheapest(p, *currency, *negated).map_or(Tri::Null, tri_bool)
             }
 
+            FilterExpr::FaceStatCmpFalse { lhs, op, rhs } => {
+                // THE FACES THIS PRINTING PRINTS: its card's, or — for the printings whose layout
+                // differs from the card's own (a reversible beside its ordinary siblings, either
+                // of which may be the one the card row was built from) — the divergent record's.
+                let own = match printing {
+                    Some(p) => crate::divergent_of(card, p),
+                    None if card.divergent.is_empty() => None,
+                    None => return Tri::PrintingDep,
+                };
+                let read = |face: &rkyv::Archived<super::OracleFace>, f: NumField| -> Option<f64> {
+                    match f {
+                        NumField::Power => face.creature_power.as_ref().map(|v| f64::from(f32::from(*v))),
+                        NumField::Toughness => face.creature_toughness.as_ref().map(|v| f64::from(f32::from(*v))),
+                        NumField::Loyalty => face.planeswalker_loyalty.as_ref().map(|v| f64::from(*v)),
+                        _ => None,
+                    }
+                };
+                // Per stat the comparison reads: the values on the faces, which must be two.
+                // Fewer is Scryfall's NULL — a face without the stat — and the leaf is false.
+                let mut values: [Vec<f64>; 3] = [Vec::new(), Vec::new(), Vec::new()];
+                for (slot, field) in [NumField::Power, NumField::Toughness, NumField::Loyalty].into_iter().enumerate() {
+                    if !(num_expr_reads(lhs, field) || num_expr_reads(rhs, field)) {
+                        continue;
+                    }
+                    values[slot] = match own {
+                        Some(d) => d.faces.iter().filter_map(|face| read(face, field)).collect(),
+                        None => card.faces.iter().filter_map(|face| read(face, field)).collect(),
+                    };
+                    if values[slot].len() < 2 {
+                        return Tri::False;
+                    }
+                }
+                // The cross product, as the positive leaf compares the faces (face_numeric_cmp_tri):
+                // FALSE only when no combination satisfies the comparison.
+                let [powers, toughnesses, loyalties] = &values;
+                for pi in 0..powers.len().max(1) {
+                    for ti in 0..toughnesses.len().max(1) {
+                        for li in 0..loyalties.len().max(1) {
+                            let pick = |vs: &Vec<f64>, i: usize| vs.get(i).map_or(NumVal::Null, |v| NumVal::Known(*v));
+                            let fetch = |f: NumField| -> NumVal {
+                                match f {
+                                    NumField::Power => pick(powers, pi),
+                                    NumField::Toughness => pick(toughnesses, ti),
+                                    NumField::Loyalty => pick(loyalties, li),
+                                    other => field_num(card, printing, other),
+                                }
+                            };
+                            match numeric_cmp_tri(lhs, *op, rhs, &fetch) {
+                                Tri::False => {}
+                                Tri::PrintingDep => return Tri::PrintingDep,
+                                Tri::True | Tri::Null => return Tri::False,
+                            }
+                        }
+                    }
+                }
+                Tri::True
+            }
+
             FilterExpr::LorePrinting { word } => {
                 let Some(p) = printing else { return Tri::PrintingDep };
                 let text = u32::from(p.flavor_text_lower_id);
@@ -4248,6 +4397,9 @@ pub(crate) fn build_filter(v: &Value) -> Result<FilterExpr, String> {
             let inner = build_filter(&kw["operand"])?;
             Ok(FilterExpr::Not(Box::new(inner)))
         }
+
+        // LOCAL PATCH (Cloudflare port): the negated GROUP as the Scryfall-compat surface asks it.
+        "ScryfallNotNode" => Ok(scryfall_not(build_filter(&kw["operand"])?)),
 
         "ExactNameNode" => {
             let value = kw["value"].as_str().unwrap_or("").to_string();

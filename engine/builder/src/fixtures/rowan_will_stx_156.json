@@ -1,0 +1,202 @@
+{
+ "all_parts": [
+  {
+   "component": "combo_piece",
+   "id": "2cca8cf1-27f8-408d-b4bc-1d4090837f8a",
+   "name": "Rowan, Scholar of Sparks // Will, Scholar of Frost",
+   "object": "related_card",
+   "type_line": "Legendary Planeswalker — Rowan // Legendary Planeswalker — Will",
+   "uri": "https://api.scryfall.com/cards/2cca8cf1-27f8-408d-b4bc-1d4090837f8a"
+  },
+  {
+   "component": "combo_piece",
+   "id": "cc18b93e-b590-4fbb-be47-d63a25cde811",
+   "name": "Rowan, Scholar of Sparks Emblem",
+   "object": "related_card",
+   "type_line": "Emblem",
+   "uri": "https://api.scryfall.com/cards/cc18b93e-b590-4fbb-be47-d63a25cde811"
+  },
+  {
+   "component": "token",
+   "id": "3d0b9b88-705e-4df0-8a93-3e240b81355b",
+   "name": "Elemental",
+   "object": "related_card",
+   "type_line": "Token Creature — Elemental",
+   "uri": "https://api.scryfall.com/cards/3d0b9b88-705e-4df0-8a93-3e240b81355b"
+  }
+ ],
+ "arena_id": 76558,
+ "artist": "Magali Villeneuve",
+ "artist_ids": [
+  "9e6a55ae-be4d-4c23-a2a5-135737ffd879"
+ ],
+ "booster": true,
+ "border_color": "black",
+ "card_faces": [
+  {
+   "artist": "Magali Villeneuve",
+   "artist_id": "9e6a55ae-be4d-4c23-a2a5-135737ffd879",
+   "colors": [
+    "R"
+   ],
+   "illustration_id": "18796b0d-2b14-4786-bf0e-b42644114aa6",
+   "image_uris": {
+    "art": "https://cards.scryfall.io/art/front/1/8/18c16872-3675-4a4d-962a-2e17ad6f3886.webp?1783927332",
+    "art_crop": "https://cards.scryfall.io/art_crop/front/1/8/18c16872-3675-4a4d-962a-2e17ad6f3886.jpg?1783927332",
+    "border_crop": "https://cards.scryfall.io/border_crop/front/1/8/18c16872-3675-4a4d-962a-2e17ad6f3886.jpg?1783927332",
+    "crop": "https://cards.scryfall.io/crop/front/1/8/18c16872-3675-4a4d-962a-2e17ad6f3886.webp?1783927332",
+    "display": "https://cards.scryfall.io/display/front/1/8/18c16872-3675-4a4d-962a-2e17ad6f3886.webp?1783927332",
+    "grid": "https://cards.scryfall.io/grid/front/1/8/18c16872-3675-4a4d-962a-2e17ad6f3886.webp?1783927332",
+    "large": "https://cards.scryfall.io/large/front/1/8/18c16872-3675-4a4d-962a-2e17ad6f3886.jpg?1783927332",
+    "normal": "https://cards.scryfall.io/normal/front/1/8/18c16872-3675-4a4d-962a-2e17ad6f3886.jpg?1783927332",
+    "png": "https://cards.scryfall.io/png/front/1/8/18c16872-3675-4a4d-962a-2e17ad6f3886.png?1783927332",
+    "small": "https://cards.scryfall.io/small/front/1/8/18c16872-3675-4a4d-962a-2e17ad6f3886.jpg?1783927332",
+    "thumb": "https://cards.scryfall.io/thumb/front/1/8/18c16872-3675-4a4d-962a-2e17ad6f3886.webp?1783927332"
+   },
+   "loyalty": "2",
+   "mana_cost": "{2}{R}",
+   "name": "Rowan, Scholar of Sparks",
+   "object": "card_face",
+   "oracle_text": "Instant and sorcery spells you cast cost {1} less to cast.\n+1: Rowan deals 1 damage to each opponent. If you've drawn three or more cards this turn, she deals 3 damage to each opponent instead.\n−4: You get an emblem with \"Whenever you cast an instant or sorcery spell, you may pay {2}. If you do, copy that spell. You may choose new targets for the copy.\"",
+   "type_line": "Legendary Planeswalker — Rowan"
+  },
+  {
+   "artist": "Magali Villeneuve",
+   "artist_id": "9e6a55ae-be4d-4c23-a2a5-135737ffd879",
+   "colors": [
+    "U"
+   ],
+   "illustration_id": "86e0338d-6537-4634-b98e-61d150c4610b",
+   "image_uris": {
+    "art": "https://cards.scryfall.io/art/back/1/8/18c16872-3675-4a4d-962a-2e17ad6f3886.webp?1783927332",
+    "art_crop": "https://cards.scryfall.io/art_crop/back/1/8/18c16872-3675-4a4d-962a-2e17ad6f3886.jpg?1783927332",
+    "border_crop": "https://cards.scryfall.io/border_crop/back/1/8/18c16872-3675-4a4d-962a-2e17ad6f3886.jpg?1783927332",
+    "crop": "https://cards.scryfall.io/crop/back/1/8/18c16872-3675-4a4d-962a-2e17ad6f3886.webp?1783927332",
+    "display": "https://cards.scryfall.io/display/back/1/8/18c16872-3675-4a4d-962a-2e17ad6f3886.webp?1783927332",
+    "grid": "https://cards.scryfall.io/grid/back/1/8/18c16872-3675-4a4d-962a-2e17ad6f3886.webp?1783927332",
+    "large": "https://cards.scryfall.io/large/back/1/8/18c16872-3675-4a4d-962a-2e17ad6f3886.jpg?1783927332",
+    "normal": "https://cards.scryfall.io/normal/back/1/8/18c16872-3675-4a4d-962a-2e17ad6f3886.jpg?1783927332",
+    "png": "https://cards.scryfall.io/png/back/1/8/18c16872-3675-4a4d-962a-2e17ad6f3886.png?1783927332",
+    "small": "https://cards.scryfall.io/small/back/1/8/18c16872-3675-4a4d-962a-2e17ad6f3886.jpg?1783927332",
+    "thumb": "https://cards.scryfall.io/thumb/back/1/8/18c16872-3675-4a4d-962a-2e17ad6f3886.webp?1783927332"
+   },
+   "loyalty": "4",
+   "mana_cost": "{4}{U}",
+   "name": "Will, Scholar of Frost",
+   "object": "card_face",
+   "oracle_text": "Instant and sorcery spells you cast cost {1} less to cast.\n+1: Up to one target creature has base power and toughness 0/2 until your next turn.\n−3: Draw two cards.\n−7: Exile up to five target permanents. For each permanent exiled this way, its controller creates a 4/4 blue and red Elemental creature token.",
+   "type_line": "Legendary Planeswalker — Will"
+  }
+ ],
+ "cardmarket_id": 556349,
+ "cmc": 3.0,
+ "collector_number": "156",
+ "color_identity": [
+  "R",
+  "U"
+ ],
+ "digital": false,
+ "edhrec_rank": 11715,
+ "finishes": [
+  "nonfoil",
+  "foil"
+ ],
+ "foil": true,
+ "frame": "2015",
+ "full_art": false,
+ "game_changer": false,
+ "games": [
+  "arena",
+  "paper",
+  "mtgo"
+ ],
+ "highres_image": true,
+ "id": "18c16872-3675-4a4d-962a-2e17ad6f3886",
+ "image_status": "highres_scan",
+ "image_updated_at": "2026-07-13T07:22:12Z",
+ "keywords": [],
+ "lang": "en",
+ "layout": "modal_dfc",
+ "legalities": {
+  "alchemy": "not_legal",
+  "brawl": "legal",
+  "commander": "legal",
+  "competitivebrawl": "legal",
+  "duel": "legal",
+  "future": "not_legal",
+  "gladiator": "legal",
+  "historic": "legal",
+  "legacy": "legal",
+  "modern": "legal",
+  "oathbreaker": "legal",
+  "oldschool": "not_legal",
+  "pauper": "not_legal",
+  "paupercommander": "not_legal",
+  "penny": "legal",
+  "pioneer": "legal",
+  "predh": "not_legal",
+  "premodern": "not_legal",
+  "standard": "not_legal",
+  "standardbrawl": "not_legal",
+  "timeless": "legal",
+  "tlr": "not_legal",
+  "vintage": "legal"
+ },
+ "mtgo_id": 88807,
+ "multiverse_ids": [
+  516792,
+  516791
+ ],
+ "name": "Rowan, Scholar of Sparks // Will, Scholar of Frost",
+ "nonfoil": true,
+ "object": "card",
+ "oracle_id": "dd06c11c-c4fd-414e-ac63-5556f31491f5",
+ "oversized": false,
+ "penny_rank": 5113,
+ "preview": {
+  "previewed_at": "2021-03-25",
+  "source": "Wizards of the Coast",
+  "source_uri": "https://www.twitch.tv/videos/962571609"
+ },
+ "prices": {
+  "eur": "1.73",
+  "eur_foil": "1.66",
+  "tix": "0.02",
+  "usd": "1.69",
+  "usd_etched": null,
+  "usd_foil": "2.29"
+ },
+ "prints_search_uri": "https://api.scryfall.com/cards/search?order=released&q=oracleid%3Add06c11c-c4fd-414e-ac63-5556f31491f5&unique=prints",
+ "promo": false,
+ "purchase_uris": {
+  "cardhoarder": "https://www.cardhoarder.com/cards/88807?affiliate_id=scryfall&ref=card-profile&utm_campaign=affiliate&utm_medium=card&utm_source=scryfall",
+  "cardmarket": "https://www.cardmarket.com/en/Magic/Products?idProduct=556349&referrer=scryfall&utm_campaign=card_prices&utm_medium=text&utm_source=scryfall",
+  "tcgplayer": "https://partner.tcgplayer.com/c/4931599/1830156/21018?subId1=api&u=https%3A%2F%2Fwww.tcgplayer.com%2Fproduct%2F235166%3Fpage%3D1"
+ },
+ "rarity": "mythic",
+ "related_uris": {
+  "edhrec": "https://edhrec.com/route/?cc=Rowan%2C+Scholar+of+Sparks",
+  "gatherer": "https://gatherer.wizards.com/Pages/Card/Details.aspx?multiverseid=516792&printed=false",
+  "tcgplayer_infinite_articles": "https://partner.tcgplayer.com/c/4931599/1830156/21018?subId1=api&trafcat=tcgplayer.com%2Fsearch%2Farticles&u=https%3A%2F%2Fwww.tcgplayer.com%2Fsearch%2Farticles%3FproductLineName%3Dmagic%26q%3DRowan%252C%2BScholar%2Bof%2BSparks%2B%252F%252F%2BWill%252C%2BScholar%2Bof%2BFrost",
+  "tcgplayer_infinite_decks": "https://partner.tcgplayer.com/c/4931599/1830156/21018?subId1=api&trafcat=tcgplayer.com%2Fsearch%2Fdecks&u=https%3A%2F%2Fwww.tcgplayer.com%2Fsearch%2Fdecks%3FproductLineName%3Dmagic%26q%3DRowan%252C%2BScholar%2Bof%2BSparks%2B%252F%252F%2BWill%252C%2BScholar%2Bof%2BFrost"
+ },
+ "released_at": "2021-04-23",
+ "reprint": false,
+ "reserved": false,
+ "rulings_uri": "https://api.scryfall.com/cards/18c16872-3675-4a4d-962a-2e17ad6f3886/rulings",
+ "scryfall_set_uri": "https://scryfall.com/sets/stx?utm_source=api",
+ "scryfall_uri": "https://scryfall.com/card/stx/156/rowan-scholar-of-sparks-will-scholar-of-frost?utm_source=api",
+ "security_stamp": "oval",
+ "set": "stx",
+ "set_id": "541c3c28-8747-40e5-a231-8e8f33234859",
+ "set_name": "Strixhaven: School of Mages",
+ "set_search_uri": "https://api.scryfall.com/cards/search?order=set&q=e%3Astx&unique=prints",
+ "set_type": "expansion",
+ "set_uri": "https://api.scryfall.com/sets/541c3c28-8747-40e5-a231-8e8f33234859",
+ "story_spotlight": false,
+ "tcgplayer_id": 235166,
+ "textless": false,
+ "type_line": "Legendary Planeswalker — Rowan // Legendary Planeswalker — Will",
+ "uri": "https://api.scryfall.com/cards/18c16872-3675-4a4d-962a-2e17ad6f3886",
+ "variation": false
+}

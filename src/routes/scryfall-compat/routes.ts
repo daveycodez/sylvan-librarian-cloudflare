@@ -92,7 +92,7 @@ import {
 } from "./query-terms";
 import { keywordCatalogWords } from "./reference-routes";
 import { asBool, scryfallCollectionBytes, scryfallCollectionResponse, scryfallJson, scryfallListJson } from "./respond";
-import { setAndCollectorNumber, TRUE_TREE } from "./trees";
+import { scryfallNegations, setAndCollectorNumber, TRUE_TREE } from "./trees";
 
 /** Path segments that name an external id namespace rather than a set code. */
 const EXTERNAL_ID_NAMESPACES = ["multiverse", "mtgo", "arena", "tcgplayer", "cardmarket"] as const;
@@ -661,6 +661,9 @@ export async function cardsSearchHandler(
 	if (usesValueAsPredicate(filterTree)) {
 		return scryfallJson(badRequestError(arithmeticNotComparedMessage(q), warnings), pretty, CARDS_CACHE);
 	}
+	// A negated group over a face stat is asked as Scryfall answers it — see scryfallNegations.
+	// After the check above, which reads the parser's own node types.
+	filterTree = scryfallNegations(filterTree);
 
 	// THE IN-QUERY DIRECTIVES (upstream #893) REACH THE SEARCH. `parseWithDirectives` has always
 	// STRIPPED them from the tree — that is what keeps `unique:prints` from being compiled as a
@@ -1200,7 +1203,7 @@ export async function cardsRandomHandler(
 				quietSets: policy.quietSets,
 			},
 		);
-		filterTreeJson = canonicalStringify(gate.tree as FilterValue);
+		filterTreeJson = canonicalStringify(scryfallNegations(gate.tree) as FilterValue);
 	}
 
 	try {

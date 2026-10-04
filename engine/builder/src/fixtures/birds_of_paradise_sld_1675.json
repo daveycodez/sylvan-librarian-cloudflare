@@ -1,0 +1,191 @@
+{
+ "artist": "Stephen Andrade",
+ "artist_ids": [
+  "f88ffcb7-f971-426d-ae74-679378ebb8e1"
+ ],
+ "booster": false,
+ "border_color": "borderless",
+ "card_faces": [
+  {
+   "artist": "Stephen Andrade",
+   "artist_id": "f88ffcb7-f971-426d-ae74-679378ebb8e1",
+   "cmc": 1.0,
+   "colors": [
+    "G"
+   ],
+   "flavor_name": "African Swallow",
+   "flavor_text": "\"It's not a question of where he grips it . . . \"",
+   "illustration_id": "25d6c1b1-f2e5-4a6b-a2e1-45b220c7f9c0",
+   "image_uris": {
+    "art": "https://cards.scryfall.io/art/front/d/a/dae8751c-4c72-4034-a192-a1e166f20246.webp?1783910874",
+    "art_crop": "https://cards.scryfall.io/art_crop/front/d/a/dae8751c-4c72-4034-a192-a1e166f20246.jpg?1783910874",
+    "border_crop": "https://cards.scryfall.io/border_crop/front/d/a/dae8751c-4c72-4034-a192-a1e166f20246.jpg?1783910874",
+    "crop": "https://cards.scryfall.io/crop/front/d/a/dae8751c-4c72-4034-a192-a1e166f20246.webp?1783910874",
+    "display": "https://cards.scryfall.io/display/front/d/a/dae8751c-4c72-4034-a192-a1e166f20246.webp?1783910874",
+    "grid": "https://cards.scryfall.io/grid/front/d/a/dae8751c-4c72-4034-a192-a1e166f20246.webp?1783910874",
+    "large": "https://cards.scryfall.io/large/front/d/a/dae8751c-4c72-4034-a192-a1e166f20246.jpg?1783910874",
+    "normal": "https://cards.scryfall.io/normal/front/d/a/dae8751c-4c72-4034-a192-a1e166f20246.jpg?1783910874",
+    "png": "https://cards.scryfall.io/png/front/d/a/dae8751c-4c72-4034-a192-a1e166f20246.png?1783910874",
+    "small": "https://cards.scryfall.io/small/front/d/a/dae8751c-4c72-4034-a192-a1e166f20246.jpg?1783910874",
+    "thumb": "https://cards.scryfall.io/thumb/front/d/a/dae8751c-4c72-4034-a192-a1e166f20246.webp?1783910874"
+   },
+   "layout": "normal",
+   "mana_cost": "{G}",
+   "name": "Birds of Paradise",
+   "object": "card_face",
+   "oracle_id": "d3a0b660-358c-41bd-9cd2-41fbf3491b1a",
+   "oracle_text": "Flying\n{T}: Add one mana of any color.",
+   "power": "0",
+   "toughness": "1",
+   "type_line": "Creature — Bird"
+  },
+  {
+   "artist": "Stephen Andrade",
+   "artist_id": "f88ffcb7-f971-426d-ae74-679378ebb8e1",
+   "cmc": 1.0,
+   "colors": [
+    "G"
+   ],
+   "flavor_name": "European Swallow",
+   "flavor_text": "\". . . It's a simple question of weight ratios.\"",
+   "illustration_id": "6b9eda30-f18a-4515-9f0e-21eee7525086",
+   "image_uris": {
+    "art": "https://cards.scryfall.io/art/back/d/a/dae8751c-4c72-4034-a192-a1e166f20246.webp?1783910874",
+    "art_crop": "https://cards.scryfall.io/art_crop/back/d/a/dae8751c-4c72-4034-a192-a1e166f20246.jpg?1783910874",
+    "border_crop": "https://cards.scryfall.io/border_crop/back/d/a/dae8751c-4c72-4034-a192-a1e166f20246.jpg?1783910874",
+    "crop": "https://cards.scryfall.io/crop/back/d/a/dae8751c-4c72-4034-a192-a1e166f20246.webp?1783910874",
+    "display": "https://cards.scryfall.io/display/back/d/a/dae8751c-4c72-4034-a192-a1e166f20246.webp?1783910874",
+    "grid": "https://cards.scryfall.io/grid/back/d/a/dae8751c-4c72-4034-a192-a1e166f20246.webp?1783910874",
+    "large": "https://cards.scryfall.io/large/back/d/a/dae8751c-4c72-4034-a192-a1e166f20246.jpg?1783910874",
+    "normal": "https://cards.scryfall.io/normal/back/d/a/dae8751c-4c72-4034-a192-a1e166f20246.jpg?1783910874",
+    "png": "https://cards.scryfall.io/png/back/d/a/dae8751c-4c72-4034-a192-a1e166f20246.png?1783910874",
+    "small": "https://cards.scryfall.io/small/back/d/a/dae8751c-4c72-4034-a192-a1e166f20246.jpg?1783910874",
+    "thumb": "https://cards.scryfall.io/thumb/back/d/a/dae8751c-4c72-4034-a192-a1e166f20246.webp?1783910874"
+   },
+   "layout": "normal",
+   "mana_cost": "{G}",
+   "name": "Birds of Paradise",
+   "object": "card_face",
+   "oracle_id": "d3a0b660-358c-41bd-9cd2-41fbf3491b1a",
+   "oracle_text": "Flying\n{T}: Add one mana of any color.",
+   "power": "0",
+   "toughness": "1",
+   "type_line": "Creature — Bird"
+  }
+ ],
+ "cardmarket_id": 781313,
+ "collector_number": "1675",
+ "color_identity": [
+  "G"
+ ],
+ "digital": false,
+ "edhrec_rank": 35,
+ "finishes": [
+  "nonfoil",
+  "foil"
+ ],
+ "foil": true,
+ "frame": "2015",
+ "frame_effects": [
+  "inverted"
+ ],
+ "full_art": false,
+ "game_changer": false,
+ "games": [
+  "paper"
+ ],
+ "highres_image": true,
+ "id": "dae8751c-4c72-4034-a192-a1e166f20246",
+ "image_status": "highres_scan",
+ "image_updated_at": "2026-07-13T02:47:54Z",
+ "keywords": [
+  "Flying"
+ ],
+ "lang": "en",
+ "layout": "reversible_card",
+ "legalities": {
+  "alchemy": "not_legal",
+  "brawl": "legal",
+  "commander": "legal",
+  "competitivebrawl": "legal",
+  "duel": "legal",
+  "future": "not_legal",
+  "gladiator": "legal",
+  "historic": "legal",
+  "legacy": "legal",
+  "modern": "legal",
+  "oathbreaker": "legal",
+  "oldschool": "not_legal",
+  "pauper": "not_legal",
+  "paupercommander": "not_legal",
+  "penny": "legal",
+  "pioneer": "not_legal",
+  "predh": "legal",
+  "premodern": "legal",
+  "standard": "not_legal",
+  "standardbrawl": "not_legal",
+  "timeless": "legal",
+  "tlr": "legal",
+  "vintage": "legal"
+ },
+ "multiverse_ids": [],
+ "name": "Birds of Paradise // Birds of Paradise",
+ "nonfoil": true,
+ "object": "card",
+ "oversized": false,
+ "penny_rank": 71,
+ "preview": {
+  "previewed_at": "2024-07-23",
+  "source": "IGN",
+  "source_uri": "https://www.ign.com/articles/magic-the-gathering-monty-python-and-the-holy-grail-secret-lair-spoilers"
+ },
+ "prices": {
+  "eur": "49.54",
+  "eur_foil": "61.49",
+  "tix": null,
+  "usd": "44.08",
+  "usd_etched": null,
+  "usd_foil": "55.86"
+ },
+ "prints_search_uri": "https://api.scryfall.com/cards/search?order=released&q=oracleid%3Ad3a0b660-358c-41bd-9cd2-41fbf3491b1a&unique=prints",
+ "produced_mana": [
+  "B",
+  "G",
+  "R",
+  "U",
+  "W"
+ ],
+ "promo": false,
+ "promo_types": [
+  "universesbeyond"
+ ],
+ "purchase_uris": {
+  "cardhoarder": "https://www.cardhoarder.com/cards?affiliate_id=scryfall&data%5Bsearch%5D=Birds+of+Paradise+%2F%2F+Birds+of+Paradise&ref=card-profile&utm_campaign=affiliate&utm_medium=card&utm_source=scryfall",
+  "cardmarket": "https://www.cardmarket.com/en/Magic/Products?idProduct=781313&referrer=scryfall&utm_campaign=card_prices&utm_medium=text&utm_source=scryfall",
+  "tcgplayer": "https://partner.tcgplayer.com/c/4931599/1830156/21018?subId1=api&u=https%3A%2F%2Fwww.tcgplayer.com%2Fproduct%2F560662%3Fpage%3D1"
+ },
+ "rarity": "rare",
+ "related_uris": {
+  "edhrec": "https://edhrec.com/route/?cc=Birds+of+Paradise+%2F%2F+Birds+of+Paradise",
+  "tcgplayer_infinite_articles": "https://partner.tcgplayer.com/c/4931599/1830156/21018?subId1=api&trafcat=tcgplayer.com%2Fsearch%2Farticles&u=https%3A%2F%2Fwww.tcgplayer.com%2Fsearch%2Farticles%3FproductLineName%3Dmagic%26q%3DBirds%2Bof%2BParadise%2B%252F%252F%2BBirds%2Bof%2BParadise",
+  "tcgplayer_infinite_decks": "https://partner.tcgplayer.com/c/4931599/1830156/21018?subId1=api&trafcat=tcgplayer.com%2Fsearch%2Fdecks&u=https%3A%2F%2Fwww.tcgplayer.com%2Fsearch%2Fdecks%3FproductLineName%3Dmagic%26q%3DBirds%2Bof%2BParadise%2B%252F%252F%2BBirds%2Bof%2BParadise"
+ },
+ "released_at": "2024-07-29",
+ "reprint": true,
+ "reserved": false,
+ "rulings_uri": "https://api.scryfall.com/cards/dae8751c-4c72-4034-a192-a1e166f20246/rulings",
+ "scryfall_set_uri": "https://scryfall.com/sets/sld?utm_source=api",
+ "scryfall_uri": "https://scryfall.com/card/sld/1675/birds-of-paradise-birds-of-paradise?utm_source=api",
+ "security_stamp": "triangle",
+ "set": "sld",
+ "set_id": "4d92a8a7-ccb0-437d-abdc-9d70fc5ed672",
+ "set_name": "Secret Lair Drop",
+ "set_search_uri": "https://api.scryfall.com/cards/search?order=set&q=e%3Asld&unique=prints",
+ "set_type": "box",
+ "set_uri": "https://api.scryfall.com/sets/4d92a8a7-ccb0-437d-abdc-9d70fc5ed672",
+ "story_spotlight": false,
+ "tcgplayer_id": 560662,
+ "textless": false,
+ "uri": "https://api.scryfall.com/cards/dae8751c-4c72-4034-a192-a1e166f20246",
+ "variation": false
+}

@@ -1,0 +1,150 @@
+{
+ "all_parts": [
+  {
+   "component": "token",
+   "id": "863768b5-3cf9-415c-b4fd-371dc5afee18",
+   "name": "Avatar",
+   "object": "related_card",
+   "type_line": "Token Creature — Avatar",
+   "uri": "https://api.scryfall.com/cards/863768b5-3cf9-415c-b4fd-371dc5afee18"
+  },
+  {
+   "component": "combo_piece",
+   "id": "2d911053-a026-4b20-ba2d-dbcc367c1413",
+   "name": "Ajani Goldmane",
+   "object": "related_card",
+   "type_line": "Legendary Planeswalker — Ajani",
+   "uri": "https://api.scryfall.com/cards/2d911053-a026-4b20-ba2d-dbcc367c1413"
+  }
+ ],
+ "artist": "Aleksi Briclot",
+ "artist_ids": [
+  "5e470014-31cb-41b0-b054-e23374484449"
+ ],
+ "booster": true,
+ "border_color": "black",
+ "card_back_id": "0aeebaf5-8c7d-4636-9e82-8c27447861f7",
+ "cardmarket_id": 242022,
+ "cmc": 4.0,
+ "collector_number": "1",
+ "color_identity": [
+  "W"
+ ],
+ "colors": [
+  "W"
+ ],
+ "digital": false,
+ "edhrec_rank": 10364,
+ "finishes": [
+  "nonfoil",
+  "foil"
+ ],
+ "foil": true,
+ "frame": "2003",
+ "full_art": false,
+ "game_changer": false,
+ "games": [
+  "paper",
+  "mtgo"
+ ],
+ "highres_image": true,
+ "id": "2d911053-a026-4b20-ba2d-dbcc367c1413",
+ "illustration_id": "a5e80dde-69a4-43ca-bd4e-d1de5b852c53",
+ "image_status": "highres_scan",
+ "image_updated_at": "2026-07-13T11:23:58Z",
+ "image_uris": {
+  "art": "https://cards.scryfall.io/art/front/2/d/2d911053-a026-4b20-ba2d-dbcc367c1413.webp?1783941838",
+  "art_crop": "https://cards.scryfall.io/art_crop/front/2/d/2d911053-a026-4b20-ba2d-dbcc367c1413.jpg?1783941838",
+  "border_crop": "https://cards.scryfall.io/border_crop/front/2/d/2d911053-a026-4b20-ba2d-dbcc367c1413.jpg?1783941838",
+  "crop": "https://cards.scryfall.io/crop/front/2/d/2d911053-a026-4b20-ba2d-dbcc367c1413.webp?1783941838",
+  "display": "https://cards.scryfall.io/display/front/2/d/2d911053-a026-4b20-ba2d-dbcc367c1413.webp?1783941838",
+  "grid": "https://cards.scryfall.io/grid/front/2/d/2d911053-a026-4b20-ba2d-dbcc367c1413.webp?1783941838",
+  "large": "https://cards.scryfall.io/large/front/2/d/2d911053-a026-4b20-ba2d-dbcc367c1413.jpg?1783941838",
+  "normal": "https://cards.scryfall.io/normal/front/2/d/2d911053-a026-4b20-ba2d-dbcc367c1413.jpg?1783941838",
+  "png": "https://cards.scryfall.io/png/front/2/d/2d911053-a026-4b20-ba2d-dbcc367c1413.png?1783941838",
+  "small": "https://cards.scryfall.io/small/front/2/d/2d911053-a026-4b20-ba2d-dbcc367c1413.jpg?1783941838",
+  "thumb": "https://cards.scryfall.io/thumb/front/2/d/2d911053-a026-4b20-ba2d-dbcc367c1413.webp?1783941838"
+ },
+ "keywords": [],
+ "lang": "en",
+ "layout": "normal",
+ "legalities": {
+  "alchemy": "not_legal",
+  "brawl": "not_legal",
+  "commander": "legal",
+  "competitivebrawl": "not_legal",
+  "duel": "legal",
+  "future": "not_legal",
+  "gladiator": "not_legal",
+  "historic": "not_legal",
+  "legacy": "legal",
+  "modern": "legal",
+  "oathbreaker": "legal",
+  "oldschool": "not_legal",
+  "pauper": "not_legal",
+  "paupercommander": "not_legal",
+  "penny": "legal",
+  "pioneer": "not_legal",
+  "predh": "legal",
+  "premodern": "not_legal",
+  "standard": "not_legal",
+  "standardbrawl": "not_legal",
+  "timeless": "not_legal",
+  "tlr": "not_legal",
+  "vintage": "legal"
+ },
+ "loyalty": "4",
+ "mana_cost": "{2}{W}{W}",
+ "mtgo_foil_id": 37139,
+ "mtgo_id": 37138,
+ "multiverse_ids": [
+  205957
+ ],
+ "name": "Ajani Goldmane",
+ "nonfoil": true,
+ "object": "card",
+ "oracle_id": "dfb5f660-fd8b-4b7b-934c-6a71cd182f15",
+ "oracle_text": "+1: You gain 2 life.\n−1: Put a +1/+1 counter on each creature you control. Those creatures gain vigilance until end of turn.\n−6: Create a white Avatar creature token. It has \"This token's power and toughness are each equal to your life total.\"",
+ "oversized": false,
+ "penny_rank": 3332,
+ "prices": {
+  "eur": "2.43",
+  "eur_foil": "5.59",
+  "tix": "0.02",
+  "usd": "4.83",
+  "usd_etched": null,
+  "usd_foil": "14.74"
+ },
+ "prints_search_uri": "https://api.scryfall.com/cards/search?order=released&q=oracleid%3Adfb5f660-fd8b-4b7b-934c-6a71cd182f15&unique=prints",
+ "promo": false,
+ "purchase_uris": {
+  "cardhoarder": "https://www.cardhoarder.com/cards/37138?affiliate_id=scryfall&ref=card-profile&utm_campaign=affiliate&utm_medium=card&utm_source=scryfall",
+  "cardmarket": "https://www.cardmarket.com/en/Magic/Products?idProduct=242022&referrer=scryfall&utm_campaign=card_prices&utm_medium=text&utm_source=scryfall",
+  "tcgplayer": "https://partner.tcgplayer.com/c/4931599/1830156/21018?subId1=api&u=https%3A%2F%2Fwww.tcgplayer.com%2Fproduct%2F35581%3Fpage%3D1"
+ },
+ "rarity": "mythic",
+ "related_uris": {
+  "edhrec": "https://edhrec.com/route/?cc=Ajani+Goldmane",
+  "gatherer": "https://gatherer.wizards.com/Pages/Card/Details.aspx?multiverseid=205957&printed=false",
+  "tcgplayer_infinite_articles": "https://partner.tcgplayer.com/c/4931599/1830156/21018?subId1=api&trafcat=tcgplayer.com%2Fsearch%2Farticles&u=https%3A%2F%2Fwww.tcgplayer.com%2Fsearch%2Farticles%3FproductLineName%3Dmagic%26q%3DAjani%2BGoldmane",
+  "tcgplayer_infinite_decks": "https://partner.tcgplayer.com/c/4931599/1830156/21018?subId1=api&trafcat=tcgplayer.com%2Fsearch%2Fdecks&u=https%3A%2F%2Fwww.tcgplayer.com%2Fsearch%2Fdecks%3FproductLineName%3Dmagic%26q%3DAjani%2BGoldmane"
+ },
+ "released_at": "2010-07-16",
+ "reprint": true,
+ "reserved": false,
+ "rulings_uri": "https://api.scryfall.com/cards/2d911053-a026-4b20-ba2d-dbcc367c1413/rulings",
+ "scryfall_set_uri": "https://scryfall.com/sets/m11?utm_source=api",
+ "scryfall_uri": "https://scryfall.com/card/m11/1/ajani-goldmane?utm_source=api",
+ "set": "m11",
+ "set_id": "485d2468-18c8-42a4-9482-ca1c51e0470e",
+ "set_name": "Magic 2011",
+ "set_search_uri": "https://api.scryfall.com/cards/search?order=set&q=e%3Am11&unique=prints",
+ "set_type": "core",
+ "set_uri": "https://api.scryfall.com/sets/485d2468-18c8-42a4-9482-ca1c51e0470e",
+ "story_spotlight": false,
+ "tcgplayer_id": 35581,
+ "textless": false,
+ "type_line": "Legendary Planeswalker — Ajani",
+ "uri": "https://api.scryfall.com/cards/2d911053-a026-4b20-ba2d-dbcc367c1413",
+ "variation": false
+}
