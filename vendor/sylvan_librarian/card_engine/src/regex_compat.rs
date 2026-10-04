@@ -337,8 +337,26 @@ impl CompiledRegex {
             // its pieces with `regex` again, so the fallback would pay the (self-reference-
             // expanded) compile twice to reach the same answer. Refuse it outright.
             Err(linear_err @ regex::Error::CompiledTooBig(_)) => Err(format!("invalid regex '{pattern}': {linear_err}")),
+            // LOCAL PATCH (Cloudflare port): `.seek(true)`. Without it fancy_regex searches by
+            // trying the VM at EVERY character of the haystack, and each failed attempt costs one
+            // backtrack per top-level alternative — so the budget measured the LENGTH OF THE TEXT,
+            // not the pattern. `(?<!any )(number of|for each)…|…|…|…` spent over five per character
+            // and exhausted 8,192 on any text past ~1,450 characters: never in upstream's corpus,
+            // whose longest text is 777 (Ral, Monsoon Mage), and on 17 cards in this one (a dungeon
+            // and the minigame cards, none of which upstream imports). The dungeon is served —
+            // Baldur's Gate Wilderness — and a query that reached it lost every card after it (see
+            // `core_api::regex_budget_held`).
+            //
+            // With it, fancy_regex derives the pattern's lookaround-free over-approximation
+            // (lookarounds dropped, backreferences inlined), finds candidate positions with that on
+            // the LINEAR engine, and runs the VM only there. A text with no candidate costs no
+            // budget at all and no VM entry, which is nearly every card: the reported pattern went
+            // from 2.8 s to 9 ms over the 38,705 oracle texts, and a battery of 47 lookaround and
+            // backreference patterns answered identically to the unbounded, unseeked VM on every
+            // one of them. A pattern with nothing to seek on (`(?=a)(?=b)`) keeps the old search.
             Err(linear_err) => match fancy_regex::RegexBuilder::new(&cased)
                 .backtrack_limit(BACKTRACK_LIMIT)
+                .seek(true)
                 .build()
             {
                 Ok(re) => Ok(CompiledRegex { engine: RegexEngine::Backtrack(Arc::new(re)), self_reference }),

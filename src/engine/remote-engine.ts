@@ -36,8 +36,10 @@ import {
 	ENGINE_UNAVAILABLE_MARKER,
 	EngineQueryError,
 	EngineUnavailableError,
+	engineRefusedQuery,
 	STALE_MODULUS_MARKER,
 	StaleModulusError,
+	UNSUPPORTED_REGEX_ERROR_PREFIX,
 } from "./types";
 
 /** Riders the DO attaches to a search result for the shard controller. */
@@ -195,7 +197,7 @@ async function unwrap<T>(call: Promise<T>): Promise<T> {
 		}
 		// The RPC path carries the message verbatim, so the same classification the fetch transport
 		// makes from its status line is made here from the text.
-		if (message.includes(BUILD_FILTER_ERROR_PREFIX)) throw new EngineQueryError(message);
+		if (engineRefusedQuery(message)) throw new EngineQueryError(message);
 		const stale = message.indexOf(STALE_MODULUS_MARKER);
 		if (stale >= 0) throw new StaleModulusError(message.slice(stale + STALE_MODULUS_MARKER.length + 1));
 		throw err;
@@ -823,7 +825,9 @@ async function pageAttempt(stub: SearchEngineStub, body: string, ms: number): Pr
 	if (unavailable >= 0) {
 		throw new EngineUnavailableError(message.slice(unavailable + ENGINE_UNAVAILABLE_MARKER.length + 1));
 	}
-	if (message.startsWith(BUILD_FILTER_ERROR_PREFIX)) throw new EngineQueryError(message);
+	if (message.startsWith(BUILD_FILTER_ERROR_PREFIX) || message.startsWith(UNSUPPORTED_REGEX_ERROR_PREFIX)) {
+		throw new EngineQueryError(message);
+	}
 	throw new Error(message);
 }
 

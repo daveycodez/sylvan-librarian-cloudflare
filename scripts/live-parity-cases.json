@@ -1681,6 +1681,24 @@
 			"method": "GET",
 			"path": "/cards/search?q=%21%22Tiller+Engine%22+o%3A%2Fchoose+one+.%5Cs.+untap%2F",
 			"note": "The control for the case above: `\\s` in the same position is 1 on both sides, before and after. A fix that kept EVERY class off the newline, or that matched line by line, would turn this into a 404."
+		},
+		{
+			"name": "search-tag-or-lookbehind-regex-holds-the-tag",
+			"method": "GET",
+			"path": "/cards/search?q=%28otag%3Alands-matter+OR+%28o%3A%2F%28%3F%3C%21any+%29%28number+of%7Cfor+each%29%5B%5E.%2C%5Cn%5D%2A%5Cb%28lands%7Cland+cards%7CForests%7CIslands%7CSwamps%7CMountains%7CPlains%29%5Cb%7Cfor+each+land+card%7Cwhenever%5B%5E%2C%5Cn%5D%2A%5Cbland%5B%5E%2C%5Cn%5D%2Agraveyard%7Clands+than%2F+OR+o%3A%22land+creatures+you%22+OR+o%3A%22lands+you+control+have%22%29%29",
+			"note": "x67, reported from mtg-seeker 2026-10-03, verbatim: 765 on api.scryfall.com and 696 here, where `otag:lands-matter` ALONE is 584 on both sides and the union was missing 50 of those 584 — an `A OR B` smaller than `A`. All 69 missing cards (the 50, and 19 only the regex matches) were in ONE of the eleven partitions, the one holding Baldur's Gate Wilderness: the lookbehind sends the pattern to the backtracking engine, whose search cost over five backtracks per CHARACTER of the text, and that dungeon's 1,489 characters exhausted the 8,192-per-card budget. The engine's answer to exhaustion is to refuse the query, and the port's core path never read the refusal — so the partition answered the page as far as it had got. Card for card identical to Scryfall's 765 after the fix (ids diffed both ways on a store built from the 2026-10-03 dumps)."
+		},
+		{
+			"name": "search-lookbehind-regex-alone-reaches-every-partition",
+			"method": "GET",
+			"path": "/cards/search?q=o%3A%2F%28%3F%3C%21any+%29%28number+of%7Cfor+each%29%5B%5E.%2C%5Cn%5D%2A%5Cb%28lands%7Cland+cards%7CForests%7CIslands%7CSwamps%7CMountains%7CPlains%29%5Cb%7Cfor+each+land+card%7Cwhenever%5B%5E%2C%5Cn%5D%2A%5Cbland%5B%5E%2C%5Cn%5D%2Agraveyard%7Clands+than%2F",
+			"note": "The regex half by itself: 304 on api.scryfall.com 2026-10-03 and 277 here — the 27 it matches in the dark partition. This is the same defect seen without the OR, and the reason the report's `expected 746` was itself low: its `supplement minus tag` was measured through the same truncation."
+		},
+		{
+			"name": "search-lookbehind-union-scoped-to-the-named-cards",
+			"method": "GET",
+			"path": "/cards/search?q=%28otag%3Alands-matter+or+o%3A%2F%28%3F%3C%21any+%29%28number+of%7Cfor+each%29%5B%5E.%2C%5Cn%5D%2A%5Cb%28lands%7Cland+cards%7CForests%7CIslands%7CSwamps%7CMountains%7CPlains%29%5Cb%7Cfor+each+land+card%7Cwhenever%5B%5E%2C%5Cn%5D%2A%5Cbland%5B%5E%2C%5Cn%5D%2Agraveyard%7Clands+than%2F%29+%28%21%22Baldur%27s+Gate+Wilderness%22+or+%21%22Burgeoning%22+or+%21%22Lumra%2C+Bellow+of+the+Woods%22+or+%21%22Omnath%2C+Locus+of+Rage%22+or+%21%22Blanchwood+Armor%22+or+%21%22Mystic+Sanctuary%22%29",
+			"note": "The report's five named cards and the one card that broke them, six candidates in all: Burgeoning, Lumra, Omnath, Blanchwood Armor and Mystic Sanctuary carry the tag, Baldur's Gate Wilderness is the 1,489-character dungeon. 5 on api.scryfall.com 2026-10-03 and a 404 here: the dungeon is walked first, has no tag, so the regex runs on it, exhausts its budget, and all five tagged cards after it are dropped. `otag:lands-matter` under the same six-name scope was 5 on both sides throughout."
 		}
 	]
 }

@@ -1,0 +1,150 @@
+{
+ "all_parts": [
+  {
+   "component": "token",
+   "id": "74b0276f-004e-458a-b941-e217216141f6",
+   "name": "Worm",
+   "object": "related_card",
+   "type_line": "Token Creature \u2014 Worm",
+   "uri": "https://api.scryfall.com/cards/74b0276f-004e-458a-b941-e217216141f6"
+  },
+  {
+   "component": "combo_piece",
+   "id": "36b5c006-115f-441e-84d4-fbff390a2c00",
+   "name": "Worm Harvest",
+   "object": "related_card",
+   "type_line": "Sorcery",
+   "uri": "https://api.scryfall.com/cards/36b5c006-115f-441e-84d4-fbff390a2c00"
+  }
+ ],
+ "artist": "Chuck Lukacs",
+ "artist_ids": [
+  "2bdf4da7-c66c-4c46-a253-284c856ccfab"
+ ],
+ "booster": false,
+ "border_color": "black",
+ "card_back_id": "0aeebaf5-8c7d-4636-9e82-8c27447861f7",
+ "cardmarket_id": 361963,
+ "cmc": 5.0,
+ "collector_number": "194",
+ "color_identity": [
+  "B",
+  "G"
+ ],
+ "colors": [
+  "B",
+  "G"
+ ],
+ "digital": false,
+ "edhrec_rank": 11866,
+ "finishes": [
+  "nonfoil"
+ ],
+ "foil": false,
+ "frame": "2015",
+ "full_art": false,
+ "game_changer": false,
+ "games": [
+  "paper"
+ ],
+ "highres_image": true,
+ "id": "36b5c006-115f-441e-84d4-fbff390a2c00",
+ "illustration_id": "34052dbf-b05f-4914-9591-d9c7a1db5c01",
+ "image_status": "highres_scan",
+ "image_updated_at": "2026-07-13T09:17:48Z",
+ "image_uris": {
+  "art": "https://cards.scryfall.io/art/front/3/6/36b5c006-115f-441e-84d4-fbff390a2c00.webp?1783934268",
+  "art_crop": "https://cards.scryfall.io/art_crop/front/3/6/36b5c006-115f-441e-84d4-fbff390a2c00.jpg?1783934268",
+  "border_crop": "https://cards.scryfall.io/border_crop/front/3/6/36b5c006-115f-441e-84d4-fbff390a2c00.jpg?1783934268",
+  "crop": "https://cards.scryfall.io/crop/front/3/6/36b5c006-115f-441e-84d4-fbff390a2c00.webp?1783934268",
+  "display": "https://cards.scryfall.io/display/front/3/6/36b5c006-115f-441e-84d4-fbff390a2c00.webp?1783934268",
+  "grid": "https://cards.scryfall.io/grid/front/3/6/36b5c006-115f-441e-84d4-fbff390a2c00.webp?1783934268",
+  "large": "https://cards.scryfall.io/large/front/3/6/36b5c006-115f-441e-84d4-fbff390a2c00.jpg?1783934268",
+  "normal": "https://cards.scryfall.io/normal/front/3/6/36b5c006-115f-441e-84d4-fbff390a2c00.jpg?1783934268",
+  "png": "https://cards.scryfall.io/png/front/3/6/36b5c006-115f-441e-84d4-fbff390a2c00.png?1783934268",
+  "small": "https://cards.scryfall.io/small/front/3/6/36b5c006-115f-441e-84d4-fbff390a2c00.jpg?1783934268",
+  "thumb": "https://cards.scryfall.io/thumb/front/3/6/36b5c006-115f-441e-84d4-fbff390a2c00.webp?1783934268"
+ },
+ "keywords": [
+  "Retrace"
+ ],
+ "lang": "en",
+ "layout": "normal",
+ "legalities": {
+  "alchemy": "not_legal",
+  "brawl": "not_legal",
+  "commander": "legal",
+  "competitivebrawl": "not_legal",
+  "duel": "legal",
+  "future": "not_legal",
+  "gladiator": "not_legal",
+  "historic": "not_legal",
+  "legacy": "legal",
+  "modern": "legal",
+  "oathbreaker": "legal",
+  "oldschool": "not_legal",
+  "pauper": "not_legal",
+  "paupercommander": "not_legal",
+  "penny": "legal",
+  "pioneer": "not_legal",
+  "predh": "legal",
+  "premodern": "not_legal",
+  "standard": "not_legal",
+  "standardbrawl": "not_legal",
+  "timeless": "not_legal",
+  "tlr": "not_legal",
+  "vintage": "legal"
+ },
+ "mana_cost": "{2}{B/G}{B/G}{B/G}",
+ "multiverse_ids": [
+  451149
+ ],
+ "name": "Worm Harvest",
+ "nonfoil": true,
+ "object": "card",
+ "oracle_id": "b2223f1c-e607-43e0-86dd-5e3225330066",
+ "oracle_text": "Create a 1/1 black and green Worm creature token for each land card in your graveyard.\nRetrace (You may cast this card from your graveyard by discarding a land card in addition to paying its other costs.)",
+ "oversized": false,
+ "penny_rank": 4857,
+ "prices": {
+  "eur": "0.23",
+  "eur_foil": null,
+  "tix": null,
+  "usd": "0.28",
+  "usd_etched": null,
+  "usd_foil": null
+ },
+ "prints_search_uri": "https://api.scryfall.com/cards/search?order=released&q=oracleid%3Ab2223f1c-e607-43e0-86dd-5e3225330066&unique=prints",
+ "promo": false,
+ "purchase_uris": {
+  "cardhoarder": "https://www.cardhoarder.com/cards?affiliate_id=scryfall&data%5Bsearch%5D=Worm+Harvest&ref=card-profile&utm_campaign=affiliate&utm_medium=card&utm_source=scryfall",
+  "cardmarket": "https://www.cardmarket.com/en/Magic/Products?idProduct=361963&referrer=scryfall&utm_campaign=card_prices&utm_medium=text&utm_source=scryfall",
+  "tcgplayer": "https://partner.tcgplayer.com/c/4931599/1830156/21018?subId1=api&u=https%3A%2F%2Fwww.tcgplayer.com%2Fproduct%2F171105%3Fpage%3D1"
+ },
+ "rarity": "rare",
+ "related_uris": {
+  "edhrec": "https://edhrec.com/route/?cc=Worm+Harvest",
+  "gatherer": "https://gatherer.wizards.com/Pages/Card/Details.aspx?multiverseid=451149&printed=false",
+  "tcgplayer_infinite_articles": "https://partner.tcgplayer.com/c/4931599/1830156/21018?subId1=api&trafcat=tcgplayer.com%2Fsearch%2Farticles&u=https%3A%2F%2Fwww.tcgplayer.com%2Fsearch%2Farticles%3FproductLineName%3Dmagic%26q%3DWorm%2BHarvest",
+  "tcgplayer_infinite_decks": "https://partner.tcgplayer.com/c/4931599/1830156/21018?subId1=api&trafcat=tcgplayer.com%2Fsearch%2Fdecks&u=https%3A%2F%2Fwww.tcgplayer.com%2Fsearch%2Fdecks%3FproductLineName%3Dmagic%26q%3DWorm%2BHarvest"
+ },
+ "released_at": "2018-08-10",
+ "reprint": true,
+ "reserved": false,
+ "rulings_uri": "https://api.scryfall.com/cards/36b5c006-115f-441e-84d4-fbff390a2c00/rulings",
+ "scryfall_set_uri": "https://scryfall.com/sets/c18?utm_source=api",
+ "scryfall_uri": "https://scryfall.com/card/c18/194/worm-harvest?utm_source=api",
+ "security_stamp": "oval",
+ "set": "c18",
+ "set_id": "06ce6bc2-85cd-4cca-85b1-8c620d3e0902",
+ "set_name": "Commander 2018",
+ "set_search_uri": "https://api.scryfall.com/cards/search?order=set&q=e%3Ac18&unique=prints",
+ "set_type": "commander",
+ "set_uri": "https://api.scryfall.com/sets/06ce6bc2-85cd-4cca-85b1-8c620d3e0902",
+ "story_spotlight": false,
+ "tcgplayer_id": 171105,
+ "textless": false,
+ "type_line": "Sorcery",
+ "uri": "https://api.scryfall.com/cards/36b5c006-115f-441e-84d4-fbff390a2c00",
+ "variation": false
+}

@@ -118,6 +118,25 @@ impl std::fmt::Display for EngineError {
 
 impl std::error::Error for EngineError {}
 
+/// The second half of the regex budget's bracket: `Err` when a match on this thread ran out of
+/// backtracking since `bind_and_split_filter_value` cleared the flag.
+///
+/// EVERY CORE PATH THAT EVALUATES A BOUND FILTER MUST END HERE. The pyo3 surface already does
+/// (`check_regex_match_failed` after `run_query_routed`); the core paths did not, and the flag is
+/// not a note for later — while it is set `CompiledRegex::is_match` answers `false` for every
+/// card and `FilterExpr::residual_matches` rejects every printing, so the rest of the walk is
+/// EMPTY whatever else the query says. Left unread, that was a silently truncated page:
+/// `otag:lands-matter OR o:/(?<!any )…/` answered 696 cards where the tag alone answers 584 and
+/// the union is 765, because the partition holding Baldur's Gate Wilderness (1,489 characters of
+/// rules text) stopped at that card and dropped 50 cards the TAG matches. An `A OR B` smaller
+/// than `A` is not an answer; an unsupported-regex error is.
+fn regex_budget_held() -> Result<(), EngineError> {
+    match super::take_regex_match_failed() {
+        Some(msg) => Err(EngineError::unsupported_regex(msg.strip_prefix(super::REGEX_MATCH_ERR_PREFIX).unwrap_or(&msg))),
+        None => Ok(()),
+    }
+}
+
 /// The exception mapping that keeps the python surface's behavior unchanged:
 /// each kind converts to exactly the exception type the pre-patch code raised
 /// at that site.
@@ -1824,6 +1843,7 @@ impl BufferStore {
                 plane_expr.as_ref(),
             )
         };
+        regex_budget_held()?;
         Ok((params, total, page, widened))
     }
 
@@ -2422,14 +2442,19 @@ impl BufferStore {
         let resolved_fields = resolve_fields_json(fields)?;
         let data = self.data();
         let bound = scope.map(|s| self.bind_scope(s)).transpose()?;
-        Ok(identifiers
+        let cards = identifiers
             .iter()
             .map(|&(folded, set_code)| {
                 self.name_best(folded, set_code, NameScope::Collection, bound.as_ref()).map(|hit| {
                     card_to_json(&data.cards[hit.cid], printing_at(data, hit.vpid), &data.strings, &data.coll_vocab, &resolved_fields)
                 })
             })
-            .collect())
+            .collect();
+        // Only a scope filter can have run a regex here, and only one was bracketed by a bind.
+        if bound.as_ref().is_some_and(|b| b.filter.is_some()) {
+            regex_budget_held()?;
+        }
+        Ok(cards)
     }
 
     /// `collection_card_by_name`'s rank, for the partitioned router -- the twin of
@@ -2454,13 +2479,17 @@ impl BufferStore {
         scope: Option<&CollectionScope>,
     ) -> Result<Vec<Option<NameRank>>, EngineError> {
         let bound = scope.map(|s| self.bind_scope(s)).transpose()?;
-        Ok(identifiers
+        let ranks = identifiers
             .iter()
             .map(|&(folded, set_code)| {
                 self.name_best(folded, set_code, NameScope::Collection, bound.as_ref())
                     .map(|hit| (hit.tier, hit.name.to_owned(), hit.served, hit.tie, hit.score))
             })
-            .collect())
+            .collect();
+        if bound.as_ref().is_some_and(|b| b.filter.is_some()) {
+            regex_budget_held()?;
+        }
+        Ok(ranks)
     }
 
     /// The shared scan behind all four name entry points: the winner's rank, as `exact_name_rank`

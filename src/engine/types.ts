@@ -716,6 +716,24 @@ export class EngineQueryError extends Error {
 export const BUILD_FILTER_ERROR_PREFIX = "build_filter";
 
 /**
+ * The prefix the wasm boundary puts on a REGEX the engine refused (engine/wasm/src/lib.rs `js_err`,
+ * the engine's `UnsupportedRegex` kind): a pattern it could not compile, or one whose match ran out
+ * of its backtracking budget. Both are the caller's pattern and neither is `build_filter:` —
+ * upstream moved regex compile failures to their own error kind, so `o:/\p{Foo}/` reached this
+ * side as a bare `invalid regex …`, classified as nothing, and answered 500.
+ *
+ * The budget half is why a query can fail AFTER it started matching: the engine no longer answers
+ * a page it knows is truncated (a lookaround that exhausted its budget on one long card used to
+ * drop every later card in that partition, silently), it refuses, and the refusal is a 400.
+ */
+export const UNSUPPORTED_REGEX_ERROR_PREFIX = "unsupported_regex";
+
+/** Whether an engine failure's message says the engine REFUSED the query — see the two prefixes. */
+export function engineRefusedQuery(message: string): boolean {
+	return message.includes(BUILD_FILTER_ERROR_PREFIX) || message.includes(UNSUPPORTED_REGEX_ERROR_PREFIX);
+}
+
+/**
  * One partition of the store.
  *
  * Each partition is its own complete rkyv archive, holding the cards whose

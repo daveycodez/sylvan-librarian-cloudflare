@@ -28,7 +28,7 @@ use std::cell::RefCell;
 use std::io::Write;
 use wasm_bindgen::prelude::*;
 
-use card_engine::{AlignedVec, BufferStore, EngineError, QueryOptions};
+use card_engine::{AlignedVec, BufferStore, EngineError, EngineErrorKind, QueryOptions};
 
 pub mod names;
 pub mod printed;
@@ -198,8 +198,21 @@ extern "C" {
     fn console_error(s: &str);
 }
 
+/// The prefix on a regex the engine REFUSED — one it could not compile, or one that ran out of
+/// its backtracking budget mid-match. `src/engine/types.ts` holds the other end
+/// (`UNSUPPORTED_REGEX_ERROR_PREFIX`) and turns it into a 400.
+///
+/// The kind has to be written into the message because the message is all that crosses: a
+/// `JsError` is a string, and so is everything the Durable Object transport carries after it.
+/// Without it the caller cannot tell "your pattern is the problem" from "the engine broke", and
+/// answered both with a 500 — which is what `o:/\p{Foo}/` got.
+const UNSUPPORTED_REGEX_ERROR_PREFIX: &str = "unsupported_regex";
+
 fn js_err(e: EngineError) -> JsError {
-    JsError::new(&e.to_string())
+    match e.kind {
+        EngineErrorKind::UnsupportedRegex => JsError::new(&format!("{UNSUPPORTED_REGEX_ERROR_PREFIX}: {e}")),
+        _ => JsError::new(&e.to_string()),
+    }
 }
 
 // ─── Store loading ───────────────────────────────────────────────────────────

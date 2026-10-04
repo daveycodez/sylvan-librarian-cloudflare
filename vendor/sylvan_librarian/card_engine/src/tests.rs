@@ -13290,15 +13290,57 @@ fn regex_backtrack_exhaustion_surfaces_as_match_failure() {
     // the fancy-free `(a+)+b` tail to the linear engine, so the only backtracking left is the one
     // lookahead. Nesting it inside the `+` is what forces the backtracking VM to run the whole
     // repeat, and is also why this budget so rarely bites a real query.
-    let re = crate::filter::compile_search_regex_for_test("((?=a)a+)+b");
+    //
+    // LOCAL PATCH (Cloudflare port): the trailing `(?!b)b`, and the haystack ending in `b`. With
+    // the seek prefilter on (`CompiledRegex::compile`) the VM only runs where the pattern's
+    // lookaround-free approximation matches, and `(a+)+b` matches nowhere in `aaa…c` -- so the
+    // old haystack is now answered `false` without spending a single backtrack, which is the point
+    // of seeking and is asserted below. Exhausting the budget needs a candidate the approximation
+    // accepts and the lookarounds refuse.
+    let re = crate::filter::compile_search_regex_for_test("((?=a)a+)+(?!b)b");
     assert!(re.is_backtracking(), "the lookahead must route this to the backtracking engine");
-    let hay = format!("{}c", "a".repeat(60));
+    let hay = format!("{}b", "a".repeat(60));
     assert!(!re.is_match(&hay));
     let msg = take_regex_match_failed().expect("backtrack exhaustion must set failure flag");
     assert!(msg.starts_with(REGEX_MATCH_ERR_PREFIX));
 
     // And the flag is one-shot: taking it clears it, so the next query starts clean.
     assert!(take_regex_match_failed().is_none(), "the flag must not survive being taken");
+
+    // No candidate, no budget spent: the same pathological repeat against a text it cannot match.
+    assert!(!re.is_match(&format!("{}c", "a".repeat(60))));
+    assert!(take_regex_match_failed().is_none(), "a text with no candidate position must not cost budget");
+}
+
+/// LOCAL PATCH (Cloudflare port): the budget is spent where the pattern could match, not once per
+/// character of the text.
+///
+/// The pattern is a real query (mtg-seeker, 2026-10-03) and nothing about it is pathological: a
+/// lookbehind in front of a four-way alternation. Searched unanchored on the backtracking VM it
+/// cost ~5.4 backtracks per CHARACTER, so any text over ~1,500 characters exhausted the 8,192
+/// budget whether or not it could match -- and the corpus holds such texts (Baldur's Gate
+/// Wilderness, 1,489; the minigame cards, up to 2,148). A text length is not a property of the
+/// pattern, and it must not be what decides whether a query is refused.
+#[test]
+fn regex_budget_does_not_scale_with_the_length_of_the_text() {
+    use crate::regex_compat::{clear_regex_match_failed, take_regex_match_failed};
+
+    clear_regex_match_failed();
+    let re = crate::filter::compile_search_regex_for_test(
+        r"(?<!any )(number of|for each)[^.,\n]*\b(lands|land cards|Forests|Islands|Swamps|Mountains|Plains)\b|for each land card|whenever[^,\n]*\bland[^,\n]*graveyard|lands than",
+    );
+    assert!(re.is_backtracking(), "the lookbehind must route this to the backtracking engine");
+    let filler = "Roll a d20 and move your venture marker into the next room of this dungeon. ".repeat(64);
+    assert!(filler.len() > 4_000);
+    assert!(!re.is_match(&filler));
+    assert!(take_regex_match_failed().is_none(), "a long text with no candidate exhausted the budget");
+    // The lookbehind refuses every candidate in a long text: still a few backtracks per CANDIDATE.
+    let refused = "Sacrifice any number of lands, then shuffle. ".repeat(64);
+    assert!(!re.is_match(&refused));
+    assert!(take_regex_match_failed().is_none(), "64 refused candidates exhausted the budget");
+    // And it still finds the one that is not refused, at the far end of that text.
+    assert!(re.is_match(&format!("{refused}Draw a card for each of the number of lands you control.")));
+    assert!(take_regex_match_failed().is_none());
 }
 
 // And children reorder cheapest-tier-first regardless of written order, and
@@ -19850,4 +19892,101 @@ fn the_card_object_residue_rides_padding_the_rows_already_had() {
     assert_eq!(offset_of!(F, artist_id_vid), 18);
     assert_eq!(offset_of!(F, card_watermark_id), 20);
     assert_eq!(std::mem::size_of::<F>(), 48);
+}
+
+/// LOCAL PATCH (Cloudflare port): seeking changes WHERE the backtracking VM is entered, never what
+/// it answers.
+///
+/// `CompiledRegex` compiles its backtracking arm with fancy_regex's seek prefilter, which that
+/// crate ships switched off and calls experimental. Its promise is that the approximation it seeks
+/// with only over-matches — and a prefilter that under-matched would lose cards as silently as the
+/// bug it was turned on to fix. So the promise is checked rather than taken: every pattern below,
+/// against the rules text of every real card in the builder's fixtures, must answer exactly what
+/// the same pattern answers on the UNSEEKED VM with no budget at all, and must never exhaust the
+/// budget doing it. (The same battery was run once against all 38,705 oracle texts of the
+/// 2026-10-03 bulk dump: no difference on any of them.)
+#[test]
+fn seeked_backtracking_regex_answers_what_the_unseeked_one_does() {
+    use crate::regex_compat::{clear_regex_match_failed, take_regex_match_failed, CompiledRegex, SelfRefScope};
+
+    const PATTERNS: &[&str] = &[
+        r"(?<!any )(number of|for each)[^.,\n]*\b(lands|land cards|Forests|Islands|Swamps|Mountains|Plains)\b|for each land card|whenever[^,\n]*\bland[^,\n]*graveyard|lands than",
+        r"(?<!any )for each",
+        r"(?<!a )b",
+        r"(?<!a )b|c|d|e",
+        r"(?<!a )zq|zx|zw|zv|zu|zt|zs",
+        r"zq(?!a)|zx|zw|zv|zu",
+        r"zq(?=a)|zx|zw|zv|zu",
+        r"(?=z)zq|zx|zw|zv|zu",
+        r"(?<=a )zq|zx|zw|zv|zu",
+        r"x(?!y)",
+        r"~(?! enters)",
+        r"(?<!non)creature(?!s)",
+        r"(?<!non)land(?! card)",
+        r"^(?!when)[a-z]+ (?=target)",
+        r"(?<=\n)whenever",
+        r"(?<=^)whenever",
+        r"whenever(?=[^\n]*draw)",
+        r"(?!.*draw)^whenever",
+        r"^(?!.*\bdraw\b).*\bdiscard\b",
+        r"destroy (?!target)(all|each)",
+        r"\mland\M",
+        r"\mlands?\M[^.]*\mgraveyard\M",
+        r"(?<![a-z])fly(?![a-z])",
+        r"(?<=\{)[wubrg](?=\})",
+        r"(\{[wubrg]\})\1",
+        r"(\w+) \1",
+        r"(?<!\{t\}, )sacrifice (?!a )",
+        r"(?<!first |double )strike",
+        r"draw (?=a card|two cards|three cards)(?!a card\.)",
+        r"(?<!\d)[2-9](?!\d)",
+        r"(?<!\+)\+1/\+1(?! counter)",
+        r"(?=.*flying)(?=.*lifelink)",
+        r"(?=[\s\S]*land)(?=[\s\S]*graveyard)",
+        r"\b(?!the\b)\w+ of \w+\b",
+        r"(?<=: )add \{[wubrgc]\}(?!\{)",
+        r"(?:(?<=you )gain|(?<=you )lose) \d+ life",
+        r"counter target (?!spell)",
+        r"(?<=deals )(\d+|x) damage to (?!any target)",
+        r"(?>a+)b",
+        r"(?<!a )(b|c)(?!d)|e(?=f)|g",
+        r"$(?<!\.)",
+        r"^(?=.{200,})",
+    ];
+
+    // The rules text of every fixture card and of each of its faces: real Scryfall objects, from
+    // Llanowar Elves' one line to Baldur's Gate Wilderness, a 1,489-character dungeon.
+    let dir = format!("{}/../../../engine/builder/src/fixtures", env!("CARGO_MANIFEST_DIR"));
+    let mut texts: Vec<String> = Vec::new();
+    for entry in std::fs::read_dir(&dir).expect("the builder's fixtures") {
+        let path = entry.unwrap().path();
+        if path.extension().and_then(|e| e.to_str()) != Some("json") {
+            continue;
+        }
+        let card: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        let faces = card["card_faces"].as_array().cloned().unwrap_or_default();
+        for object in std::iter::once(&card).chain(&faces) {
+            if let Some(text) = object["oracle_text"].as_str().filter(|t| !t.is_empty()) {
+                texts.push(text.to_owned());
+            }
+        }
+    }
+    assert!(texts.len() >= 60, "only {} fixture texts", texts.len());
+    assert!(texts.iter().any(|t| t.len() > 1_400), "the long cards are what this is about");
+
+    let mut matched = 0usize;
+    for pattern in PATTERNS {
+        let seeked = CompiledRegex::new_self_referential(pattern, SelfRefScope::Oracle).expect("compiles");
+        assert!(seeked.is_backtracking(), "{pattern:?} was meant to need the backtracking engine");
+        let reference = fancy_regex::RegexBuilder::new(seeked.as_str()).backtrack_limit(usize::MAX).build().unwrap();
+        for text in &texts {
+            clear_regex_match_failed();
+            let got = seeked.is_match(text);
+            assert!(take_regex_match_failed().is_none(), "{pattern:?} exhausted its budget on {} characters", text.len());
+            assert_eq!(got, reference.is_match(text).unwrap(), "{pattern:?} on {text:?}");
+            matched += usize::from(got);
+        }
+    }
+    // Not vacuous: the battery matches, and refuses, plenty.
+    assert!(matched > 200 && matched < PATTERNS.len() * texts.len() - 200, "{matched}");
 }

@@ -111,7 +111,7 @@ mod clock;
 mod core_api;
 mod partition;
 pub use core_api::{
-    BufferStore, CollectionScope, EngineError, FuzzyCandidate, QueryKeysOutput, QueryOptions, QueryOutput, RowMeta,
+    BufferStore, CollectionScope, EngineError, EngineErrorKind, FuzzyCandidate, QueryKeysOutput, QueryOptions, QueryOutput, RowMeta,
     SpillingStoreBuilder, StoreBuilder, StoreStats, build_partition_from_standalone, store_format_version,
 };
 // LOCAL PATCH (sylvan-librarian-cloudflare, backlog n15): the corpus-wide names index.

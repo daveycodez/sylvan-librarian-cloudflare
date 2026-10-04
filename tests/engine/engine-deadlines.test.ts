@@ -138,6 +138,32 @@ describe("RemoteEngine", () => {
 		expect(calls).toBe(1);
 	});
 
+	// The engine's UnsupportedRegex kind (engine/wasm `js_err`): a pattern it could not compile, or
+	// one whose match exhausted its backtracking budget. Before the prefix existed both arrived as a
+	// bare message, classified as nothing, and left `/cards/search` as a 500.
+	test.each([
+		"unsupported_regex: regex execution limit exceeded",
+		"unsupported_regex: invalid regex '\\p{Foo}': Unicode property not found",
+	])("a refused regex is the caller's error, on both transports: %s", async (message) => {
+		let calls = 0;
+		const stub = {
+			fetch: async () => {
+				calls++;
+				return new Response(message, { status: 503, headers: { "x-engine-error": "Error" } });
+			},
+			scryfallSearch: async () => {
+				calls++;
+				throw new Error(message);
+			},
+		} as unknown as Stub;
+		const engine = new RemoteEngine(stub, "wnam");
+		await expect(engine.scryfallSearchPage({ limit: 10 } as never, "https://x", envelope, {})).rejects.toBeInstanceOf(
+			EngineQueryError,
+		);
+		await expect(engine.scryfallSearch({ limit: 10 } as never, "https://x")).rejects.toBeInstanceOf(EngineQueryError);
+		expect(calls).toBe(2);
+	});
+
 	test("the RPC transport: an unflagged reset gets one retry; a hang times out", async () => {
 		let calls = 0;
 		const flaky = {
