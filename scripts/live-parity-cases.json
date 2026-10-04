@@ -2088,6 +2088,28 @@
 			"method": "GET",
 			"path": "/cards/search?q=-name%3A%2F%28.%29%5C1%2F+t%3Aelf",
 			"note": "The complement of nothing: 730 on api.scryfall.com 2026-10-03 — every elf, and 730 rather than `t:elf`'s 698 because a `name:` regex still switches `include_extras` on. Which is why the term is kept as a regex rather than replaced by an empty leaf."
+		},
+		{
+			"name": "search-regex-five-lookarounds-is-the-engines-budget",
+			"method": "GET",
+			"path": "/cards/search?q=t%3Ainstant+o%3A%2F%28%3F%3Dd%29%28%3F%3Dde%29%28%3F%3Ddes%29%28%3F%3Ddest%29%28%3F%3Ddestr%29destroy+target+creature%2F",
+			"known_deviation": {
+				"reason": "THE RESIDUE OF x66's \"too complex\" rule: a pattern Scryfall runs and this engine's own static budget (parser/regex-budget.ts, upstream #1047) does not. Five lookarounds cost 15 of Scryfall's 90 and run there — 152 instants on api.scryfall.com 2026-10-03 — while the engine admits four. The port used to answer `400 Search query contains an unsupported regular expression.` for the whole query; it now drops the one term with Scryfall's own sentence and answers the rest, so the FAILURE MODE is Scryfall's even though the threshold is not. The same holds for more than 64 constructs (Scryfall runs 89 dots or 82 `\\w`), an open-ended `{m,}` with m over 1, and a pattern over 256 UTF-8 bytes that is under 248 characters. It is the safe direction for a client that validates here and ships to Scryfall: the port refuses loudly what Scryfall would have run, never the reverse. Raising the engine's bound is a cost decision — every lookaround pattern scans the corpus on the backtracking engine.",
+				"scryfall": {
+					"status": 200,
+					"expect": {
+						"object": "list",
+						"total_cards": 152
+					}
+				},
+				"ours": {
+					"status": 200,
+					"expect": {
+						"object": "list",
+						"warnings.0": "Invalid expression “o:/(?=d)(?=de)(?=de…” was ignored. Regular expression too complex."
+					}
+				}
+			}
 		}
 	]
 }

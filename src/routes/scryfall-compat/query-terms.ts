@@ -53,7 +53,7 @@ import {
 	ParserClass,
 } from "../../parser/db-info";
 import { LexError } from "../../parser/errors";
-import { toJsValidationPattern } from "../../parser/regex-budget";
+import { patternExceedsBudget, toJsValidationPattern } from "../../parser/regex-budget";
 import { isKnownSetCode } from "../../parser/set-dates.gen";
 import { isWordCont, type Token, TT, tokenize } from "../../parser/tokenizer";
 import { DIRECTIVE_TABLES } from "../enums";
@@ -1553,10 +1553,39 @@ function neutralizeBackreferences(pattern: string): string {
 }
 
 /**
+ * A PATTERN SCRYFALL WOULD RUN AND THIS ENGINE'S OWN BUDGET WILL NOT is dropped with Scryfall's
+ * too-complex sentence — the FAILURE MODE is Scryfall's even where the threshold is not.
+ *
+ * The parser's static budget (`parser/regex-budget.ts`, upstream #1047) is the engine's safety
+ * bound, and it is narrower than Scryfall's in four places: more than 4 lookarounds (Scryfall
+ * prices a lookaround at 3 of its 90, so up to 29), more than 64 constructs (Scryfall runs 89 dots
+ * or 82 `\w`), an open-ended `{m,}` with m over 1 (`o:/a{2,}/` runs there), and more than 256
+ * UTF-8 BYTES (Scryfall counts 248 CHARACTERS, so a pattern of non-ASCII text). Left to the
+ * parser, any of them refused the WHOLE query — `400 Search query
+ * contains an unsupported regular expression.`, a sentence Scryfall has no counterpart for — even
+ * with other terms present. Dropping the one term keeps the rest of the query answering and tells
+ * the caller, in the words a Scryfall client already handles, that the regex was not applied.
+ *
+ * THE RESIDUE, recorded as a known deviation (live-parity `search-regex-five-lookarounds-…`):
+ * `t:instant o:/(?=d)(?=de)(?=des)(?=dest)(?=destr)destroy target creature/` is 152 on
+ * api.scryfall.com (2026-10-03) and all of `t:instant` with the warning here. The safe direction
+ * for a client that validates here and ships to Scryfall: the port refuses, loudly, what Scryfall
+ * would have run — never the reverse. Raising the engine's bound to Scryfall's is a cost decision
+ * (every lookaround pattern scans the corpus on the backtracking engine), not a parity fix.
+ *
+ * A metacharacter-free pattern on a text column never reaches the budget — the rewrite lowers it
+ * to a plain substring — so it is exempt here too.
+ */
+function overEngineBudget(keyword: string, pattern: string): boolean {
+	if (!MANA_COST_KEYWORDS.has(keyword) && regexPlainLiteral(pattern) !== null) return false;
+	return patternExceedsBudget(pattern);
+}
+
+/**
  * Why Scryfall refuses a regex it has not compiled yet, or null — the checks it runs on the
  * pattern's TEXT, in the order it runs them.
  */
-function regexTextReason(pattern: string): string | null {
+export function scryfallRegexTextReason(pattern: string): string | null {
 	if (tooComplex(pattern)) return TOO_COMPLEX_REASON;
 	if (nestsTooDeep(pattern)) return NESTED_GROUPS_REASON;
 	if (repeatsTooMuch(pattern)) return TOO_MUCH_REPETITION_REASON;
@@ -1967,7 +1996,7 @@ function classifyLeaf(term: string): LeafVerdict {
 		// no regex is ever read (`c:/w/` is `c:w`); `mana:/…/` is a real regex and takes them.
 		const readsRegex = !REGEX_VALUE_FIRST_KEYWORDS.has(keyword) || MANA_COST_KEYWORDS.has(keyword);
 		if (readsRegex) {
-			const textReason = regexTextReason(pattern);
+			const textReason = scryfallRegexTextReason(pattern);
 			if (textReason !== null) return { keep: false, reason: textReason };
 		}
 		try {
@@ -1977,6 +2006,7 @@ function classifyLeaf(term: string): LeafVerdict {
 		}
 		if (readsRegex) {
 			const withoutBackreferences = neutralizeBackreferences(pattern);
+			if (overEngineBudget(keyword, withoutBackreferences)) return { keep: false, reason: TOO_COMPLEX_REASON };
 			if (withoutBackreferences !== pattern) {
 				return { keep: true, text: `${match[1]}${match[2]}${op}/${withoutBackreferences}/` };
 			}

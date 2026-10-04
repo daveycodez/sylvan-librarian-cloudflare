@@ -126,6 +126,24 @@ function enforcePatternLimits(pattern: string): void {
 	}
 }
 
+/**
+ * Whether the static budget above would refuse `pattern` — for a caller that DROPS the term
+ * rather than failing the query (LOCAL PATCH, Cloudflare port: the Scryfall-compat term policy,
+ * `routes/scryfall-compat/query-terms.ts`, where an over-budget regex is ignored with a warning as
+ * api.scryfall.com ignores one). A malformed pattern is not "over budget"; it answers false and
+ * the caller's own well-formedness check speaks for it.
+ */
+export function patternExceedsBudget(pattern: string): boolean {
+	try {
+		enforcePatternLimits(pattern);
+		return false;
+	} catch (err) {
+		if (err instanceof QueryBudgetExceeded) return true;
+		if (err instanceof InvalidRegexPatternError) return false;
+		throw err;
+	}
+}
+
 /** `{m}` / `{m,n}` / `{m,}` at `i` (which points at the `{`), or null when it is a literal brace. */
 function readQuantifier(pattern: string, i: number): { lower: number; upper: number | null; end: number } | null {
 	const close = pattern.indexOf("}", i);

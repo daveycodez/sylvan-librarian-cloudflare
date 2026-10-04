@@ -5,7 +5,7 @@
 // queries). See src/routes/scryfall-compat/query-terms.ts for the request behind each row.
 
 import { describe, expect, test } from "bun:test";
-import { scryfallTermPolicy } from "../../src/routes/scryfall-compat/query-terms";
+import { scryfallRegexTextReason, scryfallTermPolicy } from "../../src/routes/scryfall-compat/query-terms";
 import { json, makeCtx, testDispatch } from "./harness";
 
 /** `Invalid expression “<echo>” was ignored. <reason>` — the echo is Scryfall's, typed out. */
@@ -15,12 +15,9 @@ const search = (q: string) => testDispatch(makeCtx(), `/cards/search?q=${encodeU
 
 describe("a regex over Scryfall's complexity budget is ignored", () => {
 	const COMPLEX = "Regular expression too complex.";
-	const runs = (body: string) => {
-		const q = `t:instant o:/${body}/`;
-		const result = scryfallTermPolicy(q);
-		expect(result.warnings).toEqual([]);
-		expect(result.query).toBe(q);
-	};
+	// SCRYFALL'S rule, asked directly: the engine's own budget is narrower in places (64 constructs,
+	// 4 lookarounds) and refuses some of these rows with the same sentence — see the last describe.
+	const runs = (body: string) => expect(scryfallRegexTextReason(body)).toBeNull();
 	const refused = (body: string) => {
 		const result = scryfallTermPolicy(`t:instant o:/${body}/`);
 		expect(result.query).toBe("t:instant");
@@ -152,7 +149,8 @@ describe("a regex over Scryfall's complexity budget is ignored", () => {
 describe("a regex whose `{…}` upper bounds add up past 50 is ignored", () => {
 	const REPETITION = "Too much repetition.";
 	const reasonOf = (body: string) => scryfallTermPolicy(`t:instant o:/${body}/`).warnings;
-	const runs = (body: string) => expect(reasonOf(body)).toEqual([]);
+	// Scryfall's rule, asked directly — the engine's own budget additionally refuses `{m,}`.
+	const runs = (body: string) => expect(scryfallRegexTextReason(body)).toBeNull();
 	const refused = (body: string) =>
 		expect(reasonOf(body)).toEqual([
 			ignored([...`o:/${body}/`].length > 20 ? `${`o:/${body}/`.slice(0, 19)}\u2026` : `o:/${body}/`, REPETITION),
@@ -386,5 +384,56 @@ describe("a backreference is accepted and matches nothing", () => {
 		expect(scryfallTermPolicy("t:instant o:/(a)\\1\\1(((b)))/").warnings).toEqual([
 			ignored("o:/(a)\\1\\1(((b)))/", "Too many nested groups."),
 		]);
+	});
+});
+
+describe("a pattern Scryfall would run and the engine's own budget will not", () => {
+	const COMPLEX = "Regular expression too complex.";
+
+	test("is dropped with Scryfall's sentence, and the rest of the query answers", async () => {
+		// Five lookarounds: 15 of Scryfall's 90 (152 instants there), one over the engine's four.
+		const q = "t:instant o:/(?=d)(?=de)(?=des)(?=dest)(?=destr)destroy target creature/";
+		expect(scryfallRegexTextReason(q.slice("t:instant o:/".length, -1))).toBeNull();
+		const result = scryfallTermPolicy(q);
+		expect(result.query).toBe("t:instant");
+		expect(result.warnings).toEqual([ignored("o:/(?=d)(?=de)(?=de\u2026", COMPLEX)]);
+		const response = await search(q);
+		expect(response.status).toBe(200);
+		expect((await json(response)).warnings).toEqual([ignored("o:/(?=d)(?=de)(?=de\u2026", COMPLEX)]);
+	});
+
+	test("four lookarounds run", () => {
+		const q = "t:instant o:/(?=d)(?=de)(?=des)(?=dest)destroy target creature/";
+		expect(scryfallTermPolicy(q).query).toBe(q);
+	});
+
+	test("the other three places the engine is narrower", () => {
+		for (const body of ["\\w".repeat(70), "a{2,}", "\u00e9".repeat(200)]) {
+			expect(scryfallRegexTextReason(body)).toBeNull();
+		}
+		// More than 64 constructs, and an open-ended `{m,}`: regexes, so the budget speaks.
+		for (const body of ["\\w".repeat(70), "a{2,}"]) {
+			const result = scryfallTermPolicy(`t:instant o:/${body}/`);
+			expect(result.query).toBe("t:instant");
+			expect(result.warnings[0]).toEndWith(COMPLEX);
+		}
+		// 200 characters of non-ASCII text is 400 bytes, but a metacharacter-free pattern on a text
+		// column is lowered to a substring and never reaches the budget.
+		const literal = `t:instant o:/${"\u00e9".repeat(200)}/`;
+		expect(scryfallTermPolicy(literal).query).toBe(literal);
+		// With a metacharacter it is a regex, and over 256 bytes.
+		expect(scryfallTermPolicy(`t:instant o:/^${"\u00e9".repeat(200)}/`).warnings[0]).toEndWith(COMPLEX);
+	});
+
+	test("no regex makes /cards/search answer the engine's own 400 any more", async () => {
+		for (const body of ["\\w".repeat(70), "a{2,}", "(?=a)(?=b)(?=c)(?=d)(?=e)x", `^${"\u00e9".repeat(200)}`]) {
+			const response = await search(`t:instant o:/${body}/`);
+			expect(response.status).toBe(200);
+		}
+	});
+
+	test("/search keeps the engine's budget as its own refusal", async () => {
+		const response = await testDispatch(makeCtx(), `/search?q=${encodeURIComponent("o:/(?=a)(?=b)(?=c)(?=d)(?=e)x/")}`);
+		expect(response.status).toBe(400);
 	});
 });
