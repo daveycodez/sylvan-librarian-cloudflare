@@ -10,7 +10,7 @@ import { canonicalStringify, EMPTY_TAG_ALIASES, parseScryfallQueryWithDirectives
 import type { FilterValue } from "../../src/parser/nodes";
 import { applyExtrasGate } from "../../src/routes/extras-gate";
 import { scryfallTermPolicy } from "../../src/routes/scryfall-compat/query-terms";
-import { blockSetCodes } from "../../src/routes/scryfall-compat/set-blocks.gen";
+import { blockSetCodes, blockValueCode } from "../../src/routes/scryfall-compat/set-blocks.gen";
 
 const ignored = (echo: string, reason: string) => `Invalid expression “${echo}” was ignored. ${reason}`;
 
@@ -512,13 +512,135 @@ describe("block: and b: are the sets of a block", () => {
 		expect(scryfallTermPolicy("e:zen or cmc=3").include.extras).toBe(false);
 	});
 
-	test("a value that names no set code is honored and matches nothing", () => {
-		// `block:nonsense t:god` is 404 with no warnings. So is a set NAME here, which Scryfall resolves.
-		for (const term of ["block:nonsensevalue", 'block:"time spiral"', "b:ice-age"]) {
+	test("a value that names no set is honored and matches nothing", () => {
+		// `block:nonsense t:god` is 404 with no warnings. A value that is no name and not shaped
+		// like a code has no `e:` term to become.
+		for (const term of ["block:nonsensevalue", 'block:"no such set"', "b:ice-age!"]) {
 			const policy = scryfallTermPolicy(`${term} t:god`);
 			expect([term, policy.query, policy.warnings]).toEqual([term, "cmc<0 t:god", []]);
 		}
-		expect(scryfallTermPolicy('-block:"time spiral" t:god').query).toBe("-cmc<0 t:god");
+		expect(scryfallTermPolicy('-block:"no such set" t:god').query).toBe("-cmc<0 t:god");
+		// Code-shaped and unknown: the set alone, which no row carries.
+		expect(scryfallTermPolicy("block:alara t:god").query).toBe("(e:alara) t:god");
+	});
+
+	// Every row below is a request on api.scryfall.com, 2026-10-04, whose count is the count of the
+	// block asked by code; scripts/generate-set-blocks.ts carries them.
+	test.each([
+		["block:zendikar", "zen"],
+		["block:ZENDIKAR", "zen"],
+		['block:"zendikar"', "zen"],
+		["block:worldwake", "wwk"],
+		['block:"rise of the eldrazi"', "roe"],
+		['b:"return to ravnica"', "rtr"],
+		["block:returntoravnica", "rtr"],
+		['block:"time spiral"', "tsp"],
+		["block:timespiral", "tsp"],
+		['block:"future sight"', "fut"],
+		['block:"urza\'s saga"', "usg"],
+		['block:"urzas saga"', "usg"],
+		['block:"kaldheim commander"', "khc"],
+		["block:kaldheim-commander", "khc"],
+		["block:kaldheim_commander", "khc"],
+		['block:"kaldheim  commander"', "khc"],
+		['block:"duel decks elves vs. goblins"', "dd1"],
+		['block:"duel decks elves vs goblins"', "dd1"],
+		['block:"the lord of the rings tales of middle-earth"', "ltr"],
+		["block:kaldheim", "khm"],
+		['block:"the dark"', "drk"],
+		['block:"new phyrexia"', "nph"],
+		['block:"kaldheim promos"', "pkhm"],
+		['block:"kaldheim art series"', "akhm"],
+		['block:"magic 2010"', "m10"],
+		['block:"30th anniversary edition"', "30a"],
+	])("a set's whole name answers as its code: %s", (term, code) => {
+		const policy = scryfallTermPolicy(`${term} t:goblin`);
+		expect(policy.warnings).toEqual([]);
+		expect(policy.query).toBe(scryfallTermPolicy(`block:${code} t:goblin`).query);
+		expect(policy.include.extras).toBe(true);
+		expect(() => parseScryfallQueryWithDirectives(policy.query, EMPTY_TAG_ALIASES)).not.toThrow();
+	});
+
+	test("a name, negated, is the complement of the block", () => {
+		expect(scryfallTermPolicy("-block:zendikar t:god").query).toBe(scryfallTermPolicy("-block:zen t:god").query);
+	});
+
+	test("it is the whole name: a part of one, or a block's own name, names nothing", () => {
+		// `block:"return to"`, `block:spiral`, `block:reborn`, `block:"city of guilds"`,
+		// `block:"midnight hunt"`, `block:"big score"` and `block:dark` are each 404, and so are the
+		// block names `urza`, `alara`, `"core set"` and `commander`.
+		for (const value of [
+			"return to",
+			"spiral",
+			"reborn",
+			"city of guilds",
+			"midnight hunt",
+			"big score",
+			"dark",
+			"urza",
+			"alara",
+			"core set",
+			"commander",
+		]) {
+			expect([value, blockValueCode(value)]).toEqual([value, null]);
+		}
+	});
+
+	test("a colon in the value is never a name, though the set's own name has one", () => {
+		// `block:"kamigawa: neon dynasty"` is 404 where `block:"kamigawa neon dynasty"` is 287.
+		expect(blockValueCode("kamigawa neon dynasty")).toBe("neo");
+		expect(blockValueCode("ravnica city of guilds")).toBe("rav");
+		expect(blockValueCode("innistrad double feature")).toBe("dbl");
+		for (const name of ["kamigawa: neon dynasty", "ravnica: city of guilds", "innistrad: double feature"]) {
+			expect([name, blockValueCode(name)]).toEqual([name, null]);
+			expect(scryfallTermPolicy(`block:"${name}" t:god`).query).toBe("cmc<0 t:god");
+		}
+	});
+
+	test("a token set's name is left out, and its code still answers", () => {
+		// `block:"kaldheim tokens"` is 404 on api.scryfall.com where `block:tkhm` is 328, and
+		// `block:"zendikar tokens"` is 629: eight of twelve token names answered and no rule
+		// separates them, so none is in the table.
+		expect(blockValueCode("kaldheim tokens")).toBeNull();
+		expect(blockValueCode("zendikar tokens")).toBeNull();
+		expect(blockValueCode("tkhm")).toBe("tkhm");
+	});
+
+	test.each([
+		["alpha", "lea"],
+		["beta", "leb"],
+		["unlimited", "2ed"],
+		["revised", "3ed"],
+		["fourth", "4ed"],
+		["tenth", "10e"],
+		["saga", "usg"],
+		["legacy", "ulg"],
+		["destiny", "uds"],
+		["mercadian", "mmq"],
+		["masques", "mmq"],
+		["champions", "chk"],
+		["kamigawa", "chk"],
+		["ravnica", "rav"],
+		["shards", "ala"],
+		["scars", "som"],
+		["khans", "ktk"],
+		["battle", "bfz"],
+		["throne", "eld"],
+		["eldraine", "eld"],
+		["outlaws", "otj"],
+		["double feature", "dbl"],
+		["brothers war", "bro"],
+		["lord of the rings tales of middle earth", "ltr"],
+	])("Scryfall's nickname %s is %s", (nickname, code) => {
+		expect(blockValueCode(nickname)).toBe(code);
+	});
+
+	test("a code is read before a name, and a set with no block or parent is not in the code table", () => {
+		expect(blockValueCode("war")).toBe("war");
+		expect(blockValueCode("WAR")).toBe("war");
+		// `khm` has neither a block nor a parent; the policy's code-shape fallback answers it.
+		expect(blockValueCode("khm")).toBeNull();
+		expect(scryfallTermPolicy("block:khm t:god").query).toBe("(e:khm) t:god");
 	});
 
 	test("a comparison matches nothing and a regex is the regex-keyword sentence", () => {

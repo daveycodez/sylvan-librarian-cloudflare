@@ -2271,26 +2271,10 @@
 			"note": "x68. 100, where `-e:khm t:god` is 95: `block:` opens extras unconditionally and in either polarity, which `e:` does not (2026-10-03)."
 		},
 		{
-			"name": "search-block-by-set-name-is-scryfalls-only",
+			"name": "search-block-by-set-name",
 			"method": "GET",
 			"path": "/cards/search?q=block%3Azendikar+t%3Agoblin",
-			"known_deviation": {
-				"reason": "A SET NAME WHERE A SET CODE GOES (x68). Scryfall resolves `block:zendikar`, `block:\"time spiral\"` and `block:timespiral` through the set resolver its `e:` uses (`e:zendikar` is 234 there, and the nicknames `masques`, `kamigawa`, `ravnica` resolve while the block names `urza` and `alara` do not). This port's `e:` and `block:` take set CODES only, so a name is honored and matches nothing — narrower than Scryfall, never wider. The documented spelling, `b:wwk`, answers on both.",
-				"scryfall": {
-					"status": 200,
-					"expect": {
-						"object": "list",
-						"total_cards": 18
-					}
-				},
-				"ours": {
-					"status": 404,
-					"expect": {
-						"object": "error",
-						"code": "not_found"
-					}
-				}
-			}
+			"note": "A SET NAME WHERE A SET CODE GOES. x68 recorded this as a known deviation (a 404 here against Scryfall's 18); since 2026-10-04 `block:` resolves a set's whole name from the generated table (scripts/generate-set-blocks.ts carries the measurements), so `block:zendikar` is `block:zen`."
 		},
 		{
 			"name": "search-cube-keyword-is-scryfalls-not-unknown",
@@ -2672,6 +2656,23 @@
 			"method": "GET",
 			"path": "/cards/search?q=cheapest%3A%2Fusd%2F+e%3Akhm+t%3Agod+or+cheapest%3Eusd",
 			"note": "x71. `cheapest:/usd/` is `Unknown regular expression keyword “cheapest”.`; `cheapest>usd` and `cheapest!=usd` are 404 with no warnings."
+		},
+		{
+			"name": "block-by-quoted-set-name",
+			"method": "GET",
+			"path": "/cards/search?q=b%3A%22return+to+ravnica%22+t%3Agoblin",
+			"note": "2026-10-04. `b:\"return to ravnica\"` is `block:rtr`'s 670 on Scryfall: the value is the set's whole name with case, spaces, apostrophes, periods, hyphens and underscores ignored (`block:returntoravnica` and `block:\"urzas saga\"` answer too). A part of a name does not (`block:\"return to\"` is 404)."
+		},
+		{
+			"name": "block-by-scryfall-nickname",
+			"method": "GET",
+			"path": "/cards/search?q=block%3Ashards+t%3Agoblin",
+			"note": "2026-10-04. `block:shards` is the Alara block (540) and `block:alara` is 404: Scryfall keeps a nickname list of its own, which no rule over `/sets` reproduces, so the generator carries exactly the 36 measured to answer."
+		},
+		{
+			"name": "block-name-with-a-colon-names-nothing",
+			"method": "GET",
+			"path": "/cards/search?q=block%3A%22kamigawa%3A+neon+dynasty%22+t%3Agoblin"
 		}
 	]
 }

@@ -58,7 +58,7 @@ import { patternExceedsBudget, toJsValidationPattern } from "../../parser/regex-
 import { isKnownSetCode } from "../../parser/set-dates.gen";
 import { isWordCont, type Token, TT, tokenize } from "../../parser/tokenizer";
 import { DIRECTIVE_TABLES } from "../enums";
-import { blockSetCodes } from "./set-blocks.gen";
+import { blockSetCodes, blockValueCode } from "./set-blocks.gen";
 
 /** Scryfall's syntax budget, independent of the engine's post-rewrite safety budget. */
 export const TOO_MANY_REGEX_DETAILS = "Too many regular expression operators used";
@@ -472,18 +472,29 @@ const SCRYFALL_ONLY_KEYWORDS: ReadonlySet<string> = new Set([
  * the verdict carries `include: extras` — the mechanism `include:extras` uses — rather than
  * leaving it to the conditional rule the rewritten `e:` terms would get.
  *
- * A value that is not shaped like a set code is one Scryfall resolves as a set NAME
- * (`block:"time spiral"`, `block:zendikar`), by the resolver its `e:` uses and this port's does
- * not have; it answers nothing here. Narrower than Scryfall, never wider.
+ * A SET NAME ANSWERS WHERE ITS CODE DOES. `block:zendikar` is `block:zen`'s 629 and
+ * `b:"return to ravnica"` is `block:rtr`'s 670 (2026-10-04): the value is the set's whole name
+ * with case, spaces, apostrophes, periods, hyphens and underscores ignored, or one of Scryfall's
+ * own nicknames (`block:shards`, `block:alpha`). `blockValueCode` resolves it from the generated
+ * table, whose generator carries every measurement — the 38 names that answered, the nicknames,
+ * and what is left out (token-set names, a value with a colon in it, a nickname nobody measured).
+ * A value that names nothing and is not shaped like a code answers nothing: narrower than
+ * Scryfall, never wider.
+ *
+ * COST: one map lookup in a table parsed on the first `block:` term, at parse time. A query
+ * without the keyword never touches it.
  */
 const BLOCK_KEYWORDS: ReadonlySet<string> = new Set(["block", "b"]);
 const SET_CODE_SHAPE_RE = /^[0-9a-z]{1,8}$/i;
 
 /** The `e:` terms a `block:` value means, as one group — or the term that matches nothing. */
 function blockTerm(value: string): string {
-	if (!SET_CODE_SHAPE_RE.test(value)) return NEVER_MATCHES;
-	return `(${blockSetCodes(value)
-		.map((code) => `e:${code}`)
+	// A code or a name the table knows; failing that, a code-shaped value is a set released since
+	// the table was refreshed, and answers alone.
+	const code = blockValueCode(value) ?? (SET_CODE_SHAPE_RE.test(value) ? value : null);
+	if (code === null) return NEVER_MATCHES;
+	return `(${blockSetCodes(code)
+		.map((member) => `e:${member}`)
 		.join(" or ")})`;
 }
 

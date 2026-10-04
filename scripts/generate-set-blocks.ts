@@ -32,15 +32,79 @@
 //
 // which needs, per set, its parent and its block code — the two columns this file writes.
 //
-// ─── WHAT IS NOT HERE ────────────────────────────────────────────────────────────────────────
+// ─── A SET NAME WHERE THE CODE GOES ──────────────────────────────────────────────────────────
 //
-// Scryfall also resolves X as a set NAME, by the resolver `e:` uses: `block:"time spiral"`,
-// `block:timespiral`, `block:zendikar` and `block:"urza's saga"` answer their blocks, as do the
-// nicknames `masques`, `kamigawa`, `ravnica` and `"double feature"` — while the block names
-// `urza`, `alara`, `"core set"` and `commander` do not, so it is the set resolver and not the
-// `block` field. This port's `e:` takes codes only, and so does its `block:`: a name answers
-// nothing here, which is narrower than Scryfall and never wider. The documented spelling is the
-// code.
+// Scryfall also resolves X as a set NAME: `block:zendikar` and `b:"return to ravnica"` answer their
+// blocks. Measured on api.scryfall.com 2026-10-04, one request per row (unique=cards), each count
+// read against the same block asked by code:
+//
+//   block:zendikar = block:ZENDIKAR = block:"zendikar" = block:worldwake
+//       = block:"rise of the eldrazi"                           629 = block:zen
+//   b:"return to ravnica" = block:returntoravnica               670 = block:rtr
+//   block:"time spiral" = block:timespiral = block:"future sight" = block:"planar chaos"   752
+//   block:"urza's saga" = block:"urzas saga"                    621   the apostrophe is optional
+//   block:"kaldheim commander" = block:kaldheim-commander = block:kaldheim_commander
+//       = block:"kaldheim  commander"                           7,558 = block:khc
+//   block:"duel decks elves vs. goblins" = …"elves vs goblins"  56    and so is the period
+//   block:"the lord of the rings tales of middle-earth"         289   and the hyphen
+//   block:kaldheim 305   block:dominaria 265   block:"the dark" 119   block:"new phyrexia" 560
+//   block:"kaldheim promos" 307 (= block:pkhm)   block:"kaldheim art series" 384 (= block:akhm)
+//   block:"commander 2011" 7,302   block:"magic 2010" = block:"core set 2019" 3,579
+//   block:"secret lair drop" 1,801   block:"vintage masters" 325   block:"historic anthology 1" 20
+//   block:"30th anniversary edition" 286   block:"world championship decks 1997" 84
+//
+// So the value is the set's WHOLE name, compared with case, spaces, apostrophes, periods, hyphens
+// and underscores removed from both sides — and then the set answers exactly as its code does.
+// It is the whole name and nothing less:
+//
+//   block:"return to"  block:return  block:spiral  block:reborn  block:"city of guilds"
+//   block:"midnight hunt"  block:"big score" (it is "The Big Score")  block:dark     404 each
+//
+// and the names of BLOCKS that are not also a set's name answer nothing (`block:urza`,
+// `block:alara`, `block:"core set"`, `block:commander` are 404), so it is the set's name and not
+// the `block` field.
+//
+// A COLON IN THE VALUE IS NEVER A NAME, even where the set's own name has one:
+// `block:"kamigawa: neon dynasty"`, `block:"ravnica: city of guilds"`,
+// `block:"innistrad: midnight hunt"` and `block:"innistrad: double feature"` are each 404, while
+// `block:"kamigawa neon dynasty"` is 287, `block:"ravnica city of guilds"` 636 and
+// `block:"innistrad double feature"` 728. The lookup below refuses a value carrying any character
+// outside the six measured above, which is that rule and the safe reading of every character
+// nobody measured.
+//
+// THE TOKEN SETS ARE LEFT OUT, because their names do not resolve reliably and no rule was found:
+// `block:"zendikar tokens"`, `"theros tokens"`, `"ixalan tokens"`, `"dominaria tokens"`,
+// `"zendikar rising tokens"`, `"commander 2021 tokens"`, `"kaldheim commander tokens"` and
+// `"time spiral remastered tokens"` answer, and `block:"kaldheim tokens"` (`block:tkhm` is 328),
+// `"modern horizons 2 tokens"`, `"kamigawa neon dynasty tokens"` and
+// `"strixhaven school of mages tokens"` are 404. Eight of twelve. Every name of the other set
+// types that was asked resolved (38 of 38), so the table carries those and a token set is reached
+// by its code. The six names carrying a character outside the measured ones (`,` `/` `(` `&` `×`)
+// are left out too. Narrower than Scryfall, never wider.
+//
+// ─── THE NICKNAMES ───────────────────────────────────────────────────────────────────────────
+//
+// Scryfall keeps a list of its own, and it is not derivable from `/sets`: `block:shards` is the
+// Alara block and `block:alara` is not; `block:saga`, `block:legacy` and `block:destiny` are the
+// Urza block and `block:urza` is not; `block:throne` and `block:eldraine` both answer and
+// `block:eldritch`, `block:aether` and `block:oath` do not. No rule over the set objects separates
+// the two halves (first word, last word, uniqueness and age were each tried against the rows
+// below), so NICKNAMES is exactly the ones measured to answer, each with the count that names its
+// set. A nickname nobody measured answers nothing here.
+//
+//   lea block 3,579: alpha beta unlimited revised fourth fifth sixth seventh eighth ninth tenth
+//   usg block 621: saga legacy destiny          mmq block 621: mercadian masques
+//   chk block 621: champions kamigawa betrayers saviors
+//   ravnica 636   shards 540   scars 560   avacyn 659   khans 688   shadows 519   battle 494
+//   rivals 483   throne = eldraine 285   ikoria 265   outlaws 371   duskmourn 276
+//   "double feature" 728   "brothers war" 280 (the set is "The Brothers' War")
+//   "lord of the rings tales of middle earth" 289
+//
+// Measured NOT to answer, so that nobody adds them on a guess: urza urzas alara reborn time spiral
+// return eldrazi neon spark united brothers streets capenna age dawn planar chaos future sight
+// rise besieged phyrexia ascension maze born nyx tarkir fate oath gatewatch eldritch aether hour
+// guilds allegiance strixhaven classic arabian nights fallen empires starter midnight crimson
+// machine wilds caverns murders edge modern horizons guild core commander restored.
 //
 //   bun run set-blocks
 //
@@ -56,9 +120,60 @@ const CODE_RE = /^[0-9a-z]{1,8}$/;
 
 interface SetObject {
 	code?: unknown;
+	name?: unknown;
+	set_type?: unknown;
 	block_code?: unknown;
 	parent_set_code?: unknown;
 }
+
+/** The characters a set name may carry and still be in the table: the ones measured. */
+const NAME_RE = /^[A-Za-z0-9 :.'-]+$/;
+
+/** A set name as the table keys it: lower-cased, and nothing but its letters and digits. */
+const nameKey = (name: string): string => name.toLowerCase().replace(/[^a-z0-9]/g, "");
+
+/**
+ * Scryfall's own nicknames, as `[nickname key, set code]` — exactly the ones measured to answer.
+ * See the header for the counts, and for the list measured NOT to answer.
+ */
+const NICKNAMES: readonly (readonly [string, string])[] = [
+	["alpha", "lea"],
+	["beta", "leb"],
+	["unlimited", "2ed"],
+	["revised", "3ed"],
+	["fourth", "4ed"],
+	["fifth", "5ed"],
+	["sixth", "6ed"],
+	["seventh", "7ed"],
+	["eighth", "8ed"],
+	["ninth", "9ed"],
+	["tenth", "10e"],
+	["saga", "usg"],
+	["legacy", "ulg"],
+	["destiny", "uds"],
+	["mercadian", "mmq"],
+	["masques", "mmq"],
+	["champions", "chk"],
+	["kamigawa", "chk"],
+	["betrayers", "bok"],
+	["saviors", "sok"],
+	["ravnica", "rav"],
+	["shards", "ala"],
+	["scars", "som"],
+	["avacyn", "avr"],
+	["khans", "ktk"],
+	["shadows", "soi"],
+	["battle", "bfz"],
+	["rivals", "rix"],
+	["throne", "eld"],
+	["eldraine", "eld"],
+	["ikoria", "iko"],
+	["outlaws", "otj"],
+	["duskmourn", "dsk"],
+	["doublefeature", "dbl"],
+	["brotherswar", "bro"],
+	["lordoftheringstalesofmiddleearth", "ltr"],
+];
 
 async function main(): Promise<void> {
 	const res = await fetch(SETS_URL, {
@@ -93,17 +208,49 @@ async function main(): Promise<void> {
 	if (rows.length === 0) throw new Error("/sets answered no set with a block or a parent");
 	rows.sort();
 
+	// `name key:code`, for every set but the token sets — see the header for both exclusions. A
+	// key that is also a set code would never be reached (the code is tried first), and two sets
+	// under one key would make the answer depend on the order of `/sets`; neither exists today, and
+	// either is refused here rather than resolved quietly.
+	const codes = new Set<string>();
+	for (const entry of sets as SetObject[]) codes.add(code(entry.code, "set code"));
+	const names = new Map<string, string>();
+	const addName = (key: string, own: string, what: string): void => {
+		if (codes.has(key)) throw new Error(`${what} ${JSON.stringify(key)} is also a set code`);
+		const taken = names.get(key);
+		if (taken !== undefined && taken !== own)
+			throw new Error(`${what} ${JSON.stringify(key)} names ${taken} and ${own}`);
+		names.set(key, own);
+	};
+	for (const entry of sets as SetObject[]) {
+		const own = code(entry.code, "set code");
+		if (own === "" || entry.set_type === "token" || typeof entry.name !== "string") continue;
+		if (!NAME_RE.test(entry.name)) continue;
+		addName(nameKey(entry.name), own, "set name");
+	}
+	for (const [nickname, own] of NICKNAMES) {
+		if (!codes.has(own)) throw new Error(`nickname ${nickname} names ${own}, which /sets does not have`);
+		addName(nickname, own, "nickname");
+	}
+	const nameRows = [...names].map(([key, own]) => `${key}:${own}`).sort();
+
 	const source = `// GENERATED FILE - do not edit. Built by scripts/generate-set-blocks.ts from api.scryfall.com/sets.
 //
 // The two set-object fields \`block:\` / \`b:\` are a function of — \`parent_set_code\` and
-// \`block_code\` — for every set that has either. See the generator for the measured rule, and for
-// why a set NAME is not resolved here.
+// \`block_code\` — for every set that has either, and the NAMES a set answers to where its code
+// goes. See the generator for the measured rules.
 //
 // Committed and refreshed by hand with \`bun run set-blocks\`, never at deploy time.
 
 // One string literal, parsed on first use: \`code:parent:block\` rows joined by \`|\`.
 const SET_BLOCKS =
 	"${rows.join("|")}";
+
+// One string literal, parsed on first use: \`name:code\` rows joined by \`|\`. The name is the
+// set's own, lower-cased and reduced to its letters and digits, or one of Scryfall's nicknames.
+// Token sets are not here — see the generator.
+const SET_NAMES =
+	"${nameRows.join("|")}";
 
 interface SetBlocks {
 	/** set code -> [parent set code or "", block code or ""] */
@@ -150,10 +297,46 @@ export function blockSetCodes(value: string): string[] {
 	}
 	return [...out].sort();
 }
+
+let namesParsed: ReadonlyMap<string, string> | null = null;
+
+function setNames(): ReadonlyMap<string, string> {
+	if (namesParsed === null) {
+		const built = new Map<string, string>();
+		for (const row of SET_NAMES.split("|")) {
+			const sep = row.indexOf(":");
+			built.set(row.slice(0, sep), row.slice(sep + 1));
+		}
+		namesParsed = built;
+	}
+	return namesParsed;
+}
+
+/** What Scryfall drops from a set name written as a value: spaces, \`'\`, \`.\`, \`-\` and \`_\`. */
+const NAME_SEPARATORS_RE = /[\\s'._-]/g;
+const NAME_KEY_RE = /^[a-z0-9]+$/;
+
+/**
+ * The set code a \`block:\` value names, or null when it names none this table knows.
+ *
+ * A set or block CODE in the table above is itself. Otherwise the value is read as a set NAME —
+ * the whole name, with case and the five separators ignored — or as one of the measured
+ * nicknames. A value carrying any other character (a colon above all) is no name:
+ * \`block:"kamigawa: neon dynasty"\` answers nothing on api.scryfall.com where
+ * \`block:"kamigawa neon dynasty"\` answers the set.
+ */
+export function blockValueCode(value: string): string | null {
+	const lower = value.toLowerCase();
+	const { sets, members } = setBlocks();
+	if (sets.has(lower) || members.has(lower)) return lower;
+	const key = lower.replace(NAME_SEPARATORS_RE, "");
+	if (!NAME_KEY_RE.test(key)) return null;
+	return setNames().get(key) ?? null;
+}
 `;
 
 	writeFileSync(OUT, source);
-	console.log(`Wrote ${OUT} — ${rows.length} sets with a block or a parent`);
+	console.log(`Wrote ${OUT} — ${rows.length} sets with a block or a parent, ${nameRows.length} names`);
 }
 
 await main();
