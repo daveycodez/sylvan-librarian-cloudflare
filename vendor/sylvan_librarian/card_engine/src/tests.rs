@@ -16487,6 +16487,56 @@ fn fo_searches_the_unstripped_text_and_o_does_not() {
     ));
 }
 
+/// A cleave card's `o:` text is its printed text, the same without the bracket characters, and
+/// the same without the bracketed words — three readings, one line break between. Real oracle
+/// text; every expectation is a probe measured on api.scryfall.com 2026-10-04.
+#[test]
+fn a_cleave_card_is_searched_under_three_readings() {
+    use super::searchable_oracle_text as searchable;
+    const REMINDER: &str = "(You may cast this spell for its cleave cost. If you do, remove the words in square brackets.)";
+
+    assert_eq!(
+        searchable(&format!("Cleave {{5}}{{W}} {REMINDER}\nDestroy target [attacking] creature.")),
+        "cleave {5}{w}\ndestroy target [attacking] creature.\n\
+         cleave {5}{w}\ndestroy target attacking creature.\n\
+         cleave {5}{w}\ndestroy target creature."
+    );
+    // The whitespace BEFORE the bracket goes with it, as it does for reminder text.
+    let wash = searchable(&format!(
+        "Cleave {{1}}{{U}}{{U}} {REMINDER}\nCounter target spell [that wasn't cast from its owner's hand]."
+    ));
+    assert!(wash.ends_with("\ncounter target spell."), "{wash}");
+    let dig = searchable(&format!(
+        "Cleave {{1}}{{B}}{{B}}{{G}} {REMINDER}\nSearch your library for a [basic land] card, [reveal it,] put it into your hand, then shuffle."
+    ));
+    assert!(dig.contains("for a basic land card, reveal it, put it"), "{dig}");
+    assert!(dig.ends_with("\nsearch your library for a card, put it into your hand, then shuffle."), "{dig}");
+    assert!(!dig.contains("for a card, reveal it"), "nothing is removed by halves");
+    // A bracketed sentence that ends a line leaves the line ending where the sentence before did.
+    let gambit = searchable(&format!(
+        "Cleave {{4}}{{U}}{{U}}{{R}} {REMINDER}\nTake an extra turn after this one. During that turn, damage can't be prevented. [At the beginning of that turn's end step, you lose the game.]\nExile Alchemist's Gambit."
+    ));
+    assert!(gambit.ends_with("damage can't be prevented.\nexile alchemist's gambit."), "{gambit}");
+    assert!(gambit.contains("prevented. at the beginning of that turn's end step"), "{gambit}");
+    // The playtest card: no Cleave keyword in its card object, the same treatment on Scryfall.
+    let blow = searchable(
+        "Multicleave {1} (You may pay an additional {1} any number of times as you cast this spell. For each time you do, choose a paired set of square brackets and remove the words in between.)\nDestroy target [nonblack] creature [with mana value 3 or less] [an opponent controls]. You [and its controller each] draw a card [and lose 2 life]. Create a [tapped] 1/1 white Spirit creature token with flying.",
+    );
+    assert!(blow.contains("destroy target nonblack creature with mana value 3 or less an opponent controls."), "{blow}");
+    assert!(blow.ends_with("destroy target creature. you draw a card. create a 1/1 white spirit creature token with flying."), "{blow}");
+
+    // BRACKETS ALONE ARE NOT CLEAVE. Carth the Lion is 404 for `o:"additional +1 to activate"`,
+    // and Graveyard Dig — "ignore the bracketed text", no keyword — for the cleaved reading.
+    assert_eq!(
+        searchable("Planeswalkers' loyalty abilities you activate cost an additional [+1] to activate."),
+        "planeswalkers' loyalty abilities you activate cost an additional [+1] to activate."
+    );
+    let dig = "Return up to two target [black or green] creature cards from your graveyard to your hand.\nYou may cast this spell for {2}{B/G}{B/G}. If you do, ignore the bracketed text.";
+    assert_eq!(searchable(dig), dig.to_lowercase());
+    // And everything else is the reminder-stripped text it always was.
+    assert_eq!(searchable("Lifelink (Damage dealt by this creature also causes you to gain that much life.)\nWhen this creature dies, draw a card."), "lifelink\nwhen this creature dies, draw a card.");
+}
+
 #[test]
 fn strip_reminder_text_matches_scryfalls_measured_rule() {
     use super::strip_reminder_text as strip;

@@ -1,0 +1,142 @@
+{
+ "arena_id": 79007,
+ "artist": "Slawomir Maniak",
+ "artist_ids": [
+  "d887bc66-2779-416c-a1ff-d8720242063e"
+ ],
+ "booster": true,
+ "border_color": "black",
+ "card_back_id": "0aeebaf5-8c7d-4636-9e82-8c27447861f7",
+ "cardmarket_id": 581338,
+ "cmc": 1.0,
+ "collector_number": "197",
+ "color_identity": [
+  "B",
+  "G"
+ ],
+ "colors": [
+  "G"
+ ],
+ "digital": false,
+ "edhrec_rank": 5566,
+ "finishes": [
+  "nonfoil",
+  "foil"
+ ],
+ "flavor_text": "Things buried on Innistrad rarely seem to stay that way.",
+ "foil": true,
+ "frame": "2015",
+ "full_art": false,
+ "game_changer": false,
+ "games": [
+  "arena",
+  "paper",
+  "mtgo"
+ ],
+ "highres_image": true,
+ "id": "8f14c947-2452-4fd6-8f1a-391cf5898100",
+ "illustration_id": "0b54a0f0-9e0e-4c1f-882d-ba54205f7e6d",
+ "image_status": "highres_scan",
+ "image_updated_at": "2026-07-13T06:40:13Z",
+ "image_uris": {
+  "art": "https://cards.scryfall.io/art/front/8/f/8f14c947-2452-4fd6-8f1a-391cf5898100.webp?1783924813",
+  "art_crop": "https://cards.scryfall.io/art_crop/front/8/f/8f14c947-2452-4fd6-8f1a-391cf5898100.jpg?1783924813",
+  "border_crop": "https://cards.scryfall.io/border_crop/front/8/f/8f14c947-2452-4fd6-8f1a-391cf5898100.jpg?1783924813",
+  "crop": "https://cards.scryfall.io/crop/front/8/f/8f14c947-2452-4fd6-8f1a-391cf5898100.webp?1783924813",
+  "display": "https://cards.scryfall.io/display/front/8/f/8f14c947-2452-4fd6-8f1a-391cf5898100.webp?1783924813",
+  "grid": "https://cards.scryfall.io/grid/front/8/f/8f14c947-2452-4fd6-8f1a-391cf5898100.webp?1783924813",
+  "large": "https://cards.scryfall.io/large/front/8/f/8f14c947-2452-4fd6-8f1a-391cf5898100.jpg?1783924813",
+  "normal": "https://cards.scryfall.io/normal/front/8/f/8f14c947-2452-4fd6-8f1a-391cf5898100.jpg?1783924813",
+  "png": "https://cards.scryfall.io/png/front/8/f/8f14c947-2452-4fd6-8f1a-391cf5898100.png?1783924813",
+  "small": "https://cards.scryfall.io/small/front/8/f/8f14c947-2452-4fd6-8f1a-391cf5898100.jpg?1783924813",
+  "thumb": "https://cards.scryfall.io/thumb/front/8/f/8f14c947-2452-4fd6-8f1a-391cf5898100.webp?1783924813"
+ },
+ "keywords": [
+  "Cleave"
+ ],
+ "lang": "en",
+ "layout": "normal",
+ "legalities": {
+  "alchemy": "not_legal",
+  "brawl": "legal",
+  "commander": "legal",
+  "competitivebrawl": "legal",
+  "duel": "legal",
+  "future": "not_legal",
+  "gladiator": "legal",
+  "historic": "legal",
+  "legacy": "legal",
+  "modern": "legal",
+  "oathbreaker": "legal",
+  "oldschool": "not_legal",
+  "pauper": "not_legal",
+  "paupercommander": "not_legal",
+  "penny": "legal",
+  "pioneer": "legal",
+  "predh": "not_legal",
+  "premodern": "not_legal",
+  "standard": "not_legal",
+  "standardbrawl": "not_legal",
+  "timeless": "legal",
+  "tlr": "legal",
+  "vintage": "legal"
+ },
+ "mana_cost": "{G}",
+ "mtgo_id": 94746,
+ "multiverse_ids": [
+  541059
+ ],
+ "name": "Dig Up",
+ "nonfoil": true,
+ "object": "card",
+ "oracle_id": "ae96fe7e-8d89-4f44-9cc4-3c9b124fdc4b",
+ "oracle_text": "Cleave {1}{B}{B}{G} (You may cast this spell for its cleave cost. If you do, remove the words in square brackets.)\nSearch your library for a [basic land] card, [reveal it,] put it into your hand, then shuffle.",
+ "oversized": false,
+ "penny_rank": 1687,
+ "preview": {
+  "previewed_at": "2021-10-28",
+  "source": "Wizards of the Coast",
+  "source_uri": "https://www.twitch.tv/videos/1189365133"
+ },
+ "prices": {
+  "eur": "0.42",
+  "eur_foil": "0.77",
+  "tix": "0.02",
+  "usd": "0.41",
+  "usd_etched": null,
+  "usd_foil": "0.50"
+ },
+ "prints_search_uri": "https://api.scryfall.com/cards/search?order=released&q=oracleid%3Aae96fe7e-8d89-4f44-9cc4-3c9b124fdc4b&unique=prints",
+ "promo": false,
+ "purchase_uris": {
+  "cardhoarder": "https://www.cardhoarder.com/cards/94746?affiliate_id=scryfall&ref=card-profile&utm_campaign=affiliate&utm_medium=card&utm_source=scryfall",
+  "cardmarket": "https://www.cardmarket.com/en/Magic/Products?idProduct=581338&referrer=scryfall&utm_campaign=card_prices&utm_medium=text&utm_source=scryfall",
+  "tcgplayer": "https://partner.tcgplayer.com/c/4931599/1830156/21018?subId1=api&u=https%3A%2F%2Fwww.tcgplayer.com%2Fproduct%2F252858%3Fpage%3D1"
+ },
+ "rarity": "rare",
+ "related_uris": {
+  "edhrec": "https://edhrec.com/route/?cc=Dig+Up",
+  "gatherer": "https://gatherer.wizards.com/Pages/Card/Details.aspx?multiverseid=541059&printed=false",
+  "tcgplayer_infinite_articles": "https://partner.tcgplayer.com/c/4931599/1830156/21018?subId1=api&trafcat=tcgplayer.com%2Fsearch%2Farticles&u=https%3A%2F%2Fwww.tcgplayer.com%2Fsearch%2Farticles%3FproductLineName%3Dmagic%26q%3DDig%2BUp",
+  "tcgplayer_infinite_decks": "https://partner.tcgplayer.com/c/4931599/1830156/21018?subId1=api&trafcat=tcgplayer.com%2Fsearch%2Fdecks&u=https%3A%2F%2Fwww.tcgplayer.com%2Fsearch%2Fdecks%3FproductLineName%3Dmagic%26q%3DDig%2BUp"
+ },
+ "released_at": "2021-11-19",
+ "reprint": false,
+ "reserved": false,
+ "rulings_uri": "https://api.scryfall.com/cards/8f14c947-2452-4fd6-8f1a-391cf5898100/rulings",
+ "scryfall_set_uri": "https://scryfall.com/sets/vow?utm_source=api",
+ "scryfall_uri": "https://scryfall.com/card/vow/197/dig-up?utm_source=api",
+ "security_stamp": "oval",
+ "set": "vow",
+ "set_id": "8144b676-569f-4716-8005-bc8f0778f3fa",
+ "set_name": "Innistrad: Crimson Vow",
+ "set_search_uri": "https://api.scryfall.com/cards/search?order=set&q=e%3Avow&unique=prints",
+ "set_type": "expansion",
+ "set_uri": "https://api.scryfall.com/sets/8144b676-569f-4716-8005-bc8f0778f3fa",
+ "story_spotlight": false,
+ "tcgplayer_id": 252858,
+ "textless": false,
+ "type_line": "Sorcery",
+ "uri": "https://api.scryfall.com/cards/8f14c947-2452-4fd6-8f1a-391cf5898100",
+ "variation": false
+}

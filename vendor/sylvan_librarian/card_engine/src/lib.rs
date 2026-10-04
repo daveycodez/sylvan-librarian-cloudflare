@@ -1629,7 +1629,16 @@ pub(crate) fn str_at(strings: &AStrings, id: u32) -> Option<&str> {
 /// An unclosed `(` — which no real card carries, and which `o:/\(/`'s zero
 /// rows says Scryfall does not leave standing either — strips to the end.
 pub(crate) fn strip_reminder_text(text: &str) -> std::borrow::Cow<'_, str> {
-    if !text.contains('(') {
+    strip_delimited(text, b'(', ')')
+}
+
+/// Remove every `open … close` run and the whitespace immediately before it.
+///
+/// The one walk behind [`strip_reminder_text`] (parentheses) and the cleaved text of
+/// [`searchable_oracle_text`] (square brackets) — Scryfall removes both the same way, down to
+/// which side's space goes.
+fn strip_delimited(text: &str, open: u8, close: char) -> std::borrow::Cow<'_, str> {
+    if !text.as_bytes().contains(&open) {
         return std::borrow::Cow::Borrowed(text);
     }
     let bytes = text.as_bytes();
@@ -1639,11 +1648,11 @@ pub(crate) fn strip_reminder_text(text: &str) -> std::borrow::Cow<'_, str> {
     // whitespace walk-back, so one reminder can never eat into the previous.
     let mut kept = 0usize;
     while i < bytes.len() {
-        if bytes[i] != b'(' {
+        if bytes[i] != open {
             i += 1;
             continue;
         }
-        // Walk back over the whitespace immediately before the parenthesis. Only
+        // Walk back over the whitespace immediately before the opener. Only
         // ASCII bytes compare true here, and every byte of a multi-byte UTF-8
         // sequence is >= 0x80, so `start` always lands on a char boundary.
         let mut start = i;
@@ -1651,14 +1660,71 @@ pub(crate) fn strip_reminder_text(text: &str) -> std::borrow::Cow<'_, str> {
             start -= 1;
         }
         out.push_str(&text[kept..start]);
-        i = match text[i..].find(')') {
-            Some(off) => i + off + 1, // `)` is ASCII, so this is a char boundary
+        i = match text[i..].find(close) {
+            Some(off) => i + off + 1, // the closer is ASCII, so this is a char boundary
             None => bytes.len(),
         };
         kept = i;
     }
     out.push_str(&text[kept..]);
     std::borrow::Cow::Owned(out)
+}
+
+/// What `o:` searches for one card: the reminder-stripped text, lowercased — and, for a CLEAVE
+/// card, that text three times over.
+///
+/// A cleave spell prints the words its alternative cost removes in square brackets: Fierce
+/// Retribution reads "Cleave {5}{W}" and then "Destroy target [attacking] creature." On
+/// api.scryfall.com `o:` finds such a card under all three readings — as printed, with the
+/// bracket CHARACTERS removed, and with the bracketed WORDS removed — because its searchable text
+/// is the three joined by a line break, in that order. Measured 2026-10-04, each scoped
+/// `!"Fierce Retribution"`:
+///
+/// | query | answer |
+/// |---|---|
+/// | `o:"destroy target [attacking] creature"` | 1 |
+/// | `o:"destroy target attacking creature"` | 1 |
+/// | `o:"destroy target creature"` | 1 |
+/// | `o:/^destroy target creature\.$/` | 1 |
+/// | `o:/cleave(.\|\n)*cleave(.\|\n)*cleave/` | 1 — the whole text, keyword line included, three times |
+/// | `o:/cleave(.\|\n)*cleave(.\|\n)*cleave(.\|\n)*cleave/` | 404 — and not four |
+/// | `o:/\[attacking\](.\|\n)*target attacking creature/` | 1 — printed first, |
+/// | `o:/target attacking(.\|\n)*target creature\./` | 1 — then unbracketed, then cleaved |
+/// | `o:/target creature\.(.\|\n)*\[attacking\]/` | 404 |
+/// | `o:/creature\.\ncleave/` | 1 — joined by ONE line break |
+/// | `o:/creature\.\n\n/` | 404 |
+/// | `fo:/target creature/`, `fo:"target attacking creature"` | 404 — `fo:` is the printed text alone |
+///
+/// The words go the way reminder text goes, with the whitespace BEFORE the bracket: Wash Away's
+/// "Counter target spell [that wasn't cast from its owner's hand]." answers `o:"target spell."`
+/// and not `o:"target spell ."`, Dig Up's "for a [basic land] card, [reveal it,] put it" answers
+/// `o:"for a card, put it"`, and Alchemist's Gambit's "…prevented. [At the beginning…]" answers
+/// `o:/prevented\.$/`. Nothing is removed by halves: Dig Up is 404 for `o:"for a card, reveal it,
+/// put"`.
+///
+/// WHICH CARDS: the ones whose text says `cleave {` — the keyword followed by its cost — and
+/// holds a bracket. That is the twelve Crimson Vow cleave spells and the playtest card Cleaver
+/// Blow ("Multicleave {1}", which answers both readings on Scryfall and has no keyword in its
+/// card object). Brackets alone are not enough: Carth the Lion's "an additional [+1] to activate"
+/// is 404 for `o:"additional +1 to activate"`, and Graveyard Dig, which says "ignore the
+/// bracketed text" without the keyword, is 404 for the cleaved reading.
+///
+/// A card found by this used to be MISSED by what the user meant (`o:"destroy target creature"`
+/// did not answer Fierce Retribution) and, less obviously, FOUND where Scryfall excludes it: a
+/// negated term matches the readings too, so `-o:/permanents? you (own|control)/` drops
+/// Alchemist's Retrieval ("permanent [you control]") there and kept it here.
+///
+/// Stored, not computed per query: every text predicate, the bound substring sets and the
+/// trigram postings read this one string, so they all agree and none of them pays. Thirteen
+/// cards, roughly 2.5 KB across the whole store.
+pub(crate) fn searchable_oracle_text(oracle_text: &str) -> String {
+    let printed = strip_reminder_text(oracle_text).to_lowercase();
+    if !(printed.contains('[') && printed.contains("cleave {")) {
+        return printed;
+    }
+    let unbracketed: String = printed.chars().filter(|c| !matches!(c, '[' | ']')).collect();
+    let cleaved = strip_delimited(&printed, b'[', ']');
+    format!("{printed}\n{unbracketed}\n{cleaved}")
 }
 
 /// Build-time hash-consing interner; `strings` becomes CardData.strings.
@@ -2334,7 +2400,7 @@ fn card_from_pydict(d: &Bound<PyDict>, it: &mut Interner, vocab: &mut VocabInter
     // Already lowercased + accent-folded in Python (fold_accents(), #649); read as-is.
     let card_name_folded = opt_str(d, "card_name_folded").unwrap_or_default();
     let oracle_text = opt_str(d, "oracle_text").unwrap_or_default();
-    let oracle_text_lower_id = it.intern(strip_reminder_text(&oracle_text).to_lowercase());
+    let oracle_text_lower_id = it.intern(searchable_oracle_text(&oracle_text));
     let oracle_full_lower_id = it.intern(oracle_text.to_lowercase());
     let flavor_text = opt_str(d, "flavor_text").unwrap_or_default();
     let flavor_text_lower_id = it.intern(flavor_text.to_lowercase());

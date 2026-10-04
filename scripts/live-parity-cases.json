@@ -1843,6 +1843,60 @@
 			"method": "GET",
 			"path": "/cards/search?q=keyword%3Acrew+OR+keyword%3A%22living+metal%22+OR+%28-t%3Acreature+-o%3A%22target+noncreature%22+o%3A%2F%28%5E%7C%5Cn%29%5B%5E%22%5Cn%5D%2A%28~+becomes+a+copy+of+%28target%7Cthat+card%29%7CThis+Vehicle+becomes+an+artifact+creature%29%2F%29+OR+keyword%3Aearthbend",
 			"note": "R36, with `(^|\\n)` in place of `^`: the same 244 against 247 and the same three Vehicles, which is what showed the anchor was never the difference."
+		},
+		{
+			"name": "search-cleave-three-readings",
+			"method": "GET",
+			"path": "/cards/search?q=%21%22Fierce+Retribution%22+o%3A%22destroy+target+%5Battacking%5D+creature%22+o%3A%22destroy+target+attacking+creature%22+o%3A%22destroy+target+creature%22+o%3A%2Fcleave%28.%7C%5Cn%29%2Acleave%28.%7C%5Cn%29%2Acleave%2F+o%3A%2F%5C%5Battacking%5C%5D%28.%7C%5Cn%29%2Atarget+attacking%28.%7C%5Cn%29%2Atarget+creature%5C.%2F+o%3A%2Fcreature%5C.%5Cncleave%2F+fo%3A%2F%5C%5Battacking%5C%5D%2F",
+			"note": "THE RULE ISOLATED. A cleave card's `o:` text on api.scryfall.com is its printed text, the same without the bracket CHARACTERS and the same without the bracketed WORDS, joined by one line break in that order, the keyword line repeated each time; `fo:` is the printed text alone. Each of these seven terms is 1 on Fierce Retribution (\"Cleave {5}{W}\\nDestroy target [attacking] creature.\") measured alone 2026-10-04, and the case is 1 card on both sides as written. Before generation 57 the second, third, fourth, fifth and sixth were 404 here."
+		},
+		{
+			"name": "search-cleave-readings-negative-probes",
+			"method": "GET",
+			"path": "/cards/search?q=%21%22Fierce+Retribution%22+%28fo%3A%2Ftarget+creature%2F+or+fo%3A%22target+attacking+creature%22+or+o%3A%2Fcleave%28.%7C%5Cn%29%2Acleave%28.%7C%5Cn%29%2Acleave%28.%7C%5Cn%29%2Acleave%2F+or+o%3A%2Ftarget+creature%5C.%28.%7C%5Cn%29%2A%5C%5Battacking%5C%5D%2F+or+o%3A%2Fcreature%5C.%5Cn%5Cn%2F%29+or+%21%22Wash+Away%22+o%3A%22target+spell+.%22+or+%21%22Dig+Up%22+o%3A%22for+a+card%2C+reveal+it%2C+put%22+or+%21%22Carth+the+Lion%22+%28o%3A%22additional+%2B1+to+activate%22+or+o%3A%22additional+to+activate%22%29",
+			"note": "The 404 half, a 404 on both sides as written: `fo:` has neither extra reading; the text is there three times and not four, printed first and cleaved last, with one line break between; the words go with the whitespace BEFORE the bracket (`o:\"target spell.\"` is 1 on Wash Away) and never by halves (Dig Up); and brackets without the Cleave keyword stay as printed (Carth the Lion's \"an additional [+1] to activate\")."
+		},
+		{
+			"name": "search-report-r16-removal-noncreature",
+			"method": "GET",
+			"path": "/cards/search?q=o%3A%2F%28destroy%7Cexile%7Creturn%7Cput%29+%28up+to+%5Cw%2B+%7C%5Cw%2B+%29%3F%28target%7Call%7Ceach%29+%28%3F%21creature%29%5B%5E.%5Cn%3A%5D%7B0%2C25%7D%5Cbpermanents%3F%5Cb%28%3F%21+cards%3F%7C+you+%28own%7Ccontrol%29%7C+that.s%7C+chosen%7C+of%29%2F+-o%3A%2Fpermanents%3F+you+%28own%7Ccontrol%29%7Cgraveyard%7Cexile+target+nontoken%2F",
+			"note": "mtg-seeker report R16 (2026-10-04). Scryfall 393; this port 394 — Alchemist's Retrieval. The NEGATED term `-o:/permanents? you (own|control)|…/` matches its unbracketed reading (\"nonland permanent you control\") on Scryfall and drops the card; here only \"permanent [you control]\" was searched, so it stayed."
+		},
+		{
+			"name": "search-report-r18-tutor-land",
+			"method": "GET",
+			"path": "/cards/search?q=o%3A%22your+library+for+a+card%2C%22+OR+o%3A%22searches+their+library+for+a+card%2C%22+OR+o%3A%22library+for+a+basic+land+card%22+OR+o%3A%2Fseeks%3F+%28a+%7Can+%7Ctwo+%29%28basic+%7Cnonbasic+%7C%5B%5Cw%5D%2B.s+%29%3F%28land%7CForest%7CMountain%29+cards%3F%2F+OR+o%3A%22choose+land+or+nonland%22+-o%3Aguesses",
+			"note": "R18. Scryfall 286; this port 285 — Dig Up, whose cleaved reading is \"Search your library for a card, put it into your hand, then shuffle.\""
+		},
+		{
+			"name": "search-report-r20-row4-regex-against-cleave-text",
+			"method": "GET",
+			"path": "/cards/search?q=t%3Ainstant+o%3A%2Fdestroy+target+creature%2F",
+			"note": "R20, row 4. Scryfall 152; this port 151 — Fierce Retribution, \"Destroy target [attacking] creature.\""
+		},
+		{
+			"name": "search-report-r26-triggered-ability",
+			"method": "GET",
+			"path": "/cards/search?q=o%3A%2F%28%5E%7C%5B.%3A%E2%80%94%5D+%7C%22%29%28When%7CWhenever%7CAt+the+beginning%7CAt+the+end+of%7CAt+end+of+combat%29%5Cb%2F+OR+keyword%3Afading+OR+keyword%3Achampion+OR+t%3Asaga",
+			"note": "R26. Scryfall 14,805; this port 14,804 — Alchemist's Gambit: \"…can't be prevented. [At the beginning of that turn's end step…\" follows a full stop and a space only in the unbracketed reading."
+		},
+		{
+			"name": "search-report-r30-hate-attacker",
+			"method": "GET",
+			"path": "/cards/search?q=o%3A%2FDestroy+target+attacking+creature%2F+OR+o%3A%2FExile+target+attacking+creature%2F+OR+o%3A%22Remove+all+attacking+creatures+from+combat%22",
+			"note": "R30. Scryfall 34; this port 33 — Fierce Retribution through its unbracketed reading, \"Destroy target attacking creature.\""
+		},
+		{
+			"name": "search-report-r31-rescue",
+			"method": "GET",
+			"path": "/cards/search?q=o%3A%2FReturn+target+%28creature%7Cnonland+permanent%7Cpermanent%29+to+its+owner.s+hand%2F+OR+%28layout%3Anormal+is%3Apermanent+-o%3A%22this+card%22+-o%3Agraveyard+o%3A%2FReturn+%28~%7Cthis+%5Cw%2B%29+to+its+owner.s+hand%2F%29",
+			"note": "R31. Scryfall 297; this port 295 — Alchemist's Retrieval (\"Return target nonland permanent to its owner's hand.\") and Lunar Rejection (\"Return target creature to its owner's hand.\"), both cleaved readings."
+		},
+		{
+			"name": "search-report-r31-rescue-bracket-aware-form",
+			"method": "GET",
+			"path": "/cards/search?q=o%3A%2FReturn+target+%28%5C%5B%5B%5E%5C%5D%5D%2B%5C%5D+%29%3F%5C%5B%3F%28creature%7C%28nonland+%29%3Fpermanent%29%28+you+control%29%3F%5C%5D%3F+to+its+owner.s+hand%2F+OR+%28layout%3Anormal+is%3Apermanent+-o%3A%22this+card%22+-o%3Agraveyard+o%3A%2FReturn+%28~%7Cthis+%5Cw%2B%29+to+its+owner.s+hand%2F%29",
+			"note": "R31, second form, written to step over the brackets. Scryfall 312; this port 311 — Alchemist's Retrieval: the pattern allows ` you control` and then `\\]?`, which fits the unbracketed reading and not the printed \" [you control]\"."
 		}
 	]
 }

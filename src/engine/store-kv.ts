@@ -1765,8 +1765,23 @@ export async function gzipBytes(bytes: Uint8Array): Promise<Uint8Array> {
  *      `card_is_tags` column, read as before, on ten more rows and one fewer. The importers
  *      resolve it in the per-card pass they already make for the pins and the print ranks — one
  *      oracle id held per funny card, no new field on a staged draft.
+ *
+ *   57 (2026-10-04): A CLEAVE CARD'S SEARCHABLE TEXT HOLDS ITS THREE READINGS (x65). Fierce
+ *      Retribution prints "Destroy target [attacking] creature." and api.scryfall.com answers
+ *      `o:` for it as printed, without the bracket characters ("destroy target attacking
+ *      creature.") and without the bracketed words ("destroy target creature.") — its `o:` text
+ *      is the three joined by a line break, the keyword line repeated each time. This store held
+ *      the printed reading alone, so `o:"destroy target creature"` missed the card and
+ *      `-o:/permanents? you (own|control)/` kept Alchemist's Retrieval where Scryfall drops it.
+ *      Thirteen cards (the twelve Crimson Vow cleave spells and the playtest Cleaver Blow);
+ *      `fo:` is unchanged, the printed text. The rule and its probes are on the engine's
+ *      `searchable_oracle_text`.
+ *
+ *      GENERATION-ONLY: a longer string in the stripped-oracle column the archive already has,
+ *      about 2.5 KB across the whole store, and every text predicate, bound substring set and
+ *      trigram posting is built from that string as before. Nothing on the query path moves.
  */
-export const STORE_CONTENT_GENERATION = 56;
+export const STORE_CONTENT_GENERATION = 57;
 
 /**
  * Chunk key for a store. Keyed by store_key, so publishes never collide.
