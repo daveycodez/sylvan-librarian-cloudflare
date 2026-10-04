@@ -74,8 +74,11 @@ describe("an is: value is read with its `-` and `_` removed", () => {
 	});
 
 	test("a quoted value is not respelled", () => {
-		// `is:"foil"` is not an `is:` value on Scryfall at all (`Unknown keyword “is”.`).
-		expect(scryfallTermPolicy('is:"full_art" t:goblin').query).toBe('is:"full_art" t:goblin');
+		// `is:"foil"` is not an `is:` value on Scryfall at all: the term is ignored with
+		// `Unknown keyword “is”.` (scryfall-value-warnings.test.ts), not read as `is:fullart`.
+		const policy = scryfallTermPolicy('is:"full_art" t:goblin');
+		expect(policy.query).toBe("t:goblin");
+		expect(policy.warnings).toEqual(['Invalid expression “is:"full_art"” was ignored. Unknown keyword “is”.']);
 	});
 });
 

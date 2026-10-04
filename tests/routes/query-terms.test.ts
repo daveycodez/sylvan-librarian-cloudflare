@@ -1763,14 +1763,14 @@ describe("game:, and a set code where a date goes", () => {
 	/**
 	 * `date:2021-13` is a THIRD sentence there — `Invalid date “2021-13”`, without the set-code half
 	 * — because the SHAPE parsed and only the month was out of range, and `date:2021-02-30` is a
-	 * fourth answer again (404, honored and matching nothing). Both are pre-existing divergences
-	 * this port answers with `400 Failed to parse query`, and the shape test is what keeps them
-	 * exactly that rather than folding them into the sentence above.
+	 * fourth answer again (404, honored and matching nothing). Both were `400 Failed to parse
+	 * query` here until 2026-10-04; neither takes the set-code sentence above. The rest of both
+	 * rules is pinned in scryfall-value-warnings.test.ts.
 	 */
-	test("a date-SHAPED value is not this rule's business", () => {
-		expect(policy("date:2021-13 e:khm").query).toBe("date:2021-13 e:khm");
-		expect(policy("date:2021-02-30 e:khm").query).toBe("date:2021-02-30 e:khm");
-		expect(policy("date:2021-13 e:khm").warnings).toEqual([]);
+	test("a date-SHAPED value never takes the set-code sentence", () => {
+		dropped("date:2021-13", "date:2021-13", "Invalid date “2021-13”");
+		expect(policy("date:2021-02-30 e:khm").query).toBe("cmc<0 e:khm");
+		expect(policy("date:2021-02-30 e:khm").warnings).toEqual([]);
 	});
 });
 

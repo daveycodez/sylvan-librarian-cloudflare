@@ -1173,6 +1173,107 @@ const MANA_SYMBOL_PARTS = new Set([..."wubrgcsxyzp"]);
 
 const DEVOTION_REASON = "Devotion can only match single color or hybrid mana.";
 
+/**
+ * `mana:{q}` — WHAT SCRYFALL'S MANA READER LEAVES UNREAD, which is what its sentence names.
+ *
+ * This port answered `400 Failed to parse query` for every value below: the parser's symbol
+ * validator (upstream #909) refuses the whole query, where Scryfall drops the one term. Measured
+ * 2026-10-04, anchor `e:khm t:god` = 12, each row the 12 carrying
+ * `Unknown mana symbols “<what is left, upper-cased>”.` — under `mana:`, `m:`, `mana=`, `mana>=`
+ * and `-mana:` alike, and `mana:{q}` alone is the 400 `All of your terms were ignored.`:
+ *
+ *   {q} → {Q}     {t} → {T}     {e} → {E}     {a} → {A}     {d} → {D}     {p} → {P}
+ *   {tk} → {TK}   {q}{t} → {Q}{T}   {} → {}   "{q}" → {Q}
+ *   q → Q         wq → Q        1q → Q        2wwq → Q      abc → A       hello → HEO
+ *   {w}{q} → {Q}                {w}{w}{zz} → {}             {pw} → {P}    {chaos} → {HAO}
+ *   {1/w} → {1/}  {2/c} → {2/}  {2/2} → {2/2} {w/q} → {/Q}  {w/w} → {/}
+ *   {w/u/b} → {//}              {w/p/p} → {/P/P}
+ *
+ * One reading fits every row. A whole `{…}` group that is a mana symbol is consumed; then, of
+ * what is left, each bare letter that is a symbol on its own (`w u b r g c s x y z l`) is
+ * consumed wherever it stands — inside a group that was not a symbol too, which is why `{1/w}`
+ * leaves `{1/}` and `{chaos}` leaves `{HAO}` — and a number is consumed only at the very start.
+ * What remains, in order, is the sentence.
+ *
+ * WHICH GROUPS ARE SYMBOLS is read off what Scryfall honored (a 404 with no warning): `{100}`
+ * `{s}` `{l}` `{h}` `{hw}` `{u/w}` `{c/w}` `{c/p}`, and a hybrid in EITHER order — `{p/w}` and
+ * `{w/2}` are honored where this parser takes only `{w/p}` and `{2/w}`, so those two are
+ * respelled rather than left to fail. A doubled part is not one (`{w/w}`, `{2/2}`, `{w/p/p}`),
+ * nor a generic half that is not 2, nor `{2/c}`. The table errs toward calling a group a symbol:
+ * that leaves the term to the parser, as before, where the other error would drop a term Scryfall
+ * honors. `{h}`, `{hw}`, `{hr}`, `{l}` and `{c/p}` are in that state — honored there, still a
+ * parse error here.
+ *
+ * NOT DECIDED HERE, and left to the parser exactly as before: a value with a character outside
+ * letters, digits, braces and `/`, and a bare digit that is not leading (`w2q`), which no probe
+ * covered. And one that was measured and is not reproduced: `mana:{w e:khm t:god` is the 12
+ * naming “{” there, and a parse error here — this scan reads an unclosed `{` to the end of the
+ * query, as the lexer does, so the term never arrives alone.
+ *
+ * COST: one pass over the value of a `mana:` term at parse time.
+ */
+const MANA_SYMBOL_VALUE_RE = /^[A-Za-z0-9{}/]+$/;
+const MANA_BARE_SYMBOLS: ReadonlySet<string> = new Set("wubrgcsxyzl");
+const MANA_SINGLE_SYMBOLS: ReadonlySet<string> = new Set([..."wubrgcsxyzlh", "hw", "hr"]);
+const MANA_HYBRID_COLORS = "wubrgs";
+
+/** A `{…}` group's parts, in the order this parser reads them — or null when it is no symbol. */
+function manaSymbolParts(inner: string): string[] | null {
+	const parts = inner.split("/");
+	if (parts.length === 1) return /^\d+$/.test(inner) || MANA_SINGLE_SYMBOLS.has(inner) ? parts : null;
+	if (new Set(parts).size !== parts.length || parts.length > 3) return null;
+	const colors = parts.filter((part) => MANA_HYBRID_COLORS.includes(part) && part.length === 1);
+	const has = (part: string) => parts.includes(part);
+	if (parts.length === 3) return colors.length === 2 && has("p") ? [...colors, "p"] : null;
+	if (colors.length === 2) return parts;
+	if (colors.length === 1) {
+		if (has("c")) return parts;
+		if (has("2")) return ["2", colors[0] as string];
+		if (has("p")) return [colors[0] as string, "p"];
+	}
+	return has("c") && has("p") ? ["c", "p"] : null;
+}
+
+/**
+ * What Scryfall's mana reader leaves of `value` (upper-cased; empty when it reads all of it) and
+ * the value with each hybrid's parts in this parser's order — or null when the value is a shape
+ * this does not decide.
+ */
+function readManaSymbols(value: string): { leftover: string; respelled: string } | null {
+	if (!MANA_SYMBOL_VALUE_RE.test(value)) return null;
+	let leftover = "";
+	let respelled = "";
+	let pos = /^\d*/.exec(value)?.[0].length ?? 0;
+	respelled += value.slice(0, pos);
+	const bare = (ch: string, inGroup: boolean): boolean => {
+		if (MANA_BARE_SYMBOLS.has(ch.toLowerCase())) return true;
+		// A digit inside a group that is no symbol stays (`{1/w}` → `{1/}`); a bare one that is not
+		// leading was never measured.
+		if (/\d/.test(ch) && !inGroup) return false;
+		leftover += ch;
+		return true;
+	};
+	while (pos < value.length) {
+		const ch = value[pos] as string;
+		const close = ch === "{" ? value.indexOf("}", pos + 1) : -1;
+		if (close === -1) {
+			if (!bare(ch, false)) return null;
+			respelled += ch;
+			pos++;
+			continue;
+		}
+		const group = value.slice(pos, close + 1);
+		const parts = manaSymbolParts(group.slice(1, -1).toLowerCase());
+		if (parts !== null) respelled += `{${parts.join("/")}}`;
+		else {
+			for (const inner of group) bare(inner, true);
+			respelled += group;
+		}
+		pos = close + 1;
+	}
+	return { leftover: leftover.toUpperCase(), respelled };
+}
+
 function unknownManaSymbols(value: string): string {
 	return `Unknown mana symbols “${value.toUpperCase()}”.`;
 }
@@ -1397,23 +1498,95 @@ const DATE_SHAPE_RE = /^\d{4}(?:-\d{2}(?:-\d{2})?)?$/;
  *   date:2021-2    323 + the sentence naming `2021-2`
  *   date:99        323, date:1 323, date:20210205 323, date:2021- 323
  *
- * ─── THE ONE SHAPE THIS DELIBERATELY LETS THROUGH ────────────────────────────────────────────
+ * ─── A DATE THAT IS SHAPED LIKE ONE AND IS NOT ONE ───────────────────────────────────────────
  *
- * `date:2021-13` is a THIRD answer there — `Invalid date “2021-13”`, without the set-code half of
- * the sentence, because the shape parsed and only the month was out of range. This port answers
- * `400 Failed to parse query` for it, which is the pre-existing gap `parser.parseDateValue`
- * records, and the shape test above keeps it exactly that: a value that LOOKS like a date is not
- * this function's business, so nothing here changes for it. `date:2021-02-30` is a fourth answer
- * again (404, honored and matching nothing) and is left alone for the same reason.
+ * `date:2021-13` is a THIRD answer — `Invalid date “2021-13”`, without the set-code half of the
+ * sentence, because the shape parsed and only the month was out of range. Measured 2026-10-04,
+ * anchor `e:khm t:god` = 12, each row the 12 carrying the sentence for its own value:
+ *
+ *   date:2021-13  date:2021-00  date:2021-99  date:"2021-13"      a month outside 01–12
+ *   date:2021-13-01  date:2021-12-32  date:2021-02-00             or a day outside 01–31
+ *   date>=2021-13   -date:2021-13 (echoing the minus)             every operator, either polarity
+ *
+ * and `date:2021-13` alone is the 400 `All of your terms were ignored.` carrying it. This port
+ * answered `400 Failed to parse query` for each.
+ *
+ * A day the MONTH does not have is not that: `date:2021-02-30` and `date:2021-02-29` are 404,
+ * honored and matching nothing — see `honoredDateTerm`, which also answers the years the parser
+ * will not read.
  *
  * A regex literal is skipped so `date:/199/` keeps its own sentence — `Unknown regular expression
  * keyword “date”.` from `regexKeywordReason`, which runs later and would never be reached.
  */
+const DATE_PARTS_RE = /^(\d{4})(?:-(\d{2})(?:-(\d{2}))?)?$/;
+
 function dateValueReason(keyword: string, rawValue: string): string | null {
 	if (!DATE_KEYWORDS.has(keyword) || isRegexLiteral(rawValue)) return null;
 	const value = unquote(rawValue).toLowerCase();
+	const parts = DATE_PARTS_RE.exec(value);
+	if (parts !== null) {
+		const month = parts[2] === undefined ? 1 : Number(parts[2]);
+		const day = parts[3] === undefined ? 1 : Number(parts[3]);
+		return month < 1 || month > 12 || day < 1 || day > 31 ? `Invalid date “${value}”` : null;
+	}
 	if (DATE_SHAPE_RE.test(value) || isKnownSetCode(value)) return null;
 	return `Invalid date or unknown set code “${value}”`;
+}
+
+/**
+ * The years this parser reads a date in (`parser.ts` MIN_MTG_YEAR / MAX_YEAR). No printing is
+ * dated outside them, which is what makes the two substitutions below exact rather than close.
+ */
+const MIN_DATE_YEAR = 1992;
+const MAX_DATE_YEAR = 2040;
+
+/** What a comparison against a year no printing is dated in comes to, or null inside the range. */
+function yearOutOfRangeTerm(op: string, year: number): string | null {
+	if (year >= MIN_DATE_YEAR && year <= MAX_DATE_YEAR) return null;
+	const everythingIsLater = year < MIN_DATE_YEAR;
+	if (op === "!=") return ALWAYS_MATCHES;
+	if (op === ">" || op === ">=") return everythingIsLater ? ALWAYS_MATCHES : NEVER_MATCHES;
+	if (op === "<" || op === "<=") return everythingIsLater ? NEVER_MATCHES : ALWAYS_MATCHES;
+	return NEVER_MATCHES;
+}
+
+/**
+ * A DATE SCRYFALL HONORS AND THIS PARSER REFUSES, rewritten into the term it means — or null when
+ * the parser reads the value itself.
+ *
+ * Two shapes, both `400 Failed to parse query` here. Measured 2026-10-04, anchor `e:khm t:god` =
+ * 12 (Kaldheim is 2021-02-05), none carrying a warning:
+ *
+ *   A DAY THE MONTH DOES NOT HAVE compares as the calendar position it names, past the month's end:
+ *     date:2021-02-30  date:2021-02-29     404        date!=2021-02-30    12
+ *     date<=2021-02-30                     12         date>=2021-02-30  date>=2021-02-29    404
+ *   so `=` matches nothing, `!=` everything, and `<`/`<=` and `>`/`>=` are `<=` and `>` of the
+ *   month's real last day.
+ *
+ *   A YEAR NO PRINTING IS DATED IN compares as a number:
+ *     date:1990  date<1990  date:2041  date>9999     404
+ *     date>=0000  date<9999  date<=2041               12
+ *
+ * `year:` takes the second shape too (`year:0000` and `year:9999` are 404, `year>=0` is 12);
+ * `classifyLeaf` calls `yearOutOfRangeTerm` for it directly.
+ *
+ * COST: a regex and a few integer compares on a `date:` term, at parse time.
+ */
+function honoredDateTerm(keyword: string, op: string, rawValue: string): string | null {
+	if (isRegexLiteral(rawValue)) return null;
+	const parts = DATE_PARTS_RE.exec(unquote(rawValue));
+	if (parts === null) return null;
+	const year = Number(parts[1]);
+	const outOfRange = yearOutOfRangeTerm(op, year);
+	if (outOfRange !== null) return outOfRange;
+	if (parts[2] === undefined || parts[3] === undefined) return null;
+	const month = Number(parts[2]);
+	const lastDay = new Date(Date.UTC(year, month, 0)).getUTCDate();
+	if (Number(parts[3]) <= lastDay) return null;
+	if (op === "!=") return ALWAYS_MATCHES;
+	if (op === ":" || op === "=") return NEVER_MATCHES;
+	const monthEnd = `${parts[1]}-${parts[2]}-${String(lastDay).padStart(2, "0")}`;
+	return `${keyword}${op === "<" || op === "<=" ? "<=" : ">"}${monthEnd}`;
 }
 
 /** Keyword groups, by the alias spellings this parser and Scryfall share. */
@@ -1573,6 +1746,143 @@ const STRICT_REGEX_KEYWORDS: ReadonlySet<string> = new Set([
 	...EXTERNAL_ID_KEYWORDS.keys(),
 	...LORE_KEYWORDS,
 	...CHEAPEST_KEYWORDS,
+]);
+
+/**
+ * `st:` / `set_type:` / `settype:` — Scryfall's 24 set types, and its sentence for anything else.
+ *
+ * Measured 2026-10-04, anchor `e:khm t:god` = 12. A value outside the vocabulary is ignored, in
+ * either polarity, under `:` and `=`, quoted or not, and the sentence names the WHOLE value,
+ * lower-cased (the echoed expression is cut at 20 as always; the value is not):
+ *
+ *   st:nonsense  set_type:nonsense  settype:nonsense  st=nonsense  st:"nonsense"  st:NONSENSE
+ *       12 + `Unknown set type “nonsense”`             -st:nonsense echoes the minus
+ *   st:nonsense alone        400 `All of your terms were ignored.` carrying it
+ *   st:exp  st:duel  st:ftv  st:tokens  st:promos  st:supplemental  st:un     the same sentence:
+ *       no prefix, no nickname and no plural is a set type
+ *   st>nonsense              404, no warning (the comparison rule)
+ *
+ * This port kept the term and answered a 404 for each — narrower than Scryfall where a query
+ * validated here is shipped there, and the negated form answered the anchor with no warning.
+ *
+ * All 24 types are honored (`st:core` … `st:minigame`, one request each beside `t:god`), and the
+ * value is read with its spaces, `_` and `-` removed: `st:draftinnovation`,
+ * `st:draft-innovation` and `st:"draft innovation"` are `st:draft_innovation`'s 11, where this
+ * port matched the stored spelling only and answered nothing. So a known value is respelled to
+ * the one the store holds.
+ *
+ * A CLOSED LIST, like `SCRYFALL_FORMATS`: a set type Scryfall adds is "unknown" here until it is
+ * added — and the term is then dropped where Scryfall honors it. The 24 have not changed since
+ * `minigame` in 2021.
+ */
+const SET_TYPE_KEYWORDS: ReadonlySet<string> = new Set(["st", "set_type", "settype"]);
+const SCRYFALL_SET_TYPES: ReadonlyMap<string, string> = new Map(
+	[
+		"alchemy",
+		"archenemy",
+		"arsenal",
+		"box",
+		"commander",
+		"core",
+		"draft_innovation",
+		"duel_deck",
+		"eternal",
+		"expansion",
+		"from_the_vault",
+		"funny",
+		"masterpiece",
+		"masters",
+		"memorabilia",
+		"minigame",
+		"planechase",
+		"premium_deck",
+		"promo",
+		"spellbook",
+		"starter",
+		"token",
+		"treasure_chest",
+		"vanguard",
+	].map((setType) => [setType.replaceAll("_", ""), setType]),
+);
+const SET_TYPE_SEPARATORS_RE = /[\s_-]/g;
+
+/**
+ * `frame:` — Scryfall's frame editions, frame effects and their nicknames, and its sentence for
+ * anything else.
+ *
+ * Measured 2026-10-04, anchor `e:khm t:god` = 12: `frame:nonsense`, `frame=nonsense`,
+ * `frame:"nonsense"`, `frame:NONSENSE` and `frame:1` are each the 12 carrying
+ * `Unknown frame “nonsense”` (the whole value, lower-cased), `-frame:nonsense` echoes the minus,
+ * `frame:nonsense` alone is the 400, and `frame>nonsense` is the comparison rule's 404. So are
+ * `frame:fullart`, `textless`, `borderless`, `booster`, `timeshifted`, `textured`, `dfc`,
+ * `wanted`, `vehicle`, `borderlessalt` and `placeholderimage`: none is a frame. This port kept
+ * each term and answered a 404.
+ *
+ * THE VOCABULARY, each value honored there (one request each beside `t:god`, no warning):
+ *
+ *   editions   1993 1997 2003 2015 future, and `old` `new` `modern`
+ *   effects    Scryfall's `frame_effects` enum, all 24 — legendary miracle enchantment draft devoid
+ *              tombstone colorshifted inverted sunmoondfc compasslanddfc originpwdfc mooneldrazidfc
+ *              waxingandwaningmoondfc showcase extendedart companion etched snow lesson
+ *              shatteredglass convertdfc fandfc upsidedowndfc spree
+ *   nicknames  each the same count as the value it names, over the whole corpus:
+ *              93 = 1993 (1,589)     97 = classic = 1997 (6,748)     03 = 8ed = 2003 (9,070)
+ *              15 = m15 = 2015 (24,819)     retro = old (7,285, both differences empty)
+ *              nyx = nyxtouched = enchantment (831, both differences empty)
+ *
+ * The ten nicknames answered nothing here (`frame:nyxtouched t:god` 0 against 24 — the bulk data
+ * spells that effect `enchantment` now); each is respelled to the value it names. The value maps
+ * to itself where the parser already reads it.
+ *
+ * A CLOSED LIST, with the cost that has: a frame effect Scryfall adds is "unknown" here until it
+ * is added to this table, where before this the term reached the store and answered.
+ */
+const FRAME_KEYWORDS: ReadonlySet<string> = new Set(["frame"]);
+const SCRYFALL_FRAMES: ReadonlyMap<string, string> = new Map([
+	...[
+		"1993",
+		"1997",
+		"2003",
+		"2015",
+		"future",
+		"old",
+		"new",
+		"modern",
+		"legendary",
+		"miracle",
+		"enchantment",
+		"draft",
+		"devoid",
+		"tombstone",
+		"colorshifted",
+		"inverted",
+		"sunmoondfc",
+		"compasslanddfc",
+		"originpwdfc",
+		"mooneldrazidfc",
+		"waxingandwaningmoondfc",
+		"showcase",
+		"extendedart",
+		"companion",
+		"etched",
+		"snow",
+		"lesson",
+		"shatteredglass",
+		"convertdfc",
+		"fandfc",
+		"upsidedowndfc",
+		"spree",
+	].map((frame): [string, string] => [frame, frame]),
+	["93", "1993"],
+	["97", "1997"],
+	["classic", "1997"],
+	["03", "2003"],
+	["8ed", "2003"],
+	["15", "2015"],
+	["m15", "2015"],
+	["retro", "old"],
+	["nyx", "enchantment"],
+	["nyxtouched", "enchantment"],
 ]);
 
 /** The three spellings that read the `card_is_tags` vocabulary. `not:` is `-is:`. */
@@ -1805,6 +2115,72 @@ export const SCRYFALL_UNANSWERED_IS_VALUES: ReadonlySet<string> = new Set([
 	"vanguard",
 	"vergeland",
 ]);
+
+/**
+ * SCRYFALL'S TWO SENTENCES FOR AN `is:` / `has:` / `not:` VALUE IT DOES NOT ANSWER, or null when
+ * the value is one this port keeps.
+ *
+ * This port kept every such term and answered a no-match (a 404 for `is:nonsense e:khm`, where
+ * api.scryfall.com answers the set). Measured 2026-10-04, anchor `e:khm t:god` = 12, each row the
+ * 12 carrying the sentence:
+ *
+ *   `Checking if cards are “nonsense” is not supported`      (no closing period)
+ *     is:nonsense  has:nonsense  not:nonsense  is=nonsense  -is:nonsense (echoing the minus)
+ *     is:NONSENSE names “nonsense”; is:non-sense names “non-sense”, the value as typed; is:1 names “1”
+ *     THE VALUE IS CUT AT 20 like the expression: `is:abcdefghijklmnopqrst` (20) is named whole and
+ *     `is:abcdefghijklmnopqrstu` (21) as “abcdefghijklmnopqrs…”.
+ *
+ *   `Unknown keyword “is”.` — the keyword as written, minus included
+ *     is:"foil"  is:'foil'  is:"nonsense"  is:"two words"  has:"watermark"  not:"foil" (“not”)
+ *     -is:"foil" (“-is”)  is:Éowyn
+ *     A QUOTED VALUE IS NOT AN `is:` VALUE AT ALL, known or not: `is:"foil" e:khm` is all of
+ *     Kaldheim, where this port answered its foils.
+ *
+ *   `Unknown regular expression keyword “is”.`
+ *     is:/nonsense/ — and `is:/promo/` too, which this port deliberately keeps answering (see
+ *     `regexKeywordReason`); only a pattern spelling no value it knows takes the sentence here.
+ *
+ * `is:nonsense` alone is the 400 `All of your terms were ignored.` carrying its warning, and
+ * `is>nonsense` is the comparison rule's 404. A value carrying other ASCII punctuation is not
+ * read as an `is:` term there at all (`is:foo.bar`, `is:foo,bar` and `is:foo'bar` are plain 404s
+ * with no warning) and is left to the parser, as before.
+ *
+ * WHICH VALUES ARE KNOWN is three tables: what the parser supports, what `scryfallIsTerm`
+ * respells, and SCRYFALL_UNANSWERED_IS_VALUES. All 220 values the parser supports were in the
+ * sweep and Scryfall answered every one, so nothing this port answers is dropped.
+ *
+ * THE COST OF A CLOSED LIST OVER AN OPEN VOCABULARY. Scryfall's is hand-kept and unpublished, and
+ * each of the three sweeps (947 candidates) found values the one before had not: a value it
+ * answers that no sweep asked is dropped here with this sentence — a WIDER answer than
+ * Scryfall's, where before this it was a no-match. When one is found, it joins
+ * SCRYFALL_IS_SYNONYMS (with its difference probe) or SCRYFALL_UNANSWERED_IS_VALUES.
+ */
+const IS_VALUE_ECHO_LIMIT = 20;
+
+function unknownIsValueReason(
+	keyword: string,
+	negated: boolean,
+	rawValue: string,
+	value: string,
+	loweredValue: string,
+): string | null {
+	const supported = keyword === "has" ? SUPPORTED_HAS_VALUES : SUPPORTED_IS_VALUES;
+	if (isRegexLiteral(rawValue)) {
+		const word = regexPlainLiteral(rawValue.slice(1, -1));
+		return word !== null && supported.has(word.toLowerCase())
+			? null
+			: `Unknown regular expression keyword “${keyword}”.`;
+	}
+	if (rawValue !== value || [...value].some((ch) => (ch.codePointAt(0) ?? 0) > 0x7f)) {
+		return `Unknown keyword “${negated ? "-" : ""}${keyword}”.`;
+	}
+	if (!IS_VALUE_WORD_RE.test(value) || supported.has(loweredValue)) return null;
+	if (SCRYFALL_UNANSWERED_IS_VALUES.has(loweredValue.replace(IS_VALUE_SEPARATORS_RE, ""))) return null;
+	const chars = [...loweredValue];
+	const named =
+		chars.length > IS_VALUE_ECHO_LIMIT ? `${chars.slice(0, IS_VALUE_ECHO_LIMIT - 1).join("")}…` : loweredValue;
+	return `Checking if cards are “${named}” is not supported`;
+}
 
 /** The spelling this parser stores a value under, by the value with its separators removed. */
 const IS_VALUE_SPELLINGS: ReadonlyMap<string, string> = (() => {
@@ -2849,6 +3225,13 @@ function classifyLeaf(term: string): LeafVerdict {
 		const dateReason = dateValueReason(keyword, rawValue);
 		if (dateReason !== null) return { keep: false, reason: dateReason };
 	}
+	// A date Scryfall honors and the parser refuses — a day its month does not have, a year no
+	// printing is dated in. The rewritten term carries no `-`: on `date` Scryfall discards it
+	// (DATE_KEYWORDS), exactly as the rule just below does for a date the parser reads.
+	if (DATE_KEYWORDS.has(keyword)) {
+		const honored = honoredDateTerm(match[2] as string, op, rawValue);
+		if (honored !== null) return { keep: true, text: honored };
+	}
 
 	// BEFORE the unknown-keyword rule and before every value validator, because Scryfall applies it
 	// there: `-nonsense>=1`, `-subtype>=1`, `-lang>zz`, `-f>notaformat` and `-oracleid>abc` are all
@@ -2963,12 +3346,48 @@ function classifyLeaf(term: string): LeafVerdict {
 			return { keep: false, reason: SAME_SIDES_REASON };
 		}
 	}
+	// `year:0000` and `year:9999` are 404 and `year>=0` is the anchor: a year no printing is dated
+	// in, which the parser refuses to read — see honoredDateTerm. After the negation rules, which
+	// answer `-year:1990` and `-year>=0` first.
+	if (keyword === "year" && /^\d+$/.test(rawValue)) {
+		const outOfRange = yearOutOfRangeTerm(op, Number(rawValue));
+		if (outOfRange !== null) return { keep: true, text: outOfRange };
+	}
 
 	if (FORMAT_KEYWORDS.has(keyword) && !SCRYFALL_FORMATS.has(loweredValue)) {
 		return { keep: false, reason: `Unknown game format \u201c${loweredValue}\u201d` };
 	}
 	if (LANGUAGE_KEYWORDS.has(keyword) && !SCRYFALL_LANGUAGES.has(loweredValue)) {
 		return { keep: false, reason: `Unknown language \`${loweredValue}\`` };
+	}
+	// `st:` and `frame:` read a closed vocabulary — see SCRYFALL_SET_TYPES and SCRYFALL_FRAMES. A
+	// value outside it is ignored with its own sentence; one inside it under another spelling is
+	// respelled to the one the parser reads. Equality only reaches here.
+	if (SET_TYPE_KEYWORDS.has(keyword) || FRAME_KEYWORDS.has(keyword)) {
+		const setType = SET_TYPE_KEYWORDS.has(keyword);
+		const unknown = (shown: string) => (setType ? `Unknown set type “${shown}”` : `Unknown frame “${shown}”`);
+		if (isRegexLiteral(rawValue)) {
+			// Only a plain pattern gets this far (`regexKeywordReason`), and it keeps answering — as
+			// `is:/promo/` does — only when it spells a value exactly. Anything else is the
+			// sentence Scryfall gives every pattern here.
+			const word = regexPlainLiteral(rawValue.slice(1, -1))?.toLowerCase() ?? "";
+			const spelled = setType ? SCRYFALL_SET_TYPES.get(word.replaceAll("_", "")) : SCRYFALL_FRAMES.get(word);
+			if (spelled !== word) {
+				return {
+					keep: false,
+					reason:
+						keyword === SET_TYPE_VALUE_KEYWORD
+							? unknown(rawValue.toLowerCase())
+							: `Unknown regular expression keyword “${keyword}”.`,
+				};
+			}
+		} else {
+			const spelled = setType
+				? SCRYFALL_SET_TYPES.get(loweredValue.replace(SET_TYPE_SEPARATORS_RE, ""))
+				: SCRYFALL_FRAMES.get(loweredValue);
+			if (spelled === undefined) return { keep: false, reason: unknown(loweredValue) };
+			if (spelled !== loweredValue) return { keep: true, text: `${match[1]}${match[2]}${op}${spelled}` };
+		}
 	}
 	// EVERY operator, not only `:`/`=`. Rarity is an ordered enum, so `r>rare` is a comparison
 	// Scryfall really performs — and it checks the value under a comparison exactly as it does
@@ -2994,6 +3413,15 @@ function classifyLeaf(term: string): LeafVerdict {
 	if (MANA_COST_KEYWORDS.has(keyword) && !equality && isRegexLiteral(rawValue)) {
 		const leftover = [...stripRegexDelimiters(rawValue)].every((c) => MANA_COST_VALUE_CHARS.has(c)) ? "//" : rawValue;
 		return { keep: false, reason: unknownManaSymbols(leftover) };
+	}
+	// `mana:{q}` — what the mana reader leaves unread is the sentence, under every operator and
+	// in both polarities; and a hybrid written in the other order is respelled. See readManaSymbols.
+	if (MANA_COST_KEYWORDS.has(keyword) && !isRegexLiteral(rawValue)) {
+		const read = readManaSymbols(value);
+		if (read !== null && read.leftover !== "") return { keep: false, reason: unknownManaSymbols(read.leftover) };
+		if (read !== null && read.respelled.toLowerCase() !== value.toLowerCase()) {
+			return { keep: true, text: `${match[1]}${match[2]}${op}${read.respelled}` };
+		}
 	}
 	// Devotion checks its value under every operator and in both polarities — see devotionReason.
 	if (DEVOTION_KEYWORDS.has(keyword)) {
@@ -3053,6 +3481,12 @@ function classifyLeaf(term: string): LeafVerdict {
 	if (IS_KEYWORDS.has(keyword) && rawValue === value && IS_VALUE_WORD_RE.test(value)) {
 		const respelled = scryfallIsTerm(keyword, negated, loweredValue);
 		if (respelled !== null) return { keep: true, text: respelled };
+	}
+	// ...and a value neither side answers, or one that is not an `is:` value at all — see
+	// unknownIsValueReason.
+	if (IS_KEYWORDS.has(keyword)) {
+		const reason = unknownIsValueReason(keyword, negated, rawValue, value, loweredValue);
+		if (reason !== null) return { keep: false, reason };
 	}
 	if (UUID_KEYWORDS.has(keyword) && !UUID_V4_RE.test(value)) {
 		return { keep: false, reason: "You must provide a valid v4 UUID." };

@@ -2709,6 +2709,77 @@
 			"method": "GET",
 			"path": "/cards/search?q=is%3Athemepack",
 			"note": "2026-10-04, generation 61. One of five `promo_types` members stored that day (premiereshop, schinesealtart, setextension, singularityfoil, themepack): 30 cards."
+		},
+		{
+			"name": "warning-unknown-is-value",
+			"method": "GET",
+			"path": "/cards/search?q=is%3Anonsense+e%3Akhm+t%3Agod",
+			"note": "2026-10-04. Scryfall ignores an `is:` value it does not answer — 12, carrying `Checking if cards are “nonsense” is not supported` — where this port kept the term and answered a 404. `has:` and `not:` take the same sentence, and the named value is cut at 20 characters."
+		},
+		{
+			"name": "warning-unknown-is-value-alone-is-a-400",
+			"method": "GET",
+			"path": "/cards/search?q=is%3Anonsense"
+		},
+		{
+			"name": "warning-quoted-is-value-is-an-unknown-keyword",
+			"method": "GET",
+			"path": "/cards/search?q=is%3A%22foil%22+e%3Akhm+t%3Agod",
+			"note": "2026-10-04. A quoted value is not an `is:` value at all: `Unknown keyword “is”.`, the 12 gods — this port answered its foils."
+		},
+		{
+			"name": "warning-unknown-set-type",
+			"method": "GET",
+			"path": "/cards/search?q=st%3Anonsense+e%3Akhm+t%3Agod",
+			"note": "2026-10-04. `Unknown set type “nonsense”`, in either polarity and under all three spellings; this port answered a 404."
+		},
+		{
+			"name": "set-type-read-without-its-separators",
+			"method": "GET",
+			"path": "/cards/search?q=st%3Adraftinnovation+t%3Agod",
+			"note": "2026-10-04. `st:draftinnovation`, `st:draft-innovation` and `st:\"draft innovation\"` are `st:draft_innovation`'s 11; this port matched the stored spelling only."
+		},
+		{
+			"name": "warning-unknown-frame",
+			"method": "GET",
+			"path": "/cards/search?q=frame%3Anonsense+e%3Akhm+t%3Agod",
+			"note": "2026-10-04. `Unknown frame “nonsense”`; this port answered a 404."
+		},
+		{
+			"name": "frame-nickname-nyxtouched",
+			"method": "GET",
+			"path": "/cards/search?q=frame%3Anyxtouched+t%3Agod",
+			"note": "2026-10-04. `frame:nyxtouched` = `frame:nyx` = `frame:enchantment` (831, both differences empty): the bulk data spells the effect `enchantment` now, and this port answered 0. Ten nicknames in all (93 97 classic 03 8ed 15 m15 retro nyx nyxtouched)."
+		},
+		{
+			"name": "warning-invalid-date",
+			"method": "GET",
+			"path": "/cards/search?q=date%3A2021-13+e%3Akhm+t%3Agod",
+			"note": "2026-10-04. A date-shaped value whose month is not 01-12 or whose day is not 01-31 is ignored with `Invalid date “2021-13”`; this port answered `400 Failed to parse query`."
+		},
+		{
+			"name": "date-with-a-day-its-month-lacks-is-honored",
+			"method": "GET",
+			"path": "/cards/search?q=date%3C%3D2021-02-30+e%3Akhm+t%3Agod",
+			"note": "2026-10-04. 12: a day the month does not have compares past the month's end (`date:2021-02-30` is 404, `date>=2021-02-30` 404). A parse error here before."
+		},
+		{
+			"name": "date-in-a-year-no-printing-has-is-honored",
+			"method": "GET",
+			"path": "/cards/search?q=date%3E%3D0000+e%3Akhm+t%3Agod",
+			"note": "2026-10-04. 12, and `date:1990` / `date>9999` are 404: a year outside the parser's 1992-2040 compares as a number. A parse error here before."
+		},
+		{
+			"name": "warning-unknown-mana-symbols",
+			"method": "GET",
+			"path": "/cards/search?q=mana%3A%7Bq%7D+e%3Akhm+t%3Agod",
+			"note": "2026-10-04. `Unknown mana symbols “{Q}”.` — the sentence names what Scryfall's mana reader leaves unread (`mana:{1/w}` leaves `{1/}`, `mana:hello` leaves `HEO`); this port answered `400 Failed to parse query`."
+		},
+		{
+			"name": "mana-hybrid-in-either-order",
+			"method": "GET",
+			"path": "/cards/search?q=mana%3A%7Bw%2F2%7D",
+			"note": "2026-10-04. `mana:{w/2}` is `mana:{2/w}`'s 9 on Scryfall, and `mana:{p/w}` is `mana:{w/p}`; a parse error here before."
 		}
 	]
 }
