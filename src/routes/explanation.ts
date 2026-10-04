@@ -53,6 +53,8 @@ const ATTRIBUTE_NAME_MAP: Record<string, string> = {
 	flavor_text: "flavor text",
 	card_keywords: "keyword",
 	oracle_id: "oracle ID",
+	scryfall_id: "Scryfall ID",
+	illustration_id: "illustration ID",
 	card_lang: "language",
 	card_layout: "layout",
 	card_border: "border",

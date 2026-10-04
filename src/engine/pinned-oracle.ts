@@ -23,7 +23,7 @@ interface WireNode {
 	kwargs?: Record<string, unknown>;
 }
 
-function pinnedIn(node: unknown): string | null {
+function pinnedIn(node: unknown, attribute = "oracle_id"): string | null {
 	if (!node || typeof node !== "object") return null;
 	const { node_type, kwargs } = node as WireNode;
 	if (!kwargs) return null;
@@ -31,7 +31,7 @@ function pinnedIn(node: unknown): string | null {
 		const operands = kwargs.operands;
 		if (!Array.isArray(operands)) return null;
 		for (const operand of operands) {
-			const pinned = pinnedIn(operand);
+			const pinned = pinnedIn(operand, attribute);
 			if (pinned !== null) return pinned;
 		}
 		return null;
@@ -40,7 +40,7 @@ function pinnedIn(node: unknown): string | null {
 	if (kwargs.op !== ":" && kwargs.op !== "=") return null;
 	const lhs = kwargs.lhs as WireNode | undefined;
 	const rhs = kwargs.rhs as WireNode | undefined;
-	if (lhs?.node_type !== "CardAttributeNode" || lhs.kwargs?.attribute_name !== "oracle_id") return null;
+	if (lhs?.node_type !== "CardAttributeNode" || lhs.kwargs?.attribute_name !== attribute) return null;
 	if (rhs?.node_type !== "StringValueNode") return null;
 	const value = rhs.kwargs?.value;
 	return typeof value === "string" && UUID.test(value) ? value.toLowerCase() : null;
@@ -50,6 +50,31 @@ function pinnedIn(node: unknown): string | null {
 export function pinnedOracleId(filterTreeJson: string): string | null {
 	try {
 		return pinnedIn(JSON.parse(filterTreeJson));
+	} catch {
+		return null;
+	}
+}
+
+/**
+ * Does this query require ONE printing by its Scryfall id (`scryfallid:<uuid>`)? Then every row it
+ * can match is that printing, and that printing lives in exactly one partition — the one the
+ * routing filter's printing-id keys name (routing-filter.ts `scryfallIdKey`, the hint `/cards/<id>`
+ * already routes by).
+ *
+ * The same walk and the same "first one found" rule as `pinnedOracleId`. Unlike an oracle id, a
+ * printing id says nothing about its partition by itself, so the caller treats the filter's answer
+ * as a HINT and trusts the pinned page only when it is not empty — see
+ * `PartitionedEngine.pinnedPrintingPartition`.
+ *
+ * `illustrationid:` is deliberately NOT pinned: an artwork is shared across oracle cards (a card
+ * and its art-series card, a token and its reprints), which live in different partitions, and
+ * the filter stores only the lowest one.
+ */
+export function pinnedScryfallId(filterTreeJson: string): string | null {
+	// Cheap before the parse: most trees carry no such leaf.
+	if (!filterTreeJson.includes('"scryfall_id"')) return null;
+	try {
+		return pinnedIn(JSON.parse(filterTreeJson), "scryfall_id");
 	} catch {
 		return null;
 	}

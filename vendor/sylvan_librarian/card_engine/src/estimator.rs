@@ -116,6 +116,8 @@ pub(crate) fn has_printing_varying_leaf(f: &FilterExpr) -> bool {
         FilterExpr::Legality { .. } => true,
         // The language is a per-printing fact (CompatFields.lang_id).
         FilterExpr::LangMatch { .. } | FilterExpr::SetTypeMatch { .. } => true,
+        // ...and so are its own id and the artwork it carries.
+        FilterExpr::ScryfallIdMatch { .. } | FilterExpr::IllustrationIdMatch { .. } => true,
         // ...and so are the printed name (Printing.printed_name_folded_id) and the flavor name
         // (Printing.flavor_name_id, or a PrintingFace's).
         FilterExpr::PrintedNamePresent | FilterExpr::FlavorNameIn { .. } | FilterExpr::FlavorNamePresent => true,
@@ -553,6 +555,10 @@ fn estimate_leaf(f: &FilterExpr, indexes: &Archived<CardIndexes>, n_cards: u32, 
         // would assert a floor of 1. The exact answer needs the permutation's sort keys, which live
         // on the `cards` slice this entry point does not take (the ExactName caveat above).
         FilterExpr::OracleIdMatch { .. } => Cardinality { lo: 0, est: 1, hi: 1 },
+
+        // A Scryfall id names at most one printing; an illustration id a handful (the printings
+        // sharing one artwork). Neither has a count to read here, so "unknown" is the sound answer.
+        FilterExpr::ScryfallIdMatch { .. } | FilterExpr::IllustrationIdMatch { .. } => unknown(n),
 
         FilterExpr::DateCmp { op, value } => match date_range_bounds(*op, *value) {
             None => unknown(n),

@@ -18777,6 +18777,92 @@ fn set_type_matches_through_the_compat_vocab() {
     assert!(absent.eval_printing(&archived.cards[0], &archived.printings[0], &archived.strings) == Tri::False);
 }
 
+// LOCAL PATCH (Cloudflare port): `scryfallid:` and `illustrationid:`.
+#[test]
+fn scryfall_and_illustration_ids_match_printings() {
+    // Scryfall's two printing-id keywords. `scryfallid:` names ONE printing; `illustrationid:`
+    // names every printing carrying an artwork, at top level or on a FACE — api.scryfall.com
+    // answers `illustrationid:f661d604-…` with khm/200 AND its art-series card akhm/55, whose
+    // top-level illustration id is null and whose faces carry it (2026-10-03).
+    let leaf = |attr: &str, op: &str, value: &str| {
+        super::build_filter(&serde_json::json!({
+            "node_type": "CardBinaryOperatorNode",
+            "kwargs": {
+                "op": op,
+                "lhs": {"node_type": "CardAttributeNode", "kwargs": {"attribute_name": attr, "original_attribute": attr}},
+                "rhs": {"node_type": "StringValueNode", "kwargs": {"value": value}},
+            }
+        }))
+    };
+    const PRINT_A: &str = "860aa0fe-0337-458c-b864-5ef5733fbae6";
+    const PRINT_B: &str = "1c829d83-d5b8-4be7-80f7-55b42f52b309";
+    const ART: &str = "9e42d409-161d-4e63-8982-71e313f27b2f";
+    const FACE_ART: &str = "f661d604-e956-43b7-89f0-ac7ba7389924";
+
+    let mut vocab = VocabInterner::new();
+    let card = stub_card(1, TYPE_CREATURE, &[], &mut vocab);
+    let mut data = store_of(vec![card], &[3], vocab);
+    // Two printings sharing one artwork, and a third whose artwork is on its faces only.
+    data.printings[0].scryfall_id = super::parse_uuid_or_hash(PRINT_A);
+    data.printings[0].illustration_id = super::parse_uuid_or_hash(ART);
+    data.printings[1].scryfall_id = super::parse_uuid_or_hash(PRINT_B);
+    data.printings[1].illustration_id = super::parse_uuid_or_hash(ART);
+    data.printings[2].scryfall_id = 0x77;
+    data.printings[2].illustration_id = 0;
+    data.printings[2].faces = [super::parse_uuid_or_hash(FACE_ART), super::parse_uuid_or_hash(FACE_ART)]
+        .iter()
+        .map(|&illustration_id| PrintingFace {
+            illustration_id,
+            card_artist_vid: ARTIST_NONE,
+            artist_id_vid: VOCAB_NONE,
+            card_artist_name_id: NONE_STR,
+            card_watermark_id: NONE_STR,
+            flavor_text_id: NONE_STR,
+            flavor_name_id: NONE_STR,
+        })
+        .collect();
+    let bytes = rkyv::to_bytes::<Error>(&data).expect("serialize");
+    let archived = rkyv::access::<Archived<CardData>, Error>(&bytes).expect("access");
+    let matches = |f: &FilterExpr| -> Vec<bool> {
+        (0..3).map(|i| f.eval_printing(&archived.cards[0], &archived.printings[i], &archived.strings) == Tri::True).collect()
+    };
+
+    // One printing, under `:` and `=`, and whatever case the hex is written in.
+    let by_id = leaf("scryfall_id", ":", PRINT_A).expect("scryfallid: must build");
+    assert!(matches!(by_id, FilterExpr::ScryfallIdMatch { .. }));
+    assert_eq!(matches(&by_id), [true, false, false]);
+    assert_eq!(matches(&leaf("scryfall_id", "=", &PRINT_A.to_uppercase()).unwrap()), [true, false, false]);
+    assert!(
+        by_id.eval_card(&archived.cards[0], &archived.strings) == Tri::PrintingDep,
+        "a printing's id cannot settle at card level"
+    );
+    // Two-valued, so a negation is the other printings and not an SQL NULL.
+    assert!(by_id.eval_printing(&archived.cards[0], &archived.printings[1], &archived.strings) == Tri::False);
+
+    // Every printing of the artwork — and the one that carries it on its faces alone.
+    let by_art = leaf("illustration_id", ":", ART).expect("illustrationid: must build");
+    assert!(matches!(by_art, FilterExpr::IllustrationIdMatch { .. }));
+    assert_eq!(matches(&by_art), [true, true, false]);
+    assert_eq!(matches(&leaf("illustration_id", ":", FACE_ART).unwrap()), [false, false, true]);
+    // Its negation is Scryfall's, not the complement: a printing whose own top-level id is some
+    // OTHER artwork is SQL NULL (`-illustrationid:<id> !"Reset"` is a 404 there), while one whose
+    // artwork lives on its faces is a real False (`-illustrationid:<id> layout:modal_dfc` is all 98).
+    let other = leaf("illustration_id", ":", "11111111-1111-4111-8111-111111111111").unwrap();
+    assert!(other.eval_printing(&archived.cards[0], &archived.printings[0], &archived.strings) == Tri::Null);
+    assert!(other.eval_printing(&archived.cards[0], &archived.printings[2], &archived.strings) == Tri::False);
+    assert!(by_art.eval_printing(&archived.cards[0], &archived.printings[2], &archived.strings) == Tri::False);
+
+    // An id no printing has matches nothing; so does an unparseable value, whose 0 must not meet
+    // the 0 a printing without artwork stores.
+    assert_eq!(matches(&leaf("scryfall_id", ":", "11111111-1111-4111-8111-111111111111").unwrap()), [false; 3]);
+    assert!(matches!(leaf("illustration_id", ":", "").unwrap(), FilterExpr::IllustrationIdMatch { id: 0 }));
+    assert_eq!(matches(&leaf("illustration_id", ":", "").unwrap()), [false; 3]);
+
+    // Equality only, like `oracleid:`.
+    assert!(leaf("scryfall_id", ">", PRINT_A).is_err());
+    assert!(leaf("illustration_id", "!=", ART).is_err());
+}
+
 // ─── Compat residue ───────────────────────────────────────────────────────────
 
 #[test]

@@ -2406,6 +2406,65 @@ describe("exact names route through the filter (backlog n6)", () => {
 			expect(none.calls.some((c) => c.startsWith("gatherSearchAsObjects"))).toBe(true);
 		});
 	});
+
+	// x66: `scryfallid:<uuid>` names one PRINTING, and the routing filter's printing-id keys — the
+	// hint `/cards/<id>` already routes by — say which partition holds it.
+	describe("a `scryfallid:` search is pinned to the printing's one partition", () => {
+		const PRINTING = "860aa0fe-0337-458c-b864-5ef5733fbae6";
+		const idTree = (id: string, attribute = "scryfall_id") =>
+			JSON.stringify({
+				node_type: "AndNode",
+				kwargs: {
+					operands: [
+						{
+							node_type: "CardBinaryOperatorNode",
+							kwargs: {
+								lhs: { node_type: "CardAttributeNode", kwargs: { attribute_name: attribute } },
+								op: ":",
+								rhs: { node_type: "StringValueNode", kwargs: { value: id } },
+							},
+						},
+						{ node_type: "NotNode", kwargs: { operand: { node_type: "TrueNode", kwargs: {} } } },
+					],
+				},
+			});
+		const ROUTED = filterOf([{ key: scryfallIdKey(PRINTING), partition: 3 }]);
+		const pinned = { ...OPTS, filterTreeJson: idTree(PRINTING) };
+
+		test("the hinted partition alone is asked — one call, not the gather's N", async () => {
+			const { engine, calls } = build({}, undefined, ROUTED);
+			await engine.scryfallSearch(pinned, "https://x");
+			await engine.searchCardsAsJson(pinned, "rows");
+			expect(calls).toEqual([`scryfallSearch[${N}]:3`, `searchCardsAsJson[${N}]:3`]);
+			expect(engine.pinnedAnswer).toBe(true);
+		});
+
+		test("the id is read in either case", async () => {
+			const { engine, calls } = build({}, undefined, ROUTED);
+			await engine.scryfallSearch({ ...OPTS, filterTreeJson: idTree(PRINTING.toUpperCase()) }, "https://x");
+			expect(calls).toEqual([`scryfallSearch[${N}]:3`]);
+		});
+
+		test("an EMPTY pinned answer is not trusted: the gather answers", async () => {
+			// An id no card has reads an arbitrary cell, and a real printing can be excluded by the
+			// query's other terms; neither can be told from here, so both cost what they cost before.
+			const { engine, calls } = build({ 3: { totalCards: 0 } }, undefined, ROUTED);
+			await engine.searchCardsAsObjects(pinned);
+			expect(calls[0]).toBe(`searchCardsAsObjects[${N}]:3`);
+			expect(calls.filter((c) => c.startsWith("gatherSearchAsObjects")).length).toBe(1);
+			expect(engine.pinnedAnswer).toBe(false);
+		});
+
+		test("without a routing filter, and for an illustration id, the query gathers", async () => {
+			const unrouted = build({}, undefined, null);
+			await unrouted.engine.searchCardsAsObjects(pinned);
+			expect(unrouted.calls.map((c) => c.split(":")[0])).toEqual(["gatherSearchAsObjects"]);
+			// An artwork is shared across oracle cards in different partitions; it is never pinned.
+			const art = build({}, undefined, ROUTED);
+			await art.engine.searchCardsAsObjects({ ...OPTS, filterTreeJson: idTree(PRINTING, "illustration_id") });
+			expect(art.calls.map((c) => c.split(":")[0])).toEqual(["gatherSearchAsObjects"]);
+		});
+	});
 });
 
 // n15: a gathered search carries the build it is pinned to, so its coordinator may answer a

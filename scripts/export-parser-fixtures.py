@@ -373,6 +373,17 @@ EXTRA_CASES = [
     "oracleid>43fbfeec-bcaf-48b8-befe-b7346fec5a3a",
     "oracleid:43fbfeec-bcaf-48b8-befe-b7346fec5a3a t:creature",
     "(oracleid:43fbfeec-bcaf-48b8-befe-b7346fec5a3a or oracleid:21f45043-5419-4019-8b6c-e5294bd5f549) cmc=1",
+    # scryfallid: / illustrationid: -- Scryfall's two printing-id keywords (x66)
+    "scryfallid:860aa0fe-0337-458c-b864-5ef5733fbae6",
+    "scryfall_id:860aa0fe-0337-458c-b864-5ef5733fbae6",
+    "scryfallid=860AA0FE-0337-458C-B864-5EF5733FBAE6",
+    'scryfallid:"860aa0fe-0337-458c-b864-5ef5733fbae6"',
+    "-scryfallid:860aa0fe-0337-458c-b864-5ef5733fbae6 name:reset",
+    "illustrationid:9e42d409-161d-4e63-8982-71e313f27b2f",
+    "illustration_id:9e42d409-161d-4e63-8982-71e313f27b2f",
+    "illustrationid=9e42d409-161d-4e63-8982-71e313f27b2f t:instant",
+    "scryfallid:860aa0fe-0337-458c-b864-5ef5733fbae6 or scryfallid:1c829d83-d5b8-4be7-80f7-55b42f52b309",
+    "scryfallid:00037840-6089-42ec-8c5c-281f9f474504",
     # floats and int/float json rendering
     "cmc=2.0",
     "cmc>=1.5",

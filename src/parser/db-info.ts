@@ -162,6 +162,25 @@ export const DB_COLUMNS: readonly FieldInfo[] = [
 		searchAliases: ["oracleid", "oracle_id"],
 		parserClass: ParserClass.TEXT,
 	},
+	// LOCAL PATCH (Cloudflare port): Scryfall's two PRINTING-id keywords, each under both of its
+	// spellings. Measured on api.scryfall.com 2026-10-03: `scryfallid:860aa0fe-0337-458c-b864-
+	// 5ef5733fbae6` and `scryfall_id:` the same are 1 card (Reset, me3/48), `illustrationid:` /
+	// `illustration_id:9e42d409-161d-4e63-8982-71e313f27b2f` 1 card and 2 under `unique=prints`
+	// (me3/48 and leg/73 share the artwork). `=` reads as `:`; every other operator matches
+	// nothing. The engine compares the printing's own u128 (card_engine `ScryfallIdMatch` /
+	// `IllustrationIdMatch`); nothing is stored for them that the store did not already hold.
+	{
+		dbColumnName: "scryfall_id",
+		fieldType: FieldType.TEXT,
+		searchAliases: ["scryfallid", "scryfall_id"],
+		parserClass: ParserClass.TEXT,
+	},
+	{
+		dbColumnName: "illustration_id",
+		fieldType: FieldType.TEXT,
+		searchAliases: ["illustrationid", "illustration_id"],
+		parserClass: ParserClass.TEXT,
+	},
 	{
 		dbColumnName: "oracle_text",
 		fieldType: FieldType.TEXT,

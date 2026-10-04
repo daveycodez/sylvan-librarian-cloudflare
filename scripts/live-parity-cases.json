@@ -2191,6 +2191,60 @@
 					}
 				}
 			}
+		},
+		{
+			"name": "search-scryfallid-names-one-printing",
+			"method": "GET",
+			"path": "/cards/search?q=scryfallid%3A860aa0fe-0337-458c-b864-5ef5733fbae6",
+			"note": "x66 R5, reported from mtg-seeker: `scryfallid:` is a Scryfall keyword — 1 card, Reset me3/48, on api.scryfall.com 2026-10-03 (`scryfall_id:`, `scryfallid=`, upper case and a quoted value the same). This port answered `400 All of your terms were ignored.` with `Unknown keyword “scryfallid”`. One partition call: the router pins the query to the partition the routing filter's printing-id keys name."
+		},
+		{
+			"name": "search-illustrationid-names-an-artwork",
+			"method": "GET",
+			"path": "/cards/search?q=illustrationid%3A9e42d409-161d-4e63-8982-71e313f27b2f&unique=prints",
+			"note": "x66 R5: `illustrationid:` is every printing carrying an artwork — 2 under unique=prints (Reset me3/48 and leg/73 share it), 1 under unique=cards (2026-10-03)."
+		},
+		{
+			"name": "search-illustrationid-reaches-a-face",
+			"method": "GET",
+			"path": "/cards/search?q=illustrationid%3Af661d604-e956-43b7-89f0-ac7ba7389924",
+			"note": "The artwork may be on a FACE: this is 2 cards on api.scryfall.com 2026-10-03 — Aegar, the Freezing Flame (khm/200) and its art-series card akhm/55, whose top-level illustration_id is null and whose faces carry it. It is also why the term switches `include_extras` on (the art-series card is an extra) and why it is not pinned to one partition (two oracle cards)."
+		},
+		{
+			"name": "search-scryfallid-of-a-token-needs-no-include-extras",
+			"method": "GET",
+			"path": "/cards/search?include_extras=false&q=scryfallid%3A3bd871a3-3802-4bdc-8033-3ecfd01c0449",
+			"note": "A printing named by its id is returned whatever class it is: tkhm/2, an Angel Warrior TOKEN, with `include_extras=false` sent explicitly (2026-10-03). The term forces extras — and variations, the one term found that does: `scryfallid:<id> or cmc=3` echoes `include_extras=true&include_variations=true`, in either polarity and for an id no card has."
+		},
+		{
+			"name": "search-scryfallid-not-a-v4-uuid",
+			"method": "GET",
+			"path": "/cards/search?q=scryfallid%3Aabc+e%3Akhm+t%3Agod",
+			"note": "A value that is not a v4 UUID is ignored: 12 with `Invalid expression “scryfallid:abc” was ignored. You must provide a valid v4 UUID.` — `oracleid:`'s check and sentence. The nil UUID and the unhyphenated form are refused the same way."
+		},
+		{
+			"name": "search-scryfallid-nil-uuid-alone",
+			"method": "GET",
+			"path": "/cards/search?q=scryfallid%3A00000000-0000-0000-0000-000000000000",
+			"note": "x66 R5's non-v4 case: `400 All of your terms were ignored.` with `Invalid expression “scryfallid:00000000…” was ignored. You must provide a valid v4 UUID.`"
+		},
+		{
+			"name": "search-negated-scryfallid-is-the-other-printings",
+			"method": "GET",
+			"path": "/cards/search?q=-scryfallid%3A860aa0fe-0337-458c-b864-5ef5733fbae6+%21%22Reset%22&unique=prints",
+			"note": "Printing-level and two-valued, so its negation is the card's OTHER printings: 2 of Reset's 3 on api.scryfall.com 2026-10-03 (leg/73 and mb2/170)."
+		},
+		{
+			"name": "search-negated-illustrationid-is-not-the-complement",
+			"method": "GET",
+			"path": "/cards/search?q=-illustrationid%3A9e42d409-161d-4e63-8982-71e313f27b2f+%21%22Reset%22&unique=prints",
+			"note": "`-illustrationid:` is NOT every other printing: this is a 404 on api.scryfall.com 2026-10-03 though mb2/170 carries a different artwork — and so is `-illustrationid:11111111-1111-4111-8111-111111111111 !\"Reset\"`, an id no card has. A printing whose own top-level illustration id is some other artwork survives neither the term nor its negation (SQL NULL); the engine's `IllustrationIdMatch` is three-valued to match."
+		},
+		{
+			"name": "search-negated-illustrationid-keeps-face-artwork",
+			"method": "GET",
+			"path": "/cards/search?q=-illustrationid%3A9e42d409-161d-4e63-8982-71e313f27b2f+layout%3Amodal_dfc",
+			"note": "…while a printing whose artwork lives on its FACES (no top-level illustration id) is a real False and survives the negation: all 98 modal DFCs (2026-10-03; `layout:transform` 393 of 394, `layout:art_series` all 2,243, `layout:split` none of 137)."
 		}
 	]
 }

@@ -213,6 +213,21 @@ DB_COLUMNS = [
         search_aliases=["oracleid", "oracle_id"],
         parser_class=ParserClass.TEXT,
     ),
+    # LOCAL PATCH (Cloudflare port): Scryfall's two PRINTING-id keywords, each under both of its
+    # spellings (measured on api.scryfall.com 2026-10-03). See src/parser/db-info.ts, which
+    # carries the measurements; the engine answers them from the printing's own ids.
+    FieldInfo(
+        db_column_name="scryfall_id",
+        field_type=FieldType.TEXT,
+        search_aliases=["scryfallid", "scryfall_id"],
+        parser_class=ParserClass.TEXT,
+    ),
+    FieldInfo(
+        db_column_name="illustration_id",
+        field_type=FieldType.TEXT,
+        search_aliases=["illustrationid", "illustration_id"],
+        parser_class=ParserClass.TEXT,
+    ),
     FieldInfo(
         db_column_name="oracle_text",
         field_type=FieldType.TEXT,

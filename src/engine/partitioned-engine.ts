@@ -112,7 +112,7 @@ import { edgeCacheUrl, readThroughEdgeCache } from "./edge-cache";
 import { nameReplySettles } from "./name-settle";
 import { NAMED_CONTAINMENT_LIMIT, resolveNamedFuzzyStaged, weakWinnerOrContained } from "./named-fuzzy";
 import { gatherPartitionOf, partitionOfOracleId } from "./partition";
-import { pinnedExactName, pinnedOracleId } from "./pinned-oracle";
+import { pinnedExactName, pinnedOracleId, pinnedScryfallId } from "./pinned-oracle";
 import { EngineCallTimeoutError, isTransientEngineFailure, type RemoteEngine } from "./remote-engine";
 import {
 	externalIdKey,
@@ -940,6 +940,18 @@ export class PartitionedEngine implements Engine {
 	 * filter never held) is asked of the gather, which is what it cost before.
 	 */
 	private async pinnedNamePartition(opts: EngineSearchOptions): Promise<number | null> {
+		// x66: a `scryfallid:<uuid>` query names one PRINTING, which lives in one partition — the one
+		// the routing filter's printing-id keys name, the hint `/cards/<id>` routes by. The same
+		// trust rule as a name: a partition that returns the printing holds it, and no other
+		// partition can, so a NON-EMPTY pinned answer is exact; an empty one (an id no card has, an
+		// id the filter never held, or a printing the query's other terms exclude) is asked of the
+		// gather, which is what every such query cost before.
+		const scryfallId = pinnedScryfallId(opts.filterTreeJson);
+		if (scryfallId !== null) {
+			await this.routed();
+			const hint = this.routing?.lookup(scryfallIdKey(scryfallId)) ?? null;
+			return hint !== null && hint < this.n ? hint : null;
+		}
 		const collated = pinnedExactName(opts.filterTreeJson);
 		if (collated === null) return null;
 		await this.routed();

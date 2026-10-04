@@ -1403,6 +1403,10 @@ describe("the regex surface, alias by alias", () => {
 		producesbad: ["produces:/xyz/", "Unknown color \u201cx\u201d"],
 		// ...and the two spellings whose VALUE sentence Scryfall gives verbatim, per spelling.
 		oracle_id: ["oracle_id:/^0000/", "You must provide a valid v4 UUID."],
+		// The printing-id keywords split by spelling the same way (measured 2026-10-03:
+		// `scryfall_id:/860aa0fe/` and `illustration_id:/9e42/` answer the UUID sentence).
+		scryfall_id: ["scryfall_id:/^0000/", "You must provide a valid v4 UUID."],
+		illustration_id: ["illustration_id:/^0/", "You must provide a valid v4 UUID."],
 		// THE VALUE VALIDATOR GETS THERE FIRST on these three, even for a plain-literal pattern
 		// that the parser would happily lower — `/ja/` is not a language and `/abcd/` is not a
 		// UUID, so the term is dropped before the regex question is asked. Scryfall drops them
@@ -1411,6 +1415,8 @@ describe("the regex surface, alias by alias", () => {
 		lang: ["lang:/ja/", "Unknown language `/ja/`"],
 		language: ["language:/ja/", "Unknown language `/ja/`"],
 		oracleid: ["oracleid:/abcd/", "You must provide a valid v4 UUID."],
+		scryfallid: ["scryfallid:/abcd/", "You must provide a valid v4 UUID."],
+		illustrationid: ["illustrationid:/ab/", "You must provide a valid v4 UUID."],
 		// Outcome 2, now fixed — a real pattern on a column with no regex path. Every sentence
 		// below was read off api.scryfall.com; `st:` and `date:` were `400 Failed to parse query`
 		// here before this rule, and the collection columns silently answered a DIFFERENT query.
@@ -1464,6 +1470,8 @@ describe("the regex surface, alias by alias", () => {
 		["frame:/^199/", "Unknown regular expression keyword \u201cframe\u201d."],
 		["lang:/^ja/", "Unknown regular expression keyword \u201clang\u201d."],
 		["oracleid:/^0000/", "Unknown regular expression keyword \u201coracleid\u201d."],
+		["scryfallid:/^860a/", "Unknown regular expression keyword \u201cscryfallid\u201d."],
+		["illustrationid:/^9/", "Unknown regular expression keyword \u201cillustrationid\u201d."],
 		["st:/^exp/", "Unknown regular expression keyword \u201cst\u201d."],
 		["settype:/^exp/", "Unknown regular expression keyword \u201csettype\u201d."],
 		// The one spelling that gets a VALUE sentence instead — Scryfall's own split.

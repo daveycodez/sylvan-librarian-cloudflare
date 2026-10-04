@@ -1140,6 +1140,8 @@ const REGEX_VALUE_FIRST_KEYWORDS: ReadonlySet<string> = new Set([
 	"mana",
 	"m",
 	"oracle_id",
+	"scryfall_id",
+	"illustration_id",
 ]);
 
 /**
@@ -1240,7 +1242,37 @@ function dateValueReason(keyword: string, rawValue: string): string | null {
 const FORMAT_KEYWORDS: ReadonlySet<string> = new Set(["f", "format", "legal", "banned", "restricted"]);
 const LANGUAGE_KEYWORDS: ReadonlySet<string> = new Set(["lang", "language"]);
 const RARITY_KEYWORDS: ReadonlySet<string> = new Set(["r", "rarity"]);
-const ORACLE_ID_KEYWORDS: ReadonlySet<string> = new Set(["oracleid", "oracle_id"]);
+/**
+ * The keywords whose value is a UUID: the oracle card's, and — since 2026-10-03 — the PRINTING's
+ * own id and its artwork's.
+ *
+ * `scryfallid:` and `illustrationid:` are Scryfall keywords this port called unknown (x66 R5,
+ * reported from mtg-seeker). Measured on api.scryfall.com that day, anchor `e:khm t:god` = 12:
+ *
+ *   scryfallid:860aa0fe-0337-458c-b864-5ef5733fbae6        1 card (Reset, me3/48)
+ *   scryfall_id:…  scryfallid=…  SCRYFALLID:860AA0FE-…  scryfallid:"860aa0fe-…"    the same 1
+ *   illustrationid:9e42d409-161d-4e63-8982-71e313f27b2f    1 card; 2 under unique=prints
+ *   illustration_id:…  illustrationid=…                    the same
+ *   scryfallid:abc e:khm t:god                             12 + `You must provide a valid v4 UUID.`
+ *   scryfallid:00000000-0000-0000-0000-000000000000        400, the same sentence (the nil UUID)
+ *   scryfallid:860aa0fe0337458cb8645ef5733fbae6            400 (no hyphens)
+ *   -scryfallid:abc e:khm t:god                            12, echoing “-scryfallid:abc”
+ *   scryfallid:11111111-1111-4111-8111-111111111111        404 — well-formed, names nothing
+ *   scryfallid!=<id> e:khm t:god   scryfallid><id> …       404 — the comparison rule above
+ *
+ * The same v4 check `oracleid:` has, with the same sentence, and the same per-SPELLING split on a
+ * regex-shaped value: `scryfall_id:/860aa0fe/` and `illustration_id:/9e42/` answer the UUID
+ * sentence while `scryfallid:/…/` and `illustrationid:/…/` answer `Unknown regular expression
+ * keyword` — see REGEX_VALUE_FIRST_KEYWORDS and UNDERSCORE_FREE_ID_KEYWORDS.
+ */
+const UUID_KEYWORDS: ReadonlySet<string> = new Set([
+	"oracleid",
+	"oracle_id",
+	"scryfallid",
+	"scryfall_id",
+	"illustrationid",
+	"illustration_id",
+]);
 const GAME_KEYWORDS: ReadonlySet<string> = new Set(["game"]);
 
 /** The three spellings that read the `card_is_tags` vocabulary. `not:` is `-is:`. */
@@ -1281,7 +1313,7 @@ const KNOWN_KEYWORDS: ReadonlySet<string> = new Set([
 	...FORMAT_KEYWORDS,
 	...LANGUAGE_KEYWORDS,
 	...RARITY_KEYWORDS,
-	...ORACLE_ID_KEYWORDS,
+	...UUID_KEYWORDS,
 	...COLOR_KEYWORDS,
 	...GAME_KEYWORDS,
 ]);
@@ -2185,7 +2217,7 @@ function classifyLeaf(term: string): LeafVerdict {
 	if (IS_KEYWORDS.has(keyword) && NOT_SCRYFALL_IS_VALUES.has(loweredValue)) {
 		return { keep: false, reason: `Checking if cards are \u201c${loweredValue}\u201d is not supported` };
 	}
-	if (ORACLE_ID_KEYWORDS.has(keyword) && !UUID_V4_RE.test(value)) {
+	if (UUID_KEYWORDS.has(keyword) && !UUID_V4_RE.test(value)) {
 		return { keep: false, reason: "You must provide a valid v4 UUID." };
 	}
 	if (COLOR_KEYWORDS.has(keyword)) {

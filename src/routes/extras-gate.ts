@@ -27,6 +27,8 @@ interface ExtrasTriggers {
 	forced: boolean;
 	/** Lowercased set codes named by `e:`/`s:`/`set:` — the CONDITIONAL trigger. */
 	sets: string[];
+	/** A `scryfallid:` term is present: `include_variations` is on as well as extras. */
+	variations: boolean;
 }
 
 /** Attributes whose mere presence forces `include_extras=true`, whatever their value. */
@@ -334,6 +336,7 @@ function extrasTriggers(
 			loweredRegexTerms.some((t) => t.attribute === "card_name") ||
 			expandedDerivedTerms.some((t) => EXTRAS_DERIVED_TRIGGERS.has(t.term)),
 		sets: [],
+		variations: false,
 	};
 	walkExtrasTriggers(tree, out, lowered, derived);
 	return out;
@@ -460,6 +463,33 @@ function walkExtrasTriggers(
 		// matches nothing — and Scryfall's `oracleid:abc or cmc=3` echoes false, so it must not fire.
 		if (attr === "oracle_id" && !fromExpansion && (n.kwargs?.op === ":" || n.kwargs?.op === "=")) {
 			if (values.some((v) => UUID_V4_RE.test(v) && !lowered(attr, v))) out.forced = true;
+		}
+		// `scryfallid:` and `illustrationid:` — a printing named by its own id, or by its artwork's —
+		// force extras exactly as `oracleid:` does, and `scryfallid:` forces VARIATIONS too: it is
+		// the one term found that does. Measured 2026-10-03, `<term> or cmc=3` sent with
+		// `include_extras=false` (bare 8,089; extras-on 8,302), the flags read out of `next_page`:
+		//
+		//   scryfallid:<a token's id> or cmc=3        8,303   extras=true  variations=true
+		//   scryfallid:<an art-series id> or cmc=3    8,303   extras=true  variations=true
+		//   scryfallid:<Reset, an ordinary card>      8,303   extras=true  variations=true
+		//   scryfallid:11111111-…-111111111111        8,302   extras=true  variations=true   (no card)
+		//   -scryfallid:<id> cmc=3                    8,302   extras=true  variations=true   (polarity-blind)
+		//   illustrationid:<id> or cmc=3              8,303   extras=true  variations=FALSE
+		//   illustrationid:11111111-… or cmc=3        8,302   extras=true  variations=false
+		//   scryfallid:abc or cmc=3                   8,089   false/false + the v4 warning
+		//   scryfallid!=<id> or cmc=3                 8,089   false/false
+		//
+		// So `scryfallid:<a token's id>` alone is that token, with no `include_extras` — which is
+		// the point of the keyword — and it is the TERM that fires, not the rows it names.
+		if (
+			(attr === "scryfall_id" || attr === "illustration_id") &&
+			!fromExpansion &&
+			(n.kwargs?.op === ":" || n.kwargs?.op === "=")
+		) {
+			if (values.some((v) => UUID_V4_RE.test(v) && !lowered(attr, v))) {
+				out.forced = true;
+				if (attr === "scryfall_id") out.variations = true;
+			}
 		}
 		if (attr === "card_set_code" && !fromExpansion) {
 			for (const value of values) out.sets.push(value);
@@ -625,7 +655,8 @@ export async function applyExtrasGate(
 		extrasForced = triggers.sets.some((code) => withExtras.has(code));
 	}
 	const includeExtras = extrasForced || requested.includeExtras === true;
-	const includeVariations = mentionsIsTag(tree, VARIATION_IS_TAG) || requested.includeVariations === true;
+	const includeVariations =
+		triggers.variations || mentionsIsTag(tree, VARIATION_IS_TAG) || requested.includeVariations === true;
 	return {
 		tree: withoutIsTags(tree, [
 			...(includeExtras ? [] : [EXTRA_IS_TAG]),

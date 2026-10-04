@@ -1716,6 +1716,29 @@ pub(crate) enum FilterExpr {
         id: u128,
     },
 
+    /// LOCAL PATCH (Cloudflare port): `scryfallid:<uuid>` — the ONE printing whose `scryfall_id`
+    /// equals `id`, and `illustrationid:<uuid>` — every printing carrying that artwork, at top
+    /// level or on a face. Both are Scryfall search keywords (measured on api.scryfall.com
+    /// 2026-10-03: `scryfallid:860aa0fe-…` and `illustrationid:9e42d409-…` are each 1 card, and
+    /// `illustrationid:f661d604-…` is 2 — khm/200 and its art-series card akhm/55, whose
+    /// illustration id is on its FACES and null at top level).
+    ///
+    /// Printing-level. `id` is `parse_uuid_or_hash`'s u128; 0 (an unparseable value) is refused
+    /// outright, because 0 is also how a printing with no illustration id stores "none" and the
+    /// two must not meet. `scryfallid:` is two-valued; `illustrationid:` is not — see its `tri()`
+    /// arm for what its negation answers. Neither widens the query to the foreign annex:
+    /// `scryfallid:` of a Japanese printing is a 404 on Scryfall without `lang:`.
+    ///
+    /// No narrowing arm: the predicate is one integer compare per printing, and the router pins
+    /// a `scryfallid:` query to the one partition that holds the printing (pinned-oracle.ts), so
+    /// the scan it costs is one partition's.
+    ScryfallIdMatch {
+        id: u128,
+    },
+    IllustrationIdMatch {
+        id: u128,
+    },
+
     Legality {
         shift: Option<u8>, // None: format absent from all loaded data — matches nothing
         expected: u64,
@@ -1913,6 +1936,10 @@ pub(crate) fn verify_cost_tier(f: &FilterExpr) -> u32 {
         | FilterExpr::SingleSet
         // An OracleIdMatch is one 128-bit integer equality against a field already in the card.
         | FilterExpr::OracleIdMatch { .. }
+        // ...and the two printing-id matches are the same equality against the printing (the
+        // illustration one walks the printing's few faces as well).
+        | FilterExpr::ScryfallIdMatch { .. }
+        | FilterExpr::IllustrationIdMatch { .. }
         | FilterExpr::DateCmp { .. }
         | FilterExpr::YearCmp { .. } => MASK_COMPARE_NS100,
     }
@@ -2116,6 +2143,8 @@ fn leaf_compares_printing_field(f: &FilterExpr) -> bool {
         FilterExpr::LangMatch { .. } => true,
         // The set type is the PRINTING's set, so it can only settle once one is in hand.
         FilterExpr::SetTypeMatch { .. } => true,
+        // A printing's own id, and the artwork it carries: per-printing by definition.
+        FilterExpr::ScryfallIdMatch { .. } | FilterExpr::IllustrationIdMatch { .. } => true,
         // The printed name is a per-printing fact (Printing.printed_name_folded_id) — an English
         // row and its Japanese sibling answer differently.
         FilterExpr::PrintedNamePresent => true,
@@ -3330,6 +3359,33 @@ impl FilterExpr {
             // the same answer the oracle_by_oracle_id path gives, which refuses id 0 outright.
             FilterExpr::OracleIdMatch { id } => tri_bool(u128::from(card.oracle_id) == *id),
 
+            // Two-valued per printing. Id 0 is "unparseable" on the query side and "absent" on
+            // the stored side, so it matches nothing rather than every printing without artwork.
+            FilterExpr::ScryfallIdMatch { id } => {
+                let Some(p) = printing else { return Tri::PrintingDep };
+                tri_bool(*id != 0 && u128::from(p.scryfall_id) == *id)
+            }
+            // THREE-valued, and the third value is measured rather than assumed: on api.scryfall.com
+            // (2026-10-03) `-illustrationid:<id>` does NOT answer "every other printing". It answers
+            // only the printings with NO top-level illustration id — `-illustrationid:9e42d409-…
+            // layout:transform` is 393 of 394, `layout:modal_dfc` 98 of 98, `layout:art_series` all
+            // 2,243, while `layout:split` is 0 of 137 and `-illustrationid:<id> !"Reset"` is a 404
+            // though none of Reset's three printings carries that artwork, and the same for an id no
+            // card has. So a printing whose own top-level id is some OTHER artwork is SQL NULL (it
+            // survives neither the term nor its negation), and one whose artwork lives on its faces
+            // — or that has none at all — is a real False.
+            FilterExpr::IllustrationIdMatch { id } => {
+                let Some(p) = printing else { return Tri::PrintingDep };
+                let top = u128::from(p.illustration_id);
+                if *id != 0 && (top == *id || p.faces.iter().any(|f| u128::from(f.illustration_id) == *id)) {
+                    Tri::True
+                } else if top == 0 {
+                    Tri::False
+                } else {
+                    Tri::Null
+                }
+            }
+
             FilterExpr::FlavorMatch { gids, .. } => {
                 let Some(p) = printing else { return Tri::PrintingDep };
                 let gid = u32::from(p.flavor_text_lower_id);
@@ -4206,6 +4262,19 @@ fn build_binary(kw: &Value) -> Result<FilterExpr, String> {
             return Err(format!("operator {op:?} is not supported on oracle_id"));
         }
         return Ok(FilterExpr::OracleIdMatch { id: super::parse_uuid_or_hash(rhs_value_str(rhs)) });
+    }
+
+    // LOCAL PATCH (Cloudflare port): equality only, like `oracle_id` above and for its reason.
+    if attr == "scryfall_id" || attr == "illustration_id" {
+        if !matches!(op, ":" | "=") {
+            return Err(format!("operator {op:?} is not supported on {attr}"));
+        }
+        let id = super::parse_uuid_or_hash(rhs_value_str(rhs));
+        return Ok(if attr == "scryfall_id" {
+            FilterExpr::ScryfallIdMatch { id }
+        } else {
+            FilterExpr::IllustrationIdMatch { id }
+        });
     }
 
     if attr == "card_subtypes" {
