@@ -1759,6 +1759,25 @@ pub(crate) enum FilterExpr {
     /// for them and only the 71 that have one go to their printings.
     PrintsOwnFaces,
 
+    /// LOCAL PATCH (Cloudflare port): Scryfall's `cheapest:usd` / `cheapest:eur` / `cheapest:tix` —
+    /// the printing carries its card's cheapest price in that currency. Answered from the codes
+    /// `assign_cheapest_codes` stores on the printing, which carries the measured rule.
+    ///
+    /// `negated` is the negated TERM, `-cheapest:usd`, which on api.scryfall.com is its own
+    /// expression and NOT the complement of the positive one: `(usd IS NULL OR usd <> M) AND
+    /// (usd_foil IS NULL OR usd_foil = M)`, 5 printings of Kaldheim where the positive is 222 of
+    /// 407 and one printing is in both. The compat surface spells it as a value of its own
+    /// (`not_usd`), so a `Not` over either leaf stays what Scryfall's negated GROUP is — the
+    /// complement, `-(cheapest:usd) e:khm` 185 and `-(-cheapest:usd) e:khm` 402.
+    ///
+    /// Three-valued for the two currencies with a foil price: a priced printing of a card that has
+    /// no cheapest price is SQL's NULL, in neither list and neither complement
+    /// (`cheapest:usd st:memorabilia` 4, `-(cheapest:usd) st:memorabilia` 5,662 of 5,847).
+    Cheapest {
+        currency: super::CheapestCurrency,
+        negated: bool,
+    },
+
     /// `is:unique` — the owning CARD has been printed in exactly one SET. Card-level and total, off
     /// `OracleCard.single_set`, which the build computes over the canonical printings AND the annex
     /// (`assign_single_set_flags`); nothing here to bind and nothing per printing to consult.
@@ -2036,6 +2055,9 @@ pub(crate) fn verify_cost_tier(f: &FilterExpr) -> u32 {
         // Unbound only (see tri()): a lowercasing scan of the type line, the same tier as any
         // other per-card text scan.
         FilterExpr::TypeLineContains { .. } | FilterExpr::TextContains { .. } => TEXT_SCAN_NS100,
+        // Two bits of a field already on the printing, and a price compare when the plain price
+        // is the cheapest.
+        FilterExpr::Cheapest { .. } => MASK_COMPARE_NS100,
         // A substring scan of the printing's flavor text, plus a field compare for its flavor name.
         FilterExpr::LorePrinting { .. } => TEXT_SCAN_NS100,
         // One length read on the card, and a layout compare on the 71 cards that pass it.
@@ -2318,6 +2340,8 @@ fn leaf_compares_printing_field(f: &FilterExpr) -> bool {
         FilterExpr::FlavorNameIn { .. } | FilterExpr::FlavorNamePresent => true,
         // `lore:`'s printing half: the printing's flavor text, flavor name and own faces.
         FilterExpr::LorePrinting { .. } | FilterExpr::PrintsOwnFaces => true,
+        // The cheapest codes are the printing's (CompatFields).
+        FilterExpr::Cheapest { .. } => true,
         // The frame class is read entirely off the PRINTING (its compat flags, border, frame
         // effects, promo types, finishes) — a card's plain printing and its borderless one differ.
         FilterExpr::Atypical(_) => true,
@@ -3491,6 +3515,11 @@ impl FilterExpr {
                 tri_bool(super::printing_has_flavor_name(p))
             }
 
+            FilterExpr::Cheapest { currency, negated } => {
+                let Some(p) = printing else { return Tri::PrintingDep };
+                super::printing_is_cheapest(p, *currency, *negated).map_or(Tri::Null, tri_bool)
+            }
+
             FilterExpr::LorePrinting { word } => {
                 let Some(p) = printing else { return Tri::PrintingDep };
                 let text = u32::from(p.flavor_text_lower_id);
@@ -4524,6 +4553,30 @@ fn build_binary(kw: &Value) -> Result<FilterExpr, String> {
             return Err(format!("operator {op:?} is not supported on stamp"));
         }
         return Ok(FilterExpr::StampMatch { value: rhs_value_str(rhs).to_lowercase(), vid: None });
+    }
+
+    // LOCAL PATCH (Cloudflare port): Scryfall's `cheapest:` — see `FilterExpr::Cheapest`. The value
+    // is a currency under any of the words api.scryfall.com takes for it (2026-10-04, each
+    // `cheapest:<word> e:khm`): `usd` `$` `dollar` 222, `eur` `euro` `€` 238, `tix` `mtgo` 290;
+    // `dollars`, `euros`, `ticket`, `tickets`, `usdfoil`, `eurfoil`, `tcgplayer`, `cardmarket` and
+    // the rest are `Unknown currency`. `not_<currency>` is the negated TERM, which the compat
+    // surface writes for `-cheapest:<currency>`. Equality only, like `stamp:`.
+    if attr == "cheapest" {
+        if !matches!(op, ":" | "=") {
+            return Err(format!("operator {op:?} is not supported on cheapest"));
+        }
+        let value = rhs_value_str(rhs).to_lowercase();
+        let (word, negated) = match value.strip_prefix("not_") {
+            Some(rest) => (rest, true),
+            None => (value.as_str(), false),
+        };
+        let currency = match word {
+            "usd" | "$" | "dollar" => super::CheapestCurrency::Usd,
+            "eur" | "euro" | "€" => super::CheapestCurrency::Eur,
+            "tix" | "mtgo" => super::CheapestCurrency::Tix,
+            _ => return Err(format!("unknown currency: {word}")),
+        };
+        return Ok(FilterExpr::Cheapest { currency, negated });
     }
 
     // LOCAL PATCH (Cloudflare port): Scryfall's `lore:` — the value, as a LITERAL substring, in any

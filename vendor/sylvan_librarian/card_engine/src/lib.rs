@@ -650,6 +650,29 @@ const COMPAT_VARIATION: u16 = 1 << 11;
 /// bits were clear in every archive before 2026100401.
 const COMPAT_ARTISTS_SHIFT: u32 = 12;
 const COMPAT_ARTISTS_MASK: u16 = 0b11 << COMPAT_ARTISTS_SHIFT;
+/// LOCAL PATCH (Cloudflare port): bits 14-15 of `CompatFields::flags` hold the printing's
+/// CHEAPEST CODE for US dollars — Scryfall's `cheapest:usd` — and bits 4-5 of
+/// `CompatFields::finishes` the same code for euros; bit 6 there is `cheapest:tix`. See
+/// `assign_cheapest_codes`, which writes them and carries the measured rule. All five bits were
+/// clear in every archive before 2026100402.
+///
+/// A CODE and not two booleans, because the keyword and its negation are each a function of
+/// THREE facts about a printing — does its plain price equal the card's cheapest, does its foil
+/// price, and does the card have a cheapest price at all — and two bits hold exactly the
+/// combinations that occur:
+///
+///   `CHEAPEST_NEITHER`     the card has a cheapest price and neither price of this printing is
+///                          it (or the printing has no price in the currency)
+///   `CHEAPEST_PLAIN`       the plain price is the cheapest — and the foil price too when the
+///                          two are equal, which the prices themselves say
+///   `CHEAPEST_FOIL_ONLY`   the foil price is the cheapest and the plain one is not
+///   `CHEAPEST_NO_MINIMUM`  this printing is priced and the card has no cheapest price: every
+///                          priced printing of it is memorabilia, or (euros) foil-only
+const COMPAT_CHEAPEST_USD_SHIFT: u32 = 14;
+pub(crate) const CHEAPEST_NEITHER: u8 = 0;
+pub(crate) const CHEAPEST_PLAIN: u8 = 1;
+pub(crate) const CHEAPEST_FOIL_ONLY: u8 = 2;
+pub(crate) const CHEAPEST_NO_MINIMUM: u8 = 3;
 
 // `games` and `finishes` bitsets. Closed vocabularies, so a byte each beats a Vec of interned ids.
 //
@@ -671,6 +694,11 @@ const FINISH_NONFOIL: u8 = 1 << 0;
 const FINISH_FOIL: u8 = 1 << 1;
 const FINISH_ETCHED: u8 = 1 << 2;
 const FINISH_GLOSSY: u8 = 1 << 3;
+/// The finishes themselves. The byte's high bits are not finishes — see
+/// `COMPAT_CHEAPEST_USD_SHIFT` — so a reader that compares the WHOLE set masks with this first.
+const FINISH_MASK: u8 = 0b1111;
+const FINISHES_CHEAPEST_EUR_SHIFT: u32 = 4;
+const FINISHES_CHEAPEST_TIX: u8 = 1 << 6;
 
 /// The Scryfall fields that no column holds and no derivation recovers — the `card_compat_blob`
 /// residue, packed.
@@ -4952,6 +4980,124 @@ fn assign_artist_counts(printings: &mut [Printing], foreign: &mut [Printing], co
         let count = if joined.is_empty() { 0 } else { joined.bytes().filter(|&b| b == b',').count() + 1 };
         p.compat.flags = (p.compat.flags & !COMPAT_ARTISTS_MASK) | ((count.min(3) as u16) << COMPAT_ARTISTS_SHIFT);
     }
+}
+
+/// LOCAL PATCH (Cloudflare port): decide every printing's CHEAPEST CODES — Scryfall's
+/// `cheapest:usd`, `cheapest:eur` and `cheapest:tix`, "the cheapest printing of each card".
+///
+/// THE RULE, measured on api.scryfall.com 2026-10-04 by reading every priced printing it holds
+/// (113,597 of them, `usd>=0 or eur>=0 or tix>=0` with extras, variations and every language),
+/// the three `cheapest:` lists and the three `-cheapest:` lists, and simulating the rule below on
+/// Scryfall's own prices: 108,901 of 108,901 rows agree for each currency, in BOTH polarities
+/// (the other rows belong to twelve cards with a printing newer than the comparison corpus).
+///
+///   the cheapest price M of a card is the lowest price over its CANONICAL printings outside
+///   MEMORABILIA sets, a printing's price being
+///     usd   `prices.usd`, or `prices.usd_foil` when it has no plain price — never the etched one
+///     eur   `prices.eur` alone
+///     tix   `prices.tix`
+///   cheapest:usd    usd = M  OR  usd_foil = M
+///   -cheapest:usd   (usd IS NULL OR usd <> M)  AND  (usd_foil IS NULL OR usd_foil = M)
+///   cheapest:eur and its negation are the same two expressions over eur / eur_foil
+///   cheapest:tix    tix = M, and its negation the complement
+///
+/// Each line is evidence, not a reading of the name:
+///
+///   - TIES are all cheapest: `eld/1`'s 0.38 / 0.38 and every printing sharing the low price.
+///   - A FOIL price equal to M is cheapest on a printing whose plain price is not (m21/130 at
+///     0.20 / 0.03 beside roe/136's 0.03), but a foil price BELOW the plain one does not lower M
+///     (Reflections of Littjara: khm/73 is 2.94 / 1.59, and the cheapest is the foil-only
+///     khm/400 at 1.77). In euros a foil-only printing does not enter M at all: ddu/35 at
+///     — / 17.54 is not cheapest beside c14/177's 18.53. An etched price never counts.
+///   - MEMORABILIA is outside M and can still equal it: Goblin Piledriver's gold-bordered
+///     wc03/we205 is 2.60 and the cheapest is ori/151 at 2.65, while wc04/jn13sb at 0.17 IS
+///     `cheapest:usd`, because ice/15 is 0.17. All 334 rows priced below their card's M are
+///     memorabilia (World Championship decks, Collectors' Edition, 30th Anniversary Edition).
+///   - CANONICAL rows only: Segovian Leviathan's German ren/40 is 0.10 and the cheapest is
+///     4ed/99 at 0.23 — the Renaissance slot's default-cards row is the French one, at 0.55.
+///     A non-canonical row still answers by its own prices against that M.
+///   - THE NEGATION IS NOT THE COMPLEMENT. `-cheapest:usd e:khm` is 5 printings where
+///     `cheapest:usd e:khm` is 222 of 407: it keeps the printings with NO foil price that are not
+///     cheapest, and — the same expression — a printing whose foil price is the cheapest and
+///     whose plain price is not, which is in BOTH lists (khm/400). A printing with both prices
+///     and neither cheapest is in neither. `-(cheapest:usd)`, the negated GROUP, is the
+///     complement (185 = 407 - 222), and `-(-cheapest:usd)` is 402.
+///   - NO MINIMUM is SQL's NULL: a priced printing of a card with no M (`wc98/0`, whose every
+///     priced printing is memorabilia) is in neither list nor either complement —
+///     `cheapest:usd st:memorabilia` 4 and `-(cheapest:usd) st:memorabilia` 5,662 of 5,847 —
+///     while an UNPRICED printing is a plain False / True (`-cheapest:usd e:ymkm` is all 30).
+///
+/// Prices move daily and the store is rebuilt nightly, so the codes are exact for the prices the
+/// store itself serves. The store is partitioned by oracle id, so every row of a card is here.
+fn assign_cheapest_codes(
+    printings: &mut [Printing],
+    offsets: &[u32],
+    foreign: &mut [Printing],
+    foreign_offsets: &[u32],
+    coll_vocab: &[String],
+) {
+    fn code(plain: Option<u32>, foil: Option<u32>, min: Option<u32>) -> u8 {
+        match min {
+            None if plain.is_some() || foil.is_some() => CHEAPEST_NO_MINIMUM,
+            None => CHEAPEST_NEITHER,
+            Some(_) if plain == min => CHEAPEST_PLAIN,
+            Some(_) if foil == min => CHEAPEST_FOIL_ONLY,
+            Some(_) => CHEAPEST_NEITHER,
+        }
+    }
+    let usd_foil = |p: &Printing| p.compat.price_usd_foil.map(NonZeroU32::get);
+    let eur_foil = |p: &Printing| p.compat.price_eur_foil.map(NonZeroU32::get);
+    let memorabilia = coll_vocab.iter().position(|s| s == "memorabilia").and_then(|i| u16::try_from(i).ok());
+    for cid in 0..offsets.len().saturating_sub(1) {
+        let canonical = offsets[cid] as usize..offsets[cid + 1] as usize;
+        let annex = foreign_offsets[cid] as usize..foreign_offsets[cid + 1] as usize;
+        let counted = || printings[canonical.clone()].iter().filter(|p| Some(p.compat.set_type_id) != memorabilia);
+        let min_usd = counted().filter_map(|p| p.price_usd.or_else(|| usd_foil(p))).min();
+        let min_eur = counted().filter_map(|p| p.price_eur).min();
+        let min_tix = counted().filter_map(|p| p.price_tix).min();
+        for p in printings[canonical.clone()].iter_mut().chain(foreign[annex].iter_mut()) {
+            let usd = code(p.price_usd, usd_foil(p), min_usd);
+            let eur = code(p.price_eur, eur_foil(p), min_eur);
+            let tix = min_tix.is_some() && p.price_tix == min_tix;
+            p.compat.flags = (p.compat.flags & !(0b11 << COMPAT_CHEAPEST_USD_SHIFT)) | (u16::from(usd) << COMPAT_CHEAPEST_USD_SHIFT);
+            p.compat.finishes = (p.compat.finishes & FINISH_MASK)
+                | (eur << FINISHES_CHEAPEST_EUR_SHIFT)
+                | if tix { FINISHES_CHEAPEST_TIX } else { 0 };
+        }
+    }
+}
+
+/// One currency of `cheapest:` — what `filter::FilterExpr::Cheapest` asks for.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) enum CheapestCurrency {
+    Usd,
+    Eur,
+    Tix,
+}
+
+/// A printing's answer to `cheapest:<currency>`, or to the negated TERM when `negated` — which is
+/// its own expression and not the complement (see `assign_cheapest_codes`). None is SQL's NULL:
+/// the printing is priced and its card has no cheapest price to compare with.
+pub(crate) fn printing_is_cheapest(p: &APrinting, currency: CheapestCurrency, negated: bool) -> Option<bool> {
+    let (code, plain, foil) = match currency {
+        CheapestCurrency::Tix => return Some((p.compat.finishes & FINISHES_CHEAPEST_TIX != 0) != negated),
+        CheapestCurrency::Usd => (
+            (u16::from(p.compat.flags) >> COMPAT_CHEAPEST_USD_SHIFT) as u8 & 0b11,
+            p.price_usd.as_ref().map(|v| u32::from(*v)),
+            p.compat.price_usd_foil.as_ref().map(|v| v.get()),
+        ),
+        CheapestCurrency::Eur => (
+            (p.compat.finishes >> FINISHES_CHEAPEST_EUR_SHIFT) & 0b11,
+            p.price_eur.as_ref().map(|v| u32::from(*v)),
+            p.compat.price_eur_foil.as_ref().map(|v| v.get()),
+        ),
+    };
+    if code == CHEAPEST_NO_MINIMUM {
+        return None;
+    }
+    let plain_is = code == CHEAPEST_PLAIN;
+    let foil_is = code == CHEAPEST_FOIL_ONLY || (plain_is && foil.is_some() && foil == plain);
+    Some(if negated { (plain.is_none() || !plain_is) && (foil.is_none() || foil_is) } else { plain_is || foil_is })
 }
 
 /// The set types whose RARITY Scryfall does not count toward `in:<rarity>`.
@@ -10151,7 +10297,7 @@ pub(crate) fn printing_is_atypical(p: &APrinting, ids: &PreferClassIds, strings:
     }
     // Surge foil is a variant only where it is the printing's ONLY finish — a set's ordinary
     // nonfoil rows carry the same promo_type and are the default frame.
-    p.compat.finishes == FINISH_FOIL && has(&p.compat.promo_types, ids.surgefoil)
+    p.compat.finishes & FINISH_MASK == FINISH_FOIL && has(&p.compat.promo_types, ids.surgefoil)
 }
 
 /// The FRAME half of the atypical class: a border, a frame effect, full art, textless or the
@@ -20006,7 +20152,17 @@ const ARCHIVE_MAGIC: [u8; 8] = *b"ATCARDS\0";
 //                long name as a print count and old padding as the rest, while an OLD reader on
 //                this store would read two count bytes as part of the name. Paired with
 //                STORE_CONTENT_GENERATION 58; SORT_KEY_VERSION does not move.
-const ARCHIVE_FORMAT_VERSION: u32 = 2026100401;
+//   2026100402 — THE CHEAPEST CODES (x71, LOCAL PATCH). `CompatFields::flags` takes its last two
+//                spare bits and `CompatFields::finishes` three of its four for the printing's
+//                answer to Scryfall's `cheapest:usd` / `cheapest:eur` / `cheapest:tix` (see
+//                `assign_cheapest_codes`). No field is added and no row moves — `APrinting` is
+//                still 304 bytes — so the header cannot see the change: a reader pairing this
+//                code with a 2026100401 store would read five clear bits and answer every
+//                `cheapest:` with nothing, and an OLD reader on this store would compare a
+//                `finishes` byte with bits it does not know against `FINISH_FOIL` and stop
+//                recognising surge foils. Paired with STORE_CONTENT_GENERATION 61;
+//                SORT_KEY_VERSION does not move.
+const ARCHIVE_FORMAT_VERSION: u32 = 2026100402;
 const ARCHIVE_HEADER_LEN: usize = 16;
 
 fn archive_header() -> [u8; ARCHIVE_HEADER_LEN] {
@@ -20910,6 +21066,8 @@ fn build_card_data_sorted(
     // same walk again, and before `printings` is archived for the same reason the ranks are.
     assign_print_counts(&mut cards, &printings, &offsets, &foreign, &foreign_offsets);
     assign_artist_counts(&mut printings, &mut foreign, &coll_vocab);
+    // ...and the cheapest codes behind `cheapest:usd` / `:eur` / `:tix`, over the same rows.
+    assign_cheapest_codes(&mut printings, &offsets, &mut foreign, &foreign_offsets, &coll_vocab);
     // Same walk as the line above — canonical rows AND the annex — because `in:ja` is exactly the
     // question the annex exists to answer. Interns the words it needs, so it runs before
     // `coll_vocab_sorted` below is cut.

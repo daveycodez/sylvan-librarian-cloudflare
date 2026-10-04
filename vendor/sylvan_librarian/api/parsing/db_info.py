@@ -333,6 +333,15 @@ DB_COLUMNS = [
         search_aliases=["lore"],
         parser_class=ParserClass.TEXT,
     ),
+    # LOCAL PATCH (Cloudflare port): Scryfall's `cheapest:` -- the printings carrying their card's
+    # cheapest price in usd, eur or tix (measured on api.scryfall.com 2026-10-04; see
+    # src/parser/db-info.ts). The engine answers from codes its build stores; there is no SQL column.
+    FieldInfo(
+        db_column_name="cheapest",
+        field_type=FieldType.TEXT,
+        search_aliases=["cheapest"],
+        parser_class=ParserClass.TEXT,
+    ),
     FieldInfo(
         db_column_name="card_oracle_tags",
         field_type=FieldType.JSONB_OBJECT,

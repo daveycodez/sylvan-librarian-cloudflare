@@ -1820,8 +1820,23 @@ export async function gzipBytes(bytes: Uint8Array): Promise<Uint8Array> {
  *      Growth was `prints=10` against Scryfall's 9: its por/173† is `variation: true` in four
  *      languages and `false` in Japanese, and skipping ROWS left the slot standing on that one.
  *      A slot is out when any row of it carries the flag. GENERATION-ONLY, as 59.
+ *
+ *   61 (2026-10-04): THE CHEAPEST PRINTING OF EACH CARD (x71). `cheapest:usd`, `cheapest:eur` and
+ *      `cheapest:tix` failed to parse here; each needs the lowest price over every printing of a
+ *      card, which no stored field held. The store now holds each printing's answer as a two-bit
+ *      code per foil-priced currency and one bit for tix (`assign_cheapest_codes`, which carries
+ *      the rule: the minimum is over the card's canonical printings outside memorabilia sets,
+ *      dollars falling back to the foil price and euros not, and the negated TERM is an
+ *      expression of its own — simulated on Scryfall's own prices, 108,901 of 108,901 priced
+ *      printings agree in both polarities for each currency, 2026-10-04).
+ *
+ *      Paired with ARCHIVE_FORMAT_VERSION 2026100401 -> 2026100402, and NEITHER ROW GROWS: the
+ *      five bits are the last two spare ones of the printing's compat flags and three of the
+ *      four above its finishes. Computed in card_engine's build, after grouping, like the counts
+ *      of generation 58, from the prices the row already carries — so the codes are exact for
+ *      the prices this store serves, and each nightly rebuild recomputes them.
  */
-export const STORE_CONTENT_GENERATION = 60;
+export const STORE_CONTENT_GENERATION = 61;
 
 /**
  * Chunk key for a store. Keyed by store_key, so publishes never collide.

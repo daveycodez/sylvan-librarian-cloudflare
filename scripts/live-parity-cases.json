@@ -2297,7 +2297,7 @@
 			"method": "GET",
 			"path": "/cards/search?q=cube%3Avintage+t%3Agod",
 			"known_deviation": {
-				"reason": "A KEYWORD SCRYFALL HONORS AND THIS PORT CANNOT ANSWER IS REFUSED, NOT CALLED UNKNOWN (x66, narrowed by x68). `cube:vintage t:god` is 2 cards there (2026-10-03): membership of Scryfall's curated cube lists, which are in no bulk file and behind no API endpoint, so the import cannot obtain them. `new:` and `cheapest:` are the other two keywords still refused, each with its reason at SCRYFALL_ONLY_KEYWORDS; the eighteen x66 found beside them are answered since x68, and `lore:` since x71. Refusing is deliberate: dropping the term with `Unknown keyword` would answer wider than Scryfall under a sentence saying Scryfall ignores it too.",
+				"reason": "A KEYWORD SCRYFALL HONORS AND THIS PORT CANNOT ANSWER IS REFUSED, NOT CALLED UNKNOWN (x66, narrowed by x68). `cube:vintage t:god` is 2 cards there (2026-10-03): membership of Scryfall's curated cube lists, which are in no bulk file and behind no API endpoint, so the import cannot obtain them. `new:` is the other keyword still refused, with its reason at SCRYFALL_ONLY_KEYWORDS; the eighteen x66 found beside them are answered since x68, and `lore:` and `cheapest:` since x71. Refusing is deliberate: dropping the term with `Unknown keyword` would answer wider than Scryfall under a sentence saying Scryfall ignores it too.",
 				"scryfall": {
 					"status": 200,
 					"expect": {
@@ -2612,6 +2612,66 @@
 			"method": "GET",
 			"path": "/cards/search?q=lore%3Ejace+or+e%3Akhm+t%3Agod",
 			"note": "x71. `lore>jace` and `lore!=jace` are 404 on Scryfall with no warnings, so this is the 12 Gods."
+		},
+		{
+			"name": "x71-cheapest-usd",
+			"method": "GET",
+			"path": "/cards/search?q=cheapest%3Ausd+e%3Akhm&unique=prints&include_extras=true&include_variations=true",
+			"note": "x71 (2026-10-04, generation 61). The printings carrying their card's cheapest dollar price: `usd = M or usd_foil = M`, M the lowest COALESCE(usd, usd_foil) over the card's canonical printings outside memorabilia sets. 222 of Kaldheim's 407 printings on the day it was measured; the count moves with prices, the rule does not."
+		},
+		{
+			"name": "x71-cheapest-usd-negated-term-is-not-the-complement",
+			"method": "GET",
+			"path": "/cards/search?q=-cheapest%3Ausd+e%3Akhm&unique=prints&include_extras=true&include_variations=true",
+			"note": "x71. 5 printings on Scryfall where the positive is 222 of 407: `(usd IS NULL OR usd <> M) AND (usd_foil IS NULL OR usd_foil = M)` — the printings with no foil price that are not cheapest, and the foil-only khm/400, which is in BOTH lists."
+		},
+		{
+			"name": "x71-cheapest-usd-negated-group-is-the-complement",
+			"method": "GET",
+			"path": "/cards/search?q=-%28cheapest%3Ausd%29+e%3Akhm&unique=prints&include_extras=true&include_variations=true",
+			"note": "x71. 185 = 407 - 222 on Scryfall: the negated GROUP is the complement the negated term is not."
+		},
+		{
+			"name": "x71-cheapest-eur",
+			"method": "GET",
+			"path": "/cards/search?q=cheapest%3Aeur+e%3Akhm&unique=prints&include_extras=true&include_variations=true",
+			"note": "x71. Euros read `prices.eur` alone for the minimum: a foil-only printing's `eur_foil` does not enter it (ddu/35 at — / 17.54 is not cheapest beside c14/177's 18.53)."
+		},
+		{
+			"name": "x71-cheapest-tix",
+			"method": "GET",
+			"path": "/cards/search?q=cheapest%3Atix+e%3Akhm&unique=prints&include_extras=true&include_variations=true",
+			"note": "x71. 290 of 407 on Scryfall, and `-cheapest:tix e:khm` the other 117: tix has no foil price and its negation is the complement."
+		},
+		{
+			"name": "x71-cheapest-memorabilia-is-outside-the-minimum",
+			"method": "GET",
+			"path": "/cards/search?q=cheapest%3Ausd+%21%22Goblin+Piledriver%22&unique=prints&include_extras=true",
+			"note": "x71. ori/151 at 2.65 on the day it was measured, not the gold-bordered wc03/we205 at 2.60: memorabilia printings do not enter the minimum (all 334 rows priced below their card's cheapest are memorabilia)."
+		},
+		{
+			"name": "x71-cheapest-no-minimum-is-null",
+			"method": "GET",
+			"path": "/cards/search?q=-%28cheapest%3Ausd%29+st%3Amemorabilia&unique=prints&include_extras=true&include_variations=true",
+			"note": "x71. 5,662 of 5,847 on Scryfall, with `cheapest:usd st:memorabilia` 4: the 181 priced printings of cards with no cheapest price are in neither."
+		},
+		{
+			"name": "x71-cheapest-currency-words",
+			"method": "GET",
+			"path": "/cards/search?q=cheapest%3Adollar+cheapest%3Aeuro+cheapest%3Amtgo+e%3Akhm",
+			"note": "x71. `$` and `dollar` are usd, `euro` and `€` eur, `mtgo` tix (each measured against the plain word on the same day)."
+		},
+		{
+			"name": "x71-cheapest-unknown-currency",
+			"method": "GET",
+			"path": "/cards/search?q=cheapest%3Adollars+e%3Akhm",
+			"note": "x71. 305 on Scryfall carrying `Unknown currency “dollars”` — no closing period — and `-cheapest:nonsense` echoes the minus."
+		},
+		{
+			"name": "x71-cheapest-regex-and-comparison",
+			"method": "GET",
+			"path": "/cards/search?q=cheapest%3A%2Fusd%2F+e%3Akhm+t%3Agod+or+cheapest%3Eusd",
+			"note": "x71. `cheapest:/usd/` is `Unknown regular expression keyword “cheapest”.`; `cheapest>usd` and `cheapest!=usd` are 404 with no warnings."
 		}
 	]
 }

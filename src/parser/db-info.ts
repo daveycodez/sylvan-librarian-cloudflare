@@ -328,6 +328,19 @@ export const DB_COLUMNS: readonly FieldInfo[] = [
 		searchAliases: ["lore"],
 		parserClass: ParserClass.TEXT,
 	},
+	// LOCAL PATCH (Cloudflare port): Scryfall's `cheapest:` — the printings carrying their card's
+	// cheapest price in a currency. Measured on api.scryfall.com 2026-10-04: `cheapest:usd e:khm`
+	// 222 of the set's 407 printings, `cheapest:eur` 239, `cheapest:tix` 290; the value is `usd`
+	// (`$`, `dollar`), `eur` (`euro`, `€`) or `tix` (`mtgo`), and the compat surface writes
+	// `not_<currency>` for the negated TERM, which is not the complement (`-cheapest:usd e:khm`
+	// is 5). Not a column: the engine answers from codes its build stores on the printing
+	// (card_engine `assign_cheapest_codes`, which carries the rule and its measurements).
+	{
+		dbColumnName: "cheapest",
+		fieldType: FieldType.TEXT,
+		searchAliases: ["cheapest"],
+		parserClass: ParserClass.TEXT,
+	},
 	{
 		dbColumnName: "card_oracle_tags",
 		fieldType: FieldType.JSONB_OBJECT,

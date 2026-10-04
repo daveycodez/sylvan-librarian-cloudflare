@@ -382,7 +382,6 @@ const SCRYFALL_ONLY_KEYWORDS: ReadonlySet<string> = new Set([
 	// `stamp` LEFT THIS TABLE with x68: the engine compares the security stamp the card object
 	// already emits (db-info's `security_stamp`), and STAMP_KEYWORDS below says Scryfall's
 	// `Unknown security stamp` for a value outside its six.
-	"cheapest",
 	// `include` LEFT THIS TABLE on 2026-10-03: `include:` is a display option this surface now
 	// reads (see INCLUDE_VALUES), and under `=` it is a keyword Scryfall itself does not know —
 	// `include=extras t:goblin` is 561 carrying `Unknown keyword “include”.`
@@ -429,12 +428,24 @@ const SCRYFALL_ONLY_KEYWORDS: ReadonlySet<string> = new Set([
 	//             Scryfall's curated cube lists, which are in no bulk file and have no API
 	//             endpoint. Not obtainable by the import.
 	//   new       `new:art`, `new:artist`, `new:flavor`, `new:frame`, `new:language`,
-	//             `new:rarity`, `new:card` (anything else: `Checking if cards have a new “x” is
-	//             not supported`). Per-printing "first time this card had this" flags over a
-	//             card's release history; each needs its own measured rule and a stored tag.
-	//   cheapest  `cheapest:usd|eur|tix` (anything else: `Unknown currency “x”`). The cheapest
-	//             printing(s) of each card — ties included, `-cheapest:usd e:khm` 5 against the
-	//             positive's 220 — a stored per-printing tag over daily prices.
+	//             `new:rarity`, `new:card` — and `new:illustration`, `new:lang`, `new:ft`,
+	//             `new:flavortext`, `new:foil`, `new:nonfoil`, `new:paper`, `new:game`, each
+	//             honored 2026-10-04 (anything else: `Checking if cards have a new “x” is not
+	//             supported`). Per-printing "first printing of this card with this" flags.
+	//             MEASURED AND NOT ANSWERED: two of the values fit a rule exactly over the
+	//             2026-09-24 corpus — `rarity` (42,688 of 42,688 card-rarity groups: the first
+	//             canonical printing outside promo, memorabilia, from_the_vault, treasure_chest
+	//             and every masterpiece set but `wot`) and `language` (30,866 of 30,866 for
+	//             German) — in the order (release date, release batch, first integer of the
+	//             collector number, variation last, Scryfall id). `frame`, `art`, `card` and
+	//             `flavor` do not: with promo and masterpiece printings eligible, a same-date tie
+	//             against the main set is decided by something this order does not hold (216,
+	//             410, 1,276 and 20,519 groups wrong), and `new:artist` is 542,524 of 545,293
+	//             printings — not "first by this artist" at all. A keyword answered for two
+	//             values and refused for the rest is not answered.
+	//
+	// `cheapest` LEFT SIXTH, the same day, with store generation 61, which holds each printing's
+	// answer: CHEAPEST_KEYWORDS below.
 ]);
 
 /**
@@ -1506,10 +1517,50 @@ const LEADING_DIGITS_RE = /^\d+/;
  */
 const LORE_KEYWORDS: ReadonlySet<string> = new Set(["lore"]);
 
+/**
+ * `cheapest:` — the printings carrying their card's cheapest price in a currency — and the words
+ * Scryfall takes for one. The engine answers it from codes the store's build computes
+ * (card_engine `assign_cheapest_codes`, which carries the rule and its measurements).
+ *
+ * Measured on api.scryfall.com 2026-10-04, each `cheapest:<word> e:khm` against the plain word the
+ * same day:
+ *
+ *   usd  $  dollar      222        eur  euro  €      238        tix  mtgo      290
+ *   USD, DOLLAR, "usd", cheapest=usd                            the same
+ *   dollars euros ticket tickets usdfoil eurfoil usd_foil usdetched tcg tcgplayer cardmarket
+ *   mkm cardhoarder paper price any us eu us$ 1
+ *                       305 + Unknown currency “<word>”    (no closing period; the minus echoed
+ *                                                           when the term is negated)
+ *   cheapest:""         305 + Unknown keyword “cheapest”.
+ *   cheapest:/usd/      305 + Unknown regular expression keyword “cheapest”.
+ *   cheapest>usd, cheapest!=usd      404 (the comparison rule)
+ *
+ * THE NEGATED TERM IS NOT THE COMPLEMENT. `-cheapest:usd e:khm` is 5 printings where the positive
+ * is 222 of 407, and one printing is in both; `-(cheapest:usd) e:khm` — the negated GROUP — is the
+ * complement, 185, and `-(-cheapest:usd) e:khm` 402. So the negated term is rewritten into a
+ * positive term of its own, `cheapest:not_<currency>`, which the engine answers with Scryfall's
+ * expression for it, and a negated group stays a plain `Not` over whichever it holds. The value is
+ * written as the plain word either way, so the parser never sees `$` or `€`.
+ *
+ * It forces no extras (`cheapest:usd cmc=3` echoes include_extras=false).
+ */
+const CHEAPEST_KEYWORDS: ReadonlySet<string> = new Set(["cheapest"]);
+const CHEAPEST_CURRENCIES: ReadonlyMap<string, string> = new Map([
+	["usd", "usd"],
+	["$", "usd"],
+	["dollar", "usd"],
+	["eur", "eur"],
+	["euro", "eur"],
+	["\u20ac", "eur"],
+	["tix", "tix"],
+	["mtgo", "tix"],
+]);
+
 const STRICT_REGEX_KEYWORDS: ReadonlySet<string> = new Set([
 	...STAMP_KEYWORDS,
 	...EXTERNAL_ID_KEYWORDS.keys(),
 	...LORE_KEYWORDS,
+	...CHEAPEST_KEYWORDS,
 ]);
 
 /** The three spellings that read the `card_is_tags` vocabulary. `not:` is `-is:`. */
@@ -2714,6 +2765,16 @@ function classifyLeaf(term: string): LeafVerdict {
 	// is only spaces is a value.
 	if (LORE_KEYWORDS.has(keyword) && value === "") {
 		return { keep: false, reason: `Unknown keyword \u201c${negated ? "-" : ""}${keyword}\u201d.` };
+	}
+	// `cheapest:` checks its value in both polarities, and its negated term is a term of its own
+	// — see CHEAPEST_KEYWORDS. Equality only reaches here, as for `stamp:` below.
+	if (CHEAPEST_KEYWORDS.has(keyword)) {
+		if (value === "") {
+			return { keep: false, reason: `Unknown keyword \u201c${negated ? "-" : ""}${keyword}\u201d.` };
+		}
+		const currency = CHEAPEST_CURRENCIES.get(loweredValue);
+		if (currency === undefined) return { keep: false, reason: `Unknown currency \u201c${loweredValue}\u201d` };
+		return { keep: true, text: `${match[2]}${op}${negated ? "not_" : ""}${currency}` };
 	}
 	// `stamp:` checks its value in both polarities — see STAMP_KEYWORDS. Equality only reaches
 	// here: a comparison was answered by the COMPARABLE_KEYWORDS rule above.

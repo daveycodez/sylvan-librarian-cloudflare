@@ -1578,6 +1578,8 @@ describe("the regex surface, alias by alias", () => {
 		stamp: ["stamp:/oval/", "Unknown regular expression keyword \u201cstamp\u201d."],
 		// `lore:/jace/ e:khm` is 305 carrying the sentence (2026-10-04), however plain the pattern.
 		lore: ["lore:/jace/", "Unknown regular expression keyword \u201clore\u201d."],
+		// `cheapest:/usd/ e:khm` is 305 carrying the sentence (2026-10-04).
+		cheapest: ["cheapest:/usd/", "Unknown regular expression keyword \u201ccheapest\u201d."],
 		// The six counts: `artists:/1/ e:khm` is 305 carrying the sentence; numeric columns all.
 		...Object.fromEntries(
 			["prints", "sets", "paperprints", "papersets", "illustrations", "artists"].map((kw) => [
@@ -1783,13 +1785,13 @@ describe("a keyword Scryfall honors is never called unknown", () => {
 	// external ids, `usdfoil` and `stamp` read fields the store already held; and the six counts
 	// (`prints`, `sets`, `paperprints`, `papersets`, `illustrations`, `artists`) are stored since
 	// generation 58; `block`/`b` are rewritten into the sets of the block; `lore` is answered by the
-	// engine since x71 (tests/routes/scryfall-keywords-x71.test.ts). What is left is listed, with
-	// the reason for each, at SCRYFALL_ONLY_KEYWORDS.
+	// engine since x71 and `cheapest` from store generation 61
+	// (tests/routes/scryfall-keywords-x71.test.ts). What is left is listed, with the reason for
+	// each, at SCRYFALL_ONLY_KEYWORDS.
 	const HONORED_THERE = [
-		// Three of the five that were already here.
+		// Two of the five that were already here.
 		"cube:vintage",
 		"new:art",
-		"cheapest:usd",
 	];
 
 	test.each(HONORED_THERE)("%s is kept, unwarned, and the parser refuses the query", (term) => {

@@ -216,3 +216,111 @@ fn lore_reads_a_reversible_printing_by_the_faces_it_prints() {
     assert_eq!(printings(&store, &lore("cube // doubling")), ["sld/1080/en"]);
     assert_eq!(printings(&store, &lore("artifact // artifact")), ["sld/1080/en"]);
 }
+
+// ── cheapest: ───────────────────────────────────────────────────────────────────────────────────
+
+/// `cheapest:<currency>`; the compat surface writes the negated TERM as `not_<currency>`.
+fn cheapest(value: &str) -> Value {
+    text("cheapest", "cheapest", ":", value)
+}
+
+#[test]
+fn cheapest_is_every_printing_at_the_cards_lowest_price() {
+    // Doubling Cube, usd / usd_foil — eur / eur_foil — tix:
+    //   10e/321       33.92 / 44.94    13.65 / 31.08    0.02
+    //   5dn/116       33.65 / 76.68    12.89 / 26.14    0.02
+    //   plst/10E-321  38.24 / —        18.49 / —        —
+    //   sld/1080      33.37 / 27.57    17.44 / 20.10    —
+    // The lowest PLAIN price decides where a printing has one: sld/1080's foil 27.57 is below
+    // every plain price and does not lower the minimum — Reflections of Littjara's khm/73 is
+    // 2.94 / 1.59 on api.scryfall.com and the cheapest is the foil-only khm/400 at 1.77.
+    let store = store_from(&[
+        "doubling_cube_10e_321",
+        "doubling_cube_5dn_116",
+        "doubling_cube_plst_10e_321",
+        "doubling_cube_sld_1080",
+    ]);
+    assert_eq!(printings(&store, &cheapest("usd")), ["sld/1080/en"]);
+    assert_eq!(printings(&store, &cheapest("eur")), ["5dn/116/en"]);
+    // A tie is every printing at the price: `eld/1` is 0.38 / 0.38 and all cheapest.
+    assert_eq!(printings(&store, &cheapest("tix")), ["10e/321/en", "5dn/116/en"]);
+    // `$` and `dollar`, `euro` and `€`, `mtgo` — each measured against the plain word.
+    assert_eq!(printings(&store, &cheapest("dollar")), ["sld/1080/en"]);
+    assert_eq!(printings(&store, &cheapest("$")), ["sld/1080/en"]);
+    assert_eq!(printings(&store, &cheapest("EURO")), ["5dn/116/en"]);
+    assert_eq!(printings(&store, &cheapest("€")), ["5dn/116/en"]);
+    assert_eq!(printings(&store, &cheapest("mtgo")), ["10e/321/en", "5dn/116/en"]);
+    assert_eq!(printings(&store, &text("cheapest", "cheapest", "=", "usd")), ["sld/1080/en"]);
+}
+
+#[test]
+fn the_negated_cheapest_term_is_not_the_complement() {
+    // `-cheapest:usd e:khm` is 5 printings where `cheapest:usd e:khm` is 222 of 407: Scryfall's
+    // expression is `(usd IS NULL OR usd <> M) AND (usd_foil IS NULL OR usd_foil = M)`, which
+    // keeps a printing with NO foil price that is not cheapest and drops one that has both
+    // prices. `-(cheapest:usd) e:khm`, the negated group, is the complement: 185.
+    let store = store_from(&[
+        "doubling_cube_10e_321",
+        "doubling_cube_5dn_116",
+        "doubling_cube_plst_10e_321",
+        "doubling_cube_sld_1080",
+    ]);
+    assert_eq!(printings(&store, &cheapest("not_usd")), ["plst/10E-321/en"]);
+    assert_eq!(printings(&store, &not(cheapest("usd"))), ["10e/321/en", "5dn/116/en", "plst/10E-321/en"]);
+    assert_eq!(printings(&store, &cheapest("not_eur")), ["plst/10E-321/en"]);
+    assert_eq!(printings(&store, &not(cheapest("eur"))), ["10e/321/en", "plst/10E-321/en", "sld/1080/en"]);
+    // `-(-cheapest:usd) e:khm` is 402 = 407 - 5.
+    assert_eq!(printings(&store, &not(cheapest("not_usd"))), ["10e/321/en", "5dn/116/en", "sld/1080/en"]);
+    // tix has no foil price, and both negations are the complement: 290 + 117 = 407.
+    assert_eq!(printings(&store, &cheapest("not_tix")), ["plst/10E-321/en", "sld/1080/en"]);
+    assert_eq!(printings(&store, &not(cheapest("tix"))), ["plst/10E-321/en", "sld/1080/en"]);
+}
+
+#[test]
+fn memorabilia_and_non_canonical_printings_are_outside_the_cheapest_minimum() {
+    // Tithe: vis/23 is 36.62 and the gold-bordered wc98/bh23a 8.00 — Goblin Piledriver's
+    // wc03/we205 at 2.60 beside ori/151's 2.65 on api.scryfall.com. All 334 rows priced below
+    // their card's cheapest are memorabilia.
+    let store = store_from(&["tithe_vis_23", "tithe_wc98_bh23a"]);
+    assert_eq!(printings(&store, &cheapest("usd")), ["vis/23/en"]);
+    assert_eq!(printings(&store, &cheapest("eur")), ["vis/23/en"]);
+    assert_eq!(printings(&store, &cheapest("not_usd")), ["wc98/bh23a/en"]);
+    // Reset: mb2/170 is 3.01, leg/73 27.90, me3/48 is priced in tix alone. The Italian leg/73
+    // carries no price; given one BELOW the minimum it is Segovian Leviathan's German ren/40
+    // (0.10, where the cheapest is 4ed/99 at 0.23): a row outside default_cards does not lower
+    // the minimum, and answers the negated term like any other printing that is not cheapest.
+    let mut italian = fixture("reset_leg_73_it");
+    italian["prices"]["usd"] = json!("1.00");
+    let store = store_of(&[fixture("reset_leg_73"), italian, fixture("reset_me3_48"), fixture("reset_mb2_170")]);
+    assert_eq!(printings(&store, &cheapest("usd")), ["mb2/170/en"]);
+    assert_eq!(printings(&store, &cheapest("not_usd")), ["leg/73/en", "leg/73/it", "me3/48/en"]);
+    assert_eq!(printings(&store, &cheapest("tix")), ["me3/48/en"]);
+    assert_eq!(printings(&store, &cheapest("not_tix")), ["leg/73/en", "leg/73/it", "mb2/170/en"]);
+}
+
+#[test]
+fn a_foil_only_price_is_a_dollar_price_and_no_minimum_is_null() {
+    // The Dragon token tust/16 is foil-only: usd — / 0.42, eur — / 0.24, and its only printing.
+    // DOLLARS fall back to the foil price, so it is the card's cheapest — and, having no plain
+    // price, it satisfies the negated term too: khm/400 is in both lists on api.scryfall.com.
+    // EUROS do not fall back (ddu/35 at — / 17.54 is not cheapest beside c14/177's 18.53), so the
+    // card has no cheapest euro price and this priced printing is SQL's NULL — in neither list
+    // and neither complement, as `wc98/0` is for dollars (`cheapest:usd st:memorabilia` 4 and
+    // `-(cheapest:usd) st:memorabilia` 5,662 of 5,847).
+    let store = store_from(&["dragon_tust_16", "lightning_bolt"]);
+    assert_eq!(printings(&store, &cheapest("usd")), ["msc/806/en", "tust/16/en"]);
+    assert_eq!(printings(&store, &cheapest("not_usd")), ["tust/16/en"]);
+    assert_eq!(printings(&store, &cheapest("eur")), ["msc/806/en"]);
+    assert_eq!(printings(&store, &cheapest("not_eur")), NONE);
+    assert_eq!(printings(&store, &not(cheapest("eur"))), NONE);
+    assert_eq!(printings(&store, &not(cheapest("not_eur"))), ["msc/806/en"]);
+    // An unpriced printing is a plain False / True: `-cheapest:usd e:ymkm` is all 30.
+    assert_eq!(printings(&store, &cheapest("tix")), ["msc/806/en"]);
+    assert_eq!(printings(&store, &cheapest("not_tix")), ["tust/16/en"]);
+    // Blacker Lotus: ugl/70 is 30.02 / —, sld/869 — / 208.85. The foil-only printing is not
+    // cheapest and, having a foil price that is not the minimum, not the negated term either.
+    let store = store_from(&["blacker_lotus_ugl_70", "blacker_lotus_sld_869"]);
+    assert_eq!(printings(&store, &cheapest("usd")), ["ugl/70/en"]);
+    assert_eq!(printings(&store, &cheapest("not_usd")), NONE);
+    assert_eq!(printings(&store, &not(cheapest("usd"))), ["sld/869/en"]);
+}

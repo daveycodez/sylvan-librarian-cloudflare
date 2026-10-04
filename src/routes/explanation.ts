@@ -52,6 +52,7 @@ const ATTRIBUTE_NAME_MAP: Record<string, string> = {
 	type_line: "type line",
 	flavor_text: "flavor text",
 	lore: "lore",
+	cheapest: "cheapest price",
 	card_keywords: "keyword",
 	oracle_id: "oracle ID",
 	scryfall_id: "Scryfall ID",

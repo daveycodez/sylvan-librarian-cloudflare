@@ -107,3 +107,112 @@ describe("lore: is a literal substring the engine answers", () => {
 		expect(await gated("lore:/x/ or cmc=3")).toEqual([false, false]);
 	});
 });
+
+describe("cheapest: is a currency, and its negated term is a term of its own", () => {
+	test.each([
+		// `cheapest:usd e:khm` is 222 of the set's 407 printings; `$` and `dollar` the same.
+		["cheapest:usd", "usd"],
+		["cheapest=usd", "usd"],
+		["cheapest:USD", "usd"],
+		['cheapest:"usd"', "usd"],
+		["cheapest:$", "usd"],
+		["cheapest:dollar", "usd"],
+		["cheapest:DOLLAR", "usd"],
+		// `cheapest:eur e:khm` 238 = `euro` = `€`.
+		["cheapest:eur", "eur"],
+		["cheapest:euro", "eur"],
+		["cheapest:\u20ac", "eur"],
+		// `cheapest:tix e:khm` 290 = `mtgo`.
+		["cheapest:tix", "tix"],
+		["cheapest:mtgo", "tix"],
+	])("%s", (q, currency) => {
+		const tree = leaf(q);
+		expect(tree.node_type).toBe("CardBinaryOperatorNode");
+		expect(tree.kwargs.lhs.kwargs.attribute_name).toBe("cheapest");
+		expect(tree.kwargs.rhs.node_type).toBe("StringValueNode");
+		expect(tree.kwargs.rhs.kwargs.value).toBe(currency);
+	});
+
+	test.each([
+		// `-cheapest:usd e:khm` is 5 printings where the positive is 222 of 407, and khm/400 is in
+		// both: `(usd IS NULL OR usd <> M) AND (usd_foil IS NULL OR usd_foil = M)`. The engine
+		// answers that expression for `not_<currency>`, so the term stays POSITIVE in the tree.
+		["-cheapest:usd", "not_usd"],
+		["-cheapest:$", "not_usd"],
+		["-cheapest=eur", "not_eur"],
+		["-cheapest:mtgo", "not_tix"],
+	])("%s is the negated TERM", (q, value) => {
+		const tree = leaf(q);
+		expect(tree.node_type).toBe("CardBinaryOperatorNode");
+		expect(tree.kwargs.lhs.kwargs.attribute_name).toBe("cheapest");
+		expect(tree.kwargs.rhs.kwargs.value).toBe(value);
+	});
+
+	test("a negated GROUP stays a Not over the positive term", () => {
+		// `-(cheapest:usd) e:khm` is 185 = 407 - 222, the complement the negated term is not; and
+		// `-(-cheapest:usd) e:khm` is 402 = 407 - 5.
+		expect(scryfallTermPolicy("-(cheapest:usd) e:khm").query).toBe("-(cheapest:usd) e:khm");
+		expect(scryfallTermPolicy("-(-cheapest:usd) e:khm").query).toBe("-(cheapest:not_usd) e:khm");
+		const tree = parseScryfallQueryWithDirectives(scryfallTermPolicy("-(cheapest:usd)").query, EMPTY_TAG_ALIASES)
+			.tree as unknown as Leaf;
+		expect(tree.node_type).toBe("NotNode");
+		expect(tree.kwargs.operand?.kwargs.rhs.kwargs.value).toBe("usd");
+	});
+
+	test.each([
+		"dollars",
+		"euros",
+		"ticket",
+		"tickets",
+		"usdfoil",
+		"eurfoil",
+		"usd_foil",
+		"usdetched",
+		"tcgplayer",
+		"cardmarket",
+		"paper",
+		"us",
+		"1",
+	])("cheapest:%s is an unknown currency", (word) => {
+		// Each is 305 carrying the sentence, which has no closing period.
+		expect(scryfallTermPolicy(`cheapest:${word} e:khm`)).toMatchObject({
+			query: "e:khm",
+			warnings: [ignored(`cheapest:${word}`, `Unknown currency “${word}”`)],
+		});
+	});
+
+	test("the unknown-currency sentence downcases the value and echoes the minus", () => {
+		// `-cheapest:nonsense e:khm` is 305 carrying `Invalid expression “-cheapest:nonsense” …`.
+		expect(scryfallTermPolicy("-cheapest:nonsense e:khm").warnings).toEqual([
+			ignored("-cheapest:nonsense", "Unknown currency “nonsense”"),
+		]);
+		expect(scryfallTermPolicy("cheapest:NONSENSE e:khm").warnings).toEqual([
+			ignored("cheapest:nonsense", "Unknown currency “nonsense”"),
+		]);
+		// The internal spelling of the negated term is not a currency a user can write.
+		expect(scryfallTermPolicy("cheapest:not_usd e:khm").warnings).toEqual([
+			ignored("cheapest:not_usd", "Unknown currency “not_usd”"),
+		]);
+	});
+
+	test("an empty value, a regex and a comparison", () => {
+		// `cheapest:"" e:khm` is 305 carrying the unknown-keyword sentence.
+		expect(scryfallTermPolicy('cheapest:"" e:khm').warnings).toEqual([
+			ignored('cheapest:""', "Unknown keyword “cheapest”."),
+		]);
+		// `cheapest:/usd/ e:khm` is 305 carrying the regex-keyword sentence.
+		expect(scryfallTermPolicy("cheapest:/usd/ e:khm")).toMatchObject({
+			query: "e:khm",
+			warnings: [ignored("cheapest:/usd/", "Unknown regular expression keyword “cheapest”.")],
+		});
+		// `cheapest>usd e:khm` and `cheapest!=usd e:khm` are 404 with no warnings.
+		expect(scryfallTermPolicy("cheapest>usd e:khm")).toMatchObject({ query: "cmc<0 e:khm", warnings: [] });
+		expect(scryfallTermPolicy("cheapest!=usd e:khm")).toMatchObject({ query: "cmc<0 e:khm", warnings: [] });
+	});
+
+	test("it forces no extras", async () => {
+		// `cheapest:usd cmc=3` and `-cheapest:usd cmc=3` echo include_extras=false.
+		expect(await gated("cheapest:usd cmc=3")).toEqual([false, false]);
+		expect(await gated("-cheapest:usd cmc=3")).toEqual([false, false]);
+	});
+});

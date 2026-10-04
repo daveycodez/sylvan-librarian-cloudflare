@@ -476,6 +476,17 @@ EXTRA_CASES = [
     "lore:jace or lore:beleren",
     'lore:"lim-dûl"',
     "lore:æther",
+    # cheapest: -- a currency, answered from codes the store's build computes; `not_<currency>`
+    # is the compat surface's spelling of the negated term (x71, generation 61)
+    "cheapest:usd",
+    "cheapest=eur",
+    "cheapest:tix e:khm",
+    "cheapest:USD",
+    "cheapest:not_usd",
+    "-cheapest:usd",
+    "-(cheapest:usd) e:khm",
+    "cheapest:usd cheapest:eur",
+    "cheapest:usd or cheapest:tix",
     # floats and int/float json rendering
     "cmc=2.0",
     "cmc>=1.5",
