@@ -1826,8 +1826,14 @@ impl BufferStore {
             opts.offset,
         )
         .bind_prefer(&data.coll_vocab);
-        let (plane_expr, mut filter_expr, sort_bound, unsplit) =
-            super::bind_and_split_filter_value(filter_tree, &opts.unique, data, &self.face_flavors, params.sort_col)?;
+        let (plane_expr, mut filter_expr, sort_bound, unsplit) = super::bind_and_split_filter_value(
+            filter_tree,
+            &opts.unique,
+            data,
+            &self.face_flavors,
+            params.sort_col,
+            opts.include_multilingual,
+        )?;
 
         // The multilingual widening: either trigger sends the query to the widened driver over
         // both printing spaces, with the FULL bound filter (`unsplit` — the widened driver has no
@@ -1880,7 +1886,7 @@ impl BufferStore {
         let data = self.data();
         let params = QueryParams::from_strs(&opts.unique, &opts.prefer, &opts.orderby, &opts.direction, 1, 0);
         let (_, _, _, unsplit) =
-            super::bind_and_split_filter_value(filter_tree, &opts.unique, data, &self.face_flavors, params.sort_col)?;
+            super::bind_and_split_filter_value(filter_tree, &opts.unique, data, &self.face_flavors, params.sort_col, false)?;
         Ok(unsplit.widens_to_annex())
     }
 
@@ -3040,7 +3046,7 @@ impl BufferStore {
         let filter = match &scope.filter_tree {
             Some(tree) if !Self::is_true_node(tree) => {
                 let (_, _, _, unsplit) =
-                    super::bind_and_split_filter_value(tree, "printing", data, &self.face_flavors, super::SortCol::Name)?;
+                    super::bind_and_split_filter_value(tree, "printing", data, &self.face_flavors, super::SortCol::Name, false)?;
                 Some(unsplit)
             }
             _ => None,

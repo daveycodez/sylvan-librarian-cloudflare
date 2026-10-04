@@ -2912,6 +2912,12 @@
 			"method": "GET",
 			"path": "/cards/search?q=mana%3A%7Bw+e%3Akhm",
 			"note": "2026-10-04. `e:khm`'s 305 carrying `Invalid expression “mana:{w” was ignored. Unknown mana symbols “{”.` — `Failed to parse query` here, the unclosed brace having been read to the end of the query."
+		},
+		{
+			"name": "flavor-text-of-a-foreign-printing",
+			"method": "GET",
+			"path": "/cards/search?q=ft%3Adunkelheit+lang%3Ade&unique=prints",
+			"note": "2026-10-04. 213 German printings (`ft:schatten lang:de` 264, `ft:ombre lang:fr` 755, `lang:de e:m21 has:flavor` 199; `ft:dunkelheit` with no language is a 404). A 404 here: the flavor index holds the canonical printings' texts only, so the bound `ft:` leaf was False for every foreign row. A query that walks the annex now reads the printing's own text. NEEDS THE REBUILT ENGINE BLOB."
 		}
 	]
 }

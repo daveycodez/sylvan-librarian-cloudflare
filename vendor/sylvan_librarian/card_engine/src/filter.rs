@@ -2687,6 +2687,36 @@ impl FilterExpr {
         vocab: &AStrings,
         sorted_ids: &rkyv::Archived<Vec<u16>>,
         artist_vocab: &AStrings,
+        artist_vocab_collated: &AStrings,
+        artist_entities: &Archived<crate::ArtistEntityIndex>,
+        mana_vocab: &AStrings,
+        flavor: &rkyv::Archived<FlavorIndex>,
+        strings: &AStrings,
+    ) {
+        self.bind_with(vocab, sorted_ids, artist_vocab, artist_vocab_collated, artist_entities, mana_vocab, Some(flavor), strings);
+    }
+
+    /// LOCAL PATCH (Cloudflare port): `bind`, with the flavor index OPTIONAL.
+    ///
+    /// THE FLAVOR INDEX HOLDS THE CANONICAL PRINTINGS' TEXTS ONLY, so a `FlavorMatch` — a set of
+    /// string ids drawn from it — is False for every foreign printing, whatever its flavor text
+    /// says. A query that walks the annex (`lang:de`, `include_multilingual`) therefore passes
+    /// `None`, which leaves `ft:` as the unbound predicate it was built as: `tri` reads that off
+    /// the PRINTING's own `flavor_text_lower_id`, canonical or foreign, exactly as the bound leaf
+    /// would have answered for a canonical row. Measured on api.scryfall.com 2026-10-04,
+    /// unique=prints: `ft:dunkelheit lang:de` is 213, `ft:schatten lang:de` 264, `ft:ombre
+    /// lang:fr` 755, `lang:de e:m21 has:flavor` 199 and `lang:ja ft:の e:neo` 128 — each a 404
+    /// here. (`lore:` already read the printing — see `LorePrinting`.)
+    ///
+    /// Nothing changes for a query that stays in the canonical space: it binds with the index as
+    /// before, and the widened driver has no flavor narrowing to lose (it walks every row of its
+    /// candidate cards through `tri`).
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn bind_with(
+        &mut self,
+        vocab: &AStrings,
+        sorted_ids: &rkyv::Archived<Vec<u16>>,
+        artist_vocab: &AStrings,
         // artist_vocab_collated: the same artists, `collate_name(fold_accents(...))` — the string
         // `a:word` matches against (see TextSearchField::ArtistCollated).
         artist_vocab_collated: &AStrings,
@@ -2694,16 +2724,17 @@ impl FilterExpr {
         // relate to each other — see `artist_contains_ids` and `ArtistEntityIndex`.
         artist_entities: &Archived<crate::ArtistEntityIndex>,
         mana_vocab: &AStrings,
-        flavor: &rkyv::Archived<FlavorIndex>,
+        // `None` leaves every flavor-text predicate unbound — see above.
+        flavor: Option<&rkyv::Archived<FlavorIndex>>,
         strings: &AStrings,
     ) {
         match self {
             FilterExpr::And(children) | FilterExpr::Or(children) => {
                 for c in children {
-                    c.bind(vocab, sorted_ids, artist_vocab, artist_vocab_collated, artist_entities, mana_vocab, flavor, strings);
+                    c.bind_with(vocab, sorted_ids, artist_vocab, artist_vocab_collated, artist_entities, mana_vocab, flavor, strings);
                 }
             }
-            FilterExpr::Not(inner) => inner.bind(vocab, sorted_ids, artist_vocab, artist_vocab_collated, artist_entities, mana_vocab, flavor, strings),
+            FilterExpr::Not(inner) => inner.bind_with(vocab, sorted_ids, artist_vocab, artist_vocab_collated, artist_entities, mana_vocab, flavor, strings),
             // UNCONDITIONAL, unlike the other bind arms: the weights are read off the CARD's
             // hybrids, not the query's, so `m:{2}` against a twobrid card needs them even though
             // the query carries no hybrid symbol at all. Gating this on `!hybrids.is_empty()` —
@@ -2798,7 +2829,8 @@ impl FilterExpr {
                 let ids = artist_match_ids(artist_vocab, |s| regex.is_match(s));
                 *self = FilterExpr::ArtistMatch { ids };
             }
-            FilterExpr::TextContains { field: TextSearchField::FlavorTextLower, word } => {
+            FilterExpr::TextContains { field: TextSearchField::FlavorTextLower, word } if flavor.is_some() => {
+                let flavor = flavor.expect("guarded by the arm");
                 let mask = flavor_fingerprint(word.as_str());
                 let finder = memmem::Finder::new(word.as_bytes()); // built once, reused (see ArtistLower)
                 // PER FACE, like every other verify on a joined column: `ft:"//"` is 404 on
@@ -2809,7 +2841,8 @@ impl FilterExpr {
                 });
                 *self = FilterExpr::FlavorMatch { gids, dense_ids };
             }
-            FilterExpr::TextExact { field: TextField::FlavorTextLower, op, value } => {
+            FilterExpr::TextExact { field: TextField::FlavorTextLower, op, value } if flavor.is_some() => {
+                let flavor = flavor.expect("guarded by the arm");
                 let (op, value) = (*op, std::mem::take(value));
                 // Equality implies containment, so Eq can use the fingerprint;
                 // the other comparisons carry no containment implication.
@@ -2829,7 +2862,8 @@ impl FilterExpr {
             // cannot be resolved here. `ft:/~/` (2 on api.scryfall.com) therefore stays a
             // TextRegex and is evaluated per candidate, which is the only place the name is in
             // scope. Everything else keeps the memoization.
-            FilterExpr::TextRegex { field: TextField::FlavorTextLower, regex } if !regex.has_self_reference() => {
+            FilterExpr::TextRegex { field: TextField::FlavorTextLower, regex } if flavor.is_some() && !regex.has_self_reference() => {
+                let flavor = flavor.expect("guarded by the arm");
                 // PER FACE, exactly as the unmemoized arm is: flavor text is joined with the same
                 // invented separator oracle text is (`_FACE_JOINED_TEXTS`), and this rewrite is
                 // the path a bare `ft:/…/` actually takes, so leaving it whole would have kept

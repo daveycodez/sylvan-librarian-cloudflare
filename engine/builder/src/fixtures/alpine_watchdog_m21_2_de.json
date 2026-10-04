@@ -1,0 +1,162 @@
+{
+ "all_parts": [
+  {
+   "component": "combo_piece",
+   "id": "2b524e80-1231-4e40-b361-9a1a52bb3135",
+   "name": "Igneous Cur",
+   "object": "related_card",
+   "type_line": "Creature — Elemental Dog",
+   "uri": "https://api.scryfall.com/cards/2b524e80-1231-4e40-b361-9a1a52bb3135"
+  },
+  {
+   "component": "combo_piece",
+   "id": "c93f8d98-ab1a-4c32-a76e-97849e2047d2",
+   "name": "Alpine Watchdog",
+   "object": "related_card",
+   "type_line": "Creature — Dog",
+   "uri": "https://api.scryfall.com/cards/c93f8d98-ab1a-4c32-a76e-97849e2047d2"
+  },
+  {
+   "component": "combo_piece",
+   "id": "c80c66f7-b67b-4666-8d74-2238eeceb42b",
+   "name": "Alpine Houndmaster",
+   "object": "related_card",
+   "type_line": "Creature — Human Warrior",
+   "uri": "https://api.scryfall.com/cards/c80c66f7-b67b-4666-8d74-2238eeceb42b"
+  }
+ ],
+ "artist": "Forrest Imel",
+ "artist_ids": [
+  "64fc383d-de34-4151-87d6-27b82e58086e"
+ ],
+ "booster": true,
+ "border_color": "black",
+ "card_back_id": "0aeebaf5-8c7d-4636-9e82-8c27447861f7",
+ "cmc": 2.0,
+ "collector_number": "2",
+ "color_identity": [
+  "W"
+ ],
+ "colors": [
+  "W"
+ ],
+ "digital": false,
+ "edhrec_rank": 12840,
+ "finishes": [
+  "nonfoil",
+  "foil"
+ ],
+ "flavor_text": "„Am achten Tag überraschte uns ein Schneesturm. Die Vorräte gingen verloren und die Moral stürzte in den Keller. Am neunten Tag fand uns Dover.\"\n—*Gipfelsturm: Eine Überlebensgeschichte*",
+ "foil": true,
+ "frame": "2015",
+ "full_art": false,
+ "game_changer": false,
+ "games": [
+  "arena",
+  "paper",
+  "mtgo"
+ ],
+ "highres_image": false,
+ "id": "c93f8d98-ab1a-4c32-a76e-97849e2047d2",
+ "illustration_id": "fc075ee6-4f1e-4eaf-b8af-e472003a0b72",
+ "image_status": "lowres",
+ "image_updated_at": "2026-07-01T11:42:17Z",
+ "image_uris": {
+  "art": "https://cards.scryfall.io/art/front/c/9/c93f8d98-ab1a-4c32-a76e-97849e2047d2.webp?1782906137",
+  "art_crop": "https://cards.scryfall.io/art_crop/front/c/9/c93f8d98-ab1a-4c32-a76e-97849e2047d2.jpg?1782906137",
+  "border_crop": "https://cards.scryfall.io/border_crop/front/c/9/c93f8d98-ab1a-4c32-a76e-97849e2047d2.jpg?1782906137",
+  "crop": "https://cards.scryfall.io/crop/front/c/9/c93f8d98-ab1a-4c32-a76e-97849e2047d2.webp?1782906137",
+  "display": "https://cards.scryfall.io/display/front/c/9/c93f8d98-ab1a-4c32-a76e-97849e2047d2.webp?1782906137",
+  "grid": "https://cards.scryfall.io/grid/front/c/9/c93f8d98-ab1a-4c32-a76e-97849e2047d2.webp?1782906137",
+  "large": "https://cards.scryfall.io/large/front/c/9/c93f8d98-ab1a-4c32-a76e-97849e2047d2.jpg?1782906137",
+  "normal": "https://cards.scryfall.io/normal/front/c/9/c93f8d98-ab1a-4c32-a76e-97849e2047d2.jpg?1782906137",
+  "png": "https://cards.scryfall.io/png/front/c/9/c93f8d98-ab1a-4c32-a76e-97849e2047d2.png?1782906137",
+  "small": "https://cards.scryfall.io/small/front/c/9/c93f8d98-ab1a-4c32-a76e-97849e2047d2.jpg?1782906137",
+  "thumb": "https://cards.scryfall.io/thumb/front/c/9/c93f8d98-ab1a-4c32-a76e-97849e2047d2.webp?1782906137"
+ },
+ "keywords": [
+  "Vigilance"
+ ],
+ "lang": "de",
+ "layout": "normal",
+ "legalities": {
+  "alchemy": "not_legal",
+  "brawl": "legal",
+  "commander": "legal",
+  "competitivebrawl": "legal",
+  "duel": "legal",
+  "future": "not_legal",
+  "gladiator": "legal",
+  "historic": "legal",
+  "legacy": "legal",
+  "modern": "legal",
+  "oathbreaker": "legal",
+  "oldschool": "not_legal",
+  "pauper": "legal",
+  "paupercommander": "legal",
+  "penny": "legal",
+  "pioneer": "legal",
+  "predh": "not_legal",
+  "premodern": "not_legal",
+  "standard": "not_legal",
+  "standardbrawl": "not_legal",
+  "timeless": "legal",
+  "tlr": "legal",
+  "vintage": "legal"
+ },
+ "mana_cost": "{1}{W}",
+ "multiverse_ids": [
+  485584
+ ],
+ "name": "Alpine Watchdog",
+ "nonfoil": true,
+ "object": "card",
+ "oracle_id": "6a0419c3-4bfa-46c1-932b-fe10f2fa2ad7",
+ "oracle_text": "Vigilance (Attacking doesn't cause this creature to tap.)",
+ "oversized": false,
+ "penny_rank": 10324,
+ "power": "2",
+ "prices": {
+  "eur": null,
+  "eur_foil": null,
+  "tix": null,
+  "usd": null,
+  "usd_etched": null,
+  "usd_foil": null
+ },
+ "printed_name": "Alpiner Wachhund",
+ "printed_text": "Wachsamkeit (Diese Kreatur wird beim Angreifen nicht getappt.)",
+ "printed_type_line": "Kreatur — Hund",
+ "prints_search_uri": "https://api.scryfall.com/cards/search?order=released&q=oracleid%3A6a0419c3-4bfa-46c1-932b-fe10f2fa2ad7&unique=prints",
+ "promo": false,
+ "purchase_uris": {
+  "cardhoarder": "https://www.cardhoarder.com/cards?affiliate_id=scryfall&data%5Bsearch%5D=Alpine+Watchdog&ref=card-profile&utm_campaign=affiliate&utm_medium=card&utm_source=scryfall",
+  "cardmarket": "https://www.cardmarket.com/en/Magic/Products/Search?referrer=scryfall&searchString=Alpine+Watchdog&utm_campaign=card_prices&utm_medium=text&utm_source=scryfall",
+  "tcgplayer": "https://partner.tcgplayer.com/c/4931599/1830156/21018?subId1=api&u=https%3A%2F%2Fwww.tcgplayer.com%2Fsearch%2Fmagic%2Fproduct%3FproductLineName%3Dmagic%26q%3DAlpine%2BWatchdog%26view%3Dgrid"
+ },
+ "rarity": "common",
+ "related_uris": {
+  "edhrec": "https://edhrec.com/route/?cc=Alpine+Watchdog",
+  "gatherer": "https://gatherer.wizards.com/Pages/Card/Details.aspx?multiverseid=485584&printed=true",
+  "tcgplayer_infinite_articles": "https://partner.tcgplayer.com/c/4931599/1830156/21018?subId1=api&trafcat=tcgplayer.com%2Fsearch%2Farticles&u=https%3A%2F%2Fwww.tcgplayer.com%2Fsearch%2Farticles%3FproductLineName%3Dmagic%26q%3DAlpine%2BWatchdog",
+  "tcgplayer_infinite_decks": "https://partner.tcgplayer.com/c/4931599/1830156/21018?subId1=api&trafcat=tcgplayer.com%2Fsearch%2Fdecks&u=https%3A%2F%2Fwww.tcgplayer.com%2Fsearch%2Fdecks%3FproductLineName%3Dmagic%26q%3DAlpine%2BWatchdog"
+ },
+ "released_at": "2020-07-03",
+ "reprint": false,
+ "reserved": false,
+ "rulings_uri": "https://api.scryfall.com/cards/c93f8d98-ab1a-4c32-a76e-97849e2047d2/rulings",
+ "scryfall_set_uri": "https://scryfall.com/sets/m21?utm_source=api",
+ "scryfall_uri": "https://scryfall.com/card/m21/2/de/alpiner-wachhund-(alpine-watchdog)?utm_source=api",
+ "set": "m21",
+ "set_id": "bc94aba1-7376-4e02-a12d-3a2efb66ab0f",
+ "set_name": "Core Set 2021",
+ "set_search_uri": "https://api.scryfall.com/cards/search?order=set&q=e%3Am21&unique=prints",
+ "set_type": "core",
+ "set_uri": "https://api.scryfall.com/sets/bc94aba1-7376-4e02-a12d-3a2efb66ab0f",
+ "story_spotlight": false,
+ "textless": false,
+ "toughness": "2",
+ "type_line": "Creature — Dog",
+ "uri": "https://api.scryfall.com/cards/c93f8d98-ab1a-4c32-a76e-97849e2047d2",
+ "variation": false
+}

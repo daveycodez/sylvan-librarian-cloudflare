@@ -20475,7 +20475,7 @@ fn bind_and_split_filter(
 
     // The pyo3 path holds no per-store cache; a fresh one derives the face keys per call, which
     // only a `name:` or `!` predicate pays for.
-    Ok(bind_and_split_filter_value(&json_val, unique, data, &FaceFlavorCache::default(), sort_col)?)
+    Ok(bind_and_split_filter_value(&json_val, unique, data, &FaceFlavorCache::default(), sort_col, false)?)
 }
 
 /// The pure-Rust core of `bind_and_split_filter` (LOCAL PATCH, Cloudflare
@@ -20499,6 +20499,10 @@ fn bind_and_split_filter_value(
     data: &Archived<CardData>,
     face_flavors: &FaceFlavorCache,
     sort_col: SortCol,
+    // LOCAL PATCH (Cloudflare port): the caller's `include_multilingual`. With it, or with a leaf
+    // that widens the query to the annex, flavor-text predicates are left unbound so they are read
+    // off each printing — see `FilterExpr::bind_with`.
+    include_multilingual: bool,
 ) -> Result<(Option<PlaneExpr>, FilterExpr, SortBound, FilterExpr), EngineError> {
     // Must run before build_filter so legality shifts resolve in workers that
     // never executed the load path themselves.
@@ -20507,7 +20511,10 @@ fn bind_and_split_filter_value(
     // right here, so a pattern can blow its budget before a single card is walked.
     clear_regex_match_failed();
     let mut filter_expr = build_filter(json_val).map_err(map_build_filter_err_engine)?;
-    filter_expr.bind(&data.coll_vocab, &data.coll_vocab_sorted, &data.artist_vocab, &data.artist_vocab_collated, &data.artist_entities, &data.mana_vocab, &data.indexes.flavor, &data.strings);
+    // Decided on the tree as built: the three widening leaves exist before `bind` (which only
+    // resolves their ids), and it has to be known before the flavor arms run.
+    let flavor_index = if include_multilingual || filter_expr.widens_to_annex() { None } else { Some(&data.indexes.flavor) };
+    filter_expr.bind_with(&data.coll_vocab, &data.coll_vocab_sorted, &data.artist_vocab, &data.artist_vocab_collated, &data.artist_entities, &data.mana_vocab, flavor_index, &data.strings);
     // The second half of binding, split out because `bind` predates the type-line index and is
     // called from a dozen benches and tests that never build one. THE TWO BELONG TOGETHER: every
     // production filter reaches the engine through here.
