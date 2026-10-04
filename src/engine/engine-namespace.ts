@@ -26,12 +26,6 @@
 // constructs an engine stub or mentions `locationHint`.
 //
 // x56: THE SAME RULE IS WHY ONE OBJECT CAN BE ABANDONED HERE AND NOWHERE ELSE. An object the
-// platform keeps on a bad machine cannot be moved either; what a deployment can do is stop using
-// it, by listing its id in ABANDONED_ENGINES below. Every stub this module builds for that object's
-// name is then built for the name's next EPOCH (`engine-wnam-p10-e1`) — a different id, so a
-// different object, placed afresh by whoever addresses it first.
-//
-// x56: THE SAME RULE IS WHY ONE OBJECT CAN BE ABANDONED HERE AND NOWHERE ELSE. An object the
 // platform keeps on a bad machine cannot be moved either; what can be done is to stop using it,
 // by listing its id in ABANDONED_ENGINES. Every stub this module builds for that object's name is
 // then built for the name's next EPOCH (`engine-wnam-p10-e1`) — a different id, so a different
