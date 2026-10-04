@@ -3198,7 +3198,8 @@ function unquote(value: string): string {
  */
 function isNumericValue(value: string): boolean {
 	const v = value.trim().toLowerCase();
-	if (/^[-+]?(\d+(\.\d*)?|\.\d+)$/.test(v)) return true;
+	// No `+`: `pow=+1` is the unknown-keyword sentence on Scryfall — see ODD_NUMBER_RE.
+	if (/^-?(\d+(\.\d*)?|\.\d+)$/.test(v)) return true;
 	// `pow>=tou` and friends: a column name on the right is Scryfall's cross-column comparison.
 	return /^[a-z]+$/.test(v) && CROSS_COLUMN_VALUES.has(v);
 }
@@ -3272,6 +3273,33 @@ function numericColumnOf(alias: string): string | null {
 	return info === undefined ? null : info.dbColumnName;
 }
 
+/**
+ * A NUMBER MAY END IN ITS POINT OR OPEN WITH IT, and a lone point is zero.
+ *
+ * Measured on api.scryfall.com 2026-10-04, one request per row:
+ *
+ *   pow=.5   1 (Little Girl) = cmc=.5      pow=1.  pow=1.0  pow=01   3,563 = pow=1
+ *   cmc=2.   7,153 = cmc=2                 pow=1.5  pow=1.50         1
+ *   pow=.    1,049 = pow=0                 pow=-.5                   404, no warning
+ *   collector:1. e:khm   1                 collector:1.5 e:khm       404
+ *   pow=+1   400 + `Unknown keyword “pow”.` — a `+` is not a sign, so the value is not a number
+ *
+ * The parser reads `0.5` and `1` and refuses `.5` and `1.` (the first does not lex, the second
+ * lexes as a word), so the value is respelled here and everything Scryfall says to the leaf is
+ * what it says to the respelled one. This port answered `Failed to parse query` for all of them,
+ * and for `pow=+1`, which `isNumericValue` used to call a number.
+ *
+ * COST: one regex test on a numeric leaf at parse time.
+ */
+const ODD_NUMBER_RE = /^(-?)(\d*)\.(\d*)$/;
+
+/** `.5` → `0.5`, `1.` → `1`, `.` → `0`; null when the value is not one of those spellings. */
+function respelledNumber(rawValue: string): string | null {
+	const match = ODD_NUMBER_RE.exec(rawValue);
+	if (match === null || (match[2] !== "" && match[3] !== "")) return null;
+	return `${match[1]}${match[2] === "" ? "0" : match[2]}${match[3] === "" ? "" : `.${match[3]}`}`;
+}
+
 /** The verdict on one leaf term: keep it (possibly rewritten), or drop it with Scryfall's reason. */
 type LeafVerdict =
 	/** Kept, possibly rewritten; `include` is what the term switches on besides (see BLOCK_KEYWORDS). */
@@ -3306,6 +3334,11 @@ function classifyLeaf(term: string): LeafVerdict {
 	// as written, because the caller echoes its own text.
 	if (ZERO_WORD_RE.test(rawValue) && readsNumber(keyword, equality)) {
 		return classifyLeaf(`${match[1]}${match[2]}${op}0`);
+	}
+	// `pow=.5`, `cmc=2.`, `pow=.`: a number the parser spells differently — see ODD_NUMBER_RE.
+	if (readsNumber(keyword, equality)) {
+		const respelled = respelledNumber(rawValue);
+		if (respelled !== null) return classifyLeaf(`${match[1]}${match[2]}${op}${respelled}`);
 	}
 
 	// BEFORE the negation rule below, and it is the one value validator that has to be: `-date>=zzzz`

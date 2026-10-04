@@ -2846,6 +2846,12 @@
 			"method": "GET",
 			"path": "/cards/named?fuzzy=ajani+goldmane+ajani+goldmane",
 			"note": "2026-10-04. sld/745, the reversible printing, where this port answered m11's Ajani Goldmane (`Temple Garden Temple Garden` ecl/351, `mechtitan mechtitan` sld/1969; `&set=m11` is m11's). A misspelt doubled name is not reproduced: `Ajani Goldmane // Ajani Goldman` is sld/1453 there."
+		},
+		{
+			"name": "numeric-value-leading-point",
+			"method": "GET",
+			"path": "/cards/search?q=pow%3D.5",
+			"note": "2026-10-04. 1, Little Girl; `pow=1.` is `pow=1`'s 3,563, `cmc=2.` 7,153, `pow=.` `pow=0`'s 1,049, and `pow=+1` the 400 carrying `Unknown keyword “pow”.`. Each was `Failed to parse query` here."
 		}
 	]
 }

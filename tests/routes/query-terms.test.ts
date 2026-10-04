@@ -492,9 +492,12 @@ describe("a quoted value is a string, never a number", () => {
 	});
 
 	test("an unquoted number, and a column name, are what they were", () => {
-		for (const q of ["mv:2", "pow>=2", "tou<.5", "usd>1.50", "pow>tou", "cmc<=pow"]) {
+		for (const q of ["mv:2", "pow>=2", "usd>1.50", "pow>tou", "cmc<=pow"]) {
 			expect(scryfallTermPolicy(q)).toMatchObject({ query: q, warnings: [] });
 		}
+		// `tou<.5` is still a number and still kept, now in the spelling the parser reads: as
+		// written it was a query the lexer refused (scryfall-numeric-values.test.ts, ODD_NUMBER_RE).
+		expect(scryfallTermPolicy("tou<.5")).toMatchObject({ query: "tou<0.5", warnings: [] });
 	});
 });
 

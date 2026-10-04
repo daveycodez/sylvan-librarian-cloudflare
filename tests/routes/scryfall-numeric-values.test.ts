@@ -171,3 +171,33 @@ describe("a number past ±2,461,449,600 is `Value out of range`, and the term is
 		expectKept("pow>tou", "pow>tou");
 	});
 });
+
+describe("a number may end in its point or open with it, and a `+` is not a sign", () => {
+	// `pow=.5` and `cmc=.5` are 1 (Little Girl), `pow=1.` 3,563 = `pow=1`, `cmc=2.` 7,153 = `cmc=2`,
+	// `pow=.` 1,049 = `pow=0`, `pow=-.5` a 404 with no warning, `collector:1. e:khm` 1.
+	test.each([
+		["pow=.5", "pow=0.5"],
+		["cmc=.5", "cmc=0.5"],
+		["pow=1.", "pow=1"],
+		["cmc=2.", "cmc=2"],
+		["pow=.", "pow=0"],
+		["pow=-.5", "pow=-0.5"],
+		["tou>.5", "tou>0.5"],
+		["collector:1.", "collector:1"],
+		["cn>1.", "cn>1"],
+	])("%s is %s", (term, expected) => {
+		expectKept(term, expected);
+	});
+
+	test("a spelling the parser already reads is left as written", () => {
+		// `pow=1.0` and `pow=01` are 3,563, `pow=1.5` and `pow=1.50` 1.
+		for (const term of ["pow=1.0", "pow=01", "pow=1.5", "pow=1.50", "pow=-1"]) expectKept(term, term);
+	});
+
+	test("`pow=+1` is the unknown-keyword sentence", () => {
+		// `pow=+1` alone is the 400 carrying `Unknown keyword “pow”.` — this port kept it for a
+		// parser that refused it.
+		expectIgnored("pow=+1", "pow=+1", "Unknown keyword “pow”.");
+		expectIgnored("cmc=+1", "cmc=+1", "The value must be a number, or “even”/“odd”");
+	});
+});
