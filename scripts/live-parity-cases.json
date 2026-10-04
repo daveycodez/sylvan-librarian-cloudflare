@@ -1951,6 +1951,29 @@
 			"method": "GET",
 			"path": "/cards/search?q=o%3A%2F%5E%28%E2%80%A2+%29%3F%28Counter%7CDestroy%7CExile%7CReturn%29%3F+%3Ftarget+%28%5B%5Cw-%5D%2B+%29%3F%28spell%7Ccreature%7Cartifact%7Cenchantment%7Cpermanent%7Cland%7Ccard%7Cplayer%7Copponent%29%5Cb%2F+-o%3A%2F%5Cbtargets%3F%5Cb%28.%7C%5Cn%29%2A%5Cbtargets%3F%5Cb%2F+%28t%3Ainstant+OR+t%3Asorcery%29",
 			"note": "R24. Scryfall 2,173; this port 2,177 — Who // What // When // Where // Why, and three cleave spells (Alchemist's Retrieval, Dread Fugue, Wash Away) that Scryfall's `-o:/\\btargets?\\b(.|\\n)*\\btargets?\\b/` drops because their text is searched three times over."
+		},
+		{
+			"name": "search-report-r35-backslash-does-not-escape-a-quote-on-scryfall",
+			"method": "GET",
+			"path": "/cards/search?q=%21%22Kami+of+Mourning%22+o%3A%22perpetually+gains+%5C%22Whenever%22",
+			"known_deviation": {
+				"reason": "mtg-seeker report R35 (2026-10-04), NOT FIXED — recorded. The report's query ends `o:\"perpetually gains \\\"Whenever\" o:\"return this card from your graveyard\"`: Scryfall 3 cards, this port 5 (Forgeborn Phoenix and Kami of Mourning extra, both through that last pair of terms). The cause is not which text is searched. api.scryfall.com has NO backslash escape inside a quoted string: the phrase ends at the next quote character, so the first term is the phrase `perpetually gains \\` — a literal backslash no oracle text holds — and what follows (`Whenever`, then a quoted ` o:`, then bare words) are name terms that match nothing. This port's lexer follows upstream #905, where `\\\"` is an escaped quote inside the phrase, so the same text is the phrase `perpetually gains \"whenever` and matches. Measured 2026-10-04 scoped to Kami of Mourning (\"…perpetually gains \\\"Whenever a creature you control…\\\"\"): this case, the backslash form, is 404 on Scryfall and 1 here; the single-quoted spelling `o:'perpetually gains \"Whenever'` is 1 on both; `o:\"gains \\\"\"` is 404 there; an unclosed `o:\"whenever` is 1 there (not measured here). Left alone because the fix is the shared lexer's quote rule (src/parser/tokenizer.ts and vendor hand_parser.py, pinned to agree by fixtures, and upstream-compatible on `/search`), which is outside x65's text-semantics scope: it needs a Scryfall-route-only reading of quotes, and a decision about unclosed quotes with it.",
+				"scryfall": {
+					"status": 404,
+					"expect": {
+						"object": "error",
+						"code": "not_found"
+					}
+				},
+				"ours": {
+					"status": 200,
+					"expect": {
+						"object": "list",
+						"total_cards": 1,
+						"data.0.name": "Kami of Mourning"
+					}
+				}
+			}
 		}
 	]
 }
