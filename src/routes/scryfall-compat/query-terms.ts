@@ -624,6 +624,45 @@ const MANA_VALUE_KEYWORDS: ReadonlySet<string> = new Set(["cmc", "mv", "manavalu
  */
 const ZERO_WORD_RE = /^[xyz*]$/i;
 
+/**
+ * `Value out of range` — A NUMBER PAST ±2,461,449,600 IS NOT COMPARED WITH; the term is ignored.
+ *
+ * Found while measuring what Infinity Elemental's `∞` compares as (card_engine's `INFINITE_STAT`):
+ * above a certain constant Scryfall stops answering the comparison and says so. Measured on
+ * api.scryfall.com 2026-10-04, anchor `e:khm t:god` = 12, a row at 12 carrying the sentence being
+ * a term that was dropped. The bound was found by bisection, one request per step:
+ *
+ *   pow>2461449600   pow>2461449600.0   pow>-2461449600   pt<2461449600   usd<2461449600
+ *   cmc<2461449600                                             compared (404, or 12 with no warning)
+ *   pow>2461449601   pow>2461449600.5   pow>02461449601   pow>-2461449601   pt<2461449601
+ *   usd<2461449601   cmc<2461449601                            12 + `Value out of range`
+ *
+ * so it is the VALUE (a leading zero and a fraction are read), it is symmetric, and it is the same
+ * on every numeric column and under every operator — each of these is the 12 with the sentence:
+ * `pow=9999999999`, `tou>9999999999`, `loy<9999999999`, `mv:9999999999`, `edhrec<9999999999`,
+ * `prints<9999999999`, `artists<9999999999`, `year<9999999999`, `collector<9999999999`,
+ * `cn<9999999999`, `cn:9999999999`, `tix<9999999999`, `usdfoil<9999999999`. The echo is cut at 20
+ * characters like every other (`pow>999999999999999…`), and the sentence has no full stop.
+ *
+ * (2,461,449,600 is 28,489 days of seconds — midnight on 1 January 2048 as a Unix time. Whatever
+ * reads the number evidently also tries it as a timestamp.)
+ *
+ * The negated forms never reach it: `-pow>9999999999` is the silent tautology, `-pow=9999999999`
+ * the negated-equality `Unknown keyword “-pow”.`, and `-cmc=9999999999` the value sentence.
+ *
+ * This port compared with the number: `pow>9999999999` beside the anchor was a 404, and
+ * `loy<9999999999` 1 — the set's one planeswalker — where Scryfall answers all 12.
+ *
+ * COST: one number parse on a numeric leaf at parse time.
+ */
+const VALUE_OUT_OF_RANGE_REASON = "Value out of range";
+const MAX_COMPARABLE_VALUE = 2_461_449_600;
+const PLAIN_NUMBER_RE = /^[-+]?(\d+(\.\d*)?|\.\d+)$/;
+
+function isOutOfRange(rawValue: string): boolean {
+	return PLAIN_NUMBER_RE.test(rawValue) && Math.abs(Number(rawValue)) > MAX_COMPARABLE_VALUE;
+}
+
 /** `cn` / `number`: the string collector number under `:`/`=`, a number only under a comparison. */
 const STRING_NUMBER_KEYWORDS: ReadonlySet<string> = new Set(["cn", "number"]);
 
@@ -3392,6 +3431,9 @@ function classifyLeaf(term: string): LeafVerdict {
 			}
 			return { keep: true, text: NEVER_MATCHES };
 		}
+		// A number too large for Scryfall to compare with — see VALUE_OUT_OF_RANGE_REASON. After the
+		// negation rules above, which answer `-pow>9999999999` and `-pow=9999999999` first.
+		if (isOutOfRange(rawValue)) return { keep: false, reason: VALUE_OUT_OF_RANGE_REASON };
 		// A column compared with ITSELF, under any spelling of it and any operator — see
 		// SAME_SIDES_REASON. After the value check, so a value that is not a column never gets
 		// here, and after the negation rules, which answer `-pow=pow` and `-pow>pow` first.
@@ -3399,6 +3441,11 @@ function classifyLeaf(term: string): LeafVerdict {
 		if (column !== null && column === numericColumnOf(loweredValue)) {
 			return { keep: false, reason: SAME_SIDES_REASON };
 		}
+	}
+	// ...and `cn` / `number` take the same sentence under every operator, `:` included, though under
+	// `:` they read the string collector number. The negated forms were not measured and are left.
+	if (STRING_NUMBER_KEYWORDS.has(keyword) && !negated && isOutOfRange(rawValue)) {
+		return { keep: false, reason: VALUE_OUT_OF_RANGE_REASON };
 	}
 	// `year:0000` and `year:9999` are 404 and `year>=0` is the anchor: a year no printing is dated
 	// in, which the parser refuses to read — see honoredDateTerm. After the negation rules, which

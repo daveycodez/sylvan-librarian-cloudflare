@@ -1,7 +1,9 @@
-// What a numeric column reads where a number goes: `*`, `x`, `y` and `z` are zero.
+// What a numeric column reads where a number goes: `*`, `x`, `y` and `z` are zero, and a number
+// past ±2,461,449,600 is not compared with at all.
 //
 // Every expectation is a measurement on api.scryfall.com, 2026-10-04; the requests are recorded
-// beside the rule in src/routes/scryfall-compat/query-terms.ts (ZERO_WORD_RE).
+// beside each rule in src/routes/scryfall-compat/query-terms.ts (ZERO_WORD_RE and
+// VALUE_OUT_OF_RANGE_REASON).
 
 import { describe, expect, test } from "bun:test";
 import { EMPTY_TAG_ALIASES, parseScryfallQueryWithDirectives } from "../../src/parser";
@@ -113,5 +115,59 @@ describe("`*`, `x`, `y` and `z` are the number zero on a numeric column", () => 
 		for (const term of ["o:x", "t:*", "name:x", "cn=x", "number:*", "e:x"]) {
 			expect(scryfallTermPolicy(`${term} ${ANCHOR}`).query).toBe(`${term} ${ANCHOR}`);
 		}
+	});
+});
+
+describe("a number past ±2,461,449,600 is `Value out of range`, and the term is ignored", () => {
+	const REASON = "Value out of range";
+
+	test("the bound is 2,461,449,600 itself, on either side of zero, and it is the value that is read", () => {
+		expectKept("pow>2461449600", "pow>2461449600");
+		expectKept("pow>2461449600.0", "pow>2461449600.0");
+		expectKept("pow>-2461449600", "pow>-2461449600");
+		expectIgnored("pow>2461449601", "pow>2461449601", REASON);
+		expectIgnored("pow>2461449600.5", "pow>2461449600.5", REASON);
+		expectIgnored("pow>02461449601", "pow>02461449601", REASON);
+		expectIgnored("pow>-2461449601", "pow>-2461449601", REASON);
+	});
+
+	test.each([
+		"pow=9999999999",
+		"tou>9999999999",
+		"loy<9999999999",
+		"pt<2461449601",
+		"mv:9999999999",
+		"cmc<2461449601",
+		"usd<2461449601",
+		"tix<9999999999",
+		"usdfoil<9999999999",
+		"edhrec<9999999999",
+		"prints<9999999999",
+		"artists<9999999999",
+		"year<9999999999",
+		"collector<9999999999",
+		"cn<9999999999",
+		"cn:9999999999",
+	])("every numeric column and every operator: %s", (term) => {
+		expectIgnored(term, term, REASON);
+	});
+
+	test("the echo is cut at 20 characters", () => {
+		// `!"Infinity Elemental" pow>99999999999999999999` carries `“pow>999999999999999…”`.
+		expectIgnored("pow>99999999999999999999", "pow>999999999999999…", REASON);
+	});
+
+	test("the negated forms are answered before it", () => {
+		// `-pow>9999999999` is the anchor with no warning; `-pow=9999999999` and `-cmc=9999999999`
+		// carry the sentences every negated numeric equality does.
+		expect(scryfallTermPolicy(`-pow>9999999999 ${ANCHOR}`).warnings).toEqual([]);
+		expectIgnored("-pow=9999999999", "-pow=9999999999", "Unknown keyword “-pow”.");
+		expectIgnored("-cmc=9999999999", "-cmc=9999999999", "The value must be a number, or “even”/“odd”");
+	});
+
+	test("a number inside the range, and a value that is not a number, are untouched", () => {
+		expectKept("pow>2147483648", "pow>2147483648");
+		expectKept("cn:123", "cn:123");
+		expectKept("pow>tou", "pow>tou");
 	});
 });

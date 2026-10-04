@@ -2804,6 +2804,18 @@
 			"method": "GET",
 			"path": "/cards/search?q=cmc%3Ex+e%3Akhm",
 			"note": "2026-10-04. 267, the set's cards with a mana value above 0: `x`, `y` and `z` are zero too (`pow=x` 1,049, `cmc=y` 1,432, `loy=z` 4, `usd>x e:khm` 305). `Failed to parse query` here before."
+		},
+		{
+			"name": "warning-value-out-of-range",
+			"method": "GET",
+			"path": "/cards/search?q=pow%3E2461449601+e%3Akhm+t%3Agod",
+			"note": "2026-10-04. The 12 carrying `Value out of range`: a number past ±2,461,449,600 is not compared with, on any numeric column under any operator (`loy<9999999999`, `cn:9999999999`, `usd<2461449601`). This port compared with it and answered a 404."
+		},
+		{
+			"name": "value-at-the-range-bound-is-compared",
+			"method": "GET",
+			"path": "/cards/search?q=usd%3C2461449600+e%3Akhm+t%3Agod",
+			"note": "2026-10-04. 12 with no warning: 2,461,449,600 itself is inside the range (`pow>2461449600 e:khm t:god` is a plain 404)."
 		}
 	]
 }
