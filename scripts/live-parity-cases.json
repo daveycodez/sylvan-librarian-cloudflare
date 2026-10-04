@@ -2876,6 +2876,12 @@
 			"method": "GET",
 			"path": "/cards/search?q=e%3A%22the+list%22+or+cmc%3D3",
 			"note": "2026-10-04. 12,129, echoing include_extras=false, where `e:plst or cmc=3` is 12,408 and echoes true: a set named by its name is not the conditional extras trigger its code is (`e:\"unknown event\"` is a 404 against `e:unk`'s 521)."
+		},
+		{
+			"name": "block-retired-set-code",
+			"method": "GET",
+			"path": "/cards/search?q=block%3Amb1",
+			"note": "2026-10-04. 5,323 = `block:plst`: Mystery Booster was folded into The List and its code still answers (`e:mb1` = `e:fmb1` = `e:plist` 5,257, without the extras `e:plst` opens; `e:dar` 265 = `e:dom`, `e:7e` 335). A measured list, not the sets' MTGO codes (`e:uz`, `e:te` are 404). A 404 here."
 		}
 	]
 }

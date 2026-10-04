@@ -130,6 +130,25 @@
 // whose every card is an extra. (`block:` opens extras whatever it is given, so the same names
 // answer there.)
 //
+// ─── THE RETIRED CODES ───────────────────────────────────────────────────────────────────────
+//
+// `block:mb1` is 5,323 on Scryfall and no set has that code: Mystery Booster was folded into The
+// List, and the old code still answers. Scryfall keeps such a list, and — like the nicknames — it
+// is NOT the set objects' `mtgo_code` / `arena_code`: of the 24 sets whose MTGO code differs from
+// their own, `e:dar` (dom, 265), `e:7e`, `e:ex`, `e:mi`, `e:pr`, `e:vi` and `e:wl` answer and
+// `e:uz`, `e:te`, `e:in`, `e:ap`, `e:mm`, `e:ne`, `e:od`, `e:ps`, `e:st`, `e:ud`, `e:ul`, `e:ms2`,
+// `e:ms3`, `e:ms4` and `e:pc1` are 404. So ALIASES is exactly the ones measured, each read
+// against the count of the set it names (2026-10-04):
+//
+//   mb1 = fmb1 = plist   5,257 = e:plst -is:extra     (block:mb1 = block:fmb1 = block:plst 5,323)
+//   dar 265 (block:dar 265)   2e 291   3e 295   4e 366   5e 432   6e 333   7e 335   8e 342   9e 344
+//   ex 143   mi 335   pr 143   vi 167   wl 167   fe 102   ia 373   lg 306   aq 85   an 76   dk 119
+//   nms 143 (nem)
+//
+// Measured NOT to answer: uz te in ap mm ne od ps st ud ul ms2 ms3 ms4 pc1 1e 2u ai hm ch po p2 pk
+// ug cg gu le on sc ts tsts pc cs pch pmb1 dd3_evg. An alias does not open extras either
+// (`e:mb1` is 5,257, and `e:mb1 include:extras` 5,323).
+//
 //   bun run set-blocks
 //
 // Run by hand and the diff committed, for the reasons scripts/generate-set-dates.ts gives. A set
@@ -203,7 +222,32 @@ const NICKNAMES: readonly (readonly [string, string])[] = [
  * Scryfall's retired and alternate set codes, as `[alias, set code]` — exactly the ones measured to
  * answer. See the header for the counts, and for the list measured NOT to answer.
  */
-const ALIASES: readonly (readonly [string, string])[] = [];
+const ALIASES: readonly (readonly [string, string])[] = [
+	["mb1", "plst"],
+	["fmb1", "plst"],
+	["plist", "plst"],
+	["dar", "dom"],
+	["2e", "2ed"],
+	["3e", "3ed"],
+	["4e", "4ed"],
+	["5e", "5ed"],
+	["6e", "6ed"],
+	["7e", "7ed"],
+	["8e", "8ed"],
+	["9e", "9ed"],
+	["ex", "exo"],
+	["mi", "mir"],
+	["pr", "pcy"],
+	["vi", "vis"],
+	["wl", "wth"],
+	["fe", "fem"],
+	["ia", "ice"],
+	["lg", "leg"],
+	["aq", "atq"],
+	["an", "arn"],
+	["dk", "drk"],
+	["nms", "nem"],
+];
 
 async function main(): Promise<void> {
 	const res = await fetch(SETS_URL, {
@@ -274,6 +318,9 @@ async function main(): Promise<void> {
 		aliasRows.push(`${alias}:${own}`);
 	}
 	aliasRows.sort();
+	// As biome formats it: on the declaration's line while it fits the line width, under it after.
+	const aliasLine = `const SET_ALIASES = "${aliasRows.join("|")}";`;
+	const aliasLiteral = aliasLine.length <= 120 ? aliasLine : `const SET_ALIASES =\n\t"${aliasRows.join("|")}";`;
 
 	const source = `// GENERATED FILE - do not edit. Built by scripts/generate-set-blocks.ts from api.scryfall.com/sets.
 //
@@ -294,7 +341,7 @@ const SET_NAMES =
 	"${nameRows.join("|")}";
 
 // \`alias:code\` rows joined by \`|\`: the retired and alternate codes Scryfall still answers to.
-const SET_ALIASES = "${aliasRows.join("|")}";
+${aliasLiteral}
 
 interface SetBlocks {
 	/** set code -> [parent set code or "", block code or ""] */

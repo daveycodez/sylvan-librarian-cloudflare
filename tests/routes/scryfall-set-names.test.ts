@@ -9,6 +9,7 @@ import { describe, expect, test } from "bun:test";
 import { EMPTY_TAG_ALIASES, parseScryfallQueryWithDirectives } from "../../src/parser";
 import { applyExtrasGate } from "../../src/routes/extras-gate";
 import { scryfallTermPolicy } from "../../src/routes/scryfall-compat/query-terms";
+import { blockValueCode, setNameCode } from "../../src/routes/scryfall-compat/set-blocks.gen";
 
 /** What the extras gate decides for a query when `plst`, `mb2` and `unk` hold extras. */
 async function extrasOpen(q: string): Promise<boolean> {
@@ -112,10 +113,62 @@ describe("a set is named by its whole name where its code goes", () => {
 	});
 });
 
+describe("a retired code still names its set, for `e:` and for `block:`", () => {
+	// `e:mb1` = `e:fmb1` = `e:plist` is 5,257 (The List; `block:mb1` = `block:fmb1` = `block:plst`
+	// 5,323), `e:dar` 265 = `e:dom` (`block:dar` 265), `e:2e` 291, `e:7e` 335, `e:ex` 143, `e:mi`
+	// 335, `e:pr` 143, `e:vi` 167, `e:wl` 167, `e:fe` 102, `e:ia` 373, `e:lg` 306, `e:aq` 85,
+	// `e:an` 76, `e:dk` 119, `e:nms` 143.
+	test.each([
+		["mb1", "plst"],
+		["fmb1", "plst"],
+		["plist", "plst"],
+		["dar", "dom"],
+		["DAR", "dom"],
+		["2e", "2ed"],
+		["7e", "7ed"],
+		["9e", "9ed"],
+		["ex", "exo"],
+		["mi", "mir"],
+		["pr", "pcy"],
+		["vi", "vis"],
+		["wl", "wth"],
+		["fe", "fem"],
+		["ia", "ice"],
+		["lg", "leg"],
+		["aq", "atq"],
+		["an", "arn"],
+		["dk", "drk"],
+		["nms", "nem"],
+	])("%s is %s", (alias, code) => {
+		expect(scryfallTermPolicy(`e:${alias} t:goblin`).query).toBe(`e:${code} t:goblin`);
+		expect(scryfallTermPolicy(`block:${alias} t:goblin`).query).toBe(
+			scryfallTermPolicy(`block:${code} t:goblin`).query,
+		);
+	});
+
+	test("`block:mb1` is The List, with extras open", () => {
+		// 5,323 against this port's 404: the code named no set and no block.
+		const policy = scryfallTermPolicy("block:mb1");
+		expect([policy.query, policy.include.extras]).toEqual(["(e:plst)", true]);
+		expect(blockValueCode("mb1")).toBe("plst");
+	});
+
+	test("only the codes measured to answer", () => {
+		// `e:uz`, `e:te`, `e:in`, `e:ap`, `e:mm`, `e:ms2`, `e:pc1`, `e:1e`, `e:2u`, `e:hm` and
+		// `e:pmb1` are each a 404, though the first seven are their sets' MTGO codes.
+		for (const code of ["uz", "te", "in", "ap", "mm", "ms2", "pc1", "1e", "2u", "hm", "pmb1"]) {
+			expect([code, setNameCode(code)]).toEqual([code, null]);
+		}
+	});
+});
+
 describe("a set named by its name or a retired code does not open extras, and its code does", () => {
+	// `e:plst` is 5,323 and `e:"the list"` 5,257 (= `e:plst -is:extra`); `e:mb1` 5,257 and
+	// `e:mb1 include:extras` 5,323; `e:mb2` 385 and `e:"mystery booster 2"` 264; `e:unk` 521 and
 	// `e:"unknown event"` a 404; `e:plst or cmc=3` 12,408 and `e:"the list" or cmc=3` 12,129.
 	test("the policy names the codes it wrote and the query did not", () => {
 		expect(scryfallTermPolicy('e:"the list"').quietSets).toEqual(["plst"]);
+		expect(scryfallTermPolicy("e:mb1 or cmc=3").quietSets).toEqual(["plst"]);
 		expect(scryfallTermPolicy('(e:"mystery booster 2" or e:"unknown event") t:goblin').quietSets).toEqual([
 			"mb2",
 			"unk",
@@ -128,12 +181,16 @@ describe("a set named by its name or a retired code does not open extras, and it
 		expect(await extrasOpen("e:plst or cmc=3")).toBe(true);
 		expect(await extrasOpen('e:"the list"')).toBe(false);
 		expect(await extrasOpen('e:"the list" or cmc=3')).toBe(false);
+		expect(await extrasOpen("e:mb1")).toBe(false);
 		expect(await extrasOpen('e:"unknown event"')).toBe(false);
 		expect(await extrasOpen('-e:"the list"')).toBe(false);
 	});
 
 	test("every other way of opening extras still opens them", async () => {
+		// `e:mb1 include:extras` is 5,323, `e:"the list" t:token` 57, `block:mb1` 5,323.
+		expect(await extrasOpen("e:mb1 include:extras")).toBe(true);
 		expect(await extrasOpen('e:"the list" t:token')).toBe(true);
+		expect(await extrasOpen("block:mb1")).toBe(true);
 		// A code the query also spells itself is a typed code.
 		expect(await extrasOpen('e:plst or e:"the list"')).toBe(true);
 		expect(await extrasOpen('e:"the list" or e:unk')).toBe(true);
