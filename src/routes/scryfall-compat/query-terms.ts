@@ -1383,19 +1383,32 @@ const DEVOTION_REASON = "Devotion can only match single color or hybrid mana.";
  * respelled rather than left to fail. A doubled part is not one (`{w/w}`, `{2/2}`, `{w/p/p}`),
  * nor a generic half that is not 2, nor `{2/c}`. The table errs toward calling a group a symbol:
  * that leaves the term to the parser, as before, where the other error would drop a term Scryfall
- * honors. `{h}`, `{hw}`, `{hr}`, `{l}` and `{c/p}` are in that state — honored there, still a
- * parse error here.
+ * honors. `{h}`, `{hw}`, `{hr}`, `{l}` and `{c/p}` were in that state — honored there, a parse
+ * error here — until the parser took them (mana-symbols.ts, UN_SET_ATOMS): `mana:{hw}` is Little
+ * Girl on both sides now, and the four no cost prints are the plain 404 they are there.
+ *
+ * A BARE `s`, `y`, `z` OR `l` IS RESPELLED IN BRACES. Scryfall reads each bare (`mana:s` is 2 =
+ * `mana:{s}`, `mana:ss` a 404; `mana:y`, `mana:z` and `mana:xyz` are 1, The Ultimate Nightmare of
+ * Wizards of the Coast® Customer Service; `mana:l` a 404), and the engine counts only
+ * `w u b r g c x` outside braces — so `mana:s` and `mana:ss` answered every card with a cost
+ * (32,287), the letter simply not read, and `mana:y` was a parse error.
  *
  * NOT DECIDED HERE, and left to the parser exactly as before: a value with a character outside
  * letters, digits, braces and `/`, and a bare digit that is not leading (`w2q`), which no probe
- * covered. And one that was measured and is not reproduced: `mana:{w e:khm t:god` is the 12
- * naming “{” there, and a parse error here — this scan reads an unclosed `{` to the end of the
- * query, as the lexer does, so the term never arrives alone.
+ * covered.
+ *
+ * AN UNCLOSED `{` IS A CHARACTER OF ITS TERM, not the start of a symbol that runs to the end of
+ * the query: `mana:{w e:khm` is `e:khm`'s 305 naming “{”, `mana:{w/u` names “{/”, `mana:{2/w`
+ * “{2/”, `mana:{w}{u` and `mana:{` “{”, `mana:{q` “{Q”, and `mana>{w` the same as `mana:{w`
+ * (2026-10-04). The scanners below used to hand the lexer's reading on — everything after the
+ * brace was one piece — so the term never arrived alone and the query was a lex error.
  *
  * COST: one pass over the value of a `mana:` term at parse time.
  */
 const MANA_SYMBOL_VALUE_RE = /^[A-Za-z0-9{}/]+$/;
 const MANA_BARE_SYMBOLS: ReadonlySet<string> = new Set("wubrgcsxyzl");
+/** The bare symbols the engine reads only in braces. */
+const MANA_BRACED_ONLY_SYMBOLS: ReadonlySet<string> = new Set("syzl");
 const MANA_SINGLE_SYMBOLS: ReadonlySet<string> = new Set([..."wubrgcsxyzlh", "hw", "hr"]);
 const MANA_HYBRID_COLORS = "wubrgs";
 
@@ -1427,11 +1440,14 @@ function readManaSymbols(value: string): { leftover: string; respelled: string }
 	let respelled = "";
 	let pos = /^\d*/.exec(value)?.[0].length ?? 0;
 	respelled += value.slice(0, pos);
+	// Behind a `{` nothing closes, a digit stays as it does inside a group that is no symbol
+	// (`{2/w` → `{2/`, as `{1/w}` → `{1/}`).
+	let unclosed = false;
 	const bare = (ch: string, inGroup: boolean): boolean => {
 		if (MANA_BARE_SYMBOLS.has(ch.toLowerCase())) return true;
 		// A digit inside a group that is no symbol stays (`{1/w}` → `{1/}`); a bare one that is not
 		// leading was never measured.
-		if (/\d/.test(ch) && !inGroup) return false;
+		if (/\d/.test(ch) && !inGroup && !unclosed) return false;
 		leftover += ch;
 		return true;
 	};
@@ -1439,8 +1455,9 @@ function readManaSymbols(value: string): { leftover: string; respelled: string }
 		const ch = value[pos] as string;
 		const close = ch === "{" ? value.indexOf("}", pos + 1) : -1;
 		if (close === -1) {
+			if (ch === "{") unclosed = true;
 			if (!bare(ch, false)) return null;
-			respelled += ch;
+			respelled += MANA_BRACED_ONLY_SYMBOLS.has(ch.toLowerCase()) ? `{${ch}}` : ch;
 			pos++;
 			continue;
 		}
@@ -3197,9 +3214,9 @@ function unbalancedParens(source: string): boolean {
 			continue;
 		}
 		if (c === "{") {
+			// A brace nothing closes is a character of its term — see readManaSymbols.
 			const close = src.indexOf("}", pos + 1);
-			if (close === -1) return false;
-			pos = close;
+			if (close !== -1) pos = close;
 			continue;
 		}
 		if (c === "(") depth++;
@@ -3263,7 +3280,7 @@ function scanPieces(source: string): Piece[] {
 			}
 			if (c === "{") {
 				const close = src.indexOf("}", pos + 1);
-				pos = close === -1 ? n : close + 1;
+				pos = close === -1 ? pos + 1 : close + 1;
 				continue;
 			}
 			if (c === "(") {

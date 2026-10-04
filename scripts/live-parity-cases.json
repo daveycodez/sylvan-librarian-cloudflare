@@ -2894,6 +2894,24 @@
 			"method": "GET",
 			"path": "/cards/search?q=keyword%3Afirststrike+e%3Akhm",
 			"note": "2026-10-04. 4 = `keyword:\"first strike\" e:khm` = `keyword:first-strike e:khm`; a part of a keyword is none (`keyword:fly e:khm` is the 305 with the unknown sentence). A 404 here."
+		},
+		{
+			"name": "mana-half-white-symbol",
+			"method": "GET",
+			"path": "/cards/search?q=mana%3A%7Bhw%7D",
+			"note": "2026-10-04. 1, Little Girl ({HW}); `mana:{h}`, `mana:{hr}`, `mana:{l}` and `mana:{c/p}` are plain 404s and `mana:{hu}` the 400 naming “{H}”. Each of the first five was `Failed to parse query` here: both parsers refused the un-set symbols."
+		},
+		{
+			"name": "mana-bare-snow-symbol",
+			"method": "GET",
+			"path": "/cards/search?q=mana%3As",
+			"note": "2026-10-04. 2 = `mana:{s}` (`mana:ss` is a 404, `mana:y` and `mana:xyz` 1). This port answered every card with a cost, 32,287: the engine reads `s`, `y`, `z` and `l` only in braces, so the term policy respells them."
+		},
+		{
+			"name": "mana-unclosed-brace-beside-a-term",
+			"method": "GET",
+			"path": "/cards/search?q=mana%3A%7Bw+e%3Akhm",
+			"note": "2026-10-04. `e:khm`'s 305 carrying `Invalid expression “mana:{w” was ignored. Unknown mana symbols “{”.` — `Failed to parse query` here, the unclosed brace having been read to the end of the query."
 		}
 	]
 }

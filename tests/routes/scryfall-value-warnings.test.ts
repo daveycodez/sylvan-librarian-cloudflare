@@ -456,4 +456,74 @@ describe("mana: names what its reader leaves unread", () => {
 		expect(scryfallTermPolicy(`mana>=/{r}/ ${ANCHOR}`).warnings).toEqual([ignored("mana>=/{r}/", unknown("//"))]);
 		expect(scryfallTermPolicy(`mana!=/^tap/ ${ANCHOR}`).warnings).toEqual([ignored("mana!=/^tap/", unknown("/^TAP/"))]);
 	});
+
+	test("the un-set symbols, and the ones no cost prints, are kept — and now parse", () => {
+		// `mana:{hw}` = `mana={hw}` = `mana>={hw}` is 1 (Little Girl) and `-mana:{hw}` 33,648;
+		// `mana:{h}`, `mana:{hr}`, `mana:{l}`, `mana:{l}{l}`, `mana:{c/p}` and `mana:{hw}{hw}` are
+		// plain 404s with no warning; `mana:{y}` is 1. Each was `Failed to parse query`.
+		for (const term of [
+			"mana:{hw}",
+			"mana={hw}",
+			"mana>={hw}",
+			"-mana:{hw}",
+			"mana:{h}",
+			"mana:{hr}",
+			"mana:{l}",
+			"mana:{l}{l}",
+			"mana:{c/p}",
+			"mana:{hw}{hw}",
+			"mana:{y}",
+			"mana:{x}{y}{z}{r}{r}",
+		]) {
+			expectKept(term, term);
+		}
+		// `{p/c}` is the same symbol written the other way round.
+		expectKept("mana:{p/c}", "mana:{c/p}");
+	});
+
+	test("half of any colour but white and red is not a symbol", () => {
+		// `mana:{hu}`, `mana:{hb}`, `mana:{hg}` and `mana:{hc}` are each the 400 naming “{H}”.
+		for (const symbol of ["{hu}", "{hb}", "{hg}", "{hc}"])
+			expectIgnored(`mana:${symbol}`, `mana:${symbol}`, unknown("{H}"));
+		// ...and a bare `h` is none either: `mana:h` and `mana:hw` name “H”.
+		expectIgnored("mana:h", "mana:h", unknown("H"));
+		expectIgnored("mana:hw", "mana:hw", unknown("H"));
+	});
+
+	test("a bare s, y, z or l is respelled in braces, where the engine reads it", () => {
+		// `mana:s` is 2 = `mana:{s}` and `mana:ss` a 404 — both were every card with a cost (32,287)
+		// here, the letter not read; `mana:y`, `mana:z` and `mana:xyz` are 1; `mana:l` is a 404.
+		expectKept("mana:s", "mana:{s}");
+		expectKept("mana:ss", "mana:{s}{s}");
+		expectKept("mana:y", "mana:{y}");
+		expectKept("mana:z", "mana:{z}");
+		expectKept("mana:xyz", "mana:x{y}{z}");
+		expectKept("mana:l", "mana:{l}");
+		expectKept("m>=2wsu", "m>=2w{s}u");
+		expectKept("-mana:s", "-mana:{s}");
+	});
+
+	test("an unclosed brace is a character of its term, and the rest of the query is answered", () => {
+		// `mana:{w e:khm` is `e:khm`'s 305 naming “{”; alone it is the 400. `mana:{w/u` names “{/”,
+		// `mana:{2/w` “{2/”, `mana:{w}{u` and `mana:{` “{”, `mana:{q` “{Q”, `mana:w}` “}”, and
+		// `mana>{w` what `mana:{w` does. With a second term each was `Failed to parse query`.
+		for (const [term, left] of [
+			["mana:{w", "{"],
+			["mana>{w", "{"],
+			["mana:{w/u", "{/"],
+			["mana:{2/w", "{2/"],
+			["mana:{w}{u", "{"],
+			["mana:{", "{"],
+			["mana:{q", "{Q"],
+			["mana:w}", "}"],
+		] as const) {
+			expectIgnored(term, term, unknown(left));
+		}
+		// ...inside a group too, where the scan used to read the brace past the `)`.
+		expect(scryfallTermPolicy(`(mana:{w) ${ANCHOR}`)).toMatchObject({
+			query: ANCHOR,
+			warnings: [ignored("mana:{w", unknown("{"))],
+			unclosedParens: false,
+		});
+	});
 });

@@ -804,6 +804,28 @@ EXTRA_CASES = [
     "fire /ice",
     "o:fire-",
     "name:fire/ice",
+    # LOCAL PATCH: the un-set mana symbols, and the ones Scryfall honors though no cost prints
+    # them. api.scryfall.com 2026-10-04: `mana:{hw}` is Little Girl, `{y}`/`{z}` The Ultimate
+    # Nightmare's, and `mana:{h}`, `mana:{hr}`, `mana:{l}`, `mana:{c/p}` plain 404s. `{hu}` and a
+    # bare `y`/`l`/`h` stay errors here (the compat surface answers those before the parser).
+    "mana:{hw}",
+    "mana={HW}",
+    "m>={hw}{w}",
+    "-mana:{hw}",
+    "mana:{hr}",
+    "mana:{h}",
+    "mana:{l}",
+    "mana:{l}{l}",
+    "mana:{y}",
+    "mana:{x}{y}{z}{r}{r}",
+    "mana:{c/p}",
+    'mana:"{hw}"',
+    "devotion:{hw}",
+    "mana:{hu}",
+    "mana:{p/c}",
+    "mana:y",
+    "mana:l",
+    "mana:h",
 ]
 
 

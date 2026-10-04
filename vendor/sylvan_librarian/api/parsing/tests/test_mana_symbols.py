@@ -30,7 +30,20 @@ _VALID = (
 # printed symbols, but only on cards from "funny" (Un-)sets — 'Y'/'Z' via The Ultimate Nightmare of
 # Wizards of the Coast Customer Service's {X}{Y}{Z}{R}{R} — which `preprocess_card` filters out of the
 # corpus entirely, so a mana cost containing them can never match a row either.
-_REAL_BUT_NOT_A_COST = ("T", "Q", "E", "A", "CHAOS", "PW", "TK", "∞", "HW", "HR", "Y", "Z")
+#
+# LOCAL PATCH (Cloudflare port): "HW", "HR", "Y" and "Z" left this tuple. This port imports the
+# un-sets, so a cost here CAN hold them, and api.scryfall.com answers `mana:{hw}` with Little Girl
+# (2026-10-04). See _UN_SET_ATOMS in mana_symbols.py.
+_REAL_BUT_NOT_A_COST = ("T", "Q", "E", "A", "CHAOS", "PW", "TK", "∞")
+
+# The un-set symbols, and the ones Scryfall honors though no cost prints them.
+_UN_SET = ("HW", "HR", "Y", "Z", "H", "L", "C/P")
+
+
+@pytest.mark.parametrize(argnames=["symbol"], argvalues=[(sym,) for sym in _UN_SET], ids=_UN_SET)
+def test_un_set_symbols_are_valid(symbol: str) -> None:
+    """LOCAL PATCH: 'mana:{hw}' is Little Girl on Scryfall, and '{l}' / '{c/p}' are honored and empty."""
+    assert is_valid_mana_symbol(symbol) is True
 
 
 @pytest.mark.parametrize(argnames=["symbol"], argvalues=[(sym,) for sym in _VALID], ids=_VALID)
@@ -62,7 +75,6 @@ def test_symbols_that_cannot_appear_in_a_cost_are_rejected(symbol: str) -> None:
         ("2/2",),
         ("C/C",),
         ("W/U/B",),  # three plain colours: no 'P', so not a hybrid-phyrexian shape either
-        ("C/P",),  # phyrexian mana is only ever a colour's, never colourless's
         ("2/P",),  # nor generic's
         ("W/1",),  # generic-hybrid's generic side is always '2'
         ("W/2",),  # ... and it's always first: {2/W}, never {W/2}
@@ -84,7 +96,6 @@ def test_symbols_that_cannot_appear_in_a_cost_are_rejected(symbol: str) -> None:
         "repeated_generic_side",
         "repeated_colorless_side",
         "three_colors_no_phyrexian",
-        "colorless_phyrexian",
         "generic_phyrexian",
         "non_two_generic",
         "generic_wrong_position",

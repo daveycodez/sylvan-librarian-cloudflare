@@ -27,9 +27,27 @@ export const BARE_MANA_ATOMS: ReadonlySet<string> = new Set("WUBRGCXS");
 // ccb562a8 (`{2/S}` and `{S/P}` validate); this mirrors the pinned behaviour, not a judgement.
 const COLORS: ReadonlySet<string> = new Set([...BARE_MANA_ATOMS].filter((c) => c !== "C" && c !== "X"));
 
+/**
+ * LOCAL PATCH (Cloudflare port): the one-part symbols only the un-sets print, and the ones Scryfall
+ * reads though no cost prints them.
+ *
+ * Upstream leaves these out on purpose — it drops every `set_type == "funny"` card at import, so
+ * no cost its queries can match holds them — and this port imports those cards. Measured on
+ * api.scryfall.com 2026-10-04: `mana:{hw}` is 1 (Little Girl, whose whole cost is {HW}) and so are
+ * `mana={hw}` and `mana>={hw}`; `{y}` and `{z}` are The Ultimate Nightmare of Wizards of the
+ * Coast® Customer Service's ({X}{Y}{Z}{R}{R}); and `mana:{h}`, `mana:{hr}`, `mana:{l}`,
+ * `mana:{l}{l}` and `mana:{c/p}` are each a plain 404 with no warning — honored, and matching
+ * nothing. Each was `Failed to parse query` here. (`{hu}` is NOT one: Scryfall names “{H}” unknown
+ * there, which the compat surface says before this is asked.)
+ *
+ * The engine needs nothing for them: a symbol that is not one of its lanes is compared by name
+ * against the store's own mana vocabulary (engine/builder/tests/odd_mana_symbols.rs).
+ */
+const UN_SET_ATOMS: readonly string[] = ["Y", "Z", "L", "H", "HW", "HR"];
+
 // Single-character atoms: a colour, colourless, snow, and X. Phyrexian ('P') is deliberately
 // absent: it never appears unpaired in a real cost, only through the paired shapes below.
-const ATOMS: ReadonlySet<string> = new Set([...COLORS, "C", "S", "X"]);
+const ATOMS: ReadonlySet<string> = new Set([...COLORS, "C", "S", "X", ...UN_SET_ATOMS]);
 
 // The generic side of generic-hybrid mana is always specifically '2' ({2/W}, never {1/W}).
 const GENERIC_HYBRID_VALUE = "2";
@@ -52,6 +70,7 @@ const PART_SHAPES: ReadonlySet<string> = new Set([
 	...[...COLORS].map((c) => `${GENERIC_HYBRID_VALUE}/${c}`), // generic hybrid, generic first: {2/W}
 	...[...COLORS].map((c) => `${c}/P`), // phyrexian, colour first: {W/P}
 	...permutations2(COLORS).map(([a, b]) => `${a}/${b}/P`), // hybrid-phyrexian, colours either order
+	"C/P", // LOCAL PATCH: colourless phyrexian, honored on Scryfall though no cost prints it — see UN_SET_ATOMS
 ]);
 
 /** Whether `part` is a whole one-part symbol: generic mana of any size, or a single atom. */

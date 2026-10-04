@@ -158,6 +158,10 @@
 		"tree": "{\"kwargs\":{\"operands\":[{\"kwargs\":{\"operand\":{\"kwargs\":{\"lhs\":{\"kwargs\":{\"attribute_name\":\"lore\",\"original_attribute\":\"lore\"},\"node_type\":\"CardAttributeNode\"},\"op\":\":\",\"rhs\":{\"kwargs\":{\"value\":\"jace\"},\"node_type\":\"StringValueNode\"}},\"node_type\":\"CardBinaryOperatorNode\"}},\"node_type\":\"NotNode\"},{\"kwargs\":{\"lhs\":{\"kwargs\":{\"attribute_name\":\"card_set_code\",\"original_attribute\":\"e\"},\"node_type\":\"CardAttributeNode\"},\"op\":\":\",\"rhs\":{\"kwargs\":{\"value\":\"khm\"},\"node_type\":\"StringValueNode\"}},\"node_type\":\"CardBinaryOperatorNode\"}]},\"node_type\":\"AndNode\"}"
 	},
 	{
+		"query": "-mana:{hw}",
+		"tree": "{\"kwargs\":{\"operand\":{\"kwargs\":{\"lhs\":{\"kwargs\":{\"attribute_name\":\"mana_cost_jsonb\",\"original_attribute\":\"mana\"},\"node_type\":\"CardAttributeNode\"},\"op\":\":\",\"rhs\":{\"kwargs\":{\"value\":\"{HW}\"},\"node_type\":\"ManaValueNode\"}},\"node_type\":\"CardBinaryOperatorNode\"}},\"node_type\":\"NotNode\"}"
+	},
+	{
 		"query": "-mtgoid:87321 e:khm",
 		"tree": "{\"kwargs\":{\"operands\":[{\"kwargs\":{\"operand\":{\"kwargs\":{\"lhs\":{\"kwargs\":{\"attribute_name\":\"mtgo_id\",\"original_attribute\":\"mtgoid\"},\"node_type\":\"CardAttributeNode\"},\"op\":\":\",\"rhs\":{\"kwargs\":{\"value\":\"87321\"},\"node_type\":\"StringValueNode\"}},\"node_type\":\"CardBinaryOperatorNode\"}},\"node_type\":\"NotNode\"},{\"kwargs\":{\"lhs\":{\"kwargs\":{\"attribute_name\":\"card_set_code\",\"original_attribute\":\"e\"},\"node_type\":\"CardAttributeNode\"},\"op\":\":\",\"rhs\":{\"kwargs\":{\"value\":\"khm\"},\"node_type\":\"StringValueNode\"}},\"node_type\":\"CardBinaryOperatorNode\"}]},\"node_type\":\"AndNode\"}"
 	},
@@ -944,6 +948,10 @@
 		"tree": "{\"kwargs\":{\"lhs\":{\"kwargs\":{\"attribute_name\":\"devotion\",\"original_attribute\":\"devotion\"},\"node_type\":\"CardAttributeNode\"},\"op\":\":\",\"rhs\":{\"kwargs\":{\"value\":\"{G}{G}{G}\"},\"node_type\":\"ManaValueNode\"}},\"node_type\":\"CardBinaryOperatorNode\"}"
 	},
 	{
+		"query": "devotion:{hw}",
+		"tree": "{\"kwargs\":{\"lhs\":{\"kwargs\":{\"attribute_name\":\"devotion\",\"original_attribute\":\"devotion\"},\"node_type\":\"CardAttributeNode\"},\"op\":\":\",\"rhs\":{\"kwargs\":{\"value\":\"{HW}\"},\"node_type\":\"ManaValueNode\"}},\"node_type\":\"CardBinaryOperatorNode\"}"
+	},
+	{
 		"query": "devotion=/{r}/",
 		"error": {
 			"type": "ValueError",
@@ -1379,11 +1387,19 @@
 		"tree": "{\"kwargs\":{\"lhs\":{\"kwargs\":{\"attribute_name\":\"mana_cost_jsonb\",\"original_attribute\":\"m\"},\"node_type\":\"CardAttributeNode\"},\"op\":\">=\",\"rhs\":{\"kwargs\":{\"value\":\"2WW\"},\"node_type\":\"ManaValueNode\"}},\"node_type\":\"CardBinaryOperatorNode\"}"
 	},
 	{
+		"query": "m>={hw}{w}",
+		"tree": "{\"kwargs\":{\"lhs\":{\"kwargs\":{\"attribute_name\":\"mana_cost_jsonb\",\"original_attribute\":\"m\"},\"node_type\":\"CardAttributeNode\"},\"op\":\">=\",\"rhs\":{\"kwargs\":{\"value\":\"{HW}{W}\"},\"node_type\":\"ManaValueNode\"}},\"node_type\":\"CardBinaryOperatorNode\"}"
+	},
+	{
 		"query": "mana!=/^tap/",
 		"error": {
 			"type": "ValueError",
 			"message": "Failed to parse query: \"mana!=/^tap/\""
 		}
+	},
+	{
+		"query": "mana:\"{hw}\"",
+		"tree": "{\"kwargs\":{\"lhs\":{\"kwargs\":{\"attribute_name\":\"mana_cost_jsonb\",\"original_attribute\":\"mana\"},\"node_type\":\"CardAttributeNode\"},\"op\":\":\",\"rhs\":{\"kwargs\":{\"value\":\"{HW}\"},\"node_type\":\"ManaValueNode\"}},\"node_type\":\"CardBinaryOperatorNode\"}"
 	},
 	{
 		"query": "mana:/\\smp/",
@@ -1406,12 +1422,83 @@
 		"tree": "{\"kwargs\":{\"lhs\":{\"kwargs\":{\"attribute_name\":\"mana_cost_jsonb\",\"original_attribute\":\"mana\"},\"node_type\":\"CardAttributeNode\"},\"op\":\":\",\"rhs\":{\"kwargs\":{\"value\":\"2WW\"},\"node_type\":\"ManaValueNode\"}},\"node_type\":\"CardBinaryOperatorNode\"}"
 	},
 	{
+		"query": "mana:h",
+		"error": {
+			"type": "ValueError",
+			"message": "Failed to parse query: \"mana:h\""
+		}
+	},
+	{
+		"query": "mana:l",
+		"error": {
+			"type": "ValueError",
+			"message": "Failed to parse query: \"mana:l\""
+		}
+	},
+	{
+		"query": "mana:y",
+		"error": {
+			"type": "ValueError",
+			"message": "Failed to parse query: \"mana:y\""
+		}
+	},
+	{
+		"query": "mana:{c/p}",
+		"tree": "{\"kwargs\":{\"lhs\":{\"kwargs\":{\"attribute_name\":\"mana_cost_jsonb\",\"original_attribute\":\"mana\"},\"node_type\":\"CardAttributeNode\"},\"op\":\":\",\"rhs\":{\"kwargs\":{\"value\":\"{C/P}\"},\"node_type\":\"ManaValueNode\"}},\"node_type\":\"CardBinaryOperatorNode\"}"
+	},
+	{
+		"query": "mana:{hr}",
+		"tree": "{\"kwargs\":{\"lhs\":{\"kwargs\":{\"attribute_name\":\"mana_cost_jsonb\",\"original_attribute\":\"mana\"},\"node_type\":\"CardAttributeNode\"},\"op\":\":\",\"rhs\":{\"kwargs\":{\"value\":\"{HR}\"},\"node_type\":\"ManaValueNode\"}},\"node_type\":\"CardBinaryOperatorNode\"}"
+	},
+	{
+		"query": "mana:{hu}",
+		"error": {
+			"type": "ValueError",
+			"message": "Failed to parse query: \"mana:{hu}\""
+		}
+	},
+	{
+		"query": "mana:{hw}",
+		"tree": "{\"kwargs\":{\"lhs\":{\"kwargs\":{\"attribute_name\":\"mana_cost_jsonb\",\"original_attribute\":\"mana\"},\"node_type\":\"CardAttributeNode\"},\"op\":\":\",\"rhs\":{\"kwargs\":{\"value\":\"{HW}\"},\"node_type\":\"ManaValueNode\"}},\"node_type\":\"CardBinaryOperatorNode\"}"
+	},
+	{
+		"query": "mana:{h}",
+		"tree": "{\"kwargs\":{\"lhs\":{\"kwargs\":{\"attribute_name\":\"mana_cost_jsonb\",\"original_attribute\":\"mana\"},\"node_type\":\"CardAttributeNode\"},\"op\":\":\",\"rhs\":{\"kwargs\":{\"value\":\"{H}\"},\"node_type\":\"ManaValueNode\"}},\"node_type\":\"CardBinaryOperatorNode\"}"
+	},
+	{
+		"query": "mana:{l}",
+		"tree": "{\"kwargs\":{\"lhs\":{\"kwargs\":{\"attribute_name\":\"mana_cost_jsonb\",\"original_attribute\":\"mana\"},\"node_type\":\"CardAttributeNode\"},\"op\":\":\",\"rhs\":{\"kwargs\":{\"value\":\"{L}\"},\"node_type\":\"ManaValueNode\"}},\"node_type\":\"CardBinaryOperatorNode\"}"
+	},
+	{
+		"query": "mana:{l}{l}",
+		"tree": "{\"kwargs\":{\"lhs\":{\"kwargs\":{\"attribute_name\":\"mana_cost_jsonb\",\"original_attribute\":\"mana\"},\"node_type\":\"CardAttributeNode\"},\"op\":\":\",\"rhs\":{\"kwargs\":{\"value\":\"{L}{L}\"},\"node_type\":\"ManaValueNode\"}},\"node_type\":\"CardBinaryOperatorNode\"}"
+	},
+	{
+		"query": "mana:{p/c}",
+		"error": {
+			"type": "ValueError",
+			"message": "Failed to parse query: \"mana:{p/c}\""
+		}
+	},
+	{
+		"query": "mana:{x}{y}{z}{r}{r}",
+		"tree": "{\"kwargs\":{\"lhs\":{\"kwargs\":{\"attribute_name\":\"mana_cost_jsonb\",\"original_attribute\":\"mana\"},\"node_type\":\"CardAttributeNode\"},\"op\":\":\",\"rhs\":{\"kwargs\":{\"value\":\"{X}{Y}{Z}{R}{R}\"},\"node_type\":\"ManaValueNode\"}},\"node_type\":\"CardBinaryOperatorNode\"}"
+	},
+	{
+		"query": "mana:{y}",
+		"tree": "{\"kwargs\":{\"lhs\":{\"kwargs\":{\"attribute_name\":\"mana_cost_jsonb\",\"original_attribute\":\"mana\"},\"node_type\":\"CardAttributeNode\"},\"op\":\":\",\"rhs\":{\"kwargs\":{\"value\":\"{Y}\"},\"node_type\":\"ManaValueNode\"}},\"node_type\":\"CardBinaryOperatorNode\"}"
+	},
+	{
 		"query": "mana<{R}{R}",
 		"tree": "{\"kwargs\":{\"lhs\":{\"kwargs\":{\"attribute_name\":\"mana_cost_jsonb\",\"original_attribute\":\"mana\"},\"node_type\":\"CardAttributeNode\"},\"op\":\"<\",\"rhs\":{\"kwargs\":{\"value\":\"{R}{R}\"},\"node_type\":\"ManaValueNode\"}},\"node_type\":\"CardBinaryOperatorNode\"}"
 	},
 	{
 		"query": "mana=/{r}/",
 		"tree": "{\"kwargs\":{\"lhs\":{\"kwargs\":{\"attribute_name\":\"mana_cost_jsonb\",\"original_attribute\":\"mana\"},\"node_type\":\"CardAttributeNode\"},\"op\":\"=\",\"rhs\":{\"kwargs\":{\"value\":\"{r}\"},\"node_type\":\"RegexValueNode\"}},\"node_type\":\"CardBinaryOperatorNode\"}"
+	},
+	{
+		"query": "mana={HW}",
+		"tree": "{\"kwargs\":{\"lhs\":{\"kwargs\":{\"attribute_name\":\"mana_cost_jsonb\",\"original_attribute\":\"mana\"},\"node_type\":\"CardAttributeNode\"},\"op\":\"=\",\"rhs\":{\"kwargs\":{\"value\":\"{HW}\"},\"node_type\":\"ManaValueNode\"}},\"node_type\":\"CardBinaryOperatorNode\"}"
 	},
 	{
 		"query": "mana>=/{r}/",

@@ -35,7 +35,14 @@ _COLORS = _BARE_ATOMS - frozenset("CX")
 # the rest of `_REAL_BUT_NOT_A_COST` in test_mana_symbols.py, not here.
 # Phyrexian ('P') is deliberately absent too: it never appears unpaired in a real cost, only through
 # the paired shapes `_PART_SHAPES` already enumerates ({W/P}, {2/P}, hybrid-phyrexian).
-_ATOMS = _COLORS | frozenset("CSX")
+#
+# LOCAL PATCH (Cloudflare port): the un-set symbols ARE atoms here, because this port imports the
+# un-sets. Measured on api.scryfall.com 2026-10-04: `mana:{hw}` is 1 (Little Girl), `{y}` and `{z}`
+# are The Ultimate Nightmare's, and `mana:{h}`, `mana:{hr}`, `mana:{l}` and `mana:{c/p}` are each a
+# plain 404 with no warning -- honored, and matching nothing. `{hu}` is not one (Scryfall names
+# "{H}" unknown there). The src/parser/mana-symbols.ts mirror carries the same list.
+_UN_SET_ATOMS = frozenset({"Y", "Z", "L", "H", "HW", "HR"})
+_ATOMS = _COLORS | frozenset("CSX") | _UN_SET_ATOMS
 
 # The generic side of generic-hybrid mana is always specifically '2' ({2/W}, never {1/W} or {3/W}).
 _GENERIC_HYBRID_VALUE = "2"
@@ -58,6 +65,7 @@ _PART_SHAPES = frozenset(
         *((_GENERIC_HYBRID_VALUE, c) for c in _COLORS),  # generic hybrid, generic first: {2/W}
         *((c, "P") for c in _COLORS),  # phyrexian, colour first: {W/P}
         *((a, b, "P") for a, b in itertools.permutations(_COLORS, 2)),  # hybrid-phyrexian, colours either order
+        ("C", "P"),  # LOCAL PATCH: colourless phyrexian, honored on Scryfall though no cost prints it
     )
 )
 
