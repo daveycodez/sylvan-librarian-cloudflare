@@ -807,6 +807,16 @@ The complete list of intentional differences:
   `src/routes/scryfall-compat/query-terms.ts`), which reproduces the counts
   exactly: `t: or e:khm` answers 22,369, which is 22,261 + (323 − 215) to the
   card.
+- **`/cards/search` answers arithmetic in a numeric term, where Scryfall
+  matches nothing.** `pow+tou<6`, `cmc+1<pow` and the rest are upstream's
+  extension to the query language; api.scryfall.com answers each with a plain
+  404 and no warning (measured 2026-10-03), and this port evaluates them on
+  both surfaces because `/search` shares the parser. Scryfall's own keyword for
+  the sum is `pt` (or `powtou`), which this port answers as Scryfall does —
+  and it is not the same number: `pt` is the FRONT face's power plus toughness,
+  while `pow+tou` is compared over every pairing of a card's faces, as `pow`
+  and `tou` each are. Recorded as a KNOWN_DEVIATION in the live-parity corpus
+  (`search-pow-plus-tou-arithmetic-is-not-scryfalls`).
 - **Card images come from Scryfall's CDN**, not upstream's CloudFront mirror.
   That mirror is filled by `scripts/copy_images_to_s3.py` against upstream's
   Postgres and S3, neither of which this deployment has — so it was reading a

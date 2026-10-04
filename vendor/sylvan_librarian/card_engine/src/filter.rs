@@ -85,6 +85,9 @@ pub(crate) enum NumField {
     PriceEur,
     PriceTix,
     PreferScore,
+    /// Scryfall's `pt` / `powtou`: the FRONT face's power plus its toughness. See
+    /// `front_power_plus_toughness`.
+    PowTou,
 }
 
 fn attr_to_num_field(attr: &str) -> Option<NumField> {
@@ -92,6 +95,7 @@ fn attr_to_num_field(attr: &str) -> Option<NumField> {
         "cmc"                  => Some(NumField::Cmc),
         "creature_power"       => Some(NumField::Power),
         "creature_toughness"   => Some(NumField::Toughness),
+        "power_plus_toughness" => Some(NumField::PowTou),
         "planeswalker_loyalty" => Some(NumField::Loyalty),
         "card_rarity_int"      => Some(NumField::RarityInt),
         "collector_number_int" => Some(NumField::CollectorNumberInt),
@@ -145,6 +149,61 @@ fn field_num(card: &AOracleCard, printing: Option<&APrinting>, f: NumField) -> N
         NumField::PriceEur           => printing.map_or(NumVal::PDep, |p| known_cents(super::search_price_eur_cents(p))),
         NumField::PriceTix           => printing.map_or(NumVal::PDep, |p| known_cents(p.price_tix.as_ref().map(|v| u32::from(*v)))),
         NumField::PreferScore        => printing.map_or(NumVal::PDep, |p| known(p.prefer_score.as_ref().map(|v| f32::from(*v)))),
+        NumField::PowTou             => front_power_plus_toughness(card),
+    }
+}
+
+/// `pt` / `powtou` — Scryfall's combined power-and-toughness keyword — for one card.
+///
+/// IT IS THE FRONT FACE'S SUM AND NOTHING ELSE, which is not what `pow` and `tou` are. Those two
+/// are existential over the faces and independent of each other (see the per-face section below),
+/// so `pow+tou` — arithmetic this engine has and Scryfall does not — reads the cross product and
+/// answers for a back face, or for one face's power against the other's toughness. `pt` does
+/// neither. Measured on api.scryfall.com 2026-10-03, each row scoped `!"<name>"` so it is 1 or 404:
+///
+///   Delver of Secrets // Insectile Aberration  1/1 // 3/2   pt=2 1   pt=5 404   pt=3 404   pt=4 404
+///   Akki Lavarunner // Tok-Tok (flip)          1/1 // 2/2   pt=2 1   pt=4 404
+///   Westvale Abbey // Ormendahl                —   // 9/7   pt=16 404   pt>=0 404   (pow>=0 is 1)
+///   Invasion of Zendikar // Awakened Skyclave  —   // 4/4   pt>=0 404              (pow>=0 is 1)
+///   Bonecrusher Giant // Stomp (adventure)     4/3          pt=7 1
+///   Valki, God of Lies // Tibalt               2/1 // —     pt=3 1
+///   Brisela, Voice of Nightmares (meld result) 9/10         pt=19 1
+///   Heart of Kiran (Vehicle)                   4/4          pt=8 1
+///
+/// The middle two are why this cannot read the card's own columns: the merge copies the power
+/// group from the first face that HAS one, so Westvale Abbey's row holds its back's 9/7. A card
+/// with faces is answered from `faces[0]`, and a card without them from its own row.
+///
+/// THE VALUES ARE THE ONES `pow` AND `tou` ALREADY COMPARE, so every printed form means here what
+/// it means there: Tarmogoyf's `*/1+*` is `pt=1`, Lord of Extinction's `*/*` is `pt=0`,
+/// Char-Rumbler's `-1/3` is `pt=2`, and Little Girl's `.5/.5` is `pt=1` — all measured, all 1.
+///
+/// NULL when the front has no power or no toughness, like any numeric column over an absent
+/// value: `-(pt>=0) t:instant e:khm` is 404 on Scryfall (36 instants, none matched), the same
+/// three-valued NOT `-(pow>=0)` shows there.
+///
+/// Corpus-wide the difference from `pow+tou` is small and all in the multi-face layouts —
+/// `pt=2` is 2,129 there against `pow+tou=2`'s 2,133 here, `pt<6` 10,818 against 10,855 — while
+/// `layout:normal` agrees exactly (`pt<6` 10,695 and `pt=2` 2,103 on both).
+///
+/// COMPUTED, not stored: two loads and an add per candidate card, no column, no index, no archive
+/// change. It is card-level, so it is never `PDep`; it is NOT in the joint-tuple index
+/// (`num_field_in_arith_tuple_scope`), whose key holds the merged row's values, so a `pt` term is
+/// evaluated per candidate like `edhrec` is.
+fn front_power_plus_toughness(card: &AOracleCard) -> NumVal {
+    let (power, toughness) = match card.faces.first() {
+        Some(front) => (
+            front.creature_power.as_ref().map(|v| f32::from(*v)),
+            front.creature_toughness.as_ref().map(|v| f32::from(*v)),
+        ),
+        None => (
+            card.creature_power.as_ref().map(|v| f32::from(*v)),
+            card.creature_toughness.as_ref().map(|v| f32::from(*v)),
+        ),
+    };
+    match (power, toughness) {
+        (Some(p), Some(t)) => NumVal::Known(f64::from(p) + f64::from(t)),
+        _ => NumVal::Null,
     }
 }
 
@@ -1962,6 +2021,8 @@ fn leaf_compares_printing_field(f: &FilterExpr) -> bool {
                 | NumField::PriceTix
                 | NumField::PreferScore => true,
                 NumField::Cmc | NumField::Power | NumField::Toughness | NumField::Loyalty | NumField::EdhrEc => false,
+                // The front face's stats: oracle-level, the same for every printing.
+                NumField::PowTou => false,
             },
             NumExpr::Arith(lhs, _, rhs) => num_pdep(lhs) || num_pdep(rhs),
         }

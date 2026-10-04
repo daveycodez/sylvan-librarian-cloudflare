@@ -223,12 +223,18 @@ const SCRYFALL_ONLY_KEYWORDS: ReadonlySet<string> = new Set([
  *
  * Reproducing the split rather than picking one sentence: the strings are the contract, and a
  * client that matches on them sees Scryfall's.
+ *
+ * `pt` and `powtou`, the combined power-and-toughness keyword, are the same kind of column and
+ * take the same sentence: `-pt=2` alone is the 400 carrying `Unknown keyword “-pt”.`, and
+ * `pt:foo t:goblin` is 561 carrying `Unknown keyword “pt”.` (2026-10-03).
  */
 const NEGATED_EQUALITY_UNKNOWN_KEYWORD: ReadonlySet<string> = new Set([
 	"pow",
 	"power",
 	"tou",
 	"toughness",
+	"pt",
+	"powtou",
 	"loy",
 	"loyalty",
 	"usd",
@@ -453,12 +459,17 @@ const DATE_KEYWORDS: ReadonlySet<string> = new Set(["date"]);
  *
  * ─── WHAT IS DELIBERATELY NOT IN THE SET ─────────────────────────────────────────────────────
  *
- * `edhrec`, `artists`, `paperprints`, `papersets` and `pt` are numeric columns Scryfall compares
+ * `edhrec`, `artists`, `paperprints` and `papersets` are numeric columns Scryfall compares
  * (`edhrec>=5000 e:khm t:creature` = 112) and this parser has no spelling for. They are not in
  * SCRYFALL_ONLY_KEYWORDS either, so they were already being reported as unknown keywords; under
  * this rule they answer the 404 an unknown keyword answers instead of the 151 the ignore
  * machinery answered. Both are wrong against Scryfall's count, and putting them in the set would
  * be worse — a term kept for a keyword the parser cannot lex is a 400.
+ *
+ * `pt` WAS THE FIFTH NAME ON THAT LIST until 2026-10-03, and is the worked example of what the
+ * list costs: `pt<6` answered this rule's 404 against Scryfall's 10,818, and `pt=2 t:creature`
+ * answered all 18,760 creatures with an unknown-keyword warning against Scryfall's 2,127. It has
+ * a column now (db-info's `power_plus_toughness`, both spellings), so it is in the set.
  */
 const COMPARABLE_KEYWORDS: ReadonlySet<string> = new Set([
 	// colour and colour-identity counts
@@ -484,6 +495,8 @@ const COMPARABLE_KEYWORDS: ReadonlySet<string> = new Set([
 	"power",
 	"tou",
 	"toughness",
+	"pt",
+	"powtou",
 	"loy",
 	"loyalty",
 	"usd",
@@ -1461,12 +1474,20 @@ function isNumericValue(value: string): boolean {
 	return /^[a-z]+$/.test(v) && CROSS_COLUMN_VALUES.has(v);
 }
 
-/** The column names Scryfall accepts on the RIGHT of a numeric comparison. */
+/**
+ * The column names Scryfall accepts on the RIGHT of a numeric comparison.
+ *
+ * `pt`/`powtou` are among them, in both positions (2026-10-03): `pt>pow` 18,477, `pt>tou` =
+ * `powtou>tou` = `tou<pt` 17,862, `pt=pow` = `pow=pt` 472, `pt<pow` = `pow>pt` 44, `pt>mv`
+ * 15,207, `pt=cmc` 2,328, `mv>pt` 1,364.
+ */
 const CROSS_COLUMN_VALUES: ReadonlySet<string> = new Set([
 	"pow",
 	"power",
 	"tou",
 	"toughness",
+	"pt",
+	"powtou",
 	"cmc",
 	"mv",
 	"manavalue",
@@ -1474,6 +1495,26 @@ const CROSS_COLUMN_VALUES: ReadonlySet<string> = new Set([
 	"loyalty",
 	"x",
 ]);
+
+/**
+ * What Scryfall says to a numeric column compared with itself.
+ *
+ * Measured 2026-10-03: `pt=pt`, `pt>powtou`, `pow=pow`, `pow=power`, `cmc=mv` and `tou>toughness`
+ * alone are each the 400 carrying this sentence, and `loy=loy`, `pow>power` and `pt=powtou` with
+ * `e:khm t:god` are each its 12 with the warning — every operator, and across SPELLINGS of one
+ * column, so it is the column that is compared and not the word. This port answered `pow=pow`
+ * with every card that has a power (18,981).
+ *
+ * The negated forms never reach it, and are measured too: `-pow=pow` is the negated-equality
+ * `Unknown keyword “-pow”.` and `-pow>pow` the silent tautology.
+ */
+const SAME_SIDES_REASON = "The sides of your comparison must be different.";
+
+/** The numeric column an alias names — `pow` and `power` are one, `pt` and `powtou` are one. */
+function numericColumnOf(alias: string): string | null {
+	const info = (ALIAS_TO_FIELD_INFOS.get(alias) ?? []).find((fi) => fi.parserClass === ParserClass.NUMERIC);
+	return info === undefined ? null : info.dbColumnName;
+}
 
 /** The verdict on one leaf term: keep it (possibly rewritten), or drop it with Scryfall's reason. */
 type LeafVerdict = { keep: true; text: string } | { keep: false; reason: string };
@@ -1587,6 +1628,13 @@ function classifyLeaf(term: string): LeafVerdict {
 					: { keep: false, reason: `Unknown keyword \u201c${keyword}\u201d.` };
 			}
 			return { keep: true, text: NEVER_MATCHES };
+		}
+		// A column compared with ITSELF, under any spelling of it and any operator — see
+		// SAME_SIDES_REASON. After the value check, so a value that is not a column never gets
+		// here, and after the negation rules, which answer `-pow=pow` and `-pow>pow` first.
+		const column = numericColumnOf(keyword);
+		if (column !== null && column === numericColumnOf(loweredValue)) {
+			return { keep: false, reason: SAME_SIDES_REASON };
 		}
 	}
 

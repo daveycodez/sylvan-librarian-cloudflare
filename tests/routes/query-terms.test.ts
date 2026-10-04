@@ -402,6 +402,122 @@ describe("a quoted value is a string, never a number", () => {
 	});
 });
 
+describe("pt and powtou — the combined power-and-toughness keyword", () => {
+	// Measured on api.scryfall.com 2026-10-03. Before this the keyword had no column here: `pt<6`
+	// took the unknown-keyword comparison's 404 against Scryfall's 10,818, `pt=2 t:creature` answered
+	// all 18,760 creatures with `Unknown keyword “pt”.` against 2,127, and `powtou=2` was the 400
+	// "All of your terms were ignored." against 2,129.
+	const kept = (q: string) =>
+		expect(scryfallTermPolicy(q)).toMatchObject({ query: q, warnings: [], allIgnored: false });
+
+	test("every comparator, on both spellings, is kept as written", () => {
+		// pt=2 / powtou=2 2,129 · pt:6 / powtou:6 2,724 · pt<6 10,818 · pt<=6 13,542 · pt>6 5,357 ·
+		// pt>=6 8,081 · pt!=6 16,175 — and powtou the same seven numbers.
+		for (const keyword of ["pt", "powtou", "PT"]) {
+			for (const op of ["=", ":", "<", "<=", ">", ">=", "!="]) {
+				kept(`${keyword}${op}6`);
+			}
+		}
+		kept("pt=2 t:creature");
+		kept("pt<6 ci<=br -ci=c t:creature");
+		kept("pt=2.0");
+	});
+
+	test("it stands on either side of a column comparison", () => {
+		// pt>pow 18,477 · pt>tou = powtou>tou = tou<pt 17,862 · pt=pow = pow=pt 472 · pt<pow = pow>pt
+		// 44 · pt>mv 15,207 · pt=cmc 2,328 · mv>pt 1,364.
+		for (const q of [
+			"pt>pow",
+			"pt>tou",
+			"powtou>tou",
+			"tou<pt",
+			"pt=pow",
+			"pow=pt",
+			"pow>pt",
+			"pt>mv",
+			"pt=cmc",
+			"mv>pt",
+		]) {
+			kept(q);
+		}
+	});
+
+	test("the negated forms are the two sentences every numeric column gets", () => {
+		// `-pt=2` alone is the 400 with the minus inside the quotes; `-pt>=3 e:khm t:creature` is
+		// the anchor's 141 with no warning — the silent tautology.
+		expect(scryfallTermPolicy("-pt=2")).toMatchObject({
+			allIgnored: true,
+			warnings: ["Invalid expression “-pt=2” was ignored. Unknown keyword “-pt”."],
+		});
+		expect(scryfallTermPolicy("-pt>=3 e:khm t:creature")).toMatchObject({
+			query: "-cmc<0 e:khm t:creature",
+			warnings: [],
+		});
+		// `-( … )` is honored: `-(pt<6) e:khm` is 72, the 146 with a pt less `pt<6`'s 74.
+		kept("-(pt<6) e:khm");
+	});
+
+	test("a value that is not a number is the keyword's own sentence, or an empty comparison", () => {
+		// pt:foo t:goblin is 561 + `Unknown keyword “pt”.`; pt:even and pt="2" alone are the 400.
+		expect(scryfallTermPolicy("pt:foo t:goblin")).toMatchObject({
+			query: "t:goblin",
+			warnings: ["Invalid expression “pt:foo” was ignored. Unknown keyword “pt”."],
+		});
+		for (const term of ["pt:even", 'pt="2"']) {
+			expect(scryfallTermPolicy(term)).toMatchObject({
+				allIgnored: true,
+				warnings: [`Invalid expression “${term}” was ignored. Unknown keyword “pt”.`],
+			});
+		}
+		expect(scryfallTermPolicy("powtou>notanumber e:khm").query).toBe("cmc<0 e:khm");
+	});
+
+	test("`pow+tou` is this port's arithmetic, not Scryfall's keyword — it is left alone", () => {
+		// api.scryfall.com answers `pow+tou<6` with a 404 and no warning; this port answers it, over
+		// the cross product of a card's faces (see card_engine's `front_power_plus_toughness` for
+		// where the two part). The policy does not touch it either way.
+		kept("pow+tou<6 ci<=br -ci=c t:creature");
+	});
+});
+
+describe("a numeric column compared with itself", () => {
+	// Measured 2026-10-03. This port answered `pow=pow` with every card that has a power (18,981).
+	const SIDES = "The sides of your comparison must be different.";
+
+	test("is ignored with Scryfall's sentence, across spellings of one column and under any operator", () => {
+		// pt=pt, pt>powtou, pow=pow, pow=power, cmc=mv, tou>toughness alone: each the 400 with it.
+		for (const term of ["pt=pt", "pt>powtou", "pow=pow", "pow=power", "cmc=mv", "tou>toughness"]) {
+			expect(scryfallTermPolicy(term)).toMatchObject({
+				allIgnored: true,
+				warnings: [`Invalid expression “${term}” was ignored. ${SIDES}`],
+			});
+		}
+		// loy=loy, pow>power and pt=powtou with `e:khm t:god`: each its 12, with the warning.
+		for (const term of ["loy=loy", "pow>power", "pt=powtou"]) {
+			expect(scryfallTermPolicy(`${term} e:khm t:god`)).toMatchObject({
+				query: "e:khm t:god",
+				warnings: [`Invalid expression “${term}” was ignored. ${SIDES}`],
+			});
+		}
+		// Case is immaterial on both sides, as it is for the keyword everywhere else.
+		expect(scryfallTermPolicy("POW=Power e:khm").warnings).toEqual([
+			`Invalid expression “pow=power” was ignored. ${SIDES}`,
+		]);
+	});
+
+	test("two DIFFERENT columns are a comparison, and the negated forms keep their own rules", () => {
+		for (const q of ["pow>tou", "tou<=pow", "cmc<pow", "pt>pow", "pow>pt"]) {
+			expect(scryfallTermPolicy(q)).toMatchObject({ query: q, warnings: [] });
+		}
+		// -pow=pow e:khm t:god is 12 + `Unknown keyword “-pow”.`; -pow>pow is 12 with no warning.
+		expect(scryfallTermPolicy("-pow=pow e:khm t:god")).toMatchObject({
+			query: "e:khm t:god",
+			warnings: ["Invalid expression “-pow=pow” was ignored. Unknown keyword “-pow”."],
+		});
+		expect(scryfallTermPolicy("-pow>pow e:khm t:god")).toMatchObject({ query: "-cmc<0 e:khm t:god", warnings: [] });
+	});
+});
+
 describe("a negated comparison is not applied — it is always-true, and silently so", () => {
 	// The general case of the block above, measured on api.scryfall.com 2026-08-16 with the anchor
 	// `e:khm t:creature` = 151. A row answering 151 is a term that did nothing; see
@@ -1303,6 +1419,9 @@ describe("the regex surface, alias by alias", () => {
 		pow: ["pow:/1/", "Unknown regular expression keyword \u201cpow\u201d."],
 		toughness: ["toughness:/1/", "Unknown regular expression keyword \u201ctoughness\u201d."],
 		tou: ["tou:/1/", "Unknown regular expression keyword \u201ctou\u201d."],
+		// Both read off `<kw>:/1/ t:goblin`, 561 with the warning (2026-10-03).
+		pt: ["pt:/1/", "Unknown regular expression keyword \u201cpt\u201d."],
+		powtou: ["powtou:/1/", "Unknown regular expression keyword \u201cpowtou\u201d."],
 		loyalty: ["loyalty:/3/", "Unknown regular expression keyword \u201cloyalty\u201d."],
 		loy: ["loy:/3/", "Unknown regular expression keyword \u201cloy\u201d."],
 		devotion: ["devotion:/u/", "Unknown regular expression keyword \u201cdevotion\u201d."],

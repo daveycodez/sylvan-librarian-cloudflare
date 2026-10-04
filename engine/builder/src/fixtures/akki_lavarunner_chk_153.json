@@ -1,0 +1,160 @@
+{
+ "artist": "Matt Cavotta",
+ "artist_ids": [
+  "2e6a0611-9411-4ba4-98e3-c0e18cbf9f83"
+ ],
+ "booster": true,
+ "border_color": "black",
+ "card_back_id": "0aeebaf5-8c7d-4636-9e82-8c27447861f7",
+ "card_faces": [
+  {
+   "artist": "Matt Cavotta",
+   "artist_id": "2e6a0611-9411-4ba4-98e3-c0e18cbf9f83",
+   "illustration_id": "54705304-6aeb-4722-9a17-9006db12b939",
+   "mana_cost": "{3}{R}",
+   "name": "Akki Lavarunner",
+   "object": "card_face",
+   "oracle_text": "Haste\nWhenever this creature deals damage to an opponent, flip it.",
+   "power": "1",
+   "toughness": "1",
+   "type_line": "Creature \u2014 Goblin Warrior"
+  },
+  {
+   "artist": "Matt Cavotta",
+   "artist_id": "2e6a0611-9411-4ba4-98e3-c0e18cbf9f83",
+   "mana_cost": "",
+   "name": "Tok-Tok, Volcano Born",
+   "object": "card_face",
+   "oracle_text": "Protection from red\nIf a red source would deal damage to a player, it deals that much damage plus 1 to that player instead.",
+   "power": "2",
+   "toughness": "2",
+   "type_line": "Legendary Creature \u2014 Goblin Shaman"
+  }
+ ],
+ "cardmarket_id": 11957,
+ "cmc": 4,
+ "collector_number": "153",
+ "color_identity": [
+  "R"
+ ],
+ "colors": [
+  "R"
+ ],
+ "digital": false,
+ "edhrec_rank": 21679,
+ "finishes": [
+  "nonfoil",
+  "foil"
+ ],
+ "foil": true,
+ "frame": "2003",
+ "full_art": false,
+ "game_changer": false,
+ "games": [
+  "paper",
+  "mtgo"
+ ],
+ "highres_image": true,
+ "id": "6ee6cd34-c117-4d7e-97d1-8f8464bfaac8",
+ "illustration_id": "54705304-6aeb-4722-9a17-9006db12b939",
+ "image_status": "highres_scan",
+ "image_updated_at": "2026-07-13T12:05:04Z",
+ "image_uris": {
+  "art": "https://cards.scryfall.io/art/front/6/e/6ee6cd34-c117-4d7e-97d1-8f8464bfaac8.webp?1783944304",
+  "art_crop": "https://cards.scryfall.io/art_crop/front/6/e/6ee6cd34-c117-4d7e-97d1-8f8464bfaac8.jpg?1783944304",
+  "border_crop": "https://cards.scryfall.io/border_crop/front/6/e/6ee6cd34-c117-4d7e-97d1-8f8464bfaac8.jpg?1783944304",
+  "crop": "https://cards.scryfall.io/crop/front/6/e/6ee6cd34-c117-4d7e-97d1-8f8464bfaac8.webp?1783944304",
+  "display": "https://cards.scryfall.io/display/front/6/e/6ee6cd34-c117-4d7e-97d1-8f8464bfaac8.webp?1783944304",
+  "grid": "https://cards.scryfall.io/grid/front/6/e/6ee6cd34-c117-4d7e-97d1-8f8464bfaac8.webp?1783944304",
+  "large": "https://cards.scryfall.io/large/front/6/e/6ee6cd34-c117-4d7e-97d1-8f8464bfaac8.jpg?1783944304",
+  "normal": "https://cards.scryfall.io/normal/front/6/e/6ee6cd34-c117-4d7e-97d1-8f8464bfaac8.jpg?1783944304",
+  "png": "https://cards.scryfall.io/png/front/6/e/6ee6cd34-c117-4d7e-97d1-8f8464bfaac8.png?1783944304",
+  "small": "https://cards.scryfall.io/small/front/6/e/6ee6cd34-c117-4d7e-97d1-8f8464bfaac8.jpg?1783944304",
+  "thumb": "https://cards.scryfall.io/thumb/front/6/e/6ee6cd34-c117-4d7e-97d1-8f8464bfaac8.webp?1783944304"
+ },
+ "keywords": [
+  "Protection",
+  "Haste"
+ ],
+ "lang": "en",
+ "layout": "flip",
+ "legalities": {
+  "alchemy": "not_legal",
+  "brawl": "not_legal",
+  "commander": "legal",
+  "competitivebrawl": "not_legal",
+  "duel": "legal",
+  "future": "not_legal",
+  "gladiator": "not_legal",
+  "historic": "not_legal",
+  "legacy": "legal",
+  "modern": "legal",
+  "oathbreaker": "legal",
+  "oldschool": "not_legal",
+  "pauper": "not_legal",
+  "paupercommander": "not_legal",
+  "penny": "legal",
+  "pioneer": "not_legal",
+  "predh": "legal",
+  "premodern": "not_legal",
+  "standard": "not_legal",
+  "standardbrawl": "not_legal",
+  "timeless": "not_legal",
+  "tlr": "not_legal",
+  "vintage": "legal"
+ },
+ "mana_cost": "{3}{R}",
+ "mtgo_foil_id": 21238,
+ "mtgo_id": 21237,
+ "multiverse_ids": [
+  78694
+ ],
+ "name": "Akki Lavarunner // Tok-Tok, Volcano Born",
+ "nonfoil": true,
+ "object": "card",
+ "oracle_id": "47795817-73e5-4af6-bd1e-d69b193e8e9e",
+ "oversized": false,
+ "penny_rank": 15339,
+ "power": "1",
+ "prices": {
+  "eur": "0.30",
+  "eur_foil": "4.71",
+  "tix": "0.02",
+  "usd": "0.51",
+  "usd_etched": null,
+  "usd_foil": "4.04"
+ },
+ "prints_search_uri": "https://api.scryfall.com/cards/search?order=released&q=oracleid%3A47795817-73e5-4af6-bd1e-d69b193e8e9e&unique=prints",
+ "promo": false,
+ "purchase_uris": {
+  "cardhoarder": "https://www.cardhoarder.com/cards/21237?affiliate_id=scryfall&ref=card-profile&utm_campaign=affiliate&utm_medium=card&utm_source=scryfall",
+  "cardmarket": "https://www.cardmarket.com/en/Magic/Products?idProduct=11957&referrer=scryfall&utm_campaign=card_prices&utm_medium=text&utm_source=scryfall",
+  "tcgplayer": "https://partner.tcgplayer.com/c/4931599/1830156/21018?subId1=api&u=https%3A%2F%2Fwww.tcgplayer.com%2Fproduct%2F11938%3Fpage%3D1"
+ },
+ "rarity": "rare",
+ "related_uris": {
+  "edhrec": "https://edhrec.com/route/?cc=Akki+Lavarunner",
+  "gatherer": "https://gatherer.wizards.com/Pages/Card/Details.aspx?multiverseid=78694&printed=false",
+  "tcgplayer_infinite_articles": "https://partner.tcgplayer.com/c/4931599/1830156/21018?subId1=api&trafcat=tcgplayer.com%2Fsearch%2Farticles&u=https%3A%2F%2Fwww.tcgplayer.com%2Fsearch%2Farticles%3FproductLineName%3Dmagic%26q%3DAkki%2BLavarunner%2B%252F%252F%2BTok-Tok%252C%2BVolcano%2BBorn",
+  "tcgplayer_infinite_decks": "https://partner.tcgplayer.com/c/4931599/1830156/21018?subId1=api&trafcat=tcgplayer.com%2Fsearch%2Fdecks&u=https%3A%2F%2Fwww.tcgplayer.com%2Fsearch%2Fdecks%3FproductLineName%3Dmagic%26q%3DAkki%2BLavarunner%2B%252F%252F%2BTok-Tok%252C%2BVolcano%2BBorn"
+ },
+ "released_at": "2004-10-01",
+ "reprint": false,
+ "reserved": false,
+ "rulings_uri": "https://api.scryfall.com/cards/6ee6cd34-c117-4d7e-97d1-8f8464bfaac8/rulings",
+ "scryfall_set_uri": "https://scryfall.com/sets/chk?utm_source=api",
+ "scryfall_uri": "https://scryfall.com/card/chk/153/akki-lavarunner-tok-tok-volcano-born?utm_source=api",
+ "set": "chk",
+ "set_id": "6183d21f-a0af-4118-ba58-aca1d8719c01",
+ "set_name": "Champions of Kamigawa",
+ "set_search_uri": "https://api.scryfall.com/cards/search?order=set&q=e%3Achk&unique=prints",
+ "set_type": "expansion",
+ "set_uri": "https://api.scryfall.com/sets/6183d21f-a0af-4118-ba58-aca1d8719c01",
+ "story_spotlight": false,
+ "tcgplayer_id": 11938,
+ "textless": false,
+ "toughness": "1",
+ "type_line": "Creature \u2014 Goblin Warrior // Legendary Creature \u2014 Goblin Shaman",
+ "uri": "https://api.scryfall.com/cards/6ee6cd34-c117-4d7e-97d1-8f8464bfaac8",
+ "variation": false
+}

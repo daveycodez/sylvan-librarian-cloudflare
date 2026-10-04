@@ -36,6 +36,7 @@ const ATTRIBUTE_NAME_MAP: Record<string, string> = {
 	cmc: "mana value",
 	creature_power: "power",
 	creature_toughness: "toughness",
+	power_plus_toughness: "power plus toughness",
 	card_color_identity: "color identity",
 	card_colors: "color",
 	card_name: "name",

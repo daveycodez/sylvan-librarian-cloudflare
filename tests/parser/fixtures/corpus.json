@@ -880,6 +880,10 @@
 		"tree": "{\"kwargs\":{\"lhs\":{\"kwargs\":{\"attribute_name\":\"produced_mana\",\"original_attribute\":\"produces\"},\"node_type\":\"CardAttributeNode\"},\"op\":\":\",\"rhs\":[\"G\"]},\"node_type\":\"CardBinaryOperatorNode\"}"
 	},
 	{
+		"query": "PT=2",
+		"tree": "{\"kwargs\":{\"lhs\":{\"kwargs\":{\"attribute_name\":\"power_plus_toughness\",\"original_attribute\":\"pt\"},\"node_type\":\"CardAttributeNode\"},\"op\":\"=\",\"rhs\":{\"kwargs\":{\"value\":2},\"node_type\":\"NumericValueNode\"}},\"node_type\":\"CardBinaryOperatorNode\"}"
+	},
+	{
 		"query": "Power > CMC - 1",
 		"tree": "{\"kwargs\":{\"lhs\":{\"kwargs\":{\"attribute_name\":\"creature_power\",\"original_attribute\":\"power\"},\"node_type\":\"CardAttributeNode\"},\"op\":\">\",\"rhs\":{\"kwargs\":{\"lhs\":{\"kwargs\":{\"attribute_name\":\"cmc\",\"original_attribute\":\"cmc\"},\"node_type\":\"CardAttributeNode\"},\"op\":\"-\",\"rhs\":{\"kwargs\":{\"value\":1},\"node_type\":\"NumericValueNode\"}},\"node_type\":\"CardBinaryOperatorNode\"}},\"node_type\":\"CardBinaryOperatorNode\"}"
 	},
@@ -3652,6 +3656,10 @@
 		}
 	},
 	{
+		"query": "mv>pt",
+		"tree": "{\"kwargs\":{\"lhs\":{\"kwargs\":{\"attribute_name\":\"cmc\",\"original_attribute\":\"mv\"},\"node_type\":\"CardAttributeNode\"},\"op\":\">\",\"rhs\":{\"kwargs\":{\"attribute_name\":\"power_plus_toughness\",\"original_attribute\":\"pt\"},\"node_type\":\"CardAttributeNode\"}},\"node_type\":\"CardBinaryOperatorNode\"}"
+	},
+	{
 		"query": "name: /'/",
 		"tree": "{\"kwargs\":{\"lhs\":{\"kwargs\":{\"attribute_name\":\"card_name\",\"original_attribute\":\"name\"},\"node_type\":\"CardAttributeNode\"},\"op\":\":\",\"rhs\":{\"kwargs\":{\"value\":\"'\"},\"node_type\":\"StringValueNode\"}},\"node_type\":\"CardBinaryOperatorNode\"}"
 	},
@@ -4476,6 +4484,10 @@
 		"tree": "{\"kwargs\":{\"operands\":[{\"kwargs\":{\"lhs\":{\"kwargs\":{\"attribute_name\":\"creature_power\",\"original_attribute\":\"pow\"},\"node_type\":\"CardAttributeNode\"},\"op\":\"=\",\"rhs\":{\"kwargs\":{\"value\":3},\"node_type\":\"NumericValueNode\"}},\"node_type\":\"CardBinaryOperatorNode\"},{\"kwargs\":{\"operand\":{\"kwargs\":{\"operands\":[{\"kwargs\":{\"lhs\":{\"kwargs\":{\"attribute_name\":\"card_name\",\"original_attribute\":\"name\"},\"node_type\":\"CardAttributeNode\"},\"op\":\":\",\"rhs\":{\"kwargs\":{\"value\":\"Force\"},\"node_type\":\"CollatedNameValueNode\"}},\"node_type\":\"CardBinaryOperatorNode\"},{\"kwargs\":{\"lhs\":{\"kwargs\":{\"attribute_name\":\"card_subtypes\",\"original_attribute\":\"type\"},\"node_type\":\"CardAttributeNode\"},\"op\":\":\",\"rhs\":[\"Elf\"]},\"node_type\":\"CardBinaryOperatorNode\"}]},\"node_type\":\"OrNode\"}},\"node_type\":\"NotNode\"}]},\"node_type\":\"AndNode\"}"
 	},
 	{
+		"query": "pow>pt",
+		"tree": "{\"kwargs\":{\"lhs\":{\"kwargs\":{\"attribute_name\":\"creature_power\",\"original_attribute\":\"pow\"},\"node_type\":\"CardAttributeNode\"},\"op\":\">\",\"rhs\":{\"kwargs\":{\"attribute_name\":\"power_plus_toughness\",\"original_attribute\":\"pt\"},\"node_type\":\"CardAttributeNode\"}},\"node_type\":\"CardBinaryOperatorNode\"}"
+	},
+	{
 		"query": "power - (cmc - 1) > 2",
 		"tree": "{\"kwargs\":{\"lhs\":{\"kwargs\":{\"lhs\":{\"kwargs\":{\"attribute_name\":\"creature_power\",\"original_attribute\":\"power\"},\"node_type\":\"CardAttributeNode\"},\"op\":\"-\",\"rhs\":{\"kwargs\":{\"lhs\":{\"kwargs\":{\"attribute_name\":\"cmc\",\"original_attribute\":\"cmc\"},\"node_type\":\"CardAttributeNode\"},\"op\":\"-\",\"rhs\":{\"kwargs\":{\"value\":1},\"node_type\":\"NumericValueNode\"}},\"node_type\":\"CardBinaryOperatorNode\"}},\"node_type\":\"CardBinaryOperatorNode\"},\"op\":\">\",\"rhs\":{\"kwargs\":{\"value\":2},\"node_type\":\"NumericValueNode\"}},\"node_type\":\"CardBinaryOperatorNode\"}"
 	},
@@ -4774,6 +4786,42 @@
 		"tree": "{\"kwargs\":{\"lhs\":{\"kwargs\":{\"attribute_name\":\"creature_power\",\"original_attribute\":\"power\"},\"node_type\":\"CardAttributeNode\"},\"op\":\">\",\"rhs\":{\"kwargs\":{\"attribute_name\":\"creature_toughness\",\"original_attribute\":\"toughness\"},\"node_type\":\"CardAttributeNode\"}},\"node_type\":\"CardBinaryOperatorNode\"}"
 	},
 	{
+		"query": "powtou!=6",
+		"tree": "{\"kwargs\":{\"lhs\":{\"kwargs\":{\"attribute_name\":\"power_plus_toughness\",\"original_attribute\":\"powtou\"},\"node_type\":\"CardAttributeNode\"},\"op\":\"!=\",\"rhs\":{\"kwargs\":{\"value\":6},\"node_type\":\"NumericValueNode\"}},\"node_type\":\"CardBinaryOperatorNode\"}"
+	},
+	{
+		"query": "powtou:6",
+		"tree": "{\"kwargs\":{\"lhs\":{\"kwargs\":{\"attribute_name\":\"power_plus_toughness\",\"original_attribute\":\"powtou\"},\"node_type\":\"CardAttributeNode\"},\"op\":\":\",\"rhs\":{\"kwargs\":{\"value\":6},\"node_type\":\"NumericValueNode\"}},\"node_type\":\"CardBinaryOperatorNode\"}"
+	},
+	{
+		"query": "powtou<6",
+		"tree": "{\"kwargs\":{\"lhs\":{\"kwargs\":{\"attribute_name\":\"power_plus_toughness\",\"original_attribute\":\"powtou\"},\"node_type\":\"CardAttributeNode\"},\"op\":\"<\",\"rhs\":{\"kwargs\":{\"value\":6},\"node_type\":\"NumericValueNode\"}},\"node_type\":\"CardBinaryOperatorNode\"}"
+	},
+	{
+		"query": "powtou<=6",
+		"tree": "{\"kwargs\":{\"lhs\":{\"kwargs\":{\"attribute_name\":\"power_plus_toughness\",\"original_attribute\":\"powtou\"},\"node_type\":\"CardAttributeNode\"},\"op\":\"<=\",\"rhs\":{\"kwargs\":{\"value\":6},\"node_type\":\"NumericValueNode\"}},\"node_type\":\"CardBinaryOperatorNode\"}"
+	},
+	{
+		"query": "powtou=2",
+		"tree": "{\"kwargs\":{\"lhs\":{\"kwargs\":{\"attribute_name\":\"power_plus_toughness\",\"original_attribute\":\"powtou\"},\"node_type\":\"CardAttributeNode\"},\"op\":\"=\",\"rhs\":{\"kwargs\":{\"value\":2},\"node_type\":\"NumericValueNode\"}},\"node_type\":\"CardBinaryOperatorNode\"}"
+	},
+	{
+		"query": "powtou=2 t:creature",
+		"tree": "{\"kwargs\":{\"operands\":[{\"kwargs\":{\"lhs\":{\"kwargs\":{\"attribute_name\":\"power_plus_toughness\",\"original_attribute\":\"powtou\"},\"node_type\":\"CardAttributeNode\"},\"op\":\"=\",\"rhs\":{\"kwargs\":{\"value\":2},\"node_type\":\"NumericValueNode\"}},\"node_type\":\"CardBinaryOperatorNode\"},{\"kwargs\":{\"lhs\":{\"kwargs\":{\"attribute_name\":\"card_types\",\"original_attribute\":\"t\"},\"node_type\":\"CardAttributeNode\"},\"op\":\":\",\"rhs\":[\"Creature\"]},\"node_type\":\"CardBinaryOperatorNode\"}]},\"node_type\":\"AndNode\"}"
+	},
+	{
+		"query": "powtou>6",
+		"tree": "{\"kwargs\":{\"lhs\":{\"kwargs\":{\"attribute_name\":\"power_plus_toughness\",\"original_attribute\":\"powtou\"},\"node_type\":\"CardAttributeNode\"},\"op\":\">\",\"rhs\":{\"kwargs\":{\"value\":6},\"node_type\":\"NumericValueNode\"}},\"node_type\":\"CardBinaryOperatorNode\"}"
+	},
+	{
+		"query": "powtou>=6",
+		"tree": "{\"kwargs\":{\"lhs\":{\"kwargs\":{\"attribute_name\":\"power_plus_toughness\",\"original_attribute\":\"powtou\"},\"node_type\":\"CardAttributeNode\"},\"op\":\">=\",\"rhs\":{\"kwargs\":{\"value\":6},\"node_type\":\"NumericValueNode\"}},\"node_type\":\"CardBinaryOperatorNode\"}"
+	},
+	{
+		"query": "powtou>tou",
+		"tree": "{\"kwargs\":{\"lhs\":{\"kwargs\":{\"attribute_name\":\"power_plus_toughness\",\"original_attribute\":\"powtou\"},\"node_type\":\"CardAttributeNode\"},\"op\":\">\",\"rhs\":{\"kwargs\":{\"attribute_name\":\"creature_toughness\",\"original_attribute\":\"tou\"},\"node_type\":\"CardAttributeNode\"}},\"node_type\":\"CardBinaryOperatorNode\"}"
+	},
+	{
 		"query": "produces!=m",
 		"tree": "{\"kwargs\":{\"lhs\":{\"kwargs\":{\"attribute_name\":\"produced_mana\",\"original_attribute\":\"produces\"},\"node_type\":\"CardAttributeNode\"},\"op\":\"=\",\"rhs\":{\"kwargs\":{\"value\":1},\"node_type\":\"NumericValueNode\"}},\"node_type\":\"CardBinaryOperatorNode\"}"
 	},
@@ -4855,6 +4903,54 @@
 	{
 		"query": "produces>m",
 		"tree": "{\"kwargs\":{\"lhs\":{\"kwargs\":{\"attribute_name\":\"produced_mana\",\"original_attribute\":\"produces\"},\"node_type\":\"CardAttributeNode\"},\"op\":\">=\",\"rhs\":{\"kwargs\":{\"value\":2},\"node_type\":\"NumericValueNode\"}},\"node_type\":\"CardBinaryOperatorNode\"}"
+	},
+	{
+		"query": "pt",
+		"tree": "{\"kwargs\":{\"lhs\":{\"kwargs\":{\"attribute_name\":\"card_name\",\"original_attribute\":\"name\"},\"node_type\":\"CardAttributeNode\"},\"op\":\":\",\"rhs\":{\"kwargs\":{\"value\":\"Pt\"},\"node_type\":\"CollatedNameValueNode\"}},\"node_type\":\"CardBinaryOperatorNode\"}"
+	},
+	{
+		"query": "pt!=6",
+		"tree": "{\"kwargs\":{\"lhs\":{\"kwargs\":{\"attribute_name\":\"power_plus_toughness\",\"original_attribute\":\"pt\"},\"node_type\":\"CardAttributeNode\"},\"op\":\"!=\",\"rhs\":{\"kwargs\":{\"value\":6},\"node_type\":\"NumericValueNode\"}},\"node_type\":\"CardBinaryOperatorNode\"}"
+	},
+	{
+		"query": "pt:6",
+		"tree": "{\"kwargs\":{\"lhs\":{\"kwargs\":{\"attribute_name\":\"power_plus_toughness\",\"original_attribute\":\"pt\"},\"node_type\":\"CardAttributeNode\"},\"op\":\":\",\"rhs\":{\"kwargs\":{\"value\":6},\"node_type\":\"NumericValueNode\"}},\"node_type\":\"CardBinaryOperatorNode\"}"
+	},
+	{
+		"query": "pt<-1",
+		"tree": "{\"kwargs\":{\"lhs\":{\"kwargs\":{\"attribute_name\":\"power_plus_toughness\",\"original_attribute\":\"pt\"},\"node_type\":\"CardAttributeNode\"},\"op\":\"<\",\"rhs\":{\"kwargs\":{\"value\":-1},\"node_type\":\"NumericValueNode\"}},\"node_type\":\"CardBinaryOperatorNode\"}"
+	},
+	{
+		"query": "pt<6",
+		"tree": "{\"kwargs\":{\"lhs\":{\"kwargs\":{\"attribute_name\":\"power_plus_toughness\",\"original_attribute\":\"pt\"},\"node_type\":\"CardAttributeNode\"},\"op\":\"<\",\"rhs\":{\"kwargs\":{\"value\":6},\"node_type\":\"NumericValueNode\"}},\"node_type\":\"CardBinaryOperatorNode\"}"
+	},
+	{
+		"query": "pt<=6",
+		"tree": "{\"kwargs\":{\"lhs\":{\"kwargs\":{\"attribute_name\":\"power_plus_toughness\",\"original_attribute\":\"pt\"},\"node_type\":\"CardAttributeNode\"},\"op\":\"<=\",\"rhs\":{\"kwargs\":{\"value\":6},\"node_type\":\"NumericValueNode\"}},\"node_type\":\"CardBinaryOperatorNode\"}"
+	},
+	{
+		"query": "pt=2",
+		"tree": "{\"kwargs\":{\"lhs\":{\"kwargs\":{\"attribute_name\":\"power_plus_toughness\",\"original_attribute\":\"pt\"},\"node_type\":\"CardAttributeNode\"},\"op\":\"=\",\"rhs\":{\"kwargs\":{\"value\":2},\"node_type\":\"NumericValueNode\"}},\"node_type\":\"CardBinaryOperatorNode\"}"
+	},
+	{
+		"query": "pt=2.0",
+		"tree": "{\"kwargs\":{\"lhs\":{\"kwargs\":{\"attribute_name\":\"power_plus_toughness\",\"original_attribute\":\"pt\"},\"node_type\":\"CardAttributeNode\"},\"op\":\"=\",\"rhs\":{\"kwargs\":{\"value\":2.0},\"node_type\":\"NumericValueNode\"}},\"node_type\":\"CardBinaryOperatorNode\"}"
+	},
+	{
+		"query": "pt=cmc",
+		"tree": "{\"kwargs\":{\"lhs\":{\"kwargs\":{\"attribute_name\":\"power_plus_toughness\",\"original_attribute\":\"pt\"},\"node_type\":\"CardAttributeNode\"},\"op\":\"=\",\"rhs\":{\"kwargs\":{\"attribute_name\":\"cmc\",\"original_attribute\":\"cmc\"},\"node_type\":\"CardAttributeNode\"}},\"node_type\":\"CardBinaryOperatorNode\"}"
+	},
+	{
+		"query": "pt>6",
+		"tree": "{\"kwargs\":{\"lhs\":{\"kwargs\":{\"attribute_name\":\"power_plus_toughness\",\"original_attribute\":\"pt\"},\"node_type\":\"CardAttributeNode\"},\"op\":\">\",\"rhs\":{\"kwargs\":{\"value\":6},\"node_type\":\"NumericValueNode\"}},\"node_type\":\"CardBinaryOperatorNode\"}"
+	},
+	{
+		"query": "pt>=6",
+		"tree": "{\"kwargs\":{\"lhs\":{\"kwargs\":{\"attribute_name\":\"power_plus_toughness\",\"original_attribute\":\"pt\"},\"node_type\":\"CardAttributeNode\"},\"op\":\">=\",\"rhs\":{\"kwargs\":{\"value\":6},\"node_type\":\"NumericValueNode\"}},\"node_type\":\"CardBinaryOperatorNode\"}"
+	},
+	{
+		"query": "pt>pow",
+		"tree": "{\"kwargs\":{\"lhs\":{\"kwargs\":{\"attribute_name\":\"power_plus_toughness\",\"original_attribute\":\"pt\"},\"node_type\":\"CardAttributeNode\"},\"op\":\">\",\"rhs\":{\"kwargs\":{\"attribute_name\":\"creature_power\",\"original_attribute\":\"pow\"},\"node_type\":\"CardAttributeNode\"}},\"node_type\":\"CardBinaryOperatorNode\"}"
 	},
 	{
 		"query": "r !rare",
@@ -5338,6 +5434,10 @@
 	{
 		"query": "tix>=5",
 		"tree": "{\"kwargs\":{\"lhs\":{\"kwargs\":{\"attribute_name\":\"price_tix\",\"original_attribute\":\"tix\"},\"node_type\":\"CardAttributeNode\"},\"op\":\">=\",\"rhs\":{\"kwargs\":{\"value\":5},\"node_type\":\"NumericValueNode\"}},\"node_type\":\"CardBinaryOperatorNode\"}"
+	},
+	{
+		"query": "tou<pt",
+		"tree": "{\"kwargs\":{\"lhs\":{\"kwargs\":{\"attribute_name\":\"creature_toughness\",\"original_attribute\":\"tou\"},\"node_type\":\"CardAttributeNode\"},\"op\":\"<\",\"rhs\":{\"kwargs\":{\"attribute_name\":\"power_plus_toughness\",\"original_attribute\":\"pt\"},\"node_type\":\"CardAttributeNode\"}},\"node_type\":\"CardBinaryOperatorNode\"}"
 	},
 	{
 		"query": "tou=odd",

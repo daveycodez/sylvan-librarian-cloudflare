@@ -107,6 +107,22 @@ export const DB_COLUMNS: readonly FieldInfo[] = [
 		parserClass: ParserClass.NUMERIC,
 	},
 	{
+		// Scryfall's COMBINED power-and-toughness keyword, under both of its spellings. Not a stored
+		// column: the engine adds the FRONT face's two stats per candidate card (card_engine's
+		// `front_power_plus_toughness`, which carries the measurements). A numeric alias like any
+		// other, so every comparator, a column on either side (`pt>pow`, `mv>pt`) and this port's
+		// own arithmetic all reach it through the code that already serves `pow` and `tou`.
+		//
+		// Measured on api.scryfall.com 2026-10-03: `pt=2` and `powtou=2` 2,129, `pt:6` and
+		// `powtou:6` 2,724, `pt<6` 10,818, `pt<=6` 13,542, `pt>6` 5,357, `pt>=6` 8,081, `pt!=6`
+		// 16,175 — all seven operators, on both spellings. `ptsum`, `powertoughness` and the like
+		// were never probed and are not here.
+		dbColumnName: "power_plus_toughness",
+		fieldType: FieldType.NUMERIC,
+		searchAliases: ["powtou", "pt"],
+		parserClass: ParserClass.NUMERIC,
+	},
+	{
 		dbColumnName: "planeswalker_loyalty",
 		fieldType: FieldType.NUMERIC,
 		searchAliases: ["loyalty", "loy"],

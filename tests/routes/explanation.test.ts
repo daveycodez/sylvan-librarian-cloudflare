@@ -174,6 +174,9 @@ describe("explainWireTree over the real parser", () => {
 		["-mv:even t:elf", "not (the mana value is even) and the type contains Elf"],
 		// Arithmetic a reader DID type keeps its operator.
 		["cmc+1<pow", "the mana value + 1 < power"],
+		// `pt` and `powtou` are one column, named for what it adds.
+		["pt<6", "power plus toughness < 6"],
+		["powtou=2 t:elf", "power plus toughness is 2 and the type contains Elf"],
 	];
 	for (const [query, expected] of cases) {
 		test(`${JSON.stringify(query)} → ${JSON.stringify(expected)}`, () => {

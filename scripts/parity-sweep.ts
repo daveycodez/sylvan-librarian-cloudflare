@@ -751,6 +751,15 @@ const VALUES: Record<string, { eq: string[]; neg?: string; cmp?: string[]; quote
 		cmp: ["tou>=14", "toughness<1"],
 		regex: "tou:/1/",
 	},
+	// The combined keyword. `e:isd` is the anchor because the front-face rule only shows on a
+	// multi-face card and Innistrad is the set of double-faced creatures: `pt=5 e:isd` must NOT
+	// find Delver of Secrets' 3/2 back.
+	power_plus_toughness: {
+		eq: ["powtou:20", "pt=5 e:isd"],
+		neg: "-pt:2 t:dwarf e:khm",
+		cmp: ["pt>=25", "powtou<1", "pt>pow e:isd is:dfc"],
+		regex: "pt:/1/",
+	},
 	planeswalker_loyalty: {
 		eq: ["loy:7"],
 		neg: "-loy:3 t:planeswalker e:war",

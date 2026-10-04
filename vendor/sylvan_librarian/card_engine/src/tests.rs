@@ -2215,6 +2215,7 @@ fn fuzz_num_field_str(f: NumField) -> &'static str {
         NumField::Cmc => "cmc", NumField::Power => "power", NumField::Toughness => "toughness", NumField::Loyalty => "loyalty",
         NumField::RarityInt => "rarity", NumField::CollectorNumberInt => "cn", NumField::EdhrEc => "edhrec",
         NumField::PriceUsd => "usd", NumField::PriceEur => "eur", NumField::PriceTix => "tix", NumField::PreferScore => "prefer",
+        NumField::PowTou => "pt",
     }
 }
 fn fuzz_num_expr_str(e: &NumExpr) -> String {
@@ -16755,6 +16756,114 @@ fn mana_value_parity_is_a_remainder_and_a_half_is_neither() {
     let bytes = card_with_cmc(Some(2.0));
     let card = rkyv::access::<Archived<OracleCard>, Error>(&bytes).expect("access");
     assert!(by_zero.eval_card(card, strings) == Tri::Null);
+}
+
+/// `pt` / `powtou` is the FRONT face's power plus toughness — not the cross product `pow` and
+/// `tou` are compared over, and not the merged row. Each stat line is a card probed on
+/// api.scryfall.com 2026-10-03, scoped `!"<name>"` so the reference answer is 1 or 404.
+#[test]
+fn power_plus_toughness_is_the_front_faces_sum() {
+    // `merged` is the card-level pair exactly as `_FACE_STAT_GROUPS` leaves it: the first face
+    // that has a power group at all — which is the BACK for a card whose front is not a creature.
+    fn card_with(merged: (Option<f32>, Option<f32>), faces: &[(Option<f32>, Option<f32>)]) -> Vec<u8> {
+        let mut vocab = VocabInterner::new();
+        let mut card = stub_card(1, 0, &[], &mut vocab);
+        card.creature_power = merged.0;
+        card.creature_toughness = merged.1;
+        card.faces = faces
+            .iter()
+            .map(|&(p, t)| OracleFace {
+                card_name_id: NONE_STR,
+                mana_cost_text_id: NONE_STR,
+                type_line_id: NONE_STR,
+                oracle_text_id: NONE_STR,
+                creature_power_text_id: NONE_STR,
+                creature_toughness_text_id: NONE_STR,
+                planeswalker_loyalty_text_id: NONE_STR,
+                defense_text_id: NONE_STR,
+                card_colors: None,
+                color_indicator: 0,
+                creature_power: p,
+                creature_toughness: t,
+                planeswalker_loyalty: None,
+                mana_cost: None,
+            })
+            .collect();
+        rkyv::to_bytes::<Error>(&card).expect("serialize").into_vec()
+    }
+    let strings: Vec<String> = Vec::new();
+    let strings_bytes = rkyv::to_bytes::<Error>(&strings).expect("serialize strings");
+    let strings = rkyv::access::<AStrings, Error>(&strings_bytes).expect("access strings");
+    let pt = |op, v: f64| FilterExpr::NumericCmp { lhs: NumExpr::Field(NumField::PowTou), op, rhs: NumExpr::Const(v) };
+    let verdict = |bytes: &[u8], f: &FilterExpr| {
+        let card = rkyv::access::<Archived<OracleCard>, Error>(bytes).expect("access");
+        f.eval_card(card, strings)
+    };
+    let is = |got: Tri, want: Tri| got == want;
+
+    // One face: the card's own pair. Heart of Kiran 4/4 -> pt=8; Tarmogoyf `*/1+*` is stored 0/1
+    // -> pt=1; Char-Rumbler -1/3 -> pt=2; Little Girl .5/.5 -> pt=1.
+    for (p, t, sum) in [(4.0, 4.0, 8.0), (0.0, 1.0, 1.0), (-1.0, 3.0, 2.0), (0.5, 0.5, 1.0)] {
+        let card = card_with((Some(p), Some(t)), &[]);
+        assert!(is(verdict(&card, &pt(CmpOp::Eq, sum)), Tri::True), "{p}/{t} is pt={sum}");
+        assert!(is(verdict(&card, &pt(CmpOp::Ne, sum)), Tri::False));
+    }
+
+    // Delver of Secrets // Insectile Aberration, 1/1 // 3/2: pt=2 is 1, and pt=5 (the back),
+    // pt=3 and pt=4 (one face's power, the other's toughness) are each 404.
+    let delver = card_with((Some(1.0), Some(1.0)), &[(Some(1.0), Some(1.0)), (Some(3.0), Some(2.0))]);
+    assert!(is(verdict(&delver, &pt(CmpOp::Eq, 2.0)), Tri::True));
+    for other in [3.0, 4.0, 5.0] {
+        assert!(is(verdict(&delver, &pt(CmpOp::Eq, other)), Tri::False), "pt={other} is no face's front sum");
+    }
+    // ...which is exactly where it parts from `pow+tou`, this engine's own arithmetic: that reads
+    // the cross product, so it answers for the back and for the mixed pairs too.
+    let pow_plus_tou = |v: f64| FilterExpr::NumericCmp {
+        lhs: NumExpr::Arith(Box::new(NumExpr::Field(NumField::Power)), ArithOp::Add, Box::new(NumExpr::Field(NumField::Toughness))),
+        op: CmpOp::Eq,
+        rhs: NumExpr::Const(v),
+    };
+    for sum in [2.0, 3.0, 4.0, 5.0] {
+        assert!(is(verdict(&delver, &pow_plus_tou(sum)), Tri::True), "pow+tou={sum}");
+    }
+
+    // Westvale Abbey // Ormendahl, Profane Prince: a land front, a 9/7 back. The merged row holds
+    // the back's 9/7 — `pow>=0` is 1 there — and `pt>=0` and `pt=16` are both 404.
+    let westvale = card_with((Some(9.0), Some(7.0)), &[(None, None), (Some(9.0), Some(7.0))]);
+    assert!(is(verdict(&westvale, &pt(CmpOp::Ge, 0.0)), Tri::Null), "no front pair: NULL, not the back's");
+    assert!(is(verdict(&westvale, &pt(CmpOp::Eq, 16.0)), Tri::Null));
+    // NULL, so the negation does not find it either: `!"Westvale Abbey" -(pt>=0)` is 404.
+    assert!(is(verdict(&westvale, &FilterExpr::Not(Box::new(pt(CmpOp::Ge, 0.0)))), Tri::Null));
+
+    // A column on the other side is still compared the way that column always is. `pow>pt` on
+    // Delver is 1 (the back's 3 against the front's 2) and on Akki Lavarunner // Tok-Tok
+    // (1/1 // 2/2, a flip card) is 404: no power exceeds the front's 2.
+    let pow_gt_pt = FilterExpr::NumericCmp { lhs: NumExpr::Field(NumField::Power), op: CmpOp::Gt, rhs: NumExpr::Field(NumField::PowTou) };
+    assert!(is(verdict(&delver, &pow_gt_pt), Tri::True));
+    let akki = card_with((Some(1.0), Some(1.0)), &[(Some(1.0), Some(1.0)), (Some(2.0), Some(2.0))]);
+    assert!(is(verdict(&akki, &pt(CmpOp::Eq, 2.0)), Tri::True));
+    assert!(is(verdict(&akki, &pt(CmpOp::Eq, 4.0)), Tri::False));
+    assert!(is(verdict(&akki, &pow_gt_pt), Tri::False));
+    assert!(is(verdict(&westvale, &pow_gt_pt), Tri::Null));
+
+    // No stats at all (Lightning Bolt): NULL both ways.
+    let bolt = card_with((None, None), &[]);
+    assert!(is(verdict(&bolt, &pt(CmpOp::Ge, 0.0)), Tri::Null));
+
+    // It is a numeric field by name, evaluated per candidate: card-level, and not a tuple-index
+    // column (the tuple holds the merged row's pair, which is not the front's).
+    let built = super::build_filter(&serde_json::json!({
+        "node_type": "CardBinaryOperatorNode",
+        "kwargs": {
+            "lhs": {"node_type": "CardAttributeNode", "kwargs": {"attribute_name": "power_plus_toughness", "original_attribute": "pt"}},
+            "op": "<",
+            "rhs": {"node_type": "NumericValueNode", "kwargs": {"value": 6}},
+        },
+    }))
+    .expect("pt<6 must build");
+    assert!(is(verdict(&delver, &built), Tri::True));
+    assert!(!is_arith_tuple_route(&built));
+    assert!(!is_arith_tuple_route(&pow_gt_pt), "a pt on either side keeps the whole comparison off the tuple index");
 }
 
 // ─── per-face colours ────────────────────────────────────────────────────────
