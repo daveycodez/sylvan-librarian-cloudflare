@@ -243,7 +243,7 @@ describe("the respelled term opens extras exactly when the spelling it becomes d
 	});
 });
 
-describe("the six tags stored with generation 61", () => {
+describe("the six tags stored with generation 62", () => {
 	test.each(["contentwarning", "premiereshop", "schinesealtart", "setextension", "singularityfoil", "themepack"])(
 		"is:%s has data behind it",
 		(value) => {

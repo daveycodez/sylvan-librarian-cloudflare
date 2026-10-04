@@ -2702,13 +2702,13 @@
 			"name": "is-contentwarning-opens-extras",
 			"method": "GET",
 			"path": "/cards/search?q=is%3Acontentwarning",
-			"note": "2026-10-04, generation 61. The `content_warning` flag as a stored tag: 7 cards, every one an extra, so the term opens extras as it does on Scryfall (`is:contentwarning or cmc=3` echoes include_extras=true)."
+			"note": "2026-10-04, generation 62. The `content_warning` flag as a stored tag: 7 cards, every one an extra, so the term opens extras as it does on Scryfall (`is:contentwarning or cmc=3` echoes include_extras=true)."
 		},
 		{
 			"name": "is-themepack-promo-type",
 			"method": "GET",
 			"path": "/cards/search?q=is%3Athemepack",
-			"note": "2026-10-04, generation 61. One of five `promo_types` members stored that day (premiereshop, schinesealtart, setextension, singularityfoil, themepack): 30 cards."
+			"note": "2026-10-04, generation 62. One of five `promo_types` members stored that day (premiereshop, schinesealtart, setextension, singularityfoil, themepack): 30 cards."
 		},
 		{
 			"name": "warning-unknown-is-value",

@@ -87,7 +87,7 @@ const UNCONDITIONAL_EXTRAS_IS_TAGS: ReadonlySet<string> = new Set([
 	// 796; controls the same day `is:convention` false and `is:glossy` true.
 	"playtest",
 	// THE SAME SHAPE AGAIN, 2026-10-04: every content-warning printing is an extra (`extras_class`
-	// in the builder), so the tag stored with generation 61 would have answered nothing by
+	// in the builder), so the tag stored with generation 62 would have answered nothing by
 	// default against api.scryfall.com's 7. The echo fires in both polarities — `is:contentwarning
 	// or cmc=3` and `-is:contentwarning or cmc=3` both true. The five `promo_types` tags stored the
 	// same day (`premiereshop`, `schinesealtart`, `setextension`, `singularityfoil`, `themepack`)
