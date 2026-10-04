@@ -1771,6 +1771,24 @@
 			"method": "GET",
 			"path": "/cards/search?q=%28%28%28o%3A%2F%5Cb%28opponent%7Copponents%7Ceach+player%7Ctarget+player%29%5Cb%5B%5E.%5D%2Aloses+%28exactly+%29%3F1+life%2F+OR+o%3A%2Fdeals+1+damage+to+%28an+opponent%7Ctarget+opponent%7Ceach+opponent%7Ctarget+player%7Ceach+player%7Cany+target%29%2F+OR+keyword%3Aproliferate+OR+o%3A%2Fwould+%28be+%29%3Fput+%5B%5E.%5D%2Acounters%3F%5B%5E.%5D%2Ainstead%2F+OR+otag%3Asynergy-exile-cast+OR+o%3A%2Fwhenever+you+cast+%5B%5E.%5D%2Afrom+exile%2F%29%29+ci%3C%3Dbr%29+%28f%3Acommander+or+%28date%3E2026-09-29+-is%3Adigital%29%29",
 			"note": "R08, without its `sort:edhrec`. Already at parity when re-measured 2026-10-04 (519 on both sides): the one extra, Vengeful Strangler // Strangling Grasp, was `[^.]*` crossing a line break, fixed by the negated-class rule of 2026-10-03. Pinned so it stays fixed."
+		},
+		{
+			"name": "search-report-r29-raw-newline-in-a-class",
+			"method": "GET",
+			"path": "/cards/search?q=o%3A%2FWhenever+%5B%5E%2C.%0A%5D%2A+%28blocks%7Cbecomes+blocked%29%5B%5E%2C.%0A%5D%2A%2C%2F+OR+keyword%3Abushido+OR+keyword%3Arampage",
+			"note": "mtg-seeker report R29 (2026-10-04). The two classes hold RAW line-break characters (`%0A` in this path), not the escape `\\n`. api.scryfall.com collapses every whitespace run in the query to one space before it parses it, so they are `[^,. ]` there — a class that stops at every space — and the answer is 53 cards; this port kept the line break and answered 335."
+		},
+		{
+			"name": "search-raw-whitespace-in-a-regex-is-a-space",
+			"method": "GET",
+			"path": "/cards/search?q=%21%22Abomination%22+o%3A%2Fblocks%0A%0Aor%2F+o%3A%2Fblocks%09or%2F+o%3A%22blocks++or%22+o%3A%2Fblocks%5B%0A%5Dor%2F",
+			"note": "THE RULE ISOLATED on one card, whose text is one line: \"Whenever this creature blocks or becomes blocked by…\". A raw line break, a tab, a doubled space and a class holding only a line break each match the single SPACE between \"blocks\" and \"or\": 1 on api.scryfall.com for each of the four alone (2026-10-04), and for the four together as written here. Before the fix the first, second and fourth were 404 here."
+		},
+		{
+			"name": "search-raw-newline-in-a-negated-class-excludes-the-space",
+			"method": "GET",
+			"path": "/cards/search?q=%21%22Abomination%22+%28o%3A%2Fblocks%5B%5E%0A%5Dor%2F+or+o%3A%2Fblocks%5B%5E%2C.%0A%5Dor%2F%29+or+%21%22Tiller+Engine%22+o%3A%2Fchoose+one+%E2%80%94%0A%E2%80%A2+untap%2F",
+			"note": "The other side of the same rule, a 404 on both sides as written: `[^<LF>]` is `[^ ]` and cannot take the space, and a raw line break after \"choose one —\" on Tiller Engine is a space, which the real line break there is not (the escape `\\n` in that position is 1 — see search-whitespace-class-still-crosses-a-line-break). Before the fix this port answered both cards."
 		}
 	]
 }
