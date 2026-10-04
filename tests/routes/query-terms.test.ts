@@ -296,6 +296,112 @@ describe("negated numeric equality, which Scryfall cannot express", () => {
 	});
 });
 
+describe("mv:even and mv:odd — the two words the value sentence always named", () => {
+	// Measured on api.scryfall.com 2026-10-03, corpus `mv>=0` = 33,649. See MANA_VALUE_PARITY_FLIP in
+	// query-terms.ts for the whole table; each test below is one of its rows.
+	const kept = (q: string) =>
+		expect(scryfallTermPolicy(q)).toMatchObject({ query: q, warnings: [], allIgnored: false });
+
+	test("the positive term is kept as written, on every spelling and under both operators", () => {
+		// mv:even 17,331 = cmc:even = manavalue=even = mv=even; mv:odd 16,317 = manavalue:odd = cmc=odd.
+		for (const keyword of ["mv", "cmc", "manavalue"]) {
+			for (const op of [":", "="]) {
+				kept(`${keyword}${op}even`);
+				kept(`${keyword}${op}odd t:creature`);
+			}
+		}
+		// mv:EVEN, mv:eVeN and mv:"even" are each 17,331: case and quotes are immaterial.
+		kept("mv:EVEN");
+		kept("mv:eVeN");
+		kept('mv:"even"');
+	});
+
+	test("a NEGATED parity is the other parity, not the complement", () => {
+		// -mv:even 16,317 = mv:odd and -cmc:odd 17,331 = mv:even, where the complements are 16,318 and
+		// 17,332: Little Girl's mana value is 0.5, which is neither, and `-mv:even mv=0.5` is 404.
+		expect(scryfallTermPolicy("-mv:even")).toMatchObject({ query: "mv:odd", warnings: [], allIgnored: false });
+		expect(scryfallTermPolicy("-mv=even").query).toBe("mv=odd");
+		expect(scryfallTermPolicy("-cmc:odd t:goblin").query).toBe("cmc:even t:goblin");
+		expect(scryfallTermPolicy('-mv:"odd"').query).toBe("mv:even");
+		expect(scryfallTermPolicy("-MANAVALUE:EVEN").query).toBe("MANAVALUE:odd");
+		// A number under the same `-` is still refused, with the sentence that names the two words.
+		expect(scryfallTermPolicy("-mv:3").warnings).toEqual([
+			"Invalid expression “-mv:3” was ignored. The value must be a number, or “even”/“odd”",
+		]);
+	});
+
+	test("the GROUP is the honest complement, so it is left for the parser to negate", () => {
+		// -(mv:even) is 16,318 and -(mv:even or mv:odd) is Little Girl alone.
+		kept("-(mv:even)");
+		kept("-(mv:even or mv:odd)");
+	});
+
+	test("under a comparison the word is not a number: kept, and matching nothing", () => {
+		// mv>even, mv<even, mv>=odd, mv<=odd, mv!=even, mv!=odd are each a 404 with NO warnings key,
+		// and `mv>even or (t:goblin t:wizard)` is the other arm's 18.
+		for (const q of ["mv>even", "mv<even", "mv>=odd", "mv<=odd", "mv!=even", "mv!=odd"]) {
+			expect(scryfallTermPolicy(q)).toMatchObject({ query: "cmc<0", warnings: [], allIgnored: false });
+		}
+		expect(scryfallTermPolicy("mv>even or (t:goblin t:wizard)").query).toBe("cmc<0 or (t:goblin t:wizard)");
+		// -mv>even and -mv!=even are 33,649: the silent tautology every negated comparison is.
+		expect(scryfallTermPolicy("-mv>even").query).toBe("-cmc<0");
+		expect(scryfallTermPolicy("-mv!=even").query).toBe("-cmc<0");
+	});
+
+	test("the words belong to mana value alone", () => {
+		// pow:even, tou:odd and loy:even are each `Unknown keyword`, and `pow>even or (…)` is 18.
+		for (const keyword of ["pow", "tou", "loy"]) {
+			expect(scryfallTermPolicy(`${keyword}:even t:goblin`)).toMatchObject({
+				query: "t:goblin",
+				warnings: [`Invalid expression “${keyword}:even” was ignored. Unknown keyword “${keyword}”.`],
+			});
+		}
+		expect(scryfallTermPolicy("pow>even or (t:goblin t:wizard)").query).toBe("cmc<0 or (t:goblin t:wizard)");
+		// And only the two: `mv:foo` and `mv:evening` are the value sentence, as before.
+		expect(scryfallTermPolicy("mv:evening").allIgnored).toBe(true);
+	});
+});
+
+describe("a quoted value is a string, never a number", () => {
+	// Measured 2026-10-03, anchor `e:khm t:god` = 12. This policy used to unquote before asking
+	// whether the value was numeric, which kept the term for a parser that refuses a quoted number.
+	test("under : and = the term is ignored, with the column's own sentence", () => {
+		for (const term of ['mv:"2"', 'mv="2"']) {
+			expect(scryfallTermPolicy(`${term} e:khm t:god`)).toMatchObject({
+				query: "e:khm t:god",
+				warnings: [`Invalid expression “${term}” was ignored. The value must be a number, or “even”/“odd”`],
+			});
+		}
+		for (const [term, keyword] of [
+			['pow:"2"', "pow"],
+			['tou:"2"', "tou"],
+			['loy="3"', "loy"],
+			['usd:"1"', "usd"],
+			['year:"2021"', "year"],
+		] as const) {
+			expect(scryfallTermPolicy(`${term} e:khm t:god`)).toMatchObject({
+				query: "e:khm t:god",
+				warnings: [`Invalid expression “${term}” was ignored. Unknown keyword “${keyword}”.`],
+			});
+		}
+	});
+
+	test("under a comparison it is kept, and matches nothing", () => {
+		// mv>"2" or (t:goblin t:wizard) and pow>="2" or (…) are both 18, with no warnings key.
+		expect(scryfallTermPolicy('mv>"2" or (t:goblin t:wizard)')).toMatchObject({
+			query: "cmc<0 or (t:goblin t:wizard)",
+			warnings: [],
+		});
+		expect(scryfallTermPolicy('pow>="2" or (t:goblin t:wizard)').query).toBe("cmc<0 or (t:goblin t:wizard)");
+	});
+
+	test("an unquoted number, and a column name, are what they were", () => {
+		for (const q of ["mv:2", "pow>=2", "tou<.5", "usd>1.50", "pow>tou", "cmc<=pow"]) {
+			expect(scryfallTermPolicy(q)).toMatchObject({ query: q, warnings: [] });
+		}
+	});
+});
+
 describe("a negated comparison is not applied — it is always-true, and silently so", () => {
 	// The general case of the block above, measured on api.scryfall.com 2026-08-16 with the anchor
 	// `e:khm t:creature` = 151. A row answering 151 is a term that did nothing; see

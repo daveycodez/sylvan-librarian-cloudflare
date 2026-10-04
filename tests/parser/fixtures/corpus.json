@@ -692,6 +692,10 @@
 		"tree": "{\"kwargs\":{\"operand\":{\"kwargs\":{\"lhs\":{\"kwargs\":{\"attribute_name\":\"card_lang\",\"original_attribute\":\"lang\"},\"node_type\":\"CardAttributeNode\"},\"op\":\":\",\"rhs\":{\"kwargs\":{\"value\":\"en\"},\"node_type\":\"StringValueNode\"}},\"node_type\":\"CardBinaryOperatorNode\"}},\"node_type\":\"NotNode\"}"
 	},
 	{
+		"query": "-mv:even",
+		"tree": "{\"kwargs\":{\"operand\":{\"kwargs\":{\"lhs\":{\"kwargs\":{\"lhs\":{\"kwargs\":{\"attribute_name\":\"cmc\",\"original_attribute\":\"mv\"},\"node_type\":\"CardAttributeNode\"},\"op\":\"%\",\"rhs\":{\"kwargs\":{\"value\":2},\"node_type\":\"NumericValueNode\"}},\"node_type\":\"CardBinaryOperatorNode\"},\"op\":\"=\",\"rhs\":{\"kwargs\":{\"value\":0},\"node_type\":\"NumericValueNode\"}},\"node_type\":\"CardBinaryOperatorNode\"}},\"node_type\":\"NotNode\"}"
+	},
+	{
 		"query": "-power>0",
 		"tree": "{\"kwargs\":{\"operand\":{\"kwargs\":{\"lhs\":{\"kwargs\":{\"attribute_name\":\"creature_power\",\"original_attribute\":\"power\"},\"node_type\":\"CardAttributeNode\"},\"op\":\">\",\"rhs\":{\"kwargs\":{\"value\":0},\"node_type\":\"NumericValueNode\"}},\"node_type\":\"CardBinaryOperatorNode\"}},\"node_type\":\"NotNode\"}"
 	},
@@ -850,6 +854,10 @@
 	{
 		"query": "LEGAL:modern",
 		"tree": "{\"kwargs\":{\"lhs\":{\"kwargs\":{\"attribute_name\":\"card_legalities\",\"original_attribute\":\"legal\"},\"node_type\":\"CardAttributeNode\"},\"op\":\":\",\"rhs\":[\"modern\"]},\"node_type\":\"CardBinaryOperatorNode\"}"
+	},
+	{
+		"query": "MV:Odd",
+		"tree": "{\"kwargs\":{\"lhs\":{\"kwargs\":{\"lhs\":{\"kwargs\":{\"attribute_name\":\"cmc\",\"original_attribute\":\"mv\"},\"node_type\":\"CardAttributeNode\"},\"op\":\"%\",\"rhs\":{\"kwargs\":{\"value\":2},\"node_type\":\"NumericValueNode\"}},\"node_type\":\"CardBinaryOperatorNode\"},\"op\":\"=\",\"rhs\":{\"kwargs\":{\"value\":1},\"node_type\":\"NumericValueNode\"}},\"node_type\":\"CardBinaryOperatorNode\"}"
 	},
 	{
 		"query": "NUMBER:123",
@@ -1711,6 +1719,10 @@
 		"tree": "{\"kwargs\":{\"lhs\":{\"kwargs\":{\"attribute_name\":\"cmc\",\"original_attribute\":\"cmc\"},\"node_type\":\"CardAttributeNode\"},\"op\":\":\",\"rhs\":{\"kwargs\":{\"value\":3.5},\"node_type\":\"NumericValueNode\"}},\"node_type\":\"CardBinaryOperatorNode\"}"
 	},
 	{
+		"query": "cmc:even",
+		"tree": "{\"kwargs\":{\"lhs\":{\"kwargs\":{\"lhs\":{\"kwargs\":{\"attribute_name\":\"cmc\",\"original_attribute\":\"cmc\"},\"node_type\":\"CardAttributeNode\"},\"op\":\"%\",\"rhs\":{\"kwargs\":{\"value\":2},\"node_type\":\"NumericValueNode\"}},\"node_type\":\"CardBinaryOperatorNode\"},\"op\":\"=\",\"rhs\":{\"kwargs\":{\"value\":0},\"node_type\":\"NumericValueNode\"}},\"node_type\":\"CardBinaryOperatorNode\"}"
+	},
+	{
 		"query": "cmc<1 r",
 		"tree": "{\"kwargs\":{\"operands\":[{\"kwargs\":{\"lhs\":{\"kwargs\":{\"attribute_name\":\"cmc\",\"original_attribute\":\"cmc\"},\"node_type\":\"CardAttributeNode\"},\"op\":\"<\",\"rhs\":{\"kwargs\":{\"value\":1},\"node_type\":\"NumericValueNode\"}},\"node_type\":\"CardBinaryOperatorNode\"},{\"kwargs\":{\"lhs\":{\"kwargs\":{\"attribute_name\":\"card_name\",\"original_attribute\":\"name\"},\"node_type\":\"CardAttributeNode\"},\"op\":\":\",\"rhs\":{\"kwargs\":{\"value\":\"R\"},\"node_type\":\"CollatedNameValueNode\"}},\"node_type\":\"CardBinaryOperatorNode\"}]},\"node_type\":\"AndNode\"}"
 	},
@@ -1767,6 +1779,10 @@
 	{
 		"query": "cmc=5 cmc=4",
 		"tree": "{\"kwargs\":{\"operands\":[{\"kwargs\":{\"lhs\":{\"kwargs\":{\"attribute_name\":\"cmc\",\"original_attribute\":\"cmc\"},\"node_type\":\"CardAttributeNode\"},\"op\":\"=\",\"rhs\":{\"kwargs\":{\"value\":5},\"node_type\":\"NumericValueNode\"}},\"node_type\":\"CardBinaryOperatorNode\"},{\"kwargs\":{\"lhs\":{\"kwargs\":{\"attribute_name\":\"cmc\",\"original_attribute\":\"cmc\"},\"node_type\":\"CardAttributeNode\"},\"op\":\"=\",\"rhs\":{\"kwargs\":{\"value\":4},\"node_type\":\"NumericValueNode\"}},\"node_type\":\"CardBinaryOperatorNode\"}]},\"node_type\":\"AndNode\"}"
+	},
+	{
+		"query": "cmc=odd",
+		"tree": "{\"kwargs\":{\"lhs\":{\"kwargs\":{\"lhs\":{\"kwargs\":{\"attribute_name\":\"cmc\",\"original_attribute\":\"cmc\"},\"node_type\":\"CardAttributeNode\"},\"op\":\"%\",\"rhs\":{\"kwargs\":{\"value\":2},\"node_type\":\"NumericValueNode\"}},\"node_type\":\"CardBinaryOperatorNode\"},\"op\":\"=\",\"rhs\":{\"kwargs\":{\"value\":1},\"node_type\":\"NumericValueNode\"}},\"node_type\":\"CardBinaryOperatorNode\"}"
 	},
 	{
 		"query": "cmc>-1",
@@ -3209,6 +3225,13 @@
 		"tree": "{\"kwargs\":{\"lhs\":{\"kwargs\":{\"attribute_name\":\"planeswalker_loyalty\",\"original_attribute\":\"loy\"},\"node_type\":\"CardAttributeNode\"},\"op\":\":\",\"rhs\":{\"kwargs\":{\"value\":4},\"node_type\":\"NumericValueNode\"}},\"node_type\":\"CardBinaryOperatorNode\"}"
 	},
 	{
+		"query": "loy:even",
+		"error": {
+			"type": "ValueError",
+			"message": "Failed to parse query: \"loy:even\""
+		}
+	},
+	{
 		"query": "loyalty<=7",
 		"tree": "{\"kwargs\":{\"lhs\":{\"kwargs\":{\"attribute_name\":\"planeswalker_loyalty\",\"original_attribute\":\"loyalty\"},\"node_type\":\"CardAttributeNode\"},\"op\":\"<=\",\"rhs\":{\"kwargs\":{\"value\":7},\"node_type\":\"NumericValueNode\"}},\"node_type\":\"CardBinaryOperatorNode\"}"
 	},
@@ -3532,8 +3555,101 @@
 		"tree": "{\"kwargs\":{\"lhs\":{\"kwargs\":{\"attribute_name\":\"mana_cost_jsonb\",\"original_attribute\":\"mana\"},\"node_type\":\"CardAttributeNode\"},\"op\":\">\",\"rhs\":{\"kwargs\":{\"value\":\"{G}{G}{G}\"},\"node_type\":\"ManaValueNode\"}},\"node_type\":\"CardBinaryOperatorNode\"}"
 	},
 	{
+		"query": "manavalue:odd",
+		"tree": "{\"kwargs\":{\"lhs\":{\"kwargs\":{\"lhs\":{\"kwargs\":{\"attribute_name\":\"cmc\",\"original_attribute\":\"manavalue\"},\"node_type\":\"CardAttributeNode\"},\"op\":\"%\",\"rhs\":{\"kwargs\":{\"value\":2},\"node_type\":\"NumericValueNode\"}},\"node_type\":\"CardBinaryOperatorNode\"},\"op\":\"=\",\"rhs\":{\"kwargs\":{\"value\":1},\"node_type\":\"NumericValueNode\"}},\"node_type\":\"CardBinaryOperatorNode\"}"
+	},
+	{
+		"query": "manavalue=even",
+		"tree": "{\"kwargs\":{\"lhs\":{\"kwargs\":{\"lhs\":{\"kwargs\":{\"attribute_name\":\"cmc\",\"original_attribute\":\"manavalue\"},\"node_type\":\"CardAttributeNode\"},\"op\":\"%\",\"rhs\":{\"kwargs\":{\"value\":2},\"node_type\":\"NumericValueNode\"}},\"node_type\":\"CardBinaryOperatorNode\"},\"op\":\"=\",\"rhs\":{\"kwargs\":{\"value\":0},\"node_type\":\"NumericValueNode\"}},\"node_type\":\"CardBinaryOperatorNode\"}"
+	},
+	{
+		"query": "mv!=even",
+		"error": {
+			"type": "ValueError",
+			"message": "Failed to parse query: \"mv!=even\""
+		}
+	},
+	{
+		"query": "mv:\"even\"",
+		"tree": "{\"kwargs\":{\"lhs\":{\"kwargs\":{\"lhs\":{\"kwargs\":{\"attribute_name\":\"cmc\",\"original_attribute\":\"mv\"},\"node_type\":\"CardAttributeNode\"},\"op\":\"%\",\"rhs\":{\"kwargs\":{\"value\":2},\"node_type\":\"NumericValueNode\"}},\"node_type\":\"CardBinaryOperatorNode\"},\"op\":\"=\",\"rhs\":{\"kwargs\":{\"value\":0},\"node_type\":\"NumericValueNode\"}},\"node_type\":\"CardBinaryOperatorNode\"}"
+	},
+	{
+		"query": "mv:'odd'",
+		"tree": "{\"kwargs\":{\"lhs\":{\"kwargs\":{\"lhs\":{\"kwargs\":{\"attribute_name\":\"cmc\",\"original_attribute\":\"mv\"},\"node_type\":\"CardAttributeNode\"},\"op\":\"%\",\"rhs\":{\"kwargs\":{\"value\":2},\"node_type\":\"NumericValueNode\"}},\"node_type\":\"CardBinaryOperatorNode\"},\"op\":\"=\",\"rhs\":{\"kwargs\":{\"value\":1},\"node_type\":\"NumericValueNode\"}},\"node_type\":\"CardBinaryOperatorNode\"}"
+	},
+	{
+		"query": "mv:EVEN",
+		"tree": "{\"kwargs\":{\"lhs\":{\"kwargs\":{\"lhs\":{\"kwargs\":{\"attribute_name\":\"cmc\",\"original_attribute\":\"mv\"},\"node_type\":\"CardAttributeNode\"},\"op\":\"%\",\"rhs\":{\"kwargs\":{\"value\":2},\"node_type\":\"NumericValueNode\"}},\"node_type\":\"CardBinaryOperatorNode\"},\"op\":\"=\",\"rhs\":{\"kwargs\":{\"value\":0},\"node_type\":\"NumericValueNode\"}},\"node_type\":\"CardBinaryOperatorNode\"}"
+	},
+	{
+		"query": "mv:even",
+		"tree": "{\"kwargs\":{\"lhs\":{\"kwargs\":{\"lhs\":{\"kwargs\":{\"attribute_name\":\"cmc\",\"original_attribute\":\"mv\"},\"node_type\":\"CardAttributeNode\"},\"op\":\"%\",\"rhs\":{\"kwargs\":{\"value\":2},\"node_type\":\"NumericValueNode\"}},\"node_type\":\"CardBinaryOperatorNode\"},\"op\":\"=\",\"rhs\":{\"kwargs\":{\"value\":0},\"node_type\":\"NumericValueNode\"}},\"node_type\":\"CardBinaryOperatorNode\"}"
+	},
+	{
+		"query": "mv:even or mv:odd",
+		"tree": "{\"kwargs\":{\"operands\":[{\"kwargs\":{\"lhs\":{\"kwargs\":{\"lhs\":{\"kwargs\":{\"attribute_name\":\"cmc\",\"original_attribute\":\"mv\"},\"node_type\":\"CardAttributeNode\"},\"op\":\"%\",\"rhs\":{\"kwargs\":{\"value\":2},\"node_type\":\"NumericValueNode\"}},\"node_type\":\"CardBinaryOperatorNode\"},\"op\":\"=\",\"rhs\":{\"kwargs\":{\"value\":0},\"node_type\":\"NumericValueNode\"}},\"node_type\":\"CardBinaryOperatorNode\"},{\"kwargs\":{\"lhs\":{\"kwargs\":{\"lhs\":{\"kwargs\":{\"attribute_name\":\"cmc\",\"original_attribute\":\"mv\"},\"node_type\":\"CardAttributeNode\"},\"op\":\"%\",\"rhs\":{\"kwargs\":{\"value\":2},\"node_type\":\"NumericValueNode\"}},\"node_type\":\"CardBinaryOperatorNode\"},\"op\":\"=\",\"rhs\":{\"kwargs\":{\"value\":1},\"node_type\":\"NumericValueNode\"}},\"node_type\":\"CardBinaryOperatorNode\"}]},\"node_type\":\"OrNode\"}"
+	},
+	{
+		"query": "mv:evens",
+		"error": {
+			"type": "ValueError",
+			"message": "Failed to parse query: \"mv:evens\""
+		}
+	},
+	{
+		"query": "mv:neither",
+		"error": {
+			"type": "ValueError",
+			"message": "Failed to parse query: \"mv:neither\""
+		}
+	},
+	{
+		"query": "mv:odd",
+		"tree": "{\"kwargs\":{\"lhs\":{\"kwargs\":{\"lhs\":{\"kwargs\":{\"attribute_name\":\"cmc\",\"original_attribute\":\"mv\"},\"node_type\":\"CardAttributeNode\"},\"op\":\"%\",\"rhs\":{\"kwargs\":{\"value\":2},\"node_type\":\"NumericValueNode\"}},\"node_type\":\"CardBinaryOperatorNode\"},\"op\":\"=\",\"rhs\":{\"kwargs\":{\"value\":1},\"node_type\":\"NumericValueNode\"}},\"node_type\":\"CardBinaryOperatorNode\"}"
+	},
+	{
+		"query": "mv:odd t:creature",
+		"tree": "{\"kwargs\":{\"operands\":[{\"kwargs\":{\"lhs\":{\"kwargs\":{\"lhs\":{\"kwargs\":{\"attribute_name\":\"cmc\",\"original_attribute\":\"mv\"},\"node_type\":\"CardAttributeNode\"},\"op\":\"%\",\"rhs\":{\"kwargs\":{\"value\":2},\"node_type\":\"NumericValueNode\"}},\"node_type\":\"CardBinaryOperatorNode\"},\"op\":\"=\",\"rhs\":{\"kwargs\":{\"value\":1},\"node_type\":\"NumericValueNode\"}},\"node_type\":\"CardBinaryOperatorNode\"},{\"kwargs\":{\"lhs\":{\"kwargs\":{\"attribute_name\":\"card_types\",\"original_attribute\":\"t\"},\"node_type\":\"CardAttributeNode\"},\"op\":\":\",\"rhs\":[\"Creature\"]},\"node_type\":\"CardBinaryOperatorNode\"}]},\"node_type\":\"AndNode\"}"
+	},
+	{
+		"query": "mv<=odd",
+		"error": {
+			"type": "ValueError",
+			"message": "Failed to parse query: \"mv<=odd\""
+		}
+	},
+	{
+		"query": "mv<even",
+		"error": {
+			"type": "ValueError",
+			"message": "Failed to parse query: \"mv<even\""
+		}
+	},
+	{
 		"query": "mv=3",
 		"tree": "{\"kwargs\":{\"lhs\":{\"kwargs\":{\"attribute_name\":\"cmc\",\"original_attribute\":\"mv\"},\"node_type\":\"CardAttributeNode\"},\"op\":\"=\",\"rhs\":{\"kwargs\":{\"value\":3},\"node_type\":\"NumericValueNode\"}},\"node_type\":\"CardBinaryOperatorNode\"}"
+	},
+	{
+		"query": "mv=even",
+		"tree": "{\"kwargs\":{\"lhs\":{\"kwargs\":{\"lhs\":{\"kwargs\":{\"attribute_name\":\"cmc\",\"original_attribute\":\"mv\"},\"node_type\":\"CardAttributeNode\"},\"op\":\"%\",\"rhs\":{\"kwargs\":{\"value\":2},\"node_type\":\"NumericValueNode\"}},\"node_type\":\"CardBinaryOperatorNode\"},\"op\":\"=\",\"rhs\":{\"kwargs\":{\"value\":0},\"node_type\":\"NumericValueNode\"}},\"node_type\":\"CardBinaryOperatorNode\"}"
+	},
+	{
+		"query": "mv=odd",
+		"tree": "{\"kwargs\":{\"lhs\":{\"kwargs\":{\"lhs\":{\"kwargs\":{\"attribute_name\":\"cmc\",\"original_attribute\":\"mv\"},\"node_type\":\"CardAttributeNode\"},\"op\":\"%\",\"rhs\":{\"kwargs\":{\"value\":2},\"node_type\":\"NumericValueNode\"}},\"node_type\":\"CardBinaryOperatorNode\"},\"op\":\"=\",\"rhs\":{\"kwargs\":{\"value\":1},\"node_type\":\"NumericValueNode\"}},\"node_type\":\"CardBinaryOperatorNode\"}"
+	},
+	{
+		"query": "mv>=odd",
+		"error": {
+			"type": "ValueError",
+			"message": "Failed to parse query: \"mv>=odd\""
+		}
+	},
+	{
+		"query": "mv>even",
+		"error": {
+			"type": "ValueError",
+			"message": "Failed to parse query: \"mv>even\""
+		}
 	},
 	{
 		"query": "name: /'/",
@@ -4343,6 +4459,13 @@
 	{
 		"query": "otag:tricycle-land",
 		"tree": "{\"kwargs\":{\"lhs\":{\"kwargs\":{\"attribute_name\":\"card_oracle_tags\",\"original_attribute\":\"otag\"},\"node_type\":\"CardAttributeNode\"},\"op\":\":\",\"rhs\":[\"tricycle-land\"]},\"node_type\":\"CardBinaryOperatorNode\"}"
+	},
+	{
+		"query": "pow:even",
+		"error": {
+			"type": "ValueError",
+			"message": "Failed to parse query: \"pow:even\""
+		}
 	},
 	{
 		"query": "pow=2, tou=3",
@@ -5215,6 +5338,13 @@
 	{
 		"query": "tix>=5",
 		"tree": "{\"kwargs\":{\"lhs\":{\"kwargs\":{\"attribute_name\":\"price_tix\",\"original_attribute\":\"tix\"},\"node_type\":\"CardAttributeNode\"},\"op\":\">=\",\"rhs\":{\"kwargs\":{\"value\":5},\"node_type\":\"NumericValueNode\"}},\"node_type\":\"CardBinaryOperatorNode\"}"
+	},
+	{
+		"query": "tou=odd",
+		"error": {
+			"type": "ValueError",
+			"message": "Failed to parse query: \"tou=odd\""
+		}
 	},
 	{
 		"query": "toughness - power > 0",

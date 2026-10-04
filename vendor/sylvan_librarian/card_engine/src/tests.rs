@@ -2222,7 +2222,7 @@ fn fuzz_num_expr_str(e: &NumExpr) -> String {
         NumExpr::Const(c) => format!("{c}"),
         NumExpr::Field(f) => fuzz_num_field_str(*f).to_string(),
         NumExpr::Arith(l, o, r) => {
-            let os = match o { ArithOp::Add => "+", ArithOp::Sub => "-", ArithOp::Mul => "*", ArithOp::Div => "/" };
+            let os = match o { ArithOp::Add => "+", ArithOp::Sub => "-", ArithOp::Mul => "*", ArithOp::Div => "/", ArithOp::Mod => "%" };
             format!("({} {os} {})", fuzz_num_expr_str(l), fuzz_num_expr_str(r))
         }
     }
@@ -2955,7 +2955,11 @@ fn arith_tuple_narrowing_matches_reference() {
         // Builder closures — each returns a fresh NumericCmp (FilterExpr isn't Clone), parameterized
         // by op, so the same predicate can be built bare and again inside a `Not`.
         for op in [CmpOp::Lt, CmpOp::Le, CmpOp::Gt, CmpOp::Ge, CmpOp::Eq, CmpOp::Ne] {
-            let builders: [(&str, &dyn Fn() -> FilterExpr); 6] = [
+            let builders: [(&str, &dyn Fn() -> FilterExpr); 8] = [
+                // `mv:even` / `mv:odd` as the parser lowers them — cmc alone, but an Arith, so the
+                // tuple index is what narrows them (one remainder per distinct combination).
+                ("cmc%2 op 0", &|| cmp(arith(field(NumField::Cmc), ArithOp::Mod, konst(2.0)), op, konst(0.0))),
+                ("cmc%2 op 1", &|| cmp(arith(field(NumField::Cmc), ArithOp::Mod, konst(2.0)), op, konst(1.0))),
                 ("loyalty op 4", &|| cmp(field(NumField::Loyalty), op, konst(4.0))),
                 ("power op toughness", &|| cmp(field(NumField::Power), op, field(NumField::Toughness))),
                 ("cmc+1 op power", &|| cmp(arith(field(NumField::Cmc), ArithOp::Add, konst(1.0)), op, field(NumField::Power))),
@@ -16680,6 +16684,77 @@ fn a_face_satisfies_a_numeric_predicate_the_merged_row_cannot() {
     let plain = rkyv::access::<Archived<OracleCard>, Error>(&plain).expect("access");
     assert!(matches_tri(t(plain, &num(NumField::Power, CmpOp::Ge, 3.0)), Tri::False));
     assert!(matches_tri(t(plain, &num(NumField::Loyalty, CmpOp::Ge, 1.0)), Tri::Null));
+}
+
+/// `mv:even` / `mv:odd`, from the tree the parser writes for them to the verdict on one card.
+///
+/// Each mana value is a card measured on api.scryfall.com 2026-10-03 (`!"<name>" mv:even` and
+/// `mv:odd`, 1 or 404): a land's 0 is even (Seat of the Synod), Lightning Bolt's 1 is odd, Fire //
+/// Ice's joined 4 is even, Brisela's 11 is odd — and Little Girl's 0.5 is NEITHER, which is the
+/// whole reason this is a float remainder and not a stored bit.
+#[test]
+fn mana_value_parity_is_a_remainder_and_a_half_is_neither() {
+    use serde_json::json;
+    fn parity_tree(remainder: u8) -> serde_json::Value {
+        json!({
+            "node_type": "CardBinaryOperatorNode",
+            "kwargs": {
+                "lhs": {
+                    "node_type": "CardBinaryOperatorNode",
+                    "kwargs": {
+                        "lhs": {"node_type": "CardAttributeNode", "kwargs": {"attribute_name": "cmc", "original_attribute": "mv"}},
+                        "op": "%",
+                        "rhs": {"node_type": "NumericValueNode", "kwargs": {"value": 2}},
+                    },
+                },
+                "op": "=",
+                "rhs": {"node_type": "NumericValueNode", "kwargs": {"value": remainder}},
+            },
+        })
+    }
+    fn card_with_cmc(cmc: Option<f32>) -> Vec<u8> {
+        let mut vocab = VocabInterner::new();
+        let mut card = stub_card(1, 0, &[], &mut vocab);
+        card.cmc = cmc;
+        rkyv::to_bytes::<Error>(&card).expect("serialize").into_vec()
+    }
+    let even = super::build_filter(&parity_tree(0)).expect("mv:even must build");
+    let odd = super::build_filter(&parity_tree(1)).expect("mv:odd must build");
+    // The planner narrows it through the joint-tuple index, not a per-card scan.
+    assert!(is_arith_tuple_route(&even) && is_arith_tuple_route(&odd));
+
+    let strings: Vec<String> = Vec::new();
+    let strings_bytes = rkyv::to_bytes::<Error>(&strings).expect("serialize strings");
+    let strings = rkyv::access::<AStrings, Error>(&strings_bytes).expect("access strings");
+    let verdicts = |cmc: Option<f32>| -> (Tri, Tri) {
+        let bytes = card_with_cmc(cmc);
+        let card = rkyv::access::<Archived<OracleCard>, Error>(&bytes).expect("access");
+        (even.eval_card(card, strings), odd.eval_card(card, strings))
+    };
+    let is = |got: (Tri, Tri), want: (Tri, Tri)| got.0 == want.0 && got.1 == want.1;
+
+    for cmc in [0.0, 2.0, 4.0, 16.0, 1_000_000.0] {
+        assert!(is(verdicts(Some(cmc)), (Tri::True, Tri::False)), "{cmc} is even");
+    }
+    for cmc in [1.0, 3.0, 11.0, 15.0] {
+        assert!(is(verdicts(Some(cmc)), (Tri::False, Tri::True)), "{cmc} is odd");
+    }
+    // Little Girl. FALSE both ways, not NULL: `-(mv:even or mv:odd)` finds her on Scryfall, which
+    // a NULL under the negation would not.
+    assert!(is(verdicts(Some(0.5)), (Tri::False, Tri::False)), "a half is neither");
+    // A card with no mana value at all has no parity to ask about.
+    assert!(is(verdicts(None), (Tri::Null, Tri::Null)));
+
+    // `%` is the parser's, for the two words; it is still just arithmetic, and a zero divisor is
+    // NULL exactly as division's is.
+    let by_zero = FilterExpr::NumericCmp {
+        lhs: NumExpr::Arith(Box::new(NumExpr::Field(NumField::Cmc)), ArithOp::Mod, Box::new(NumExpr::Const(0.0))),
+        op: CmpOp::Eq,
+        rhs: NumExpr::Const(0.0),
+    };
+    let bytes = card_with_cmc(Some(2.0));
+    let card = rkyv::access::<Archived<OracleCard>, Error>(&bytes).expect("access");
+    assert!(by_zero.eval_card(card, strings) == Tri::Null);
 }
 
 // ─── per-face colours ────────────────────────────────────────────────────────

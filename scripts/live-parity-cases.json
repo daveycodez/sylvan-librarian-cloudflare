@@ -1564,6 +1564,36 @@
 			"method": "GET",
 			"path": "/cards/fd7094d6-6e23-47f2-a9da-4dd680294ac8",
 			"note": "x27 differential sample (every layout and object shape, 2026-09-26)."
+		},
+		{
+			"name": "search-mv-even",
+			"method": "GET",
+			"path": "/cards/search?q=mv%3Aeven",
+			"note": "x59, reported from mtg-seeker 2026-10-03: the port refused the whole query (`400 Failed to parse query`) where Scryfall documents the word. Measured on api.scryfall.com that day, corpus `mv>=0` = 33,649: `mv:even` is 17,331 — and so are `cmc:even`, `manavalue=even`, `mv=even`, `mv:EVEN` and `mv:\"even\"`. It is the CARD's mana value, the one `mv=` compares: a land is even (`mv:even mv=0` is all 1,432 of `mv=0`), Fire // Ice is even on its joined 4. The parser lowers the word to `(mv % 2) = 0`, which the engine narrows through the joint-tuple index it already has; nothing is stored."
+		},
+		{
+			"name": "search-mv-odd",
+			"method": "GET",
+			"path": "/cards/search?q=mv%3Aodd",
+			"note": "The other word: 16,317 on api.scryfall.com 2026-10-03 (`manavalue:odd`, `mv=odd` and `cmc=odd` the same). With `mv:even`'s 17,331 that is 33,648 of a 33,649-card corpus — one short, and the next two cases are about the one."
+		},
+		{
+			"name": "search-negated-mv-even-is-the-other-parity",
+			"method": "GET",
+			"path": "/cards/search?q=-mv%3Aeven",
+			"note": "A NEGATED PARITY IS THE OTHER PARITY, NOT THE COMPLEMENT: `-mv:even` is 16,317 — exactly `mv:odd` — where the complement of 17,331 in 33,649 is 16,318 (and `-cmc:odd` is 17,331, `-mv=even` 16,317, `-mv:\"odd\"` 17,331). The card between the two readings is Little Girl, mana value 0.5: `-mv:even mv=0.5` and `-mv:odd mv=0.5` are both 404. It is the leaf-binding fault every numeric column shows (`-mv:3` is refused with the sentence that names even/odd, `-mv>=3` is a silent tautology) in its third shape, and `scryfallTermPolicy` reproduces it on the query text by rewriting the term to the other word."
+		},
+		{
+			"name": "search-mv-parity-complement-is-the-half",
+			"method": "GET",
+			"path": "/cards/search?q=-%28mv%3Aeven+or+mv%3Aodd%29",
+			"note": "THE ONE-CARD WITNESS for both rules at once: Little Girl (unh/16, `{HW}`, mana value 0.5) is neither even nor odd, and a negated GROUP is the honest complement where a negated leaf is not (`-(mv:even)` is 16,318 against `-mv:even`'s 16,317). One row on api.scryfall.com 2026-10-03. A stored parity bit, or a remainder taken after rounding, answers nothing here; so does a NULL for the half, since NOT of NULL does not match."
+		},
+		{
+			"name": "search-mv-compared-with-even-matches-nothing",
+			"method": "GET",
+			"path": "/cards/search?q=mv%3Eeven",
+			"note": "Only `:` and `=` take the words. `mv>even`, `mv<even`, `mv>=odd`, `mv<=odd`, `mv!=even` and `mv!=odd` are each a 404 with NO `warnings` key on api.scryfall.com (2026-10-03) — the term is kept and matches nothing, as `cmc>=notanumber` does (`mv>even or (t:goblin t:wizard)` is the other arm's 18, and `-mv>even` is the whole corpus). This port answered `400 Failed to parse query`."
 		}
 	]
 }

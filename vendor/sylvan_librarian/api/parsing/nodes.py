@@ -210,6 +210,9 @@ class BinaryOperatorNode(QueryNode):
             "!=",
             "*",
             "/",
+            # The remainder, which the lexer never produces: the parser writes it for `mv:even`
+            # and `mv:odd` (see hand_parser._MANA_VALUE_PARITY), and nothing else reaches it.
+            "%",
             "+",
             "<",
             "<=",
@@ -231,6 +234,9 @@ class BinaryOperatorNode(QueryNode):
         sql_operator = self.operator
         if sql_operator == ":":
             sql_operator = "="
+        if sql_operator == "%":
+            # The statement runs with named parameters, where a bare `%` opens a placeholder.
+            sql_operator = "%%"
         return f"({self.lhs.to_sql(context)} {sql_operator} {self.rhs.to_sql(context)})"
 
     def to_human_explanation(self: BinaryOperatorNode) -> str:

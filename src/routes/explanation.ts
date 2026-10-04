@@ -266,10 +266,36 @@ function formatCardAttributeExplanation(
 	return `${lhsStr} ${opStr} ${rhsStr}`;
 }
 
+/**
+ * `mv:even` / `mv:odd` as the parser lowers them — `(<attribute> % 2) = 0|1` — said the way they
+ * were typed, or null for any other shape.
+ *
+ * The remainder is how the engine answers the two words, not something a reader asked for:
+ * without this the explanation of `mv:even` is "mana value % 2 is 0".
+ */
+function explainParity(lhs: unknown, op: string, rhs: unknown): string | null {
+	if (op !== "=" || !isWireNode(lhs) || !isWireNode(rhs) || rhs.node_type !== "NumericValueNode") return null;
+	if (lhs.node_type !== "CardBinaryOperatorNode" || lhs.kwargs.op !== "%") return null;
+	const attribute = lhs.kwargs.lhs;
+	const divisor = lhs.kwargs.rhs;
+	if (!isWireNode(attribute) || attribute.node_type !== "CardAttributeNode") return null;
+	if (!isWireNode(divisor) || divisor.node_type !== "NumericValueNode" || Number(divisor.kwargs.value) !== 2) {
+		return null;
+	}
+	const remainder = Number(rhs.kwargs.value);
+	if (remainder !== 0 && remainder !== 1) return null;
+	return `the ${explain(attribute)} is ${remainder === 0 ? "even" : "odd"}`;
+}
+
 function explainBinary(node: WireNode): string {
 	const lhs = node.kwargs.lhs;
 	const rhs = node.kwargs.rhs;
 	const op = typeof node.kwargs.op === "string" ? node.kwargs.op : "";
+
+	const parity = explainParity(lhs, op, rhs);
+	if (parity !== null) {
+		return parity;
+	}
 
 	// Handle empty string values (CardBinaryOperatorNode.to_human_explanation).
 	if (

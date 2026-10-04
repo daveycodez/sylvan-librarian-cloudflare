@@ -1009,3 +1009,50 @@ describe("operand dedup mirrors upstream's node hash", () => {
 		expect(operandsOf("cmc<2 c=w cmc<2 color=w").length).toBe(2);
 	});
 });
+
+// ── mv:even / mv:odd ──────────────────────────────────────────────────────────
+//
+// The two words Scryfall takes where a mana value goes, lowered to `(mv % 2) = 0|1` — arithmetic
+// the engine already evaluates, so a half (Little Girl's 0.5) is neither and negation is the
+// complement. Measured on api.scryfall.com 2026-10-03: `mv:even` 17,331 and `mv:odd` 16,317 of a
+// 33,649 corpus, on every spelling of the column, under `:` and `=`, in any case, quoted or not.
+// The parity fixtures pin the bytes against the Python parser; these pin what the bytes mean.
+
+describe("mv:even and mv:odd are a remainder on the mana-value column", () => {
+	const parity = (alias: string, remainder: number): string =>
+		'{"kwargs":{"lhs":{"kwargs":{"lhs":{"kwargs":{"attribute_name":"cmc","original_attribute":' +
+		`"${alias}"},"node_type":"CardAttributeNode"},"op":"%","rhs":{"kwargs":{"value":2},"node_type":` +
+		`"NumericValueNode"}},"node_type":"CardBinaryOperatorNode"},"op":"=","rhs":{"kwargs":{"value":${remainder}},` +
+		'"node_type":"NumericValueNode"}},"node_type":"CardBinaryOperatorNode"}';
+	const wire = (query: string): string => canonicalStringify(parseScryfallQuery(query));
+
+	test("every spelling of the column, both equality operators, any case, quoted or not", () => {
+		for (const alias of ["mv", "cmc", "manavalue"]) {
+			for (const op of [":", "="]) {
+				expect(wire(`${alias}${op}even`)).toBe(parity(alias, 0));
+				expect(wire(`${alias}${op}odd`)).toBe(parity(alias, 1));
+			}
+		}
+		expect(wire("mv:EVEN")).toBe(parity("mv", 0));
+		expect(wire("MV:Odd")).toBe(parity("mv", 1));
+		expect(wire('mv:"even"')).toBe(parity("mv", 0));
+	});
+
+	test("it composes as an ordinary leaf: negation wraps it, a pair is two leaves", () => {
+		expect(wire("-mv:even")).toBe(`{"kwargs":{"operand":${parity("mv", 0)}},"node_type":"NotNode"}`);
+		expect(wire("mv:even mv:odd")).toBe(
+			`{"kwargs":{"operands":[${parity("mv", 0)},${parity("mv", 1)}]},"node_type":"AndNode"}`,
+		);
+		// Two spellings of one parity are one leaf, as two spellings of `cmc<2` are.
+		expect(wire("mv:even cmc=even")).toBe(parity("mv", 0));
+	});
+
+	test("only the two words, only that column, only under : and =", () => {
+		for (const q of ["mv>even", "mv>=odd", "mv<even", "mv!=odd", "pow:even", "tou=odd", "loy:even", "mv:evens"]) {
+			expect(() => parseScryfallQuery(q)).toThrow(ParseError);
+		}
+		// A bare word is still a name, and a number is still a number.
+		expect(wire("even")).toContain('"attribute_name":"card_name"');
+		expect(wire("mv=2")).not.toContain('"%"');
+	});
+});

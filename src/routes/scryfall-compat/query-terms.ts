@@ -243,6 +243,52 @@ const MANA_VALUE_KEYWORDS: ReadonlySet<string> = new Set(["cmc", "mv", "manavalu
 const MANA_VALUE_REASON = "The value must be a number, or \u201ceven\u201d/\u201codd\u201d";
 
 /**
+ * `even` and `odd`, each mapped to the other \u2014 the two words the mana-value keywords take where a
+ * number goes, and what a LEADING `-` turns each into.
+ *
+ * \u2500\u2500\u2500 WHAT SCRYFALL DOES WITH THEM \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
+ *
+ * Measured on api.scryfall.com 2026-10-03, one request per row, corpus `mv>=0` = 33,649:
+ *
+ *   mv:even    17,331    cmc:even 17,331    manavalue=even 17,331    mv=even 17,331
+ *   mv:odd     16,317    manavalue:odd 16,317    mv=odd 16,317    cmc=odd 16,317
+ *   mv:EVEN    17,331    mv:eVeN 17,331    mv:"even" 17,331       case and quotes are immaterial
+ *   mv:foo     400 + `The value must be a number, or \u201ceven\u201d/\u201codd\u201d` \u2014 the sentence named them all along
+ *
+ *   mv>even  mv<even  mv>=odd  mv<=odd  mv!=even  mv!=odd       404 each, NO `warnings` key
+ *   mv>even or (t:goblin t:wizard)   18 = the other arm          kept, and matching nothing
+ *   -mv>even  -mv!=even              33,649                       the silent tautology below
+ *
+ * So `:`/`=` is the whole feature, and under a comparison the word is just a value that is not a
+ * number: the same honored-and-empty leaf `cmc>=notanumber` is.
+ *
+ * \u2500\u2500\u2500 A NEGATED PARITY IS THE OTHER PARITY, NOT THE COMPLEMENT \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
+ *
+ * The one place the two differ is Little Girl, whose mana value is 0.5 and is neither:
+ *
+ *   -mv:even   16,317    -mv=even 16,317    = mv:odd         -cmc:odd  -mv:"odd"  17,331 = mv:even
+ *   -mv:even mv=0.5      404                                 -mv:odd mv=0.5      404
+ *   -(mv:even)           16,318                              the GROUP is the honest complement
+ *   -(mv:even or mv:odd) 1, Little Girl
+ *
+ * This is the same leaf-binding fault the numeric columns show everywhere else (`-mv:3` is
+ * refused with the value sentence, `-mv>=3` is a tautology), in its third shape: on the two words
+ * the `-` FLIPS the word. Rewritten here, on the raw text, for the reason `date` is: the parser's
+ * `-mv:even` is the complement, which is what `/search` should answer and what `-(mv:even)`
+ * answers on Scryfall too.
+ */
+const MANA_VALUE_PARITY_FLIP: ReadonlyMap<string, string> = new Map([
+	["even", "odd"],
+	["odd", "even"],
+]);
+
+/** The parity word a raw value spells, or null: quotes and case are immaterial (see above). */
+function manaValueParity(rawValue: string): string | null {
+	const word = unquote(rawValue).toLowerCase();
+	return MANA_VALUE_PARITY_FLIP.has(word) ? word : null;
+}
+
+/**
  * A LEADING `-` ON A COMPARISON LEAF IS NOT APPLIED BY SCRYFALL. The term becomes always-true.
  *
  * This is the general case of the table above, and it is SILENT \u2014 no warning, no 400, nothing in
@@ -1391,10 +1437,25 @@ function unquote(value: string): string {
 	return value;
 }
 
-/** Whether a value reads as a number to the numeric columns (Scryfall also takes even/odd). */
+/**
+ * Whether a value reads as a number to the numeric columns.
+ *
+ * `even`/`odd` are NOT numbers here, and were until 2026-10-03: they are two words ONE column
+ * takes under `:`/`=`, which `classifyLeaf` decides before it asks this. Calling them numeric for
+ * every column kept `pow:even` and `mv>even` in the query for the parser to refuse — `400 Failed
+ * to parse query` where api.scryfall.com answers `Unknown keyword “pow”.` and a 404.
+ *
+ * AND A QUOTED VALUE IS A STRING, NEVER A NUMBER, which the same measurement turned up: this used
+ * to unquote first, so `mv:"2"` was kept for a parser that reads a number TOKEN there and refuses
+ * a quoted one — another `400 Failed to parse query`. Measured 2026-10-03, anchor `e:khm t:god`
+ * = 12: `mv:"2"` and `mv="2"` earn the value sentence, `pow:"2"` `tou:"2"` `loy="3"` `usd:"1"`
+ * `year:"2021"` and `year="2021"` earn `Unknown keyword “<kw>”.`, each 12 with its warning; and
+ * `mv>"2" or (t:goblin t:wizard)` and `pow>="2" or (…)` are 18 with none — the comparison kept,
+ * matching nothing. (`mv:"even"` is the one quoted value that IS honored, 17,331, and it is not a
+ * number either.)
+ */
 function isNumericValue(value: string): boolean {
-	const v = unquote(value).trim().toLowerCase();
-	if (v === "even" || v === "odd") return true;
+	const v = value.trim().toLowerCase();
 	if (/^[-+]?(\d+(\.\d*)?|\.\d+)$/.test(v)) return true;
 	// `pow>=tou` and friends: a column name on the right is Scryfall's cross-column comparison.
 	return /^[a-z]+$/.test(v) && CROSS_COLUMN_VALUES.has(v);
@@ -1477,6 +1538,20 @@ function classifyLeaf(term: string): LeafVerdict {
 	// keyword`, since neither spelling is a Scryfall keyword at all. See regexKeywordReason.
 	const regexReasonForKeyword = regexKeywordReason(keyword, rawValue);
 	if (regexReasonForKeyword !== null) return { keep: false, reason: regexReasonForKeyword };
+
+	// `mv:even` / `mv:odd`, before every numeric rule below because the word is not a number and
+	// each of them would otherwise speak for it. Three outcomes, all measured — see
+	// MANA_VALUE_PARITY_FLIP: the positive term is kept as written, the negated one is the OTHER
+	// parity, and under a comparison the word matches nothing (the negated comparison never gets
+	// here: the tautology rule above already answered it).
+	if (MANA_VALUE_KEYWORDS.has(keyword)) {
+		const parity = manaValueParity(rawValue);
+		if (parity !== null) {
+			if (!equality) return { keep: true, text: NEVER_MATCHES };
+			if (!negated) return { keep: true, text: term };
+			return { keep: true, text: `${match[2]}${op}${MANA_VALUE_PARITY_FLIP.get(parity)}` };
+		}
+	}
 
 	if (negated && equality) {
 		if (MANA_VALUE_KEYWORDS.has(keyword)) return { keep: false, reason: MANA_VALUE_REASON };

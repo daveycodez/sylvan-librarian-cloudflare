@@ -120,7 +120,9 @@ export class RegexValueNode extends ValueNode {
 	}
 }
 
-const BIN_OPS: ReadonlySet<string> = new Set(["-", "!=", "*", "/", "+", "<", "<=", "=", ">", ">=", ":"]);
+// `%` is the one operator here the lexer never produces: the parser writes it for `mv:even` and
+// `mv:odd` (see MANA_VALUE_PARITY in parser.ts), and nothing else reaches it.
+const BIN_OPS: ReadonlySet<string> = new Set(["-", "!=", "*", "/", "%", "+", "<", "<=", "=", ">", ">=", ":"]);
 
 export class BinaryOperatorNode extends QueryNode {
 	override readonly nodeType: string = "BinaryOperatorNode";

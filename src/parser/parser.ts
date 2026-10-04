@@ -149,6 +149,46 @@ function validateMtgYear(value: PyNumber, pos: number): bigint {
 const ARITH_OPS: ReadonlySet<TT> = new Set([TT.PLUS, TT.MINUS, TT.STAR, TT.SLASH]);
 
 /**
+ * The spellings of mana value — every alias db-info maps onto the `cmc` column, so a spelling
+ * added there takes `even`/`odd` on the same commit.
+ */
+const MANA_VALUE_ALIASES: ReadonlySet<string> = new Set(
+	[...ALIAS_TO_FIELD_INFOS]
+		.filter(([, fis]) => fis.some((fi) => fi.parserClass === PC.NUMERIC && pyLower(fi.dbColumnName) === "cmc"))
+		.map(([alias]) => alias.toLowerCase()),
+);
+
+/**
+ * `mv:even` and `mv:odd` — the two WORDS Scryfall takes where a mana value goes, and the
+ * remainder each one asks of `mana value mod 2`.
+ *
+ * Measured on api.scryfall.com 2026-10-03, corpus 33,649 (`mv>=0`):
+ *
+ *   mv:even  17,331   = cmc:even = manavalue=even = mv=even = mv:EVEN = mv:"even"
+ *   mv:odd   16,317   = manavalue:odd = mv=odd = cmc=odd
+ *   mv:even or mv:odd   33,648 — one short, and `-(mv:even or mv:odd)` is the one: Little Girl,
+ *                       whose mana value is 0.5 and is NEITHER (`mv:even mv=0.5` and
+ *                       `mv:odd mv=0.5` are both 404)
+ *
+ * It is the CARD's mana value, the same one `mv=` compares: a land is even (`mv:even mv=0` is all
+ * 1,432 of `mv=0`), Fire // Ice is even on its joined 4, Delver of Secrets is odd on its front's
+ * 1, the meld result Brisela is odd on its own 11, and Fireball's X is 0 so it is odd on the 1.
+ *
+ * So it is lowered to arithmetic the engine already evaluates — `(mv % 2) = 0` — rather than
+ * given a node of its own: a half is neither remainder, a card with no mana value is neither,
+ * and negation, `or` and the planner's joint-tuple narrowing all compose as they do for
+ * `cmc+1<pow`. `%` is NOT lexed: nothing a user types reaches it but these two words.
+ *
+ * `:` and `=` only. Under `>` `>=` `<` `<=` `!=` Scryfall keeps the term and matches nothing
+ * (`mv>even` 404, `-mv>even` 33,649), which is not a parity at all — the compat surface answers
+ * that the way it answers `cmc>=notanumber`, and here it stays the parse error it was.
+ */
+const MANA_VALUE_PARITY: ReadonlyMap<string, bigint> = new Map([
+	["even", 0n],
+	["odd", 1n],
+]);
+
+/**
  * A token read as TEXT: a NUMBER as the query spelled it, anything else as its value.
  *
  * A text value is glued from the lexer's pieces, and a hyphen splits a UUID into WORD and NUMBER
@@ -456,6 +496,10 @@ export class Parser {
 			if (nextTok.type === TT.OP || numBangAlias) {
 				const op = numBangAlias ? "=" : (nextTok.value as string);
 				this.consume();
+				const parity = this.parseManaValueParity(wl, op);
+				if (parity !== null) {
+					return parity;
+				}
 				return new CardBinaryOperatorNode(new CardAttributeNode(wl, PC.NUMERIC), op, this.parseNumExprValue());
 			}
 			if (ARITH_OPS.has(nextTok.type) && !nextTok.spaceBefore) {
@@ -498,6 +542,34 @@ export class Parser {
 
 		// ── unknown alias → implicit name, possibly hyphenated ──
 		return this.parseHyphenatedName(word);
+	}
+
+	/**
+	 * `mv:even` / `mv:odd`, lowered to `(mv % 2) = 0|1`; null when the value is anything else.
+	 *
+	 * Called with the operator already consumed, and consumes the word only when it IS one of the
+	 * two — so every other value falls through to the numeric expression parser untouched. A
+	 * quoted word is the same word (`mv:"even"` is 17,331 on api.scryfall.com, as `mv:even` is).
+	 * See MANA_VALUE_PARITY for the measurements.
+	 */
+	private parseManaValueParity(alias: string, op: string): QueryNode | null {
+		if ((op !== ":" && op !== "=") || !MANA_VALUE_ALIASES.has(alias)) {
+			return null;
+		}
+		const tok = this.peek();
+		if (tok.type !== TT.WORD && tok.type !== TT.QUOTED) {
+			return null;
+		}
+		const remainder = MANA_VALUE_PARITY.get(pyLower(pyStr(tok.value)));
+		if (remainder === undefined) {
+			return null;
+		}
+		this.consume();
+		return new CardBinaryOperatorNode(
+			new CardBinaryOperatorNode(new CardAttributeNode(alias, PC.NUMERIC), "%", new NumericValueNode(PyNumber.int(2n))),
+			"=",
+			new NumericValueNode(PyNumber.int(remainder)),
+		);
 	}
 
 	parseNumberPrimary(): QueryNode {

@@ -168,6 +168,12 @@ describe("explainWireTree over the real parser", () => {
 		["c:c", "the color is Colorless ({C})"],
 		["year:2020", "release date contains 2020"],
 		["usd>10", "price (USD) > 10"],
+		// `mv:even` is lowered to `(mv % 2) = 0`; the explanation says the word, not the remainder.
+		["mv:even", "the mana value is even"],
+		["cmc=odd", "the mana value is odd"],
+		["-mv:even t:elf", "not (the mana value is even) and the type contains Elf"],
+		// Arithmetic a reader DID type keeps its operator.
+		["cmc+1<pow", "the mana value + 1 < power"],
 	];
 	for (const [query, expected] of cases) {
 		test(`${JSON.stringify(query)} → ${JSON.stringify(expected)}`, () => {
