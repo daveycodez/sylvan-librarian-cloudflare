@@ -744,6 +744,34 @@ EXTRA_CASES = [
     "name:'it\\'s'",
     "set:MH2 r:c",
     "e:neo cn:100",
+    # A bare word that OPENS with a numeric alias and continues with `-` or `*` and something that
+    # is not a numeric term: a name word, as `some-word` and `some*word` are. Measured on
+    # api.scryfall.com 2026-10-04: `power-sink` and `power*sink` are Power Sink, `power-armor` 2,
+    # `power-word-kill` 1, `usd-a` 4, `pt-a` 130. The arithmetic spellings beside them are
+    # unchanged: a numeric term after the operator is still arithmetic.
+    "power-sink",
+    "pow-sink",
+    "POWER-Sink",
+    "power-word-kill",
+    "power-sink-x",
+    "power*sink",
+    "usd-a",
+    "pt-a",
+    "cn-a",
+    "mv-x",
+    "loyalty-x",
+    "edhrec-a",
+    "prints-a",
+    "-power-sink",
+    "power-sink t:instant",
+    "power-sink or cmc-foo",
+    "power-sink>3",
+    'power-"sink"',
+    "power-",
+    "power+sink",
+    "power-1",
+    "cmc-power",
+    "power-1>3",
 ]
 
 

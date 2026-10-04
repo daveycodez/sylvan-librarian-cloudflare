@@ -2780,6 +2780,18 @@
 			"method": "GET",
 			"path": "/cards/search?q=mana%3A%7Bw%2F2%7D",
 			"note": "2026-10-04. `mana:{w/2}` is `mana:{2/w}`'s 9 on Scryfall, and `mana:{p/w}` is `mana:{w/p}`; a parse error here before."
+		},
+		{
+			"name": "name-word-opening-with-a-numeric-alias-hyphen",
+			"method": "GET",
+			"path": "/cards/search?q=power-word-kill",
+			"note": "2026-10-04. Power Word Kill: a hyphenated bare word that opens with a numeric alias is a name word (`power-sink` 1, `power-armor` 2, `usd-a` 4, `pt-a` 130, `cn-a` 3); `Failed to parse query` here before, in both parsers."
+		},
+		{
+			"name": "name-word-opening-with-a-numeric-alias-star",
+			"method": "GET",
+			"path": "/cards/search?q=pt*a+t%3Ainstant",
+			"note": "2026-10-04. The starred spelling of the same word: `power*sink` is Power Sink, and `pt*a` is every name whose collated form holds `pta`. A parse error here before."
 		}
 	]
 }

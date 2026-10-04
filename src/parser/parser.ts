@@ -504,6 +504,12 @@ export class Parser {
 			}
 			if (ARITH_OPS.has(nextTok.type) && !nextTok.spaceBefore) {
 				let lhs = this.arithTail(new CardAttributeNode(wl, PC.NUMERIC));
+				if (lhs instanceof CardAttributeNode) {
+					// The operator has no numeric term after it, so this is not arithmetic: `power-sink`
+					// is the hyphenated name word `some-word` is, and `power*sink` the starred one.
+					// Returning the bare attribute left the operator unconsumed and failed the parse.
+					return this.parseHyphenatedName(word);
+				}
 				lhs = this.spacedArithTail(lhs);
 				if (this.peek().type === TT.OP) {
 					const op = this.consume().value as string;

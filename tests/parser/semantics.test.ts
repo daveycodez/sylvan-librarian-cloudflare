@@ -1056,3 +1056,52 @@ describe("mv:even and mv:odd are a remainder on the mana-value column", () => {
 		expect(wire("mv=2")).not.toContain('"%"');
 	});
 });
+
+// ── a bare word that opens with a numeric alias ──────────────────────────────
+
+describe("a hyphenated or starred word that opens with a numeric alias is a name word", () => {
+	// `power-sink` was `Failed to parse query` in both parsers: the numeric branch saw `-`, found
+	// no numeric term after it, and returned the bare attribute with the operator still unread.
+	// Measured on api.scryfall.com 2026-10-04: `power-sink` and `power*sink` are Power Sink (1),
+	// `power-armor` 2, `power-word-kill` 1, `usd-a` 4 and `pt-a` 130 (names whose collated form
+	// holds `usda` / `pta`), and `pow-sink`, `cmc-foo`, `mv-x`, `loyalty-x`, `toughness-test`,
+	// `prints-a` and `edhrec-a` each an ordinary 404.
+	const wire = (query: string): string => canonicalStringify(parseScryfallQuery(query));
+
+	test("every numeric alias, under `-` and under `*`, reads exactly as an unknown word does", () => {
+		const aliases = [
+			...["cmc", "mv", "manavalue", "power", "pow", "toughness", "tou", "powtou", "pt", "loyalty", "loy"],
+			...["edhrec", "edhrecrank", "edhrec_rank", "usd", "eur", "tix", "usdfoil"],
+			...["prints", "sets", "paperprints", "papersets", "illustrations", "artists"],
+			...["number", "cn", "collector", "collectornumber"],
+		];
+		for (const alias of aliases) {
+			expect(wire(`${alias}-sink`)).toBe(wire(`name:${alias}-sink`));
+			expect(wire(`${alias}*sink`)).toBe(wire(`name:${alias}*sink`));
+			expect(wire(`${alias}-word-kill`)).toBe(wire(`name:${alias}-word-kill`));
+		}
+		expect(wire("power-sink")).toContain('"value":"PowerSink"');
+		expect(wire("power-sink")).toContain('"node_type":"CollatedNameValueNode"');
+	});
+
+	test("it composes: negated, beside another term, under or", () => {
+		expect(wire("-power-sink")).toBe(wire("-name:power-sink"));
+		expect(wire("power-sink t:instant")).toBe(wire("name:power-sink t:instant"));
+		expect(wire("power-sink or cmc-foo")).toBe(wire("name:power-sink or name:cmc-foo"));
+	});
+
+	test("arithmetic is untouched: a numeric term after the operator is still arithmetic", () => {
+		for (const q of ["power-1>3", "cmc-power>1", "power-(cmc-1)>2", "power*2>4", "power - cmc>1"]) {
+			expect(wire(q)).not.toContain("card_name");
+		}
+		// The standalone spellings stay arithmetic too, as upstream pins them (`power - cmc`).
+		expect(wire("power-1")).toContain('"op":"-"');
+		expect(wire("cmc-power")).toContain('"op":"-"');
+	});
+
+	test("what was an error for an unknown word is still one here", () => {
+		for (const q of ["power-", "power-sink>3", 'power-"sink"', "power+sink", "power/sink"]) {
+			expect(() => parseScryfallQuery(q)).toThrow(ParseError);
+		}
+	});
+});
