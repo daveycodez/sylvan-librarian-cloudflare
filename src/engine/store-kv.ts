@@ -1815,8 +1815,13 @@ export async function gzipBytes(bytes: Uint8Array): Promise<Uint8Array> {
  *
  *      GENERATION-ONLY: the same five u16 hold different values for about a hundred cards. No
  *      layout, no format version, nothing on the query path.
+ *
+ *   60 (2026-10-04): THE VARIATION RULE IS PER SLOT. Compared again on generation 59, Monstrous
+ *      Growth was `prints=10` against Scryfall's 9: its por/173† is `variation: true` in four
+ *      languages and `false` in Japanese, and skipping ROWS left the slot standing on that one.
+ *      A slot is out when any row of it carries the flag. GENERATION-ONLY, as 59.
  */
-export const STORE_CONTENT_GENERATION = 59;
+export const STORE_CONTENT_GENERATION = 60;
 
 /**
  * Chunk key for a store. Keyed by store_key, so publishes never collide.

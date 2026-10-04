@@ -445,6 +445,19 @@ fn a_variation_is_not_a_print() {
 }
 
 #[test]
+fn a_variation_slot_is_out_whole_when_one_language_of_it_lacks_the_flag() {
+    // Monstrous Growth's por/173† is `variation: true` in four languages and `false` in Japanese
+    // on api.scryfall.com (2026-10-04), and the card is `prints=9` of its ten slots: Scryfall
+    // skips the slot, not the rows. The same shape here — a Japanese ons/200★ without the flag.
+    let mut japanese = fixture("embermage_goblin_ons_200_star");
+    japanese["lang"] = json!("ja");
+    japanese["variation"] = json!(false);
+    japanese["id"] = json!("0ee5aa80-32cc-486e-bbb2-5386eadaf4cb");
+    let store = store_of(&[fixture("embermage_goblin_ons_200"), fixture("embermage_goblin_ons_200_star"), japanese]);
+    assert_eq!(counts_of(&store, "ons/200"), (1, 1, 1, 1, 2));
+}
+
+#[test]
 fn a_digital_printing_in_a_paper_set_is_a_paper_print() {
     // "Name Sticker" Goblin's only printing is unf/107m: `games: [mtgo]`, `digital: true` — in
     // Unfinity, a paper set. Scryfall holds paperprints=1 and papersets=1 for it (2026-10-04):

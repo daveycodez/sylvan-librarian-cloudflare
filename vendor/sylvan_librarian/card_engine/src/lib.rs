@@ -4883,7 +4883,7 @@ fn assign_single_set_flags(
 ///     Sorcerer's nine slots are five, Vizzerdrix's eight six. Ten of ten cards probed, and the
 ///     same holds under `paperprints` (Erg Raiders 9, not 10). No card's `sets` can tell the two
 ///     readings apart — none has a set it appears in only as a variation — so the set counts
-///     keep every row.
+///     keep every row. The SLOT is what is skipped, when any row of it carries the flag.
 ///   - `illustrations` is the distinct artworks, a printing's artwork being its top-level
 ///     `illustration_id` or, when it has none (a transform or modal card), its FRONT face's:
 ///     Delver of Secrets' eight printings carry twelve face illustrations and count 6, Agadeem's
@@ -4923,7 +4923,11 @@ fn assign_print_counts(
                 paper_sets.contains(code) || p.compat.games & GAME_PAPER != 0
             }
         };
-        let print = |p: &&Printing| p.compat.flags & COMPAT_VARIATION == 0;
+        // By SLOT, not by row: Scryfall's flag is not the same on every language of one. Monstrous
+        // Growth's por/173† is `variation: true` in English, German, Spanish and French and
+        // `false` in Japanese, and the card is `prints=9` — the slot is out whole.
+        let varied: Vec<(&str, u32)> = rows().filter(|p| p.compat.flags & COMPAT_VARIATION != 0).map(slot).collect();
+        let print = |p: &&Printing| !varied.contains(&slot(p));
         card.print_count = distinct(rows().filter(print).map(slot).collect());
         card.set_count = distinct(rows().map(|p| p.card_set_code.as_str()).collect());
         card.paper_print_count = distinct(rows().filter(print).filter(paper).map(slot).collect());
