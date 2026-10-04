@@ -103,11 +103,7 @@ describe("`*`, `x`, `y` and `z` are the number zero on a numeric column", () => 
 		for (const term of ["pow=a", "pow=w", "pow=?", "pow=∞", "pow=inf", "pow=½", 'pow="x"', 'pow="*"', "pow='*'"]) {
 			expectIgnored(term, term, "Unknown keyword “pow”.");
 		}
-		// A value that only STARTS with one is a different thing on Scryfall (the rest is a name
-		// word) and is not reproduced: it is still the unknown-keyword sentence here.
-		for (const term of ["pow=xx", "pow=x*", "pow=**", "pow=x2", "pow=1a"]) {
-			expectIgnored(term, term, "Unknown keyword “pow”.");
-		}
+		// A value that only STARTS with one is the zero and a term after it — the next describe.
 	});
 
 	test("a column that is not numeric does not read them as zero", () => {
@@ -169,6 +165,103 @@ describe("a number past ±2,461,449,600 is `Value out of range`, and the term is
 		expectKept("pow>2147483648", "pow>2147483648");
 		expectKept("cn:123", "cn:123");
 		expectKept("pow>tou", "pow>tou");
+	});
+});
+
+describe("a numeric value ends where the number ends, and what follows is a term of its own", () => {
+	const split = (query: string): string => {
+		const policy = scryfallTermPolicy(query);
+		expect([query, policy.warnings]).toEqual([query, []]);
+		expect(() => parseScryfallQueryWithDirectives(policy.query, EMPTY_TAG_ALIASES)).not.toThrow();
+		return policy.query;
+	};
+
+	// Each pair is one count on api.scryfall.com, 2026-10-04: `pow=1a` 2,743 = `pow=1 a`, `pow=2x`
+	// 234, `cmc=3a` 6,254, `tou=2x` 188, `loy=3a` 74, `pow>1a` 11,760, `pow=1.5a` 1, `pow=-1a` 3,
+	// `usd>1a e:khm` 47, `year=2021a e:khm` 241, `cn>1a e:khm` 240.
+	test.each([
+		["pow=1a", "pow=1 a"],
+		["pow=2x", "pow=2 x"],
+		["cmc=3a", "cmc=3 a"],
+		["tou=2x", "tou=2 x"],
+		["loy=3a", "loy=3 a"],
+		["pow>1a", "pow>1 a"],
+		["pow=1.5a", "pow=1.5 a"],
+		["pow=-1a", "pow=-1 a"],
+		["usd>1a", "usd>1 a"],
+		["year=2021a", "year=2021 a"],
+		["cn>1a", "cn>1 a"],
+	])("after a number: %s is %s", (term, expected) => {
+		expect(split(term)).toBe(expected);
+	});
+
+	// `pow=xy` 200 = `pow=0 y`, `pow=xx` 46 = `pow=0 x`, `pow=you` 85 = `pow=0 ou`; `pow=toua`
+	// 8,059 = `pow=tou a`, and the LONGEST column name is the value: `tou=powerx` is 457 =
+	// `tou=power x`, where `tou=pow erx` is 1.
+	test.each([
+		["pow=xy", "pow=0 y"],
+		["pow=xx", "pow=0 x"],
+		["pow=you", "pow=0 ou"],
+		["pow=toua", "pow=tou a"],
+		["tou=powerx", "tou=power x"],
+	])("after a zero word or a column name: %s is %s", (term, expected) => {
+		expect(split(term)).toBe(expected);
+	});
+
+	test("the rest is any term: a keyword term, a negated word, a quoted word, a number", () => {
+		// `pow=1t:goblin` 182 = `pow=1 t:goblin`; `pow=1-1` 3,561; `pow=1"a"` 2,742; `pow=*1` 1 =
+		// `pow=0 1`; `pow=x2`, `pow=1e1`, `pow=1,2` and `pow=1/2` 404. A bare number is a NAME word
+		// there and a numeric literal to this parser, so it is spelled `name:`.
+		expect(split("pow=1t:goblin")).toBe("pow=1 t:goblin");
+		expect(split("pow=1-1")).toBe("pow=1 -name:1");
+		expect(split('pow=1"a"')).toBe('pow=1 "a"');
+		expect(split("pow=*1")).toBe("pow=0 name:1");
+		expect(split("pow=x2")).toBe("pow=0 name:2");
+		expect(split("pow=1e1")).toBe("pow=1 e1");
+		expect(split("pow=1,2")).toBe("pow=1 name:2");
+		expect(split("pow=1/2")).toBe("pow=1 name:2");
+		// ...and the rest is split again where it is itself a numeric leaf.
+		expect(split("pow=1tou=2x")).toBe("pow=1 tou=2 x");
+	});
+
+	test("a rest of only punctuation is nothing", () => {
+		// `pow=1*` `pow=1?` `pow=1!` `pow=1..` 3,563 = `pow=1`; `pow=**` `pow=x*` `pow=***` 1,049.
+		for (const term of ["pow=1*", "pow=1?", "pow=1!", "pow=1.."]) expect(split(term)).toBe("pow=1");
+		for (const term of ["pow=**", "pow=x*", "pow=***"]) expect(split(term)).toBe("pow=0");
+	});
+
+	test("a `+` is a character the name keeps, so the rest is the quoted word", () => {
+		// `+2` alone is +2 Mace and `+mace` a 404; `pow=1+1`, `pow=1+*` and `pow=x+1` are 404.
+		expect(split("pow=1+1")).toBe('pow=1 "+1"');
+		expect(split("pow=1+*")).toBe('pow=1 "+*"');
+		expect(split("pow=x+1")).toBe('pow=0 "+1"');
+	});
+
+	test("it composes beside other terms and under `or`, and each half is answered as itself", () => {
+		expect(split("pow=1a e:khm")).toBe("pow=1 a e:khm");
+		expect(split("t:goblin or pow=2x")).toBe("t:goblin or pow=2 x");
+		// The number half is still the leaf it would be alone: out of range, it is dropped with
+		// its own sentence and the word stays.
+		expect(scryfallTermPolicy("pow=9999999999a e:khm")).toMatchObject({
+			query: "a e:khm",
+			warnings: [ignored("pow=9999999999", "Value out of range")],
+		});
+	});
+
+	test("not under a leading minus, and not for a value that does not start as a number", () => {
+		// `-pow=1a` alone is the 400 carrying `Unknown keyword “-pow”.`; `-cmc=3a e:khm t:god` is
+		// the 12 with the value sentence; `-pow>1a e:khm` is the anchor's 305 with no warning.
+		expectIgnored("-pow=1a", "-pow=1a", "Unknown keyword “-pow”.");
+		expectIgnored("-cmc=3a", "-cmc=3a", "The value must be a number, or “even”/“odd”");
+		expect(scryfallTermPolicy(`-pow>1a ${ANCHOR}`)).toMatchObject({ query: `-cmc<0 ${ANCHOR}`, warnings: [] });
+		// `pow=+1a` is the unknown-keyword 400 and `mv=evena e:khm` the 305 with the value sentence.
+		expectIgnored("pow=+1a", "pow=+1a", "Unknown keyword “pow”.");
+		expectIgnored("mv=evena", "mv=evena", "The value must be a number, or “even”/“odd”");
+	});
+
+	test("`cn:` under `:` is the string collector number, and a text column is never split", () => {
+		expect(scryfallTermPolicy("cn:1a e:fem").query).toBe("cn:1a e:fem");
+		expect(scryfallTermPolicy("o:1a t:2x name:xy").query).toBe("o:1a t:2x name:xy");
 	});
 });
 

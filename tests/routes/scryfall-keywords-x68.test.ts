@@ -135,11 +135,16 @@ describe("collector: and collectornumber: are the NUMERIC collector number", () 
 		expect(tautology.query).toBe("-cmc<0 e:khm");
 	});
 
-	test("a value that only starts as a number is its leading integer, or nothing", () => {
-		// `collector:1a e:khm` and `collector:1-2 e:khm` are each khm/1; `collector:1★ e:khm` is 404.
-		expect(scryfallTermPolicy("collector:1a e:khm").query).toBe("collector:1 e:khm");
-		expect(scryfallTermPolicy("collector:1-2 e:khm").query).toBe("collector:1 e:khm");
-		expect(scryfallTermPolicy("collectornumber=40s e:khm").query).toBe("collectornumber=40 e:khm");
+	test("a value that only starts as a number is its leading integer and a term after it, or nothing", () => {
+		// `collector:1a e:khm` and `collector:1-2 e:khm` are each khm/1 (Axgard Braggart, which has
+		// an `a` and no `2`); `collector:1z e:khm` and `collector:1★ e:khm` are 404. The integer is
+		// the collector number and the rest is the term it would be after a space — the rule every
+		// numeric column follows (query-terms.ts, numericValueSplit). Until 2026-10-04 this pinned
+		// `collector:1a` as `collector:1` alone, which answered `collector:1z e:khm` with khm/1.
+		expect(scryfallTermPolicy("collector:1a e:khm").query).toBe("collector:1 a e:khm");
+		expect(scryfallTermPolicy("collector:1z e:khm").query).toBe("collector:1 z e:khm");
+		expect(scryfallTermPolicy("collector:1-2 e:khm").query).toBe("collector:1 -name:2 e:khm");
+		expect(scryfallTermPolicy("collectornumber=40s e:khm").query).toBe("collectornumber=40 s e:khm");
 		expect(scryfallTermPolicy("collector:1★ e:khm").query).toBe("cmc<0 e:khm");
 		for (const q of ["collector:1a e:khm", "collector:1★ e:khm", "collector:1.5 e:khm", "collector:-1 e:khm"]) {
 			expect(scryfallTermPolicy(q).warnings).toEqual([]);

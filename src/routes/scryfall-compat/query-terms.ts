@@ -580,6 +580,12 @@ const NEGATED_EQUALITY_UNKNOWN_KEYWORD: ReadonlySet<string> = new Set([
  * sentence the numeric columns give. (`pow:1a t:goblin` is 135, the power-1 goblins, so the
  * leading-integer reading is not this keyword's alone — it is applied here because it was
  * measured here.)
+ *
+ * THE FIRST OF THOSE WAS HALF THE RULE, found 2026-10-04: `collector:1z e:khm` is a 404. The
+ * letters behind the integer are a term of their own (khm/1 is Axgard Braggart, which has an `a`
+ * and no `z`), as behind every numeric value — `numericValueSplit`, which now answers `1a` and
+ * `1-2` before this table is read. What still reaches the leading-integer test below is the value
+ * that rule cannot split: one continued in a character the lexer does not read (`1★`).
  */
 const COLLECTOR_NUMBER_KEYWORDS: ReadonlySet<string> = new Set(["collector", "collectornumber"]);
 const COLLECTOR_LEADING_INTEGER_RE = /^(\d+)[A-Za-z-][A-Za-z0-9-]*$/;
@@ -613,12 +619,8 @@ const MANA_VALUE_KEYWORDS: ReadonlySet<string> = new Set(["cmc", "mv", "manavalu
  * This port ignored `*` with the unknown-keyword sentence and — `x` having been listed among the
  * column names a comparison may name on its right — handed `pow=x` to a parser that refused it.
  *
- * NOT REPRODUCED: a value that only STARTS with one of these, or with a number. Scryfall's lexer
- * ends the value there and reads the rest as a NAME word of its own — `pow=1a` is 2,743, exactly
- * `pow=1 a`; `pow=2x` 234 = `pow=2 x`; `pow=xy` 200 = `pow=0 y`; `pow=xx` 46 = `pow=0 x`;
- * `pow=1-1` 3,561 (a negated word); `pow=*1` 1; `pow=1*` `pow=1?` `pow=1.` 3,563 = `pow=1`;
- * `pow=**` `pow=x*` `pow=***` 1,049; `pow=1+1` `pow=1+*` `pow=x+1` `pow=1d4` `pow=x2` `pow=1e1`
- * 404. Here each is still the unknown-keyword sentence.
+ * A value that only STARTS with one of these, or with a number, ends there and the rest is a term
+ * of its own: `pow=xy` is `pow=0 y`. That is `numericValueSplit`, beside `classifyLeaf`.
  *
  * COST: one regex test on a numeric leaf at parse time. Nothing reaches the engine.
  */
@@ -3300,6 +3302,103 @@ function respelledNumber(rawValue: string): string | null {
 	return `${match[1]}${match[2] === "" ? "0" : match[2]}${match[3] === "" ? "" : `.${match[3]}`}`;
 }
 
+/**
+ * A NUMERIC VALUE ENDS WHERE THE NUMBER ENDS, AND WHAT FOLLOWS IS A TERM OF ITS OWN.
+ *
+ * Scryfall's lexer reads, after a numeric keyword and its operator, a number, one of the four
+ * zero words (ZERO_WORD_RE) or a column name (CROSS_COLUMN_VALUES, the longest that fits) — and
+ * stops. Whatever is glued on behind is lexed as the next term, exactly as if a space stood
+ * there. Measured on api.scryfall.com 2026-10-04, one request per cell, each pair equal:
+ *
+ *   pow=1a    2,743 = pow=1 a        cmc=3a   6,254 = cmc=3 a       tou=2x   188 = tou=2 x
+ *   pow=2x      234 = pow=2 x        loy=3a      74 = loy=3 a       pow>1a   11,760 = pow>1 a
+ *   pow=xy      200 = pow=0 y        pow=xx      46 = pow=0 x       pow=you  85 = pow=0 ou
+ *   pow=1.5a      1 = pow=1.5 a      pow=-1a      3 = pow=-1 a      pow=1.a  2,743 = pow=1. a
+ *   pow=toua  8,059 = pow=tou a      tou=powerx 457 = tou=power x   (`tou=pow erx` is 1)
+ *   usd>1a e:khm  47 = usd>1 a e:khm            year=2021a e:khm  241 = year=2021 a e:khm
+ *   cn>1a e:khm  240 = cn>1 a e:khm             collector:1a e:khm  1, collector:1z e:khm  404
+ *
+ * THE REST IS ANY TERM, not only a name word: `pow=1t:goblin` is 182 = `pow=1 t:goblin`,
+ * `pow=1-1` 3,561 (the word `1`, negated), `pow=1"a"` 2,742 (the quoted word), `pow=*1` 1 =
+ * `pow=0 1` and `pow=x2` `pow=1e1` `pow=1d4` each the 404 their spaced twins are. So the rest goes
+ * back through this policy as a query of its own.
+ *
+ * A REST THAT IS ONLY PUNCTUATION IS NOTHING: `pow=1*` `pow=1?` `pow=1!` `pow=1..` are 3,563 =
+ * `pow=1`, `pow=**` `pow=x*` `pow=***` 1,049 = `pow=0`, as the bare words `?` and `.` are the
+ * whole corpus (33,649). And `+` is a character a name keeps: `+2` alone is +2 Mace and `+mace` a
+ * 404, so `pow=1+1` `pow=1+*` `pow=x+1` are 404 — the rest is asked for as the quoted word.
+ *
+ * NOT UNDER A LEADING `-`, where Scryfall reads no number at all: `-pow=1a` alone is the 400
+ * carrying `Unknown keyword “-pow”.`, `-cmc=3a e:khm t:god` the 12 carrying the value sentence,
+ * and `-pow>1a e:khm` the anchor's 305 (`-pow>1 a e:khm` is 241) — the whole word swallowed by the
+ * rule the negated leaf already gets. Nor for a value that does not START as a number: `pow=a`,
+ * `pow=+1a` and `mv=evena` are the sentences they were.
+ *
+ * `collector:` took a narrower rule until this one was measured — "a value led by digits is its
+ * leading integer" — which answered `collector:1z e:khm` with khm/1 where Scryfall has a 404.
+ *
+ * LEFT ALONE: a rest this port's lexer cannot read (`collector:1★`, which stays the kept term
+ * that matches nothing — Scryfall's 404), a rest of a lone `-`, and `cn:`/`number:` under
+ * `:`/`=`, where the value is the string collector number (`cn:1a e:fem` is a card numbered 1a).
+ *
+ * COST: one regex on a leaf at parse time, and a second scan of the one leaf that splits.
+ */
+const NUMBER_PREFIX_RE = /^-?(?:\d+(?:\.\d*)?|\.\d*)/;
+const ZERO_WORD_PREFIX_RE = /^[xyz*]/i;
+const COLUMNS_LONGEST_FIRST: readonly string[] = [...CROSS_COLUMN_VALUES].sort((a, b) => b.length - a.length);
+/** What the name collation deletes at the head of a word, so a rest of only these is no term. */
+const REST_PUNCTUATION_RE = /^[.?*,/]+/;
+const NUMBER_WORD_RE = /^(-?)(\d+(?:\.\d+)?)$/;
+const QUOTABLE_WORD_RE = /^[^\s"'()]+$/;
+
+/** How much of `rawValue` a numeric column reads: a number, a column name, or a zero word. */
+function numericPrefixLength(rawValue: string): number {
+	const number = NUMBER_PREFIX_RE.exec(rawValue);
+	if (number !== null) return number[0].length;
+	const lowered = rawValue.toLowerCase();
+	for (const column of COLUMNS_LONGEST_FIRST) {
+		if (lowered.startsWith(column)) return column.length;
+	}
+	return ZERO_WORD_PREFIX_RE.test(rawValue) ? 1 : 0;
+}
+
+/**
+ * What was glued behind a numeric value, as the term it is: "" when it is nothing, null when this
+ * port cannot read it (the leaf is then answered unsplit, as before).
+ */
+function gluedRest(rest: string): string | null {
+	const text = rest.replace(REST_PUNCTUATION_RE, "");
+	if (text === "" || text === "!") return "";
+	// `+2` is the name that holds "+2", which only the quoted word says to this parser (a bare
+	// `+` is arithmetic to it).
+	if (text.startsWith("+")) return QUOTABLE_WORD_RE.test(text) ? `"${text}"` : null;
+	// A bare number is a name word on Scryfall and a numeric literal to this parser.
+	const number = NUMBER_WORD_RE.exec(text);
+	if (number !== null) return `${number[1]}name:${number[2]}`;
+	if (text === "-") return null;
+	try {
+		tokenize(text);
+	} catch {
+		return null;
+	}
+	return text;
+}
+
+/** `pow=1a` → `pow=1 a`: the leaf as the terms Scryfall reads, or null when it is one term. */
+function numericValueSplit(term: string): string | null {
+	const match = LEAF_RE.exec(term);
+	if (match === null || match[1] === "-") return null;
+	const op = match[3] as string;
+	const rawValue = match[4] as string;
+	if (!readsNumber((match[2] as string).toLowerCase(), op === ":" || op === "=")) return null;
+	const length = numericPrefixLength(rawValue);
+	if (length === 0 || length === rawValue.length) return null;
+	const rest = gluedRest(rawValue.slice(length));
+	if (rest === null) return null;
+	const head = `${match[2]}${op}${rawValue.slice(0, length)}`;
+	return rest === "" ? head : `${head} ${rest}`;
+}
+
 /** The verdict on one leaf term: keep it (possibly rewritten), or drop it with Scryfall's reason. */
 type LeafVerdict =
 	/** Kept, possibly rewritten; `include` is what the term switches on besides (see BLOCK_KEYWORDS). */
@@ -3698,6 +3797,14 @@ function policyLevel(source: string, scan: PolicyScan): string | null {
 			}
 			if (inner !== piece.inner) changed = true;
 			kept.push({ ...piece, text: `${piece.prefix ?? ""}(${inner})` });
+			continue;
+		}
+		// `pow=1a` is two terms — see numericValueSplit. Each is answered as the term it is.
+		const split = numericValueSplit(piece.text);
+		if (split !== null) {
+			changed = true;
+			const inner = policyLevel(split, scan);
+			if (inner !== null) kept.push({ kind: "leaf", text: inner });
 			continue;
 		}
 		const verdict = classifyLeaf(piece.text);
