@@ -289,6 +289,10 @@ pub(crate) fn translate_self_reference(pattern: &str, scope: SelfRefScope) -> St
 /// Together that is exactly PostgreSQL ARE's newline-sensitive mode — the SQL path spells the
 /// same pair `(?n)` — so the two paths still accept and answer one dialect.
 ///
+/// THAT MODE HAS A THIRD LEG NO FLAG HERE CAN SPELL: a NEGATED bracket expression never matches a
+/// newline either. The `regex` crate's `[^.]` does, so `translate_query_escapes` writes the
+/// newline into every negated class — see `NEGATED_CLASS_NEWLINE`.
+///
 /// Keep this a single `(?…)` group: the strippers match it by literal prefix.
 pub(crate) const QUERY_REGEX_FLAGS: &str = "(?im)";
 
@@ -474,8 +478,48 @@ const SCRYFALL_SHORTHANDS: &[(&str, &str)] = &[
     ("c", r"(?:\{[0-9wubrgcpxyz/½]*[wubrg][0-9wubrgcpxyz/½]*\})"),
 ];
 
+/// What a negated bracket expression is opened with, in place of the bare `[^`.
+///
+/// A NEGATED CLASS NEVER MATCHES A NEWLINE on api.scryfall.com, which is the third leg of
+/// PostgreSQL ARE's newline-sensitive mode (`.` and `^`/`$` are the two [`QUERY_REGEX_FLAGS`]
+/// carries) and the one the `regex` crate has no flag for: its `[^.]` is "anything but a full
+/// stop", line break included. So `o:/you control enters tapped, [^.]*untap/` reached across the
+/// break in Tiller Engine — "Whenever a land you control enters tapped, choose one —\n• Untap that
+/// land.\n• Tap target nonland permanent an opponent controls." — and answered 2 cards against
+/// Scryfall's 1 (Amulet of Vigor), and `fo:/whenever you (cycle or )?discard[^.]*draw a card/`
+/// answered Monument to Endurance beside Bone Miser where Scryfall answers Bone Miser alone.
+///
+/// MEASURED 2026-10-03, one variable per probe, each scoped `!"Tiller Engine"` so the answer is 1
+/// or 404, the pattern being `choose one .X. untap` with X the one character that has to be the
+/// line break (the `.`s take the dash before it and the bullet after):
+///
+/// | X               | Scryfall | here, before |
+/// |-----------------|----------|--------------|
+/// | `\n`            | 1        | 1            |
+/// | `.`             | 404      | 404          |
+/// | `[^x]`          | 404      | 1            |
+/// | `[^a-z]`        | 404      | 1            |
+/// | `[^[:alpha:]]`  | 404      | 1            |
+/// | `\s`            | 1        | 1            |
+/// | `[\s\S]`        | 1        | 1            |
+/// | `[\n]`          | 1        | 1            |
+/// | `[[:space:]]`   | 1        | 1            |
+/// | `(.\|\n)`       | 1        | 1            |
+///
+/// and `[^x]{3}` in place of all three is 404 too. So the rule is about NEGATION and nothing
+/// else: a positive class that names the newline, by itself or through `\s` or `[:space:]`, still
+/// matches it, and it is the line break and not the `—`/`•` around it (`[^.]*one` on the same
+/// line is 1). The flavor column obeys the same rule — `ft:/\."[^x]—marianne/` on LEA Dragon
+/// Whelp, whose attribution sits on its own line, is 404 where `\s` in that position is 1.
+///
+/// Written INTO the class rather than wrapped around it: `(?:(?!\n)[^.])` would say the same
+/// thing through a lookahead, which is the backtracking engine and no trigram narrow. A class
+/// with one more member is still a class, on the linear engine, at no cost per candidate.
+const NEGATED_CLASS_NEWLINE: &str = r"[^\n";
+
 /// Rewrite PostgreSQL ARE escapes that the `regex` crate spells differently or
-/// cannot spell at all, and expand Scryfall's `\s…` shorthands.
+/// cannot spell at all, expand Scryfall's `\s…` shorthands, and keep a negated
+/// bracket expression off the newline ([`NEGATED_CLASS_NEWLINE`]).
 ///
 /// | ARE  | meaning              | rewritten to      |
 /// |------|----------------------|-------------------|
@@ -588,12 +632,27 @@ pub(crate) fn translate_query_escapes(pattern: &str) -> String {
         match class_pos {
             None => {
                 if c == '[' {
+                    if chars.get(i + 1) == Some(&'^') {
+                        // A leading `^` negates without occupying the first position, so
+                        // `[^]…]` gets the same literal-`]` treatment as `[]…]` — and the
+                        // newline written in after it WOULD occupy that position, turning a
+                        // literal `]` into the class's close and a literal `-` into a range
+                        // from the newline up. Both are escaped so they stay the members
+                        // they were.
+                        out.push_str(NEGATED_CLASS_NEWLINE);
+                        i += 2;
+                        class_pos = Some(0);
+                        if let Some(&first @ (']' | '-')) = chars.get(i) {
+                            out.push('\\');
+                            out.push(first);
+                            i += 1;
+                            class_pos = Some(1);
+                        }
+                        continue;
+                    }
                     class_pos = Some(0);
                 }
             }
-            // A leading `^` negates without occupying the first position, so
-            // `[^]…]` gets the same literal-`]` treatment as `[]…]`.
-            Some(0) if c == '^' => {}
             // `[]…]`: a `]` in the first position is a literal member.
             Some(0) if c == ']' => class_pos = Some(1),
             Some(_) if c == ']' => class_pos = None,

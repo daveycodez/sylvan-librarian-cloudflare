@@ -15887,6 +15887,78 @@ fn anchors_are_line_anchors_and_dot_is_not() {
     assert!(!CompiledRegex::new("^Vigilance").unwrap().is_match("Flying\nWhenever"));
 }
 
+/// The third leg of ARE's newline-sensitive mode: a NEGATED class stops at a line break, and only
+/// a negated one. Every row is a probe of api.scryfall.com on 2026-10-03, scoped
+/// `!"Tiller Engine"`, and the haystack is that card's oracle text verbatim.
+#[test]
+fn a_negated_class_never_matches_a_newline() {
+    use super::regex_compat::CompiledRegex;
+    let tiller = "Whenever a land you control enters tapped, choose one —\n• Untap that land.\n• Tap target nonland permanent an opponent controls.";
+    let m = |pattern: &str, haystack: &str| CompiledRegex::new(pattern).unwrap().is_match(haystack);
+
+    // The reported query: `[^.]*` ran from the first line into the bullet. 404 there.
+    assert!(!m(r"you control enters tapped, [^.]*untap", tiller));
+    // ...while the same class inside one line still matches (1 there).
+    assert!(m(r"tapped, [^.]*one", tiller));
+
+    // One variable at a time: `choose one .X. untap`, where X has to be the line break.
+    for crossing in [r"\n", r"\s", r"[\s\S]", r"[\n]", r"[[:space:]]", r"(.|\n)"] {
+        assert!(m(&format!("choose one .{crossing}. untap"), tiller), "{crossing} names the newline");
+    }
+    for stopped in [".", "[^x]", "[^a-z]", "[^[:alpha:]]", r"[^x\n]"] {
+        assert!(!m(&format!("choose one .{stopped}. untap"), tiller), "{stopped} must not cross");
+    }
+    assert!(!m("choose one [^x]{3} untap", tiller), "a counted negated class is still three of them");
+
+    // The second reported query: Monument to Endurance is modal, Bone Miser is one sentence.
+    let discard = "whenever you (cycle or )?discard[^.]*draw a card";
+    let monument = "Whenever you discard a card, choose one that hasn't been chosen this turn —\n• Draw a card.\n• Create a Treasure token.\n• Each opponent loses 3 life.";
+    let miser = "Whenever you discard a creature card, create a 2/2 black Zombie creature token.\nWhenever you discard a land card, add {B}{B}.\nWhenever you discard a noncreature, nonland card, draw a card.";
+    assert!(!m(discard, monument));
+    assert!(m(discard, miser));
+
+    // Flavor text obeys it too: LEA Dragon Whelp's attribution is on its own line.
+    let whelp = "\"O to be a dragon . . . of silkworm size or immense . . .\"\n—Marianne Moore, \"O to Be a Dragon\"";
+    assert!(!m("\\.\"[^x]—marianne", whelp));
+    assert!(m("\\.\"\\s—marianne", whelp));
+
+    // The class is otherwise what it was: every other character it used to take, it takes.
+    assert!(m("^[^x]+$", "a whole line, and all of it"));
+    assert!(m(r"a[^\]]b", "a-b"));
+    assert!(!m(r"a[^\]]b", "a]b"));
+}
+
+/// The newline goes in right after the `^`, which is the one place a literal `]` or `-` reads
+/// differently — so those two are escaped, and nothing else about the class moves.
+#[test]
+fn a_negated_class_keeps_its_leading_literal() {
+    use super::regex_compat::{translate_query_escapes, CompiledRegex};
+    assert_eq!(translate_query_escapes("[^.]*"), r"[^\n.]*");
+    assert_eq!(translate_query_escapes("[^]a]"), r"[^\n\]a]");
+    assert_eq!(translate_query_escapes("[^-a]"), r"[^\n\-a]");
+    assert_eq!(translate_query_escapes("[^^]x"), r"[^\n^]x");
+    // A positive class is copied through as it always was.
+    assert_eq!(translate_query_escapes("[.^-]"), "[.^-]");
+    assert_eq!(translate_query_escapes(r"\[^a]"), r"\[^a]", "an escaped bracket opens nothing");
+
+    let m = |pattern: &str, haystack: &str| CompiledRegex::new(pattern).unwrap().is_match(haystack);
+    // `[^]a]` is "neither a bracket nor an a", and still is.
+    assert!(m("x[^]a]y", "x-y"));
+    assert!(!m("x[^]a]y", "x]y"));
+    assert!(!m("x[^]a]y", "xay"));
+    assert!(!m("x[^]a]y", "x\ny"));
+    // `[^-a]` is "neither a dash nor an a" — not a range that starts at the newline.
+    assert!(m("x[^-a]y", "x!y"));
+    assert!(!m("x[^-a]y", "x-y"));
+    assert!(!m("x[^-a]y", "xay"));
+    // A class that closes is followed by translation again; one that negates a caret closes.
+    assert_eq!(translate_query_escapes(r"[^^]\y"), r"[^\n^]\b");
+    // Still the linear engine, so the #734 trigram narrow still reads its literal factors.
+    let re = CompiledRegex::new("enters tapped, [^.]*untap").unwrap();
+    assert!(!re.is_backtracking());
+    assert_eq!(super::regex_required_factors(re.as_str()), vec!["enters tapped, ".to_string(), "untap".to_string()]);
+}
+
 #[test]
 fn query_regex_flags_stay_strippable() {
     // regex_tier and regex_required_factors both recover the raw pattern by removing this exact
@@ -16029,7 +16101,9 @@ fn are_escapes_are_literal_inside_bracket_expressions() {
     // A `]` in first position is a literal member (POSIX), so it does not close
     // the class — the \y after it is still inside.
     assert_eq!(translate_query_escapes(r"[]\y]"), r"[]\y]");
-    assert_eq!(translate_query_escapes(r"[^]\y]"), r"[^]\y]");
+    // (The negated form is opened with the newline written in and its leading `]` escaped —
+    // see `a_negated_class_keeps_its_leading_literal`; the `\y` inside is still untouched.)
+    assert_eq!(translate_query_escapes(r"[^]\y]"), r"[^\n\]\y]");
     // ...and once the class really does close, translation resumes.
     assert_eq!(translate_query_escapes(r"[abc]\y"), r"[abc]\b");
 }

@@ -1657,6 +1657,30 @@
 			"method": "GET",
 			"path": "/cards/search?q=pt%3Dpowtou+e%3Akhm+t%3Agod",
 			"note": "A numeric column compared with itself is ignored-and-warned: `The sides of your comparison must be different.` Measured 2026-10-03 on `pt=pt`, `pt>powtou`, `pow=pow`, `pow=power`, `pow>power`, `cmc=mv`, `tou>toughness`, `loy=loy` and this query (12 cards with the warning) — every operator, across spellings of one column. This port answered `pow=pow` with every card that has a power."
+		},
+		{
+			"name": "search-negated-class-stops-at-a-line-break",
+			"method": "GET",
+			"path": "/cards/search?q=o%3A%2Fyou+control+enters+tapped%2C+%5B%5E.%5D*untap%2F",
+			"note": "x61, reported from mtg-seeker 2026-10-03: a NEGATED character class matched across a line break here and does not on Scryfall. This query is 1 card on api.scryfall.com — Amulet of Vigor — and was 2 here, the second being Tiller Engine, whose text is \"Whenever a land you control enters tapped, choose one —\\n• Untap that land.\\n• Tap target nonland permanent an opponent controls.\": `[^.]*` ran from the trigger line into the first bullet. The rule is PostgreSQL ARE's newline-sensitive mode, of which this port already had two legs (`.` stops at a newline, `^`/`$` are line anchors) and not the third: a bracket expression using `^` never matches a newline. The engine now writes the newline into every negated class before compiling (`[^.]` becomes `[^\\n.]`), which keeps the pattern on the linear regex engine and its trigram narrow."
+		},
+		{
+			"name": "search-negated-class-discard-draw",
+			"method": "GET",
+			"path": "/cards/search?q=fo%3A%2Fwhenever+you+%28cycle+or+%29%3Fdiscard%5B%5E.%5D*draw+a+card%2F",
+			"note": "The second reported query, on the full-oracle column: 1 card on api.scryfall.com 2026-10-03 — Bone Miser, whose third ability is one sentence — and 2 here, the second being Monument to Endurance, another modal card (\"…choose one that hasn't been chosen this turn —\\n• Draw a card.\"). Writing the class as `[^.\\n]` answered Bone Miser alone on both sides, which is what located the difference."
+		},
+		{
+			"name": "search-negated-class-newline-probes",
+			"method": "GET",
+			"path": "/cards/search?q=%21%22Tiller+Engine%22+%28o%3A%2Fchoose+one+.%5B%5Ex%5D.+untap%2F+or+o%3A%2Fchoose+one+.%5B%5Ea-z%5D.+untap%2F+or+o%3A%2Ftapped%2C+%5B%5E.%5D*untap%2F%29",
+			"note": "THE RULE ISOLATED, one variable per pattern, on the one card: `choose one .X. untap` can only match if X is the line break (the dots take the dash before it and the bullet after). On api.scryfall.com 2026-10-03, scoped to Tiller Engine: `\\n`, `\\s`, `[\\s\\S]`, `[\\n]`, `[[:space:]]` and `(.|\\n)` in that position are each 1; `.`, `[^x]`, `[^a-z]` and `[^[:alpha:]]` are each 404, and so is `[^x]{3}` for all three. So it is negation and nothing else — a positive class that names the newline still matches it — and it is the line break, not the dash or the bullet (`tapped, [^.]*one`, inside the line, is 1). This case ORs three of the 404s and is a 404 on both sides, measured as written; before the fix this port answered the card."
+		},
+		{
+			"name": "search-whitespace-class-still-crosses-a-line-break",
+			"method": "GET",
+			"path": "/cards/search?q=%21%22Tiller+Engine%22+o%3A%2Fchoose+one+.%5Cs.+untap%2F",
+			"note": "The control for the case above: `\\s` in the same position is 1 on both sides, before and after. A fix that kept EVERY class off the newline, or that matched line by line, would turn this into a 404."
 		}
 	]
 }

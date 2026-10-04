@@ -1,0 +1,154 @@
+{
+ "all_parts": [
+  {
+   "component": "token",
+   "id": "ba7638ef-114b-4055-9855-390f82b7d5c5",
+   "name": "Treasure",
+   "object": "related_card",
+   "type_line": "Token Artifact \u2014 Treasure",
+   "uri": "https://api.scryfall.com/cards/ba7638ef-114b-4055-9855-390f82b7d5c5"
+  },
+  {
+   "component": "combo_piece",
+   "id": "c75f3b27-7c08-4e92-ae9a-6208aa9aec0c",
+   "name": "Monument to Endurance",
+   "object": "related_card",
+   "type_line": "Artifact",
+   "uri": "https://api.scryfall.com/cards/c75f3b27-7c08-4e92-ae9a-6208aa9aec0c"
+  }
+ ],
+ "arena_id": 95039,
+ "artist": "Victor Sales",
+ "artist_ids": [
+  "7f1fa8d2-22e2-4da2-9a7f-8d650bd9a186"
+ ],
+ "booster": true,
+ "border_color": "black",
+ "card_back_id": "0aeebaf5-8c7d-4636-9e82-8c27447861f7",
+ "cardmarket_id": 809077,
+ "cmc": 3,
+ "collector_number": "237",
+ "color_identity": [],
+ "colors": [],
+ "digital": false,
+ "edhrec_rank": 944,
+ "finishes": [
+  "nonfoil",
+  "foil"
+ ],
+ "flavor_text": "Loss is not the end of the journey.",
+ "foil": true,
+ "frame": "2015",
+ "full_art": false,
+ "game_changer": false,
+ "games": [
+  "paper",
+  "arena",
+  "mtgo"
+ ],
+ "highres_image": true,
+ "id": "d21433ba-0a14-42bc-ad0b-a4ef823a3295",
+ "illustration_id": "263dd274-86c3-4bba-b57b-06b75ebb3c96",
+ "image_status": "highres_scan",
+ "image_updated_at": "2026-07-13T01:57:28Z",
+ "image_uris": {
+  "art": "https://cards.scryfall.io/art/front/d/2/d21433ba-0a14-42bc-ad0b-a4ef823a3295.webp?1783907848",
+  "art_crop": "https://cards.scryfall.io/art_crop/front/d/2/d21433ba-0a14-42bc-ad0b-a4ef823a3295.jpg?1783907848",
+  "border_crop": "https://cards.scryfall.io/border_crop/front/d/2/d21433ba-0a14-42bc-ad0b-a4ef823a3295.jpg?1783907848",
+  "crop": "https://cards.scryfall.io/crop/front/d/2/d21433ba-0a14-42bc-ad0b-a4ef823a3295.webp?1783907848",
+  "display": "https://cards.scryfall.io/display/front/d/2/d21433ba-0a14-42bc-ad0b-a4ef823a3295.webp?1783907848",
+  "grid": "https://cards.scryfall.io/grid/front/d/2/d21433ba-0a14-42bc-ad0b-a4ef823a3295.webp?1783907848",
+  "large": "https://cards.scryfall.io/large/front/d/2/d21433ba-0a14-42bc-ad0b-a4ef823a3295.jpg?1783907848",
+  "normal": "https://cards.scryfall.io/normal/front/d/2/d21433ba-0a14-42bc-ad0b-a4ef823a3295.jpg?1783907848",
+  "png": "https://cards.scryfall.io/png/front/d/2/d21433ba-0a14-42bc-ad0b-a4ef823a3295.png?1783907848",
+  "small": "https://cards.scryfall.io/small/front/d/2/d21433ba-0a14-42bc-ad0b-a4ef823a3295.jpg?1783907848",
+  "thumb": "https://cards.scryfall.io/thumb/front/d/2/d21433ba-0a14-42bc-ad0b-a4ef823a3295.webp?1783907848"
+ },
+ "keywords": [
+  "Treasure"
+ ],
+ "lang": "en",
+ "layout": "normal",
+ "legalities": {
+  "alchemy": "legal",
+  "brawl": "legal",
+  "commander": "legal",
+  "competitivebrawl": "legal",
+  "duel": "legal",
+  "future": "legal",
+  "gladiator": "legal",
+  "historic": "legal",
+  "legacy": "legal",
+  "modern": "legal",
+  "oathbreaker": "legal",
+  "oldschool": "not_legal",
+  "pauper": "not_legal",
+  "paupercommander": "not_legal",
+  "penny": "not_legal",
+  "pioneer": "legal",
+  "predh": "not_legal",
+  "premodern": "not_legal",
+  "standard": "legal",
+  "standardbrawl": "legal",
+  "timeless": "legal",
+  "tlr": "legal",
+  "vintage": "legal"
+ },
+ "mana_cost": "{3}",
+ "mtgo_id": 136597,
+ "multiverse_ids": [
+  690674
+ ],
+ "name": "Monument to Endurance",
+ "nonfoil": true,
+ "object": "card",
+ "oracle_id": "e69e8de4-b521-4888-8074-17f1efe2f345",
+ "oracle_text": "Whenever you discard a card, choose one that hasn't been chosen this turn \u2014\n\u2022 Draw a card.\n\u2022 Create a Treasure token.\n\u2022 Each opponent loses 3 life.",
+ "oversized": false,
+ "preview": {
+  "previewed_at": "2025-01-28",
+  "source": "Wizards of the Coast",
+  "source_uri": ""
+ },
+ "prices": {
+  "eur": "18.02",
+  "eur_foil": "19.38",
+  "tix": "0.14",
+  "usd": "17.22",
+  "usd_etched": null,
+  "usd_foil": "19.35"
+ },
+ "prints_search_uri": "https://api.scryfall.com/cards/search?order=released&q=oracleid%3Ae69e8de4-b521-4888-8074-17f1efe2f345&unique=prints",
+ "promo": false,
+ "purchase_uris": {
+  "cardhoarder": "https://www.cardhoarder.com/cards/136597?affiliate_id=scryfall&ref=card-profile&utm_campaign=affiliate&utm_medium=card&utm_source=scryfall",
+  "cardmarket": "https://www.cardmarket.com/en/Magic/Products?idProduct=809077&referrer=scryfall&utm_campaign=card_prices&utm_medium=text&utm_source=scryfall",
+  "tcgplayer": "https://partner.tcgplayer.com/c/4931599/1830156/21018?subId1=api&u=https%3A%2F%2Fwww.tcgplayer.com%2Fproduct%2F615741%3Fpage%3D1"
+ },
+ "rarity": "rare",
+ "related_uris": {
+  "edhrec": "https://edhrec.com/route/?cc=Monument+to+Endurance",
+  "gatherer": "https://gatherer.wizards.com/Pages/Card/Details.aspx?multiverseid=690674&printed=false",
+  "tcgplayer_infinite_articles": "https://partner.tcgplayer.com/c/4931599/1830156/21018?subId1=api&trafcat=tcgplayer.com%2Fsearch%2Farticles&u=https%3A%2F%2Fwww.tcgplayer.com%2Fsearch%2Farticles%3FproductLineName%3Dmagic%26q%3DMonument%2Bto%2BEndurance",
+  "tcgplayer_infinite_decks": "https://partner.tcgplayer.com/c/4931599/1830156/21018?subId1=api&trafcat=tcgplayer.com%2Fsearch%2Fdecks&u=https%3A%2F%2Fwww.tcgplayer.com%2Fsearch%2Fdecks%3FproductLineName%3Dmagic%26q%3DMonument%2Bto%2BEndurance"
+ },
+ "released_at": "2025-02-14",
+ "reprint": false,
+ "reserved": false,
+ "rulings_uri": "https://api.scryfall.com/cards/d21433ba-0a14-42bc-ad0b-a4ef823a3295/rulings",
+ "scryfall_set_uri": "https://scryfall.com/sets/dft?utm_source=api",
+ "scryfall_uri": "https://scryfall.com/card/dft/237/monument-to-endurance?utm_source=api",
+ "security_stamp": "oval",
+ "set": "dft",
+ "set_id": "23464cc2-a69c-427d-b8a7-08e5d80235d7",
+ "set_name": "Aetherdrift",
+ "set_search_uri": "https://api.scryfall.com/cards/search?order=set&q=e%3Adft&unique=prints",
+ "set_type": "expansion",
+ "set_uri": "https://api.scryfall.com/sets/23464cc2-a69c-427d-b8a7-08e5d80235d7",
+ "story_spotlight": false,
+ "tcgplayer_id": 615741,
+ "textless": false,
+ "type_line": "Artifact",
+ "uri": "https://api.scryfall.com/cards/d21433ba-0a14-42bc-ad0b-a4ef823a3295",
+ "variation": false
+}
