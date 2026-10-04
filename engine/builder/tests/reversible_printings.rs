@@ -339,3 +339,63 @@ fn autocomplete_include_extras_offers_the_token_and_its_reversible_printing() {
     assert_eq!(store.autocomplete_gated("mechtitanmech", 20, true), ["Mechtitan // Mechtitan"]);
     assert!(store.autocomplete("mechtitanmech", 20).is_empty());
 }
+
+/// `e:sld` — the set leaf.
+fn set(code: &str) -> Value {
+    leaf("card_set_code", "e", "StringValueNode", code)
+}
+
+/// `cn:…`.
+fn number(n: &str) -> Value {
+    leaf("collector_number", "cn", "StringValueNode", n)
+}
+
+#[test]
+fn unique_cards_gives_a_reversible_printing_up_to_a_plain_one_of_the_card() {
+    // Four cards with a plain Secret Lair printing beside a reversible one, and Ajani Goldmane,
+    // whose Secret Lair printings are both reversible. api.scryfall.com 2026-10-04, `e:sld
+    // unique=cards` answers sld/57 for Darksteel Colossus, sld/1147 for Birds of Paradise, sld/446
+    // for Smuggler's Copter and sld/917 for Command Tower — the PLAIN printing — where the store's
+    // order (`prefer_score`, which ranks the newer reversible printing first) answers sld/1081,
+    // sld/1675, sld/1968 and sld/2794. Across all 203 pairs of a reversible printing and a plain
+    // printing of the same card (best, newest and oldest by the store's order) of the corpus's 71
+    // reversible cards it answered the plain one every time.
+    let store = store_of(
+        &[
+            "darksteel_colossus_m10_208",
+            "darksteel_colossus_sld_57",
+            "darksteel_colossus_sld_1081",
+            "birds_of_paradise_sld_1147",
+            "birds_of_paradise_sld_1675",
+            "smugglers_copter_sld_446",
+            "smugglers_copter_sld_1968",
+            "command_tower_sld_917",
+            "command_tower_sld_2794",
+            "ajani_goldmane_m11_1",
+            "ajani_goldmane_sld_745",
+            "ajani_goldmane_sld_1453",
+        ],
+        &[
+            "darksteel_colossus_m10_208",
+            "birds_of_paradise_sld_1147",
+            "smugglers_copter_sld_446",
+            "command_tower_sld_917",
+            "ajani_goldmane_m11_1",
+        ],
+    );
+    let cards = |tree: &Value| rows(&store, tree, "card");
+    assert_eq!(cards(&set("sld")), ["sld/1147", "sld/446", "sld/57", "sld/745", "sld/917"]);
+    // Where only reversible printings match, the store's order stands: sld/745 on both sides for
+    // Ajani Goldmane (`unique=art` is the opposite pick, sld/1453, and both hold).
+    assert_eq!(cards(&and(&[set("sld"), word("ajani")])), ["sld/745"]);
+    assert_eq!(rows(&store, &and(&[set("sld"), word("ajani")]), "artwork"), ["sld/1453"]);
+    // Only a printing the filter MATCHES can stand for the card: with the plain one excluded the
+    // reversible printing is the answer, as it is on Scryfall.
+    assert_eq!(cards(&and(&[set("sld"), word("colossus"), not(number("57"))])), ["sld/1081"]);
+    assert_eq!(cards(&and(&[set("sld"), word("tower"), not(number("917"))])), ["sld/2794"]);
+    // And with no filter on the printing the card's own default printing is the answer.
+    assert_eq!(cards(&word("colossus")), ["m10/208"]);
+    assert_eq!(cards(&word("copter")), ["sld/446"]);
+    // `unique=prints` is every printing, untouched.
+    assert_eq!(printings(&store, &and(&[set("sld"), word("colossus")])), ["sld/1081", "sld/57"]);
+}

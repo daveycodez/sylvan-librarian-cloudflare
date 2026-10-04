@@ -6659,8 +6659,12 @@ fn reversible_name_candidates<'a>(
     out
 }
 
-/// `unique=art`'S REPRESENTATIVE AMONG A REVERSIBLE CARD'S SIBLING PRINTINGS: a printing tagged
-/// `sldbonus` gives way to a sibling of the same artwork that prints the same record and is not.
+/// THE REPRESENTATIVE OF A CARD OR AN ARTWORK WHEN A PLAIN PRINTING IS ON THE PAGE'S OTHER SIDE OF IT.
+/// Two rules, one funnel: `unique=art` gives a reversible card's `sldbonus` printing up to a plain
+/// sibling of its artwork, and `unique=cards` gives a reversible printing up to a plain printing of
+/// its card.
+///
+/// ─── `unique=art`: a reversible bonus printing gives way to a plain one of its artwork ───────
 ///
 /// api.scryfall.com, 2026-10-04: `is:reversible t:planeswalker unique=art` answers sld/1453, 1454,
 /// 1455, 1456 and 1457 for the five Secret Lair planeswalkers, where `prefer_score` (a fitted score,
@@ -6671,49 +6675,112 @@ fn reversible_name_candidates<'a>(
 /// already, so the rule is the bonus tag and nothing wider: across all ten groups it is 10 of 10,
 /// where `prefer_score` is 5.
 ///
+/// ─── `unique=cards`: a reversible printing gives way to a plain printing of the card ──────────
+///
+/// api.scryfall.com, 2026-10-04: where a card has a reversible printing AND a plain one matching the
+/// query, `unique=cards` answers the PLAIN one — `e:sld unique=cards` is Darksteel Colossus sld/57
+/// (not sld/1081), Birds of Paradise sld/1147 (not sld/1675), Smuggler's Copter sld/446 (not
+/// sld/1968), Dragonlord Kolaghan sld/1269 (not sld/1972), Garruk sld/1142, Teferi's Ageless Insight
+/// sld/1721 and Command Tower sld/917 — while the store's own order, a fitted `prefer_score` that
+/// ranks the newer reversible Secret Lair above them, answers the reversible printing. Over every
+/// reversible printing of the corpus's 71 reversible cards, each paired with the plain printings
+/// best, newest and oldest by the store's order (`oracleid:… ((e:… cn:…) or (e:… cn:…))
+/// unique=cards`), Scryfall answered the plain one in every pair; where only reversible printings
+/// match (`e:sld` for Ajani Goldmane: sld/745 and sld/1453) the store's order stands — sld/745 on
+/// both sides — which is why `unique=art`'s opposite pick for those five cards and this one both hold.
+///
+/// ─── where, and what it costs ─────────────────────────────────────────────────────────────────
+///
 /// APPLIED TO THE PAGE AFTER THE REPRESENTATIVES ARE CHOSEN, at the one funnel every plan's rows
 /// pass through (`BufferStore::run_page`), and not inside the eight places that choose a
 /// representative — each is a different loop (first stored match, best score, popcount skip) over
-/// the same store order, and a demotion wired into one would be absent from the next. The price is
-/// a position: a swapped row keeps the place its predecessor sorted to, which is exact for every
-/// order whose key the two siblings share (name, set, released, rarity, artist, edhrec, cmc) and
-/// approximate for `order=usd|eur|tix`. And the cost is nothing to any other query: a row is looked
-/// at only when its card has a divergent record, one length read on a card the serializer is about
-/// to read anyway.
+/// the same store order, and a demotion wired into one would be absent from the next. A sibling
+/// stands in only if it MATCHES THE FILTER (the whole unsplit tree is asked of that one printing):
+/// with the plain one excluded by the query, the reversible or bonus printing is the answer, as it is
+/// on Scryfall. `prefer:` other than the default is left alone — it chose by its own measure.
 ///
-/// `unique=cards` is deliberately NOT here: it answers sld/745 for the same card on both sides
-/// (`e:sld unique=cards`, measured the same day), which is the opposite pick — Scryfall's two
-/// representatives are not one rule.
-pub(crate) fn prefer_plain_reversible_art_rep<'a>(
+/// A swapped row's SORT KEY is the new printing's, and the page is put back in `page_cmp` order when
+/// that moved a row (`order=name` is the default and a reversible printing sorts by the doubled
+/// name it prints; `usd`, `eur`, `tix`, `released`, `rarity`, `set` are printing-level too). The key
+/// is the one `sort_key_bits` gives every plan, so the partitioned gather — whose phase one encodes
+/// its opaque keys from this page — merges on the swapped printing's too. What stays approximate is
+/// the page's EDGE: a row that would have crossed into or out of the window on its new key was
+/// chosen on the old one.
+///
+/// COST, which is nothing to a query without a candidate: both rules look at a row only when its card
+/// has a divergent record (one length read on a card the serializer is about to read anyway). No
+/// other mode runs it, and nothing is stored.
+pub(crate) fn prefer_plain_sibling_rep<'a>(
     data: &'a Archived<CardData>,
     full: &FilterExpr,
+    params: &QueryParams,
     page: &mut [(&'a AOracleCard, &'a APrinting)],
 ) {
+    let by_card = match params.mode {
+        Mode::Card if matches!(params.prefer, Prefer::Default) => true,
+        Mode::Artwork => false,
+        _ => return,
+    };
     let mut bonus_vid: Option<Option<u16>> = None;
+    let mut moved = false;
     for row in page.iter_mut() {
         let (card, p) = *row;
-        if card.divergent.is_empty() || divergent_of(card, p).is_none() {
-            continue;
-        }
-        let vid = *bonus_vid.get_or_insert_with(|| data.coll_vocab.iter().position(|s| s.as_str() == "sldbonus").map(|v| v as u16));
-        let Some(vid) = vid else { continue };
-        let is_bonus = |q: &APrinting| q.card_is_tags.iter().any(|t| u16::from(*t) == vid);
-        if !is_bonus(p) {
-            continue;
-        }
-        let cid = card_of_vpid(data, vpid_of_ref(data, p)) as usize;
-        let (start, end) = (u32::from(data.offsets[cid]) as usize, u32::from(data.offsets[cid + 1]) as usize);
-        let gid = u16::from(p.artwork_group_id);
-        let sibling = data.printings[start..end].iter().find(|q| {
-            u16::from(q.artwork_group_id) == gid
-                && divergent_of(card, q).is_some()
-                && !is_bonus(q)
-                && full.matches(card, q, &data.strings)
-        });
-        if let Some(q) = sibling {
+        let reversible = !card.divergent.is_empty() && divergent_of(card, p).is_some();
+        let replacement = if by_card {
+            if !reversible {
+                continue;
+            }
+            let (start, end) = printing_range(data, p);
+            // The first PLAIN printing in store order that the filter matches — the printing
+            // `unique=cards` would have answered had the card no reversible printing.
+            data.printings[start..end].iter().find(|q| divergent_of(card, q).is_none() && full.matches(card, q, &data.strings))
+        } else {
+            // A reversible card's bonus printing: the tag is read only on a printing of a card
+            // that prints a divergent record.
+            if !reversible {
+                continue;
+            }
+            let vid = *bonus_vid.get_or_insert_with(|| data.coll_vocab.iter().position(|s| s.as_str() == "sldbonus").map(|v| v as u16));
+            let Some(vid) = vid else { continue };
+            let is_bonus = |q: &APrinting| q.card_is_tags.iter().any(|t| u16::from(*t) == vid);
+            if !is_bonus(p) {
+                continue;
+            }
+            let (start, end) = printing_range(data, p);
+            let gid = u16::from(p.artwork_group_id);
+            // The same artwork, the same record, not itself a bonus, matching.
+            data.printings[start..end].iter().find(|q| {
+                u16::from(q.artwork_group_id) == gid
+                    && divergent_of(card, q).is_some()
+                    && !is_bonus(q)
+                    && full.matches(card, q, &data.strings)
+            })
+        };
+        if let Some(q) = replacement {
+            let before = sort_key_bits(card, p, params.sort_col, params.descending);
+            moved |= before != sort_key_bits(card, q, params.sort_col, params.descending);
             row.1 = q;
         }
     }
+    if moved {
+        let mut keyed: Vec<(Match, (&'a AOracleCard, &'a APrinting))> = page
+            .iter()
+            .map(|&row| {
+                let vpid = vpid_of_ref(data, row.1);
+                ((sort_key_bits(row.0, row.1, params.sort_col, params.descending), card_of_vpid(data, vpid), vpid), row)
+            })
+            .collect();
+        keyed.sort_by(|a, b| page_cmp(&a.0, &b.0));
+        for (slot, (_, row)) in page.iter_mut().zip(keyed) {
+            *slot = row;
+        }
+    }
+}
+
+/// The half-open range of `data.printings` holding this card's canonical printings.
+fn printing_range(data: &Archived<CardData>, p: &APrinting) -> (usize, usize) {
+    let cid = card_of_vpid(data, vpid_of_ref(data, p)) as usize;
+    (u32::from(data.offsets[cid]) as usize, u32::from(data.offsets[cid + 1]) as usize)
 }
 
 /// The owning card of a virtual printing id, via the direct arrays of whichever space it is in.

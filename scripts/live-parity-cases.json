@@ -3218,6 +3218,18 @@
 			"method": "GET",
 			"path": "/cards/autocomplete?q=mechtitan&include_extras=false",
 			"note": "2026-10-04. `false` is the parameter left out: \"Mechtitan Core\", \"Mechtitan Core // Mechtitan Core\"."
+		},
+		{
+			"name": "unique-cards-plain-printing-over-a-reversible-one",
+			"method": "GET",
+			"path": "/cards/search?q=e%3Asld+%28%21%22Darksteel+Colossus%22+or+%21%22Birds+of+Paradise%22+or+%21%22Smuggler%27s+Copter%22+or+%21%22Dragonlord+Kolaghan%22+or+%21%22Garruk+Wildspeaker%22+or+%21%22Teferi%27s+Ageless+Insight%22+or+%21%22Command+Tower%22%29&unique=cards",
+			"note": "2026-10-04. sld/57, sld/1147, sld/446, sld/1269, sld/1142, sld/1721 and sld/917: where a card has a reversible printing AND a plain one matching, `unique=cards` answers the plain one. This port answered the newer reversible printings sld/1081, 1675, 1968, 1972, 749, 2214 and 2794. Over all 203 pairs of a reversible printing with the best, newest and oldest plain printing of its card (71 reversible cards) Scryfall answered the plain one every time; and where both printings are reversible it answers the store's order's pick (11 of 11 cards, sld/745 for Ajani Goldmane). NEEDS THE REBUILT ENGINE BLOB."
+		},
+		{
+			"name": "unique-cards-reversible-printing-alone-is-the-answer",
+			"method": "GET",
+			"path": "/cards/search?q=e%3Asld+is%3Areversible&unique=cards",
+			"note": "2026-10-04. 56 cards, each the reversible printing: a plain sibling the filter excludes cannot stand for the card, so the reversible printing is all there is (sld/1081 for Darksteel Colossus, sld/745 for Ajani Goldmane)."
 		}
 	]
 }

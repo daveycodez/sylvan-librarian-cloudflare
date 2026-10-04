@@ -1,0 +1,138 @@
+{
+  "object": "card",
+  "id": "d2d8bf03-42f3-4200-96a7-03e822b102e9",
+  "oracle_id": "d3a0b660-358c-41bd-9cd2-41fbf3491b1a",
+  "multiverse_ids": [],
+  "tcgplayer_id": 451238,
+  "cardmarket_id": 685699,
+  "name": "Birds of Paradise",
+  "lang": "en",
+  "released_at": "2022-11-04",
+  "uri": "https://api.scryfall.com/cards/d2d8bf03-42f3-4200-96a7-03e822b102e9",
+  "scryfall_uri": "https://scryfall.com/card/sld/1147/birds-of-paradise?utm_source=api",
+  "layout": "normal",
+  "highres_image": true,
+  "image_status": "highres_scan",
+  "image_updated_at": "2026-07-13T05:23:27Z",
+  "image_uris": {
+    "small": "https://cards.scryfall.io/small/front/d/2/d2d8bf03-42f3-4200-96a7-03e822b102e9.jpg?1783920207",
+    "normal": "https://cards.scryfall.io/normal/front/d/2/d2d8bf03-42f3-4200-96a7-03e822b102e9.jpg?1783920207",
+    "large": "https://cards.scryfall.io/large/front/d/2/d2d8bf03-42f3-4200-96a7-03e822b102e9.jpg?1783920207",
+    "png": "https://cards.scryfall.io/png/front/d/2/d2d8bf03-42f3-4200-96a7-03e822b102e9.png?1783920207",
+    "art_crop": "https://cards.scryfall.io/art_crop/front/d/2/d2d8bf03-42f3-4200-96a7-03e822b102e9.jpg?1783920207",
+    "border_crop": "https://cards.scryfall.io/border_crop/front/d/2/d2d8bf03-42f3-4200-96a7-03e822b102e9.jpg?1783920207",
+    "thumb": "https://cards.scryfall.io/thumb/front/d/2/d2d8bf03-42f3-4200-96a7-03e822b102e9.webp?1783920207",
+    "grid": "https://cards.scryfall.io/grid/front/d/2/d2d8bf03-42f3-4200-96a7-03e822b102e9.webp?1783920207",
+    "display": "https://cards.scryfall.io/display/front/d/2/d2d8bf03-42f3-4200-96a7-03e822b102e9.webp?1783920207",
+    "art": "https://cards.scryfall.io/art/front/d/2/d2d8bf03-42f3-4200-96a7-03e822b102e9.webp?1783920207",
+    "crop": "https://cards.scryfall.io/crop/front/d/2/d2d8bf03-42f3-4200-96a7-03e822b102e9.webp?1783920207"
+  },
+  "mana_cost": "{G}",
+  "cmc": 1.0,
+  "type_line": "Creature — Bird",
+  "oracle_text": "Flying\n{T}: Add one mana of any color.",
+  "power": "0",
+  "toughness": "1",
+  "colors": [
+    "G"
+  ],
+  "color_identity": [
+    "G"
+  ],
+  "keywords": [
+    "Flying"
+  ],
+  "produced_mana": [
+    "B",
+    "G",
+    "R",
+    "U",
+    "W"
+  ],
+  "legalities": {
+    "standard": "not_legal",
+    "future": "not_legal",
+    "historic": "legal",
+    "timeless": "legal",
+    "gladiator": "legal",
+    "pioneer": "not_legal",
+    "modern": "legal",
+    "legacy": "legal",
+    "pauper": "not_legal",
+    "vintage": "legal",
+    "penny": "legal",
+    "commander": "legal",
+    "oathbreaker": "legal",
+    "standardbrawl": "not_legal",
+    "brawl": "legal",
+    "competitivebrawl": "legal",
+    "alchemy": "not_legal",
+    "paupercommander": "not_legal",
+    "duel": "legal",
+    "oldschool": "not_legal",
+    "premodern": "legal",
+    "predh": "legal",
+    "tlr": "legal"
+  },
+  "games": [
+    "paper"
+  ],
+  "reserved": false,
+  "game_changer": false,
+  "foil": true,
+  "nonfoil": true,
+  "finishes": [
+    "nonfoil",
+    "foil"
+  ],
+  "oversized": false,
+  "promo": false,
+  "reprint": true,
+  "variation": false,
+  "set_id": "4d92a8a7-ccb0-437d-abdc-9d70fc5ed672",
+  "set": "sld",
+  "set_name": "Secret Lair Drop",
+  "set_type": "box",
+  "set_uri": "https://api.scryfall.com/sets/4d92a8a7-ccb0-437d-abdc-9d70fc5ed672",
+  "set_search_uri": "https://api.scryfall.com/cards/search?order=set&q=e%3Asld&unique=prints",
+  "scryfall_set_uri": "https://scryfall.com/sets/sld?utm_source=api",
+  "rulings_uri": "https://api.scryfall.com/cards/d2d8bf03-42f3-4200-96a7-03e822b102e9/rulings",
+  "prints_search_uri": "https://api.scryfall.com/cards/search?order=released&q=oracleid%3Ad3a0b660-358c-41bd-9cd2-41fbf3491b1a&unique=prints",
+  "collector_number": "1147",
+  "digital": false,
+  "rarity": "rare",
+  "flavor_text": "Its diet consists of the rare everyberry, which tastes different every time. It loves the surprise!",
+  "card_back_id": "0aeebaf5-8c7d-4636-9e82-8c27447861f7",
+  "artist": "Andrea Radeck, age 35",
+  "artist_ids": [
+    "2560b932-96b5-4308-9d32-298641ef326e"
+  ],
+  "illustration_id": "24773b0b-e4d5-434f-99d6-372f896de842",
+  "border_color": "black",
+  "frame": "2015",
+  "security_stamp": "oval",
+  "full_art": false,
+  "textless": false,
+  "booster": false,
+  "story_spotlight": false,
+  "edhrec_rank": 35,
+  "penny_rank": 70,
+  "prices": {
+    "usd": "14.24",
+    "usd_foil": "16.17",
+    "usd_etched": null,
+    "eur": "15.17",
+    "eur_foil": "14.26",
+    "tix": null
+  },
+  "related_uris": {
+    "tcgplayer_infinite_articles": "https://partner.tcgplayer.com/c/4931599/1830156/21018?subId1=api&trafcat=tcgplayer.com%2Fsearch%2Farticles&u=https%3A%2F%2Fwww.tcgplayer.com%2Fsearch%2Farticles%3FproductLineName%3Dmagic%26q%3DBirds%2Bof%2BParadise",
+    "tcgplayer_infinite_decks": "https://partner.tcgplayer.com/c/4931599/1830156/21018?subId1=api&trafcat=tcgplayer.com%2Fsearch%2Fdecks&u=https%3A%2F%2Fwww.tcgplayer.com%2Fsearch%2Fdecks%3FproductLineName%3Dmagic%26q%3DBirds%2Bof%2BParadise",
+    "edhrec": "https://edhrec.com/route/?cc=Birds+of+Paradise"
+  },
+  "purchase_uris": {
+    "tcgplayer": "https://partner.tcgplayer.com/c/4931599/1830156/21018?subId1=api&u=https%3A%2F%2Fwww.tcgplayer.com%2Fproduct%2F451238%3Fpage%3D1",
+    "cardmarket": "https://www.cardmarket.com/en/Magic/Products?idProduct=685699&referrer=scryfall&utm_campaign=card_prices&utm_medium=text&utm_source=scryfall",
+    "cardhoarder": "https://www.cardhoarder.com/cards?affiliate_id=scryfall&data%5Bsearch%5D=Birds+of+Paradise&ref=card-profile&utm_campaign=affiliate&utm_medium=card&utm_source=scryfall"
+  }
+}
