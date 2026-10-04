@@ -55,6 +55,11 @@ const ATTRIBUTE_NAME_MAP: Record<string, string> = {
 	oracle_id: "oracle ID",
 	scryfall_id: "Scryfall ID",
 	illustration_id: "illustration ID",
+	mtgo_id: "MTGO ID",
+	arena_id: "Arena ID",
+	tcgplayer_id: "TCGplayer ID",
+	multiverse_id: "multiverse ID",
+	security_stamp: "security stamp",
 	card_lang: "language",
 	card_layout: "layout",
 	card_border: "border",
@@ -64,6 +69,7 @@ const ATTRIBUTE_NAME_MAP: Record<string, string> = {
 	price_usd: "price (USD)",
 	price_eur: "price (EUR)",
 	price_tix: "price (TIX)",
+	price_usd_foil: "foil price (USD)",
 	edhrec_rank: "EDHREC rank",
 };
 

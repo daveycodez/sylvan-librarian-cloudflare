@@ -181,3 +181,164 @@ fn a_card_with_no_rank_compares_as_null() {
         NONE
     );
 }
+
+// ── usdfoil: ────────────────────────────────────────────────────────────────────────────────────
+
+#[test]
+fn usdfoil_is_the_printings_own_foil_price() {
+    // usd / usd_foil: chk/153 0.51 / 4.04, khm/114 3.84 / 4.21, msc/806 0.79 / 2.78,
+    // sld/869 — / 208.85, sld/1969 4.52 / 4.34, c13/186 8.94 / —, tund/4 — / —.
+    let store = store_from(&[
+        "akki_lavarunner_chk_153",
+        "valki_khm_114",
+        "lightning_bolt",
+        "blacker_lotus_sld_869",
+        "mechtitan_sld_1969",
+        "derevi_c13_186",
+        "dragon_tund_4",
+    ]);
+    let usdfoil = |op: &str, v: f64| printings(&store, &num("price_usd_foil", "usdfoil", op, v));
+    assert_eq!(usdfoil(">=", 4.21), ["khm/114", "sld/1969", "sld/869"]);
+    assert_eq!(usdfoil(">", 4.21), ["sld/1969", "sld/869"]);
+    assert_eq!(usdfoil("<", 4.0), ["msc/806"]);
+    assert_eq!(usdfoil("=", 2.78), ["msc/806"]);
+    assert_eq!(usdfoil(":", 4.04), ["chk/153"]);
+    assert_eq!(usdfoil(">=", 100.0), ["sld/869"]);
+    // `usdfoil>=0 e:khm` is 285 of 305 on api.scryfall.com: no foil price is NULL, on either side
+    // of the comparison — and it is NOT `usd`'s coalesced key, which would give c13/186 its 8.94.
+    assert_eq!(usdfoil(">=", 0.0), ["chk/153", "khm/114", "msc/806", "sld/1969", "sld/869"]);
+    assert_eq!(printings(&store, &not(num("price_usd_foil", "usdfoil", ">=", 0.0))), NONE);
+    assert_eq!(usdfoil("!=", 4.04), ["khm/114", "msc/806", "sld/1969", "sld/869"]);
+}
+
+#[test]
+fn usdfoil_compares_against_the_other_prices() {
+    // `usdfoil>usd e:khm` is 247 and `usd>usdfoil e:khm` 57 there. sld/869 has no nonfoil price
+    // and `usd` reads its foil one, so the two sides are equal and neither strict comparison holds.
+    let store = store_from(&["akki_lavarunner_chk_153", "valki_khm_114", "blacker_lotus_sld_869", "mechtitan_sld_1969"]);
+    assert_eq!(
+        printings(&store, &num_col("price_usd_foil", "usdfoil", ">", "price_usd", "usd")),
+        ["chk/153", "khm/114"]
+    );
+    assert_eq!(printings(&store, &num_col("price_usd", "usd", ">", "price_usd_foil", "usdfoil")), ["sld/1969"]);
+}
+
+// ── stamp: ──────────────────────────────────────────────────────────────────────────────────────
+
+#[test]
+fn stamp_is_the_security_stamp() {
+    // khm/114 oval, sld/869 triangle, ysnc/23 arena; chk/153 and msc/806 have none.
+    let store = store_from(&[
+        "valki_khm_114",
+        "blacker_lotus_sld_869",
+        "effluence_devourer_ysnc_23",
+        "akki_lavarunner_chk_153",
+        "lightning_bolt",
+    ]);
+    let stamp = |value: &str| printings(&store, &text("security_stamp", "stamp", ":", value));
+    assert_eq!(stamp("oval"), ["khm/114"]);
+    assert_eq!(stamp("OVAL"), ["khm/114"]);
+    assert_eq!(stamp("triangle"), ["sld/869"]);
+    assert_eq!(stamp("arena"), ["ysnc/23"]);
+    assert_eq!(stamp("heart"), NONE);
+    assert_eq!(printings(&store, &text("security_stamp", "stamp", "=", "oval")), ["khm/114"]);
+    // `-stamp:oval e:khm` is 216 beside `stamp:oval e:khm`'s 94: a printing with NO stamp is a plain
+    // False and survives the negation, where a NULL would have dropped it.
+    assert_eq!(
+        printings(&store, &not(text("security_stamp", "stamp", ":", "oval"))),
+        ["chk/153", "msc/806", "sld/869", "ysnc/23"]
+    );
+}
+
+// ── mtgoid: / arenaid: / tcgplayerid: / multiverseid: ───────────────────────────────────────────
+
+/// chk/153 (mtgo 21237 + foil 21238, tcgplayer 11938, multiverse 78694), khm/114 (mtgo 87559,
+/// arena 75155, tcgplayer 230113, multiverse 503724 + 503725), msc/806 (mtgo 152037, arena 105816,
+/// tcgplayer 697344), ysnc/23 (arena 81960, multiverse 571326), tund/4 (none of them).
+fn id_store() -> BufferStore {
+    store_from(&[
+        "akki_lavarunner_chk_153",
+        "valki_khm_114",
+        "lightning_bolt",
+        "effluence_devourer_ysnc_23",
+        "dragon_tund_4",
+    ])
+}
+
+#[test]
+fn mtgoid_names_a_printing_by_either_of_its_mtgo_ids() {
+    let store = id_store();
+    let mtgoid = |value: &str| printings(&store, &text("mtgo_id", "mtgoid", ":", value));
+    assert_eq!(mtgoid("21237"), ["chk/153"]);
+    // `mtgoid:12346` is Phyrexian Processor by its FOIL id on api.scryfall.com.
+    assert_eq!(mtgoid("21238"), ["chk/153"]);
+    assert_eq!(mtgoid("87559"), ["khm/114"]);
+    assert_eq!(printings(&store, &text("mtgo_id", "mtgo", "=", "87559")), ["khm/114"]);
+    assert_eq!(mtgoid("1"), NONE);
+    assert_eq!(mtgoid("0"), NONE);
+    assert_eq!(mtgoid("abc"), NONE);
+    // The engine reads the leading digits itself, for `/search`, where no policy rewrites them.
+    assert_eq!(mtgoid("87559a"), ["khm/114"]);
+}
+
+#[test]
+fn a_negated_mtgoid_keeps_only_printings_holding_both_ids() {
+    // `-mtgoid:87321 e:khm` is 404 on api.scryfall.com — no Kaldheim printing has an mtgo_foil_id,
+    // so `NOT (id = x OR foil_id = x)` is NULL for all of them — while `-mtgoid:12346 e:usg` is
+    // 331 of 335, Urza's Saga carrying both. Here chk/153 is the one printing with both.
+    let store = id_store();
+    let not_mtgoid = |value: &str| printings(&store, &not(text("mtgo_id", "mtgoid", ":", value)));
+    assert_eq!(not_mtgoid("87559"), ["chk/153"]);
+    assert_eq!(not_mtgoid("99999999"), ["chk/153"]);
+    assert_eq!(not_mtgoid("0"), ["chk/153"]);
+    assert_eq!(not_mtgoid("21238"), NONE);
+}
+
+#[test]
+fn arenaid_is_one_column_and_its_negation_drops_printings_without_one() {
+    // `-arenaid:75036 e:khm` is 304 (every Kaldheim printing has an arena id) and
+    // `-arenaid:75036 e:usg` is 404 (none does); `-arenaid:abc e:khm` is all 305.
+    let store = id_store();
+    assert_eq!(printings(&store, &text("arena_id", "arenaid", ":", "75155")), ["khm/114"]);
+    assert_eq!(printings(&store, &text("arena_id", "arena", "=", "81960")), ["ysnc/23"]);
+    assert_eq!(printings(&store, &not(text("arena_id", "arenaid", ":", "75155"))), ["msc/806", "ysnc/23"]);
+    assert_eq!(printings(&store, &not(text("arena_id", "arenaid", ":", "0"))), ["khm/114", "msc/806", "ysnc/23"]);
+}
+
+#[test]
+fn tcgplayerid_reads_the_etched_id_too() {
+    let store = id_store();
+    assert_eq!(printings(&store, &text("tcgplayer_id", "tcgplayerid", ":", "11938")), ["chk/153"]);
+    assert_eq!(printings(&store, &text("tcgplayer_id", "tcgplayer", "=", "697344")), ["msc/806"]);
+    // `-tcgplayerid:230675 e:khm` is 404: no Kaldheim printing has a tcgplayer_etched_id, so the
+    // disjunction is NULL wherever it is not True. None of these fixtures has one either.
+    assert_eq!(printings(&store, &not(text("tcgplayer_id", "tcgplayerid", ":", "11938"))), NONE);
+    // The same Valki given an etched id (no fixture carries one): it is found by it, and it is
+    // the one printing a negation can keep.
+    let mut etched = fixture("valki_khm_114");
+    etched["tcgplayer_etched_id"] = json!(424242);
+    let store = store_of(&[etched, fixture("akki_lavarunner_chk_153")]);
+    assert_eq!(printings(&store, &text("tcgplayer_id", "tcgplayerid", ":", "424242")), ["khm/114"]);
+    assert_eq!(printings(&store, &text("tcgplayer_id", "tcgplayerid", ":", "230113")), ["khm/114"]);
+    assert_eq!(printings(&store, &not(text("tcgplayer_id", "tcgplayerid", ":", "11938"))), ["khm/114"]);
+}
+
+#[test]
+fn multiverseid_is_membership_and_its_negation_is_a_plain_complement() {
+    // `-multiverseid:503605 e:khm cn:1` is 404 and `-multiverseid:abc e:khm` is all 305: an array
+    // is never NULL, so a printing with no multiverse id at all survives the negation.
+    let store = id_store();
+    let multiverseid = |value: &str| printings(&store, &text("multiverse_id", "multiverseid", ":", value));
+    assert_eq!(multiverseid("78694"), ["chk/153"]);
+    assert_eq!(multiverseid("503724"), ["khm/114"]);
+    assert_eq!(multiverseid("503725"), ["khm/114"], "the back face's id names the printing too");
+    assert_eq!(multiverseid("1"), NONE);
+    assert_eq!(
+        printings(&store, &not(text("multiverse_id", "multiverseid", ":", "78694"))),
+        ["khm/114", "msc/806", "tund/4", "ysnc/23"]
+    );
+    assert_eq!(
+        printings(&store, &not(text("multiverse_id", "multiverse", ":", "0"))),
+        ["chk/153", "khm/114", "msc/806", "tund/4", "ysnc/23"]
+    );
+}

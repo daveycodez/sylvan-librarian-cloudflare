@@ -2215,7 +2215,7 @@ fn fuzz_num_field_str(f: NumField) -> &'static str {
         NumField::Cmc => "cmc", NumField::Power => "power", NumField::Toughness => "toughness", NumField::Loyalty => "loyalty",
         NumField::RarityInt => "rarity", NumField::CollectorNumberInt => "cn", NumField::EdhrEc => "edhrec",
         NumField::PriceUsd => "usd", NumField::PriceEur => "eur", NumField::PriceTix => "tix", NumField::PreferScore => "prefer",
-        NumField::PowTou => "pt",
+        NumField::PowTou => "pt", NumField::PriceUsdFoil => "usdfoil",
     }
 }
 fn fuzz_num_expr_str(e: &NumExpr) -> String {

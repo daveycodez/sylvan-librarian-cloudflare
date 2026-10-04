@@ -378,7 +378,9 @@ const SCRYFALL_ONLY_KEYWORDS: ReadonlySet<string> = new Set([
 	"cube",
 	"new",
 	"not",
-	"stamp",
+	// `stamp` LEFT THIS TABLE with x68: the engine compares the security stamp the card object
+	// already emits (db-info's `security_stamp`), and STAMP_KEYWORDS below says Scryfall's
+	// `Unknown security stamp` for a value outside its six.
 	"cheapest",
 	// `include` LEFT THIS TABLE on 2026-10-03: `include:` is a display option this surface now
 	// reads (see INCLUDE_VALUES), and under `=` it is a keyword Scryfall itself does not know —
@@ -408,21 +410,18 @@ const SCRYFALL_ONLY_KEYWORDS: ReadonlySet<string> = new Set([
 	//
 	// x68 TOOK THEM BACK OUT ONE GROUP AT A TIME, as each gained an answer. `edition`, `collector`,
 	// `collectornumber` and `edhrec` left first: they are spellings of columns the parser already
-	// had (db-info's `card_set_code`, `collector_number_int`, `edhrec_rank`).
+	// had (db-info's `card_set_code`, `collector_number_int`, `edhrec_rank`). `mtgoid`,
+	// `multiverseid`, `arenaid`, `tcgplayerid` and `usdfoil` left second: the engine answers them
+	// from fields the store already held for the card object.
 	"block",
 	"b",
 	"lore",
 	"artists",
-	"mtgoid",
-	"multiverseid",
-	"arenaid",
-	"tcgplayerid",
 	"prints",
 	"sets",
 	"paperprints",
 	"papersets",
 	"illustrations",
-	"usdfoil",
 ]);
 
 /**
@@ -474,6 +473,9 @@ const NEGATED_EQUALITY_UNKNOWN_KEYWORD: ReadonlySet<string> = new Set([
 	"edhrec",
 	"edhrecrank",
 	"edhrec_rank",
+	// `usdfoil:abc e:khm` and `-usdfoil:1 e:khm` are 305 carrying the two sentences, and
+	// `-usdfoil>=1 e:khm` is 305 with none (2026-10-03).
+	"usdfoil",
 ]);
 
 /**
@@ -765,6 +767,8 @@ const COMPARABLE_KEYWORDS: ReadonlySet<string> = new Set([
 	"edhrec",
 	"edhrecrank",
 	"edhrec_rank",
+	// `usdfoil>=1 e:khm` 68, `usdfoil<1 e:khm` 229, `usdfoil!=1 e:khm` 285.
+	"usdfoil",
 	// ordered enums / dates
 	"r",
 	"rarity",
@@ -1264,7 +1268,9 @@ function regexKeywordReason(keyword: string, rawValue: string): string | null {
 	if (REGEX_CAPABLE_KEYWORDS.has(keyword) || REGEX_VALUE_FIRST_KEYWORDS.has(keyword)) return null;
 	const infos = ALIAS_TO_FIELD_INFOS.get(keyword) ?? [];
 	const textOnly = infos.length > 0 && infos.every((fi) => fi.parserClass === ParserClass.TEXT);
-	if (textOnly && regexPlainLiteral(rawValue.slice(1, -1)) !== null) return null;
+	if (textOnly && !STRICT_REGEX_KEYWORDS.has(keyword) && regexPlainLiteral(rawValue.slice(1, -1)) !== null) {
+		return null;
+	}
 	if (keyword === SET_TYPE_VALUE_KEYWORD) {
 		return `Unknown set type \u201c${rawValue.toLowerCase()}\u201d`;
 	}
@@ -1353,6 +1359,64 @@ const UUID_KEYWORDS: ReadonlySet<string> = new Set([
 	"illustration_id",
 ]);
 const GAME_KEYWORDS: ReadonlySet<string> = new Set(["game"]);
+
+/**
+ * `stamp:` and its vocabulary — Scryfall's six security stamps.
+ *
+ * Measured 2026-10-03: `stamp:oval` 9,760, `triangle` 2,412, `arena` 525, `acorn` 141, `circle` 36,
+ * `heart` 8, and anything else ignored with its own sentence, in either polarity and with NO
+ * closing period: `stamp:none e:khm` and `stamp:nonsense e:khm` are 305 carrying
+ * `Unknown security stamp “nonsense”`, `-stamp:nonsense e:khm` the same echoing the minus.
+ * `stamp:OVAL` and `stamp:"oval"` are `stamp:oval`; `stamp!=oval` and `stamp>oval` are 404 (the
+ * comparison rule); `stamp:/oval/` is the regex-keyword sentence.
+ */
+const STAMP_KEYWORDS: ReadonlySet<string> = new Set(["stamp"]);
+const SECURITY_STAMPS: ReadonlySet<string> = new Set(["oval", "triangle", "acorn", "circle", "arena", "heart"]);
+
+/**
+ * Scryfall's external-id keywords, by spelling, and whether the spelling CHECKS its value.
+ *
+ * A value is read as its leading decimal digits — `mtgoid:87321a`, `mtgoid:87321.0`,
+ * `arenaid:75036a`, `tcgplayerid:230675a` and `multiverseid:503605a` each name the one printing,
+ * quoted or not — and one with no leading digit names no card: `mtgoid:abc`, `mtgoid:-1`,
+ * `arenaid:abc` and `multiverseid:abc` are 404 with no warning, while the negations are SQL's
+ * (`-arenaid:abc e:khm` and `-multiverseid:abc e:khm` are all 305, `-mtgoid:abc e:usg` 332 of
+ * 335). So the value is rewritten to the integer the engine compares, `0` when there is none:
+ * no printing carries id 0, and the engine's three-valued compare then answers each negation.
+ *
+ * ONLY THE tcgplayer SPELLINGS VALIDATE, and the sentence is Scryfall's own, typos included:
+ * `tcgplayerid:abc e:khm`, `-tcgplayerid:abc e:khm` and `tcgplayerid:-5 e:khm` are 305 carrying
+ * `You must provide a vaid interger`. `tcgplayerid:1.5` is honored (404 in Kaldheim).
+ *
+ * A regex-shaped value is the regex-keyword sentence on every one of them, however plain the
+ * pattern (`mtgoid:/87321/ e:khm` is 305 carrying it), so these are in STRICT_REGEX_KEYWORDS.
+ * Measured 2026-10-03.
+ */
+const EXTERNAL_ID_KEYWORDS: ReadonlyMap<string, { validates: boolean }> = new Map(
+	[
+		["mtgoid", "mtgo_id", "mtgo"],
+		["arenaid", "arena_id", "arena"],
+		["multiverseid", "multiverse_id", "multiverse"],
+	]
+		.flat()
+		.map((alias): [string, { validates: boolean }] => [alias, { validates: false }])
+		.concat(
+			["tcgplayerid", "tcgplayer_id", "tcgplayer"].map((alias): [string, { validates: boolean }] => [
+				alias,
+				{ validates: true },
+			]),
+		),
+);
+const TCGPLAYER_ID_REASON = "You must provide a vaid interger";
+const LEADING_DIGITS_RE = /^\d+/;
+
+/**
+ * TEXT-class keywords whose regex-shaped value is ALWAYS Scryfall's regex-keyword sentence — even
+ * a plain-literal pattern, which `regexKeywordReason` otherwise lets through because the parser
+ * lowers it. The exemption exists to keep answers this port already gave (`is:/promo/`); a keyword
+ * that is new here has none to keep, and starts at Scryfall's answer.
+ */
+const STRICT_REGEX_KEYWORDS: ReadonlySet<string> = new Set([...STAMP_KEYWORDS, ...EXTERNAL_ID_KEYWORDS.keys()]);
 
 /** The three spellings that read the `card_is_tags` vocabulary. `not:` is `-is:`. */
 const IS_KEYWORDS: ReadonlySet<string> = new Set(["is", "has", "not"]);
@@ -2309,6 +2373,13 @@ const CROSS_COLUMN_VALUES: ReadonlySet<string> = new Set([
 	"collectornumber",
 	"edhrec",
 	"edhrecrank",
+	// The prices, which were never here: `cmc<usd e:khm` is 66, `usdfoil>usd` 247, `usd>usdfoil`
+	// 57, `usdfoil>eur` 274, `eur>usdfoil` 30, `usdfoil>tix` 283 (2026-10-03). Before this a price
+	// on the right was "not a number" and the comparison matched nothing.
+	"usd",
+	"eur",
+	"tix",
+	"usdfoil",
 ]);
 
 /**
@@ -2528,6 +2599,20 @@ function classifyLeaf(term: string): LeafVerdict {
 	// are in the vocabulary and simply match nothing in the default corpus; see GAME_IS_TAGS.
 	if (GAME_KEYWORDS.has(keyword) && !GAME_IS_TAGS.has(loweredValue)) {
 		return { keep: false, reason: `Unknown game \`${loweredValue}\`` };
+	}
+	// `stamp:` checks its value in both polarities — see STAMP_KEYWORDS. Equality only reaches
+	// here: a comparison was answered by the COMPARABLE_KEYWORDS rule above.
+	if (STAMP_KEYWORDS.has(keyword) && !SECURITY_STAMPS.has(loweredValue)) {
+		return { keep: false, reason: `Unknown security stamp “${loweredValue}”` };
+	}
+	// The external ids: the value becomes the integer it leads with — see EXTERNAL_ID_KEYWORDS.
+	{
+		const externalId = EXTERNAL_ID_KEYWORDS.get(keyword);
+		if (externalId !== undefined) {
+			const digits = LEADING_DIGITS_RE.exec(value)?.[0];
+			if (digits === undefined && externalId.validates) return { keep: false, reason: TCGPLAYER_ID_REASON };
+			return { keep: true, text: `${match[1]}${match[2]}${op}${digits ?? "0"}` };
+		}
 	}
 	// The `game_*` tags under this port's own spelling — see NOT_SCRYFALL_IS_VALUES.
 	if (IS_KEYWORDS.has(keyword) && NOT_SCRYFALL_IS_VALUES.has(loweredValue)) {

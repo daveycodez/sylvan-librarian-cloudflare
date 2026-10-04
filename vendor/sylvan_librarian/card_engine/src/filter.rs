@@ -90,6 +90,13 @@ pub(crate) enum NumField {
     /// Scryfall's `pt` / `powtou`: the FRONT face's power plus its toughness. See
     /// `front_power_plus_toughness`.
     PowTou,
+    /// LOCAL PATCH (Cloudflare port): Scryfall's `usdfoil` — the printing's own `prices.usd_foil`,
+    /// which the compat residue already holds in integer cents. NOT the coalesced search key
+    /// `usd` reads: measured on api.scryfall.com 2026-10-03, `usdfoil>=0 e:khm` is 285 of the
+    /// set's 305 where `usd>=0 e:khm` is all 305, and `usdfoil>usd e:khm` is 247 beside
+    /// `usd>usdfoil e:khm` 57 — two different numbers on one printing. Printing-level, NULL when
+    /// the printing has no foil price, unindexed (verified per candidate, like `edhrec`).
+    PriceUsdFoil,
 }
 
 fn attr_to_num_field(attr: &str) -> Option<NumField> {
@@ -105,6 +112,7 @@ fn attr_to_num_field(attr: &str) -> Option<NumField> {
         "price_usd"            => Some(NumField::PriceUsd),
         "price_eur"            => Some(NumField::PriceEur),
         "price_tix"            => Some(NumField::PriceTix),
+        "price_usd_foil"       => Some(NumField::PriceUsdFoil),
         "prefer_score"         => Some(NumField::PreferScore),
         _ => None,
     }
@@ -152,6 +160,7 @@ fn field_num(card: &AOracleCard, printing: Option<&APrinting>, f: NumField) -> N
         NumField::PriceTix           => printing.map_or(NumVal::PDep, |p| known_cents(p.price_tix.as_ref().map(|v| u32::from(*v)))),
         NumField::PreferScore        => printing.map_or(NumVal::PDep, |p| known(p.prefer_score.as_ref().map(|v| f32::from(*v)))),
         NumField::PowTou             => front_power_plus_toughness(card),
+        NumField::PriceUsdFoil       => printing.map_or(NumVal::PDep, |p| known_cents(p.compat.price_usd_foil.as_ref().map(|v| v.get()))),
     }
 }
 
@@ -1447,6 +1456,34 @@ fn text_field_value<'a>(
 /// rather than reusing one filter across plans/rounds. Every field here is
 /// cheaply `Clone` already (small `Vec`s, `String`, `regex::Regex` is
 /// internally `Arc`-based); this is a plain derive, not a deep-copy concern.
+/// LOCAL PATCH (Cloudflare port): which of Scryfall's external integer ids an `ExternalIdMatch`
+/// compares, and so which column(s) of the compat residue it reads.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) enum ExternalIdKind {
+    /// `mtgo_id` OR `mtgo_foil_id`.
+    Mtgo,
+    /// `arena_id`.
+    Arena,
+    /// `tcgplayer_id` OR `tcgplayer_etched_id`.
+    Tcgplayer,
+    /// Membership in `multiverse_ids`.
+    Multiverse,
+}
+
+/// The integer a Scryfall id keyword's value names: its leading decimal digits, 0 when it has
+/// none or overflows.
+///
+/// Measured on api.scryfall.com 2026-10-03: `mtgoid:87321`, `mtgoid:"87321"` (the parser hands
+/// the unquoted text), `mtgoid:87321.0` and `mtgoid:87321a` are each the one printing, the same
+/// for `arenaid:75036a`, `tcgplayerid:230675a` and `multiverseid:503605a`; `mtgoid:abc`,
+/// `mtgoid:-1` and `mtgoid:0` are 404 with no warning. That is a string-to-integer conversion that
+/// stops at the first non-digit. 0 is returned for "no number" because no card carries id 0 —
+/// every stored id is a NonZeroU32 or a member of a list that never holds one.
+fn leading_external_id(value: &str) -> u32 {
+    let digits: &str = &value[..value.bytes().take_while(u8::is_ascii_digit).count()];
+    digits.parse().unwrap_or(0)
+}
+
 #[derive(Clone)]
 pub(crate) enum FilterExpr {
     True,
@@ -1739,6 +1776,53 @@ pub(crate) enum FilterExpr {
         id: u128,
     },
 
+    /// LOCAL PATCH (Cloudflare port): `mtgoid:` / `arenaid:` / `tcgplayerid:` / `multiverseid:` —
+    /// the printing(s) carrying one of Scryfall's external integer ids, read off the compat
+    /// residue the card object already emits them from. No archive change and no index: one or
+    /// two integer compares per printing (a short slice walk for `multiverseid:`).
+    ///
+    /// Measured on api.scryfall.com 2026-10-03 (khm/1 Axgard Braggart: arena 75036, mtgo 87321,
+    /// tcgplayer 230675, multiverse 503605; usg/306 Phyrexian Processor: mtgo 12345, foil 12346):
+    ///
+    ///   mtgoid:87321  arenaid:75036  tcgplayerid:230675  multiverseid:503605     1 card each
+    ///   mtgoid:12346                 1 — the FOIL id names the printing too, and
+    ///   mtgoid:12345 or mtgoid:12346 is 1 card, the same one
+    ///
+    /// NEGATION IS SQL'S, AND IT DIFFERS PER KEYWORD because the columns behind them do:
+    ///
+    ///   -arenaid:75036 e:khm          304   one column, set on every khm printing
+    ///   -multiverseid:503605 e:khm cn:1   404, and -multiverseid:<other> e:khm is all 305
+    ///                                 an array, never NULL: a plain complement
+    ///   -mtgoid:87321 e:khm           404, and so is -mtgoid:99999999 e:khm — an id no card has
+    ///   -mtgoid:12346 e:usg           331 of 335
+    ///   -tcgplayerid:230675 e:khm     404
+    ///
+    /// The last three are `NOT (id = x OR foil_id = x)` over a pair of columns where the second
+    /// is usually absent: no Kaldheim printing has an `mtgo_foil_id` or a `tcgplayer_etched_id`,
+    /// so the disjunction is NULL for every printing that does not match and its negation keeps
+    /// none of them; Urza's Saga printings carry both MTGO ids, so there the negation is real.
+    /// `tri()` reproduces exactly that: a match is True, a printing holding EVERY column of the
+    /// keyword and matching none is False, anything else is Null.
+    ExternalIdMatch {
+        kind: ExternalIdKind,
+        id: u32,
+    },
+
+    /// LOCAL PATCH (Cloudflare port): `stamp:<name>` — the printing's `security_stamp` equals
+    /// `value`. `SetTypeMatch`'s shape (the stamp interns into `coll_vocab` as
+    /// `CompatFields.security_stamp_id`, resolved to an id in `bind()`), with one difference that
+    /// is measured: a printing with NO stamp is a plain False, not SQL NULL. On api.scryfall.com
+    /// (2026-10-03) `stamp:oval e:khm` is 94 cards and `-stamp:oval e:khm` is 216 — the unstamped
+    /// commons and uncommons — where a NULL would have left the negation nearly empty.
+    ///
+    /// `stamp:oval` 9,760 cards / 34,726 printings, `triangle` 2,412 / 6,446, `arena` 525 / 525,
+    /// `acorn` 141 / 296, `circle` 36, `heart` 8 / 8.
+    StampMatch {
+        value: String,
+        /// None: no loaded printing carries the stamp, which matches nothing.
+        vid: Option<u16>,
+    },
+
     Legality {
         shift: Option<u8>, // None: format absent from all loaded data — matches nothing
         expected: u64,
@@ -1928,6 +2012,10 @@ pub(crate) fn verify_cost_tier(f: &FilterExpr) -> u32 {
         | FilterExpr::LangMatch { .. }
         // ...and a SetTypeMatch is the same equality against a different id in the same vocab.
         | FilterExpr::SetTypeMatch { .. }
+        // ...as is a StampMatch; an ExternalIdMatch is one or two integer compares (or a walk of
+        // the printing's one-or-two multiverse ids).
+        | FilterExpr::StampMatch { .. }
+        | FilterExpr::ExternalIdMatch { .. }
         // A PrintedNamePresent is one u32 compare against a field already on the printing, a
         // FlavorNamePresent the same compare plus a walk of the printing's few faces, and a
         // SingleSet one bool read off a field already on the card.
@@ -2090,6 +2178,7 @@ fn leaf_compares_printing_field(f: &FilterExpr) -> bool {
                 | NumField::PriceUsd
                 | NumField::PriceEur
                 | NumField::PriceTix
+                | NumField::PriceUsdFoil
                 | NumField::PreferScore => true,
                 NumField::Cmc | NumField::Power | NumField::Toughness | NumField::Loyalty | NumField::EdhrEc => false,
                 // The front face's stats: oracle-level, the same for every printing.
@@ -2145,6 +2234,8 @@ fn leaf_compares_printing_field(f: &FilterExpr) -> bool {
         FilterExpr::SetTypeMatch { .. } => true,
         // A printing's own id, and the artwork it carries: per-printing by definition.
         FilterExpr::ScryfallIdMatch { .. } | FilterExpr::IllustrationIdMatch { .. } => true,
+        // ...and so are its marketplace ids and its security stamp (CompatFields).
+        FilterExpr::ExternalIdMatch { .. } | FilterExpr::StampMatch { .. } => true,
         // The printed name is a per-printing fact (Printing.printed_name_folded_id) — an English
         // row and its Japanese sibling answer differently.
         FilterExpr::PrintedNamePresent => true,
@@ -2555,6 +2646,15 @@ impl FilterExpr {
             // The set type interns into that same vocab (CompatFields.set_type_id), so this is
             // the resolution above verbatim.
             FilterExpr::SetTypeMatch { value, vid } => {
+                let i = sorted_ids.partition_point(|id| vocab[u16::from(*id) as usize].as_str() < value.as_str());
+                *vid = sorted_ids
+                    .get(i)
+                    .map(|id| u16::from(*id))
+                    .filter(|&id| vocab[id as usize].as_str() == value.as_str());
+            }
+            // LOCAL PATCH: the security stamp interns into that vocab too
+            // (CompatFields.security_stamp_id) — the same resolution a third time.
+            FilterExpr::StampMatch { value, vid } => {
                 let i = sorted_ids.partition_point(|id| vocab[u16::from(*id) as usize].as_str() < value.as_str());
                 *vid = sorted_ids
                     .get(i)
@@ -3336,6 +3436,45 @@ impl FilterExpr {
                 } else {
                     // `vid` None = the set type exists on no loaded printing; matches nothing.
                     tri_bool(vid.is_some_and(|v| u16::from(p.compat.set_type_id) == v))
+                }
+            }
+
+            // Two-valued: a printing with no stamp is False, so `-stamp:oval` keeps it — see the
+            // variant's doc for the measurement. `vid` None = no loaded printing carries the stamp.
+            FilterExpr::StampMatch { vid, .. } => {
+                let Some(p) = printing else { return Tri::PrintingDep };
+                tri_bool(vid.is_some_and(|v| u16::from(p.compat.security_stamp_id) == v))
+            }
+
+            // Three-valued over the keyword's column(s) — see the variant's doc. An absent id is
+            // archived as 0 (the NonZero niche), which is also what an unparseable value binds
+            // to, so `id == 0` is refused before any compare.
+            FilterExpr::ExternalIdMatch { kind, id } => {
+                let Some(p) = printing else { return Tri::PrintingDep };
+                let c = &p.compat;
+                let pair = |a: u32, b: u32| -> Tri {
+                    if *id != 0 && (a == *id || b == *id) {
+                        Tri::True
+                    } else if a != 0 && b != 0 {
+                        Tri::False
+                    } else {
+                        Tri::Null
+                    }
+                };
+                match kind {
+                    ExternalIdKind::Mtgo => pair(
+                        c.mtgo_id.as_ref().map_or(0, |v| v.get()),
+                        c.mtgo_foil_id.as_ref().map_or(0, |v| v.get()),
+                    ),
+                    ExternalIdKind::Tcgplayer => pair(
+                        c.tcgplayer_id.as_ref().map_or(0, |v| v.get()),
+                        c.tcgplayer_etched_id.as_ref().map_or(0, |v| v.get()),
+                    ),
+                    ExternalIdKind::Arena => {
+                        let a = c.arena_id.as_ref().map_or(0, |v| v.get());
+                        pair(a, a)
+                    }
+                    ExternalIdKind::Multiverse => tri_bool(*id != 0 && c.multiverse_ids.iter().any(|m| u32::from(*m) == *id)),
                 }
             }
 
@@ -4262,6 +4401,28 @@ fn build_binary(kw: &Value) -> Result<FilterExpr, String> {
             return Err(format!("operator {op:?} is not supported on oracle_id"));
         }
         return Ok(FilterExpr::OracleIdMatch { id: super::parse_uuid_or_hash(rhs_value_str(rhs)) });
+    }
+
+    // LOCAL PATCH (Cloudflare port): Scryfall's external-id keywords and `stamp:`. Equality only —
+    // on api.scryfall.com every comparison operator on them is a 404 with no warning, which the
+    // compat surface answers before the term reaches here.
+    if let Some(kind) = match attr {
+        "mtgo_id" => Some(ExternalIdKind::Mtgo),
+        "arena_id" => Some(ExternalIdKind::Arena),
+        "tcgplayer_id" => Some(ExternalIdKind::Tcgplayer),
+        "multiverse_id" => Some(ExternalIdKind::Multiverse),
+        _ => None,
+    } {
+        if !matches!(op, ":" | "=") {
+            return Err(format!("operator {op:?} is not supported on {attr}"));
+        }
+        return Ok(FilterExpr::ExternalIdMatch { kind, id: leading_external_id(rhs_value_str(rhs)) });
+    }
+    if attr == "security_stamp" {
+        if !matches!(op, ":" | "=") {
+            return Err(format!("operator {op:?} is not supported on stamp"));
+        }
+        return Ok(FilterExpr::StampMatch { value: rhs_value_str(rhs).to_lowercase(), vid: None });
     }
 
     // LOCAL PATCH (Cloudflare port): equality only, like `oracle_id` above and for its reason.

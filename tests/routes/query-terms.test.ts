@@ -1554,6 +1554,28 @@ describe("the regex surface, alias by alias", () => {
 		edhrec: ["edhrec:/1/", "Unknown regular expression keyword \u201cedhrec\u201d."],
 		edhrecrank: ["edhrecrank:/1/", "Unknown regular expression keyword \u201cedhrecrank\u201d."],
 		edhrec_rank: ["edhrec_rank:/1/", "Unknown regular expression keyword \u201cedhrec_rank\u201d."],
+		usdfoil: ["usdfoil:/1/", "Unknown regular expression keyword \u201cusdfoil\u201d."],
+		// The external ids and `stamp` take the sentence for a PLAIN-LITERAL pattern too
+		// (`mtgoid:/87321/ e:khm`, `arenaid:/75036/ e:khm`, `tcgplayerid:/230675/ e:khm`,
+		// `multiverseid:/503605/ e:khm` and `stamp:/oval/ e:khm` are each 305 carrying it): they are
+		// new keywords here and have no lowered-literal answer to keep.
+		...Object.fromEntries(
+			[
+				"mtgoid",
+				"mtgo_id",
+				"mtgo",
+				"arenaid",
+				"arena_id",
+				"arena",
+				"tcgplayerid",
+				"tcgplayer_id",
+				"tcgplayer",
+				"multiverseid",
+				"multiverse_id",
+				"multiverse",
+			].map((kw) => [kw, [`${kw}:/1/`, `Unknown regular expression keyword \u201c${kw}\u201d.`]]),
+		),
+		stamp: ["stamp:/oval/", "Unknown regular expression keyword \u201cstamp\u201d."],
 	};
 
 	/**
@@ -1748,26 +1770,21 @@ describe("a keyword Scryfall honors is never called unknown", () => {
 	// Scryfall would have ignored it too. They are left for the parser to refuse instead.
 	//
 	// The list shrinks as x68 answers them (tests/routes/scryfall-keywords-x68.test.ts): `edition`,
-	// `edhrec`, `collector` and `collectornumber` are spellings of columns the parser had.
+	// `edhrec`, `collector` and `collectornumber` are spellings of columns the parser had; the four
+	// external ids, `usdfoil` and `stamp` read fields the store already held.
 	const HONORED_THERE = [
 		"block:khm",
 		"b:khm",
 		"lore:x",
 		"artists:1",
-		"mtgoid:1",
-		"multiverseid:1",
-		"arenaid:1",
-		"tcgplayerid:1",
 		"prints:1",
 		"sets:1",
 		"paperprints:1",
 		"papersets:1",
 		"illustrations:1",
-		"usdfoil:1",
-		// The five that were already here.
+		// Three of the five that were already here.
 		"cube:vintage",
 		"new:art",
-		"stamp:oval",
 		"cheapest:usd",
 	];
 

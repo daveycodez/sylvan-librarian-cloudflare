@@ -8,9 +8,23 @@
 import { describe, expect, test } from "bun:test";
 import { canonicalStringify, EMPTY_TAG_ALIASES, parseScryfallQueryWithDirectives } from "../../src/parser";
 import type { FilterValue } from "../../src/parser/nodes";
+import { applyExtrasGate } from "../../src/routes/extras-gate";
 import { scryfallTermPolicy } from "../../src/routes/scryfall-compat/query-terms";
 
 const ignored = (echo: string, reason: string) => `Invalid expression “${echo}” was ignored. ${reason}`;
+
+/** What the extras gate decides for a query, with both parameters sent as false. */
+async function gated(q: string) {
+	const policy = scryfallTermPolicy(q);
+	const parsed = parseScryfallQueryWithDirectives(policy.query, EMPTY_TAG_ALIASES);
+	const gate = await applyExtrasGate(
+		{ setsWithExtras: async () => [] } as never,
+		parsed.tree,
+		{ loweredRegexTerms: parsed.loweredRegexTerms, expandedDerivedTerms: parsed.expandedDerivedTerms },
+		{ includeExtras: false, includeVariations: false },
+	);
+	return [gate.includeExtras, gate.includeVariations];
+}
 
 interface Leaf {
 	node_type: string;
@@ -181,5 +195,192 @@ describe("edhrec: is the EDHREC rank, under three spellings", () => {
 		const tautology = scryfallTermPolicy("-edhrec>=5000 e:khm");
 		expect(tautology.warnings).toEqual([]);
 		expect(tautology.query).toBe("-cmc<0 e:khm");
+	});
+});
+
+describe("usdfoil: is the printing's foil price", () => {
+	test.each([
+		["usdfoil>=1", ">="],
+		["usdfoil<1", "<"],
+		["usdfoil=0.25", "="],
+		["usdfoil:0.25", ":"],
+		["usdfoil!=1", "!="],
+	])("%s", (q, op) => {
+		const tree = leaf(q);
+		expect(tree.kwargs.lhs.kwargs.attribute_name).toBe("price_usd_foil");
+		expect(tree.kwargs.lhs.kwargs.original_attribute).toBe("usdfoil");
+		expect(tree.kwargs.op).toBe(op);
+	});
+
+	test("it compares against the other prices and columns, on either side", () => {
+		// `usdfoil>usd e:khm` 247, `usd>usdfoil e:khm` 57, `usdfoil>eur` 274, `eur>usdfoil` 30,
+		// `usdfoil>tix` 283, `usdfoil>=cmc` 67, `cmc<usd` 66.
+		for (const q of [
+			"usdfoil>usd e:khm",
+			"usd>usdfoil e:khm",
+			"usdfoil>eur e:khm",
+			"eur>usdfoil e:khm",
+			"usdfoil>tix e:khm",
+			"usdfoil>=cmc e:khm",
+			"cmc<usd e:khm",
+		]) {
+			const policy = scryfallTermPolicy(q);
+			expect([q, policy.query, policy.warnings]).toEqual([q, q, []]);
+			expect(() => parseScryfallQueryWithDirectives(q, EMPTY_TAG_ALIASES)).not.toThrow();
+		}
+	});
+
+	test("the numeric columns' sentences, and no extras", async () => {
+		expect(scryfallTermPolicy("usdfoil:abc e:khm").warnings).toEqual([
+			ignored("usdfoil:abc", "Unknown keyword “usdfoil”."),
+		]);
+		expect(scryfallTermPolicy("-usdfoil:1 e:khm").warnings).toEqual([
+			ignored("-usdfoil:1", "Unknown keyword “-usdfoil”."),
+		]);
+		expect(scryfallTermPolicy("-usdfoil>=1 e:khm").query).toBe("-cmc<0 e:khm");
+		expect(await gated("usdfoil>=100 or cmc=3")).toEqual([false, false]);
+	});
+
+	test("its siblings are not Scryfall keywords", () => {
+		// `eurfoil:1 e:khm` and `usdetched:1 e:khm` are 305 carrying `Unknown keyword`.
+		for (const kw of ["eurfoil", "usdetched", "usd_foil", "tixfoil"]) {
+			expect(scryfallTermPolicy(`${kw}:1 e:khm`).warnings).toEqual([ignored(`${kw}:1`, `Unknown keyword “${kw}”.`)]);
+		}
+	});
+});
+
+describe("stamp: is the security stamp, with Scryfall's six values", () => {
+	test.each(["oval", "triangle", "acorn", "circle", "arena", "heart"])("stamp:%s", (value) => {
+		const tree = leaf(`stamp:${value}`);
+		expect(tree.kwargs.lhs.kwargs.attribute_name).toBe("security_stamp");
+		expect(tree.kwargs.op).toBe(":");
+		expect((tree.kwargs.rhs as { kwargs: { value: string } }).kwargs.value).toBe(value);
+	});
+
+	test("=, upper case and quotes are the same term", () => {
+		for (const q of ["stamp=oval", "stamp:OVAL", 'stamp:"oval"', "STAMP:oval"]) {
+			expect(leaf(q).kwargs.lhs.kwargs.attribute_name).toBe("security_stamp");
+		}
+	});
+
+	test("any other value is ignored with its own sentence, in either polarity", () => {
+		expect(scryfallTermPolicy("stamp:nonsense e:khm").warnings).toEqual([
+			ignored("stamp:nonsense", "Unknown security stamp “nonsense”"),
+		]);
+		expect(scryfallTermPolicy("stamp:none e:khm").warnings).toEqual([
+			ignored("stamp:none", "Unknown security stamp “none”"),
+		]);
+		expect(scryfallTermPolicy("-stamp:NONSENSE e:khm").warnings).toEqual([
+			ignored("-stamp:nonsense", "Unknown security stamp “nonsense”"),
+		]);
+		expect(scryfallTermPolicy("stamp:nonsense e:khm").query).toBe("e:khm");
+	});
+
+	test("a comparison matches nothing, a regex is the regex-keyword sentence, and extras stay closed", async () => {
+		expect(scryfallTermPolicy("stamp!=oval e:khm").query).toBe("cmc<0 e:khm");
+		expect(scryfallTermPolicy("stamp>oval e:khm").query).toBe("cmc<0 e:khm");
+		expect(scryfallTermPolicy("stamp:/oval/ e:khm").warnings).toEqual([
+			ignored("stamp:/oval/", "Unknown regular expression keyword “stamp”."),
+		]);
+		expect(await gated("stamp:oval or cmc=3")).toEqual([false, false]);
+		expect(await gated("-stamp:oval or cmc=3")).toEqual([false, false]);
+	});
+});
+
+describe("the four external-id keywords", () => {
+	const SPELLINGS: [column: string, aliases: string[]][] = [
+		["mtgo_id", ["mtgoid", "mtgo_id", "mtgo"]],
+		["arena_id", ["arenaid", "arena_id", "arena"]],
+		["tcgplayer_id", ["tcgplayerid", "tcgplayer_id", "tcgplayer"]],
+		["multiverse_id", ["multiverseid", "multiverse_id", "multiverse"]],
+	];
+
+	for (const [column, aliases] of SPELLINGS) {
+		test.each(aliases)(`%s: is ${column}, under : and =`, (alias) => {
+			for (const op of [":", "="]) {
+				const tree = leaf(`${alias}${op}87321`);
+				expect(tree.kwargs.lhs.kwargs.attribute_name).toBe(column);
+				expect(tree.kwargs.lhs.kwargs.original_attribute).toBe(alias);
+				expect(tree.kwargs.op).toBe(op);
+				expect((tree.kwargs.rhs as { kwargs: { value: string } }).kwargs.value).toBe("87321");
+			}
+		});
+	}
+
+	test("the value is the integer it leads with, quoted or not", () => {
+		// `mtgoid:"87321"`, `mtgoid:87321.0` and `mtgoid:87321a` are each khm/1.
+		expect(scryfallTermPolicy('mtgoid:"87321" e:khm').query).toBe("mtgoid:87321 e:khm");
+		expect(scryfallTermPolicy("mtgoid:87321.0 e:khm").query).toBe("mtgoid:87321 e:khm");
+		expect(scryfallTermPolicy("mtgoid:87321a e:khm").query).toBe("mtgoid:87321 e:khm");
+		expect(scryfallTermPolicy("arenaid:75036a e:khm").query).toBe("arenaid:75036 e:khm");
+		expect(scryfallTermPolicy("tcgplayerid:230675a e:khm").query).toBe("tcgplayerid:230675 e:khm");
+		expect(scryfallTermPolicy("tcgplayerid:1.5 e:khm").query).toBe("tcgplayerid:1 e:khm");
+		expect(scryfallTermPolicy("multiverse_id=503605a e:khm").query).toBe("multiverse_id=503605 e:khm");
+	});
+
+	test("a value that leads with no digit names no card, and is not a warning", () => {
+		// `mtgoid:abc`, `mtgoid:-1`, `arenaid:abc`, `multiverseid:abc` e:khm: 404, no warnings. The
+		// negations are left to the engine: id 0 is on no printing.
+		for (const [q, rewritten] of [
+			["mtgoid:abc e:khm", "mtgoid:0 e:khm"],
+			["mtgoid:-1 e:khm", "mtgoid:0 e:khm"],
+			["arenaid:abc e:khm", "arenaid:0 e:khm"],
+			["multiverseid:abc e:khm", "multiverseid:0 e:khm"],
+			["-multiverseid:abc e:khm", "-multiverseid:0 e:khm"],
+			["-arenaid:abc e:khm", "-arenaid:0 e:khm"],
+		]) {
+			const policy = scryfallTermPolicy(q as string);
+			expect([q, policy.query, policy.warnings]).toEqual([q, rewritten, []]);
+			expect(() => parseScryfallQueryWithDirectives(policy.query, EMPTY_TAG_ALIASES)).not.toThrow();
+		}
+	});
+
+	test("only tcgplayerid validates, in Scryfall's own words", () => {
+		const reason = "You must provide a vaid interger";
+		expect(scryfallTermPolicy("tcgplayerid:abc e:khm").warnings).toEqual([ignored("tcgplayerid:abc", reason)]);
+		expect(scryfallTermPolicy("-tcgplayerid:abc e:khm").warnings).toEqual([ignored("-tcgplayerid:abc", reason)]);
+		expect(scryfallTermPolicy("tcgplayerid:-5 e:khm").warnings).toEqual([ignored("tcgplayerid:-5", reason)]);
+		expect(scryfallTermPolicy("tcgplayer_id:abc e:khm").warnings).toEqual([ignored("tcgplayer_id:abc", reason)]);
+		expect(scryfallTermPolicy("tcgplayerid:abc e:khm").query).toBe("e:khm");
+	});
+
+	test("a comparison is honored and matches nothing", () => {
+		for (const q of ["mtgoid>=87000", "mtgoid!=87000", "arenaid>=75000", "tcgplayerid>abc", "multiverseid<503650"]) {
+			const policy = scryfallTermPolicy(`${q} e:khm`);
+			expect([q, policy.query, policy.warnings]).toEqual([q, "cmc<0 e:khm", []]);
+		}
+	});
+
+	test("the spellings Scryfall does not know stay unknown", () => {
+		for (const kw of ["mtgofoilid", "mtgo_foil_id", "tcg", "mvid", "cardmarketid", "cardmarket"]) {
+			expect(scryfallTermPolicy(`${kw}:1 e:khm`).warnings).toEqual([ignored(`${kw}:1`, `Unknown keyword “${kw}”.`)]);
+		}
+	});
+
+	test("each opens extras on the term, in either polarity and for a value naming nothing", async () => {
+		for (const q of [
+			"mtgoid:87321 or cmc=3",
+			"arenaid:75036 or cmc=3",
+			"multiverseid:503605 or cmc=3",
+			"mtgoid:abc or cmc=3",
+			"arenaid:abc or cmc=3",
+			"multiverseid:abc or cmc=3",
+			"-mtgoid:87321 or cmc=3",
+			"-arenaid:75036 or cmc=3",
+			"-multiverseid:503605 or cmc=3",
+		]) {
+			expect([q, ...(await gated(q))]).toEqual([q, true, false]);
+		}
+	});
+
+	test("tcgplayerid: opens variations too", async () => {
+		expect(await gated("tcgplayerid:230675 or cmc=3")).toEqual([true, true]);
+		expect(await gated("-tcgplayerid:230675 or cmc=3")).toEqual([true, true]);
+		expect(await gated("tcgplayer:230675 or cmc=3")).toEqual([true, true]);
+	});
+
+	test("a comparison and an ignored value fire nothing", async () => {
+		expect(await gated("mtgoid>=1 or cmc=3")).toEqual([false, false]);
+		expect(await gated("tcgplayerid:abc or cmc=3")).toEqual([false, false]);
 	});
 });

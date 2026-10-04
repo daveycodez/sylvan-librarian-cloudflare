@@ -87,6 +87,7 @@ pub(crate) fn has_printing_varying_leaf(f: &FilterExpr) -> bool {
                     | NumField::PriceUsd
                     | NumField::PriceEur
                     | NumField::PriceTix
+                    | NumField::PriceUsdFoil
                     | NumField::PreferScore
             ),
             NumExpr::Arith(lhs, _, rhs) => num_varying(lhs) || num_varying(rhs),
@@ -118,6 +119,8 @@ pub(crate) fn has_printing_varying_leaf(f: &FilterExpr) -> bool {
         FilterExpr::LangMatch { .. } | FilterExpr::SetTypeMatch { .. } => true,
         // ...and so are its own id and the artwork it carries.
         FilterExpr::ScryfallIdMatch { .. } | FilterExpr::IllustrationIdMatch { .. } => true,
+        // ...and its marketplace ids and security stamp.
+        FilterExpr::ExternalIdMatch { .. } | FilterExpr::StampMatch { .. } => true,
         // ...and so are the printed name (Printing.printed_name_folded_id) and the flavor name
         // (Printing.flavor_name_id, or a PrintingFace's).
         FilterExpr::PrintedNamePresent | FilterExpr::FlavorNameIn { .. } | FilterExpr::FlavorNamePresent => true,
@@ -424,7 +427,9 @@ fn estimate_leaf(f: &FilterExpr, indexes: &Archived<CardIndexes>, n_cards: u32, 
                     Some(Some((lo, hi))) => project(range_count(&indexes.collector_number, lo, hi), n_cards, n_printings),
                 },
                 // Unindexed fields (loyalty/edhrec/prefer_score/pt) → sound unknown.
-                NumField::Loyalty | NumField::EdhrEc | NumField::PreferScore | NumField::PowTou => unknown(n),
+                NumField::Loyalty | NumField::EdhrEc | NumField::PreferScore | NumField::PowTou | NumField::PriceUsdFoil => {
+                    unknown(n)
+                }
             }
         }
 
@@ -559,6 +564,10 @@ fn estimate_leaf(f: &FilterExpr, indexes: &Archived<CardIndexes>, n_cards: u32, 
         // A Scryfall id names at most one printing; an illustration id a handful (the printings
         // sharing one artwork). Neither has a count to read here, so "unknown" is the sound answer.
         FilterExpr::ScryfallIdMatch { .. } | FilterExpr::IllustrationIdMatch { .. } => unknown(n),
+
+        // LOCAL PATCH: an external id names a printing or two and a stamp a class of them;
+        // neither has an index to count through.
+        FilterExpr::ExternalIdMatch { .. } | FilterExpr::StampMatch { .. } => unknown(n),
 
         FilterExpr::DateCmp { op, value } => match date_range_bounds(*op, *value) {
             None => unknown(n),

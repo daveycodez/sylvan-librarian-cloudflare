@@ -154,6 +154,21 @@ export const DB_COLUMNS: readonly FieldInfo[] = [
 	{ dbColumnName: "price_eur", fieldType: FieldType.NUMERIC, searchAliases: ["eur"], parserClass: ParserClass.NUMERIC },
 	{ dbColumnName: "price_tix", fieldType: FieldType.NUMERIC, searchAliases: ["tix"], parserClass: ParserClass.NUMERIC },
 	{
+		// LOCAL PATCH (Cloudflare port): Scryfall's `usdfoil` — the printing's own `prices.usd_foil`
+		// and nothing coalesced into it. Measured 2026-10-03: `usdfoil>=1 e:khm` 68,
+		// `usdfoil<1 e:khm` 229, `usdfoil=0.25 e:khm` 7, `usdfoil>=0 e:khm` 285 of 305 (a printing
+		// with no foil price compares as NULL), `usdfoil>=100` 880 cards / 1,234 printings, and
+		// `usdfoil>=0 e:cmr is:etched` is 404 — the etched price is not read. It compares against
+		// the other columns in both positions (`usdfoil>usd e:khm` 247, `usd>usdfoil e:khm` 57,
+		// `usdfoil>eur` 274, `eur>usdfoil` 30). `eurfoil`, `usdetched`, `usd_foil` and `tixfoil`
+		// are NOT keywords there (`Unknown keyword`). The engine reads the cents the card object
+		// already emits the price from; nothing new is stored.
+		dbColumnName: "price_usd_foil",
+		fieldType: FieldType.NUMERIC,
+		searchAliases: ["usdfoil"],
+		parserClass: ParserClass.NUMERIC,
+	},
+	{
 		dbColumnName: "produced_mana",
 		fieldType: FieldType.JSONB_OBJECT,
 		searchAliases: ["produces"],
@@ -188,6 +203,42 @@ export const DB_COLUMNS: readonly FieldInfo[] = [
 		dbColumnName: "illustration_id",
 		fieldType: FieldType.TEXT,
 		searchAliases: ["illustrationid", "illustration_id"],
+		parserClass: ParserClass.TEXT,
+	},
+	// LOCAL PATCH (Cloudflare port): Scryfall's four EXTERNAL-id keywords, three spellings each.
+	// Measured on api.scryfall.com 2026-10-03 against khm/1 Axgard Braggart (mtgo 87321, arena
+	// 75036, tcgplayer 230675, multiverse 503605), each `<kw>:<id> e:khm` = 1:
+	//
+	//   mtgoid  mtgo_id  mtgo            arenaid  arena_id  arena
+	//   tcgplayerid  tcgplayer_id  tcgplayer        multiverseid  multiverse_id  multiverse
+	//
+	// and NOT `mtgofoilid`, `mtgo_foil_id`, `tcg`, `mvid`, `cardmarketid` or `cardmarket` (each
+	// `Unknown keyword`). `=` reads as `:`; every other operator matches nothing. TEXT, because
+	// the value is an identifier and not a quantity: nothing compares or does arithmetic on it.
+	// The engine reads the ids the card object already emits (card_engine `ExternalIdMatch`,
+	// which carries the negation measurements); nothing new is stored.
+	{
+		dbColumnName: "mtgo_id",
+		fieldType: FieldType.TEXT,
+		searchAliases: ["mtgoid", "mtgo_id", "mtgo"],
+		parserClass: ParserClass.TEXT,
+	},
+	{
+		dbColumnName: "arena_id",
+		fieldType: FieldType.TEXT,
+		searchAliases: ["arenaid", "arena_id", "arena"],
+		parserClass: ParserClass.TEXT,
+	},
+	{
+		dbColumnName: "tcgplayer_id",
+		fieldType: FieldType.TEXT,
+		searchAliases: ["tcgplayerid", "tcgplayer_id", "tcgplayer"],
+		parserClass: ParserClass.TEXT,
+	},
+	{
+		dbColumnName: "multiverse_id",
+		fieldType: FieldType.TEXT,
+		searchAliases: ["multiverseid", "multiverse_id", "multiverse"],
 		parserClass: ParserClass.TEXT,
 	},
 	{
@@ -328,6 +379,18 @@ export const DB_COLUMNS: readonly FieldInfo[] = [
 		dbColumnName: "card_watermark",
 		fieldType: FieldType.TEXT,
 		searchAliases: ["watermark", "wm"],
+		parserClass: ParserClass.TEXT,
+	},
+	// LOCAL PATCH (Cloudflare port): Scryfall's `stamp:` — the printing's security stamp. Measured
+	// 2026-10-03: `stamp:oval` 9,760 cards / 34,726 printings, `triangle` 2,412 / 6,446, `arena`
+	// 525, `acorn` 141 / 296, `circle` 36, `heart` 8; `stamp:oval e:khm` = `stamp=oval e:khm` =
+	// `stamp:OVAL e:khm` 94 and `-stamp:oval e:khm` 216. Any other value is ignored with
+	// `Unknown security stamp “<value>”` (SECURITY_STAMPS below; query-terms.ts says it). The
+	// engine compares the stamp the card object already emits; nothing new is stored.
+	{
+		dbColumnName: "security_stamp",
+		fieldType: FieldType.TEXT,
+		searchAliases: ["stamp"],
 		parserClass: ParserClass.TEXT,
 	},
 	{ dbColumnName: "released_at", fieldType: FieldType.DATE, searchAliases: ["date"], parserClass: ParserClass.DATE },

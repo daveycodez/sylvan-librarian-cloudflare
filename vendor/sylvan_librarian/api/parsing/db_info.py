@@ -198,6 +198,14 @@ DB_COLUMNS = [
         search_aliases=["tix"],
         parser_class=ParserClass.NUMERIC,
     ),
+    # LOCAL PATCH (Cloudflare port): Scryfall's `usdfoil`, the printing's own foil price (measured
+    # on api.scryfall.com 2026-10-03; see src/parser/db-info.ts).
+    FieldInfo(
+        db_column_name="price_usd_foil",
+        field_type=FieldType.NUMERIC,
+        search_aliases=["usdfoil"],
+        parser_class=ParserClass.NUMERIC,
+    ),
     FieldInfo(
         db_column_name="produced_mana",
         field_type=FieldType.JSONB_OBJECT,
@@ -229,6 +237,33 @@ DB_COLUMNS = [
         db_column_name="illustration_id",
         field_type=FieldType.TEXT,
         search_aliases=["illustrationid", "illustration_id"],
+        parser_class=ParserClass.TEXT,
+    ),
+    # LOCAL PATCH (Cloudflare port): Scryfall's four EXTERNAL-id keywords, three spellings each
+    # (measured on api.scryfall.com 2026-10-03; see src/parser/db-info.ts). The engine answers
+    # them from the ids the compat residue already holds.
+    FieldInfo(
+        db_column_name="mtgo_id",
+        field_type=FieldType.TEXT,
+        search_aliases=["mtgoid", "mtgo_id", "mtgo"],
+        parser_class=ParserClass.TEXT,
+    ),
+    FieldInfo(
+        db_column_name="arena_id",
+        field_type=FieldType.TEXT,
+        search_aliases=["arenaid", "arena_id", "arena"],
+        parser_class=ParserClass.TEXT,
+    ),
+    FieldInfo(
+        db_column_name="tcgplayer_id",
+        field_type=FieldType.TEXT,
+        search_aliases=["tcgplayerid", "tcgplayer_id", "tcgplayer"],
+        parser_class=ParserClass.TEXT,
+    ),
+    FieldInfo(
+        db_column_name="multiverse_id",
+        field_type=FieldType.TEXT,
+        search_aliases=["multiverseid", "multiverse_id", "multiverse"],
         parser_class=ParserClass.TEXT,
     ),
     FieldInfo(
@@ -339,6 +374,14 @@ DB_COLUMNS = [
         db_column_name="card_watermark",
         field_type=FieldType.TEXT,
         search_aliases=["watermark", "wm"],
+        parser_class=ParserClass.TEXT,
+    ),
+    # LOCAL PATCH (Cloudflare port): Scryfall's `stamp:`, the printing's security stamp (measured
+    # on api.scryfall.com 2026-10-03; see src/parser/db-info.ts).
+    FieldInfo(
+        db_column_name="security_stamp",
+        field_type=FieldType.TEXT,
+        search_aliases=["stamp"],
         parser_class=ParserClass.TEXT,
     ),
     FieldInfo(

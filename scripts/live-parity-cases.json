@@ -2317,6 +2317,72 @@
 			"note": "x68. `-edhrec:1` is refused as the numeric columns are: 12 with `Invalid expression “-edhrec:1” was ignored. Unknown keyword “-edhrec”.` (2026-10-03)."
 		},
 		{
+			"name": "search-mtgoid-by-foil-id",
+			"method": "GET",
+			"path": "/cards/search?q=mtgoid%3A12346",
+			"note": "x68. `mtgoid:` matches either MTGO id: 12346 is Phyrexian Processor's FOIL id (usg/306, mtgo_id 12345) and names the printing (2026-10-03)."
+		},
+		{
+			"name": "search-mtgoid-negation-is-null-without-a-foil-id",
+			"method": "GET",
+			"path": "/cards/search?q=-mtgoid%3A87321+e%3Akhm",
+			"note": "x68. A 404 on both sides: no Kaldheim printing has an mtgo_foil_id, so `NOT (id = x OR foil_id = x)` is NULL for every one of them (2026-10-03; `-mtgoid:12346 e:usg` is 331 of 335, Urza's Saga carrying both ids)."
+		},
+		{
+			"name": "search-arenaid",
+			"method": "GET",
+			"path": "/cards/search?q=arena%3A75036+e%3Akhm",
+			"note": "x68. `arenaid:` / `arena_id:` / `arena:` — khm/1 Axgard Braggart by its Arena id (2026-10-03)."
+		},
+		{
+			"name": "search-tcgplayerid-opens-variations",
+			"method": "GET",
+			"path": "/cards/search?q=tcgplayerid%3A230675+or+cmc%3D3",
+			"note": "x68. `tcgplayerid:` forces include_extras AND include_variations — the second term found that opens variations, after `scryfallid:` — which the `next_page` echo of this 8,303-card answer carries (2026-10-03)."
+		},
+		{
+			"name": "search-tcgplayerid-bad-value-sentence",
+			"method": "GET",
+			"path": "/cards/search?q=tcgplayerid%3Aabc+e%3Akhm+t%3Agod",
+			"note": "x68. Scryfall's own words, typos included: `Invalid expression “tcgplayerid:abc” was ignored. You must provide a vaid interger` over the 12 gods (2026-10-03). The other three id keywords do not validate — `mtgoid:abc` is a 404."
+		},
+		{
+			"name": "search-multiverseid-negated",
+			"method": "GET",
+			"path": "/cards/search?q=-multiverseid%3A503605+e%3Akhm+cn%3A1",
+			"note": "x68. `multiverseid:` is array membership and its negation a plain complement: this is a 404 (khm/1 carries 503605), where `-multiverseid:abc e:khm` is the whole set (2026-10-03)."
+		},
+		{
+			"name": "search-usdfoil-is-not-the-coalesced-usd",
+			"method": "GET",
+			"path": "/cards/search?q=usdfoil%3E%3D0+e%3Acmr+is%3Aetched",
+			"note": "x68. A 404 on both sides: `usdfoil` reads `prices.usd_foil` alone, and Commander Legends' etched printings have an etched price and no foil one (2026-10-03). `usd>=0` on the same printings answers, because `usd` coalesces."
+		},
+		{
+			"name": "search-usdfoil-range",
+			"method": "GET",
+			"path": "/cards/search?q=usdfoil%3E%3D100+e%3A2xm&order=name",
+			"note": "x68. `usdfoil>=…` is a real numeric comparison (`usdfoil>=1 e:khm` 68, `usdfoil>=100` 880 cards on 2026-10-03). Prices move daily and the two sides can hold different bulk dumps, so a row at the boundary can differ."
+		},
+		{
+			"name": "search-stamp-oval",
+			"method": "GET",
+			"path": "/cards/search?q=stamp%3Aoval+e%3Akhm+t%3Agod",
+			"note": "x68. `stamp:` is the printing's security stamp: `stamp:oval e:khm` is 94 and `-stamp:oval e:khm` 216 (2026-10-03) — a printing with no stamp is a plain False."
+		},
+		{
+			"name": "search-stamp-heart",
+			"method": "GET",
+			"path": "/cards/search?q=stamp%3Aheart&unique=prints",
+			"note": "x68. `stamp:heart` is 8 printings (2026-10-03) — the smallest of Scryfall's six stamps (oval 34,726 printings, triangle 6,446, arena 525, acorn 296, circle 36)."
+		},
+		{
+			"name": "search-stamp-unknown-value-sentence",
+			"method": "GET",
+			"path": "/cards/search?q=-stamp%3Anonsense+e%3Akhm+t%3Agod",
+			"note": "x68. `Invalid expression “-stamp:nonsense” was ignored. Unknown security stamp “nonsense”` over the 12 gods — in either polarity, and with no closing period (2026-10-03)."
+		},
+		{
 			"name": "search-regex-inline-flag-is-refused",
 			"method": "GET",
 			"path": "/cards/search?q=o%3A%2F%28%3Fi%29destroy+target+creature%2F+t%3Ainstant",

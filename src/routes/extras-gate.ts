@@ -27,7 +27,7 @@ interface ExtrasTriggers {
 	forced: boolean;
 	/** Lowercased set codes named by `e:`/`s:`/`set:` — the CONDITIONAL trigger. */
 	sets: string[];
-	/** A `scryfallid:` term is present: `include_variations` is on as well as extras. */
+	/** A `scryfallid:` or `tcgplayerid:` term is present: `include_variations` is on as well as extras. */
 	variations: boolean;
 }
 
@@ -490,6 +490,28 @@ function walkExtrasTriggers(
 				out.forced = true;
 				if (attr === "scryfall_id") out.variations = true;
 			}
+		}
+		// The four EXTERNAL-id keywords force extras too, and they fire on the TERM whatever its
+		// value: measured 2026-10-03, `<term> or cmc=3` sent with `include_extras=false` (bare 8,089;
+		// extras-on 8,302), the flags read out of `next_page`:
+		//
+		//   mtgoid:87321  arenaid:75036  multiverseid:503605 or cmc=3   8,303  extras=true  variations=false
+		//   tcgplayerid:230675 or cmc=3                                 8,303  extras=true  variations=TRUE
+		//   mtgoid:abc  arenaid:abc  multiverseid:abc or cmc=3          8,302  extras=true  (a value naming nothing)
+		//   -mtgoid:87321  -arenaid:75036  -multiverseid:503605         extras=true         (polarity-blind)
+		//   -tcgplayerid:230675 or cmc=3                                extras=true  variations=true
+		//   mtgoid>=1 or cmc=3                                          8,089  false/false
+		//
+		// `tcgplayerid:` is the second term found that opens VARIATIONS, after `scryfallid:`. Its
+		// malformed value (`tcgplayerid:abc`) is ignored before a tree exists, so it never reaches
+		// here on `/cards/search`.
+		if (
+			(attr === "mtgo_id" || attr === "arena_id" || attr === "tcgplayer_id" || attr === "multiverse_id") &&
+			!fromExpansion &&
+			(n.kwargs?.op === ":" || n.kwargs?.op === "=")
+		) {
+			out.forced = true;
+			if (attr === "tcgplayer_id") out.variations = true;
 		}
 		if (attr === "card_set_code" && !fromExpansion) {
 			for (const value of values) out.sets.push(value);
