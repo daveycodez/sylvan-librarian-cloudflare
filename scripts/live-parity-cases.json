@@ -1974,6 +1974,48 @@
 					}
 				}
 			}
+		},
+		{
+			"name": "search-regex-nested-two-deep-runs",
+			"method": "GET",
+			"path": "/cards/search?q=o%3A%2Fdestroy+%28%28target%7Canother%29+%28nonblack%7Cnonwhite%29%7Cthat%29+creature%2F",
+			"note": "x66 R1a, reported from mtg-seeker: a regex whose parentheses nest TWO deep runs — 116 cards on api.scryfall.com 2026-10-03. The control for the three cases below."
+		},
+		{
+			"name": "search-regex-nested-three-deep-alone",
+			"method": "GET",
+			"path": "/cards/search?q=o%3A%2Fdestroy+%28%28target+%28nonblack%7Cnonwhite%29%29%7Cthat%29+creature%2F",
+			"note": "x66 R1b: three deep, and Scryfall drops the regex before compiling it. Alone, nothing is left: `400 bad_request`, details `All of your terms were ignored.`, warnings [`Invalid expression “o:/destroy ((target…” was ignored. Too many nested groups.`] (2026-10-03). This port evaluated it: 200, 116 cards, no warning."
+		},
+		{
+			"name": "search-regex-nested-three-deep-beside-a-term",
+			"method": "GET",
+			"path": "/cards/search?q=t%3Ainstant+o%3A%2Fdestroy+%28%28%28target%29%29%29+creature%2F",
+			"note": "x66 R1c: beside another term the regex is dropped and the rest answers — all 3,909 of `t:instant`, carrying the warning (2026-10-03). This port answered 151 with none, so a query validated here shipped a different result set to Scryfall users."
+		},
+		{
+			"name": "search-regex-nested-non-capturing-counts",
+			"method": "GET",
+			"path": "/cards/search?q=t%3Ainstant+o%3A%2Fdestroy+%28%3F%3A%28%3F%3A%28%3F%3Atarget%29%29%29+creature%2F",
+			"note": "x66 R1d: `(?:` nests like any other parenthesis — 3,909 with the warning. Lookarounds, named and atomic groups, an escaped `\\(` and a `[(]` all count too: the rule is a count of the two CHARACTERS, measured row by row in query-terms.ts (`nestsTooDeep`)."
+		},
+		{
+			"name": "search-regex-nested-removal-battle",
+			"method": "GET",
+			"path": "/cards/search?q=o%3A%2F%28%3F%3C%21would+%29deals%3F+%28%5B1-9X%5D%7Cthat+much%7Chalf+X%7Cdamage%28+equal%7C%28%3F%3D+to+any+target%29%29%29%5B%5E.%5D%2Ato+%28any%28+other%29%3F+target%7C%5B%5E.%5D%2A%5Cbbattle%5Cb%29%2F+OR+o%3A%2Fremove+%28up+to+%5Cw%2B%7C%5Cw%2B%29+counters%3F+from+%28all+%7C%28up+to+%5Cw%2B+%29%3Ftarget+%29permanents%3F%5Cb%2F+-o%3A%22you+control%22",
+			"note": "x66 R12, a shipped mtg-seeker query: the first regex nests three deep (`damage( equal|(?= to any target))` inside the alternation group) and Scryfall answers the REST — 12 cards with `Invalid expression “o:/(?<!would )deals…” was ignored. Too many nested groups.` (2026-10-03). This port evaluated both regexes: 814 cards, no warning."
+		},
+		{
+			"name": "search-regex-nested-attacking-matters",
+			"method": "GET",
+			"path": "/cards/search?q=o%3A%2FWhenever+%28you%7C%28%28a%7Can%7Canother%7Cone+or+more%29+%5B%5E.%2C%22%5D%2A%29%29+attacks%3F%2F+OR+o%3A%22if+you+attacked%22+OR+o%3A%22if+no+creatures+attacked%22+OR+o%3A%22number+of+attacking%22+OR+o%3A%22for+each+attacking%22",
+			"note": "x66 R25, a shipped mtg-seeker query: 114 on api.scryfall.com 2026-10-03 with `Invalid expression “o:/whenever (you|((…” was ignored. Too many nested groups.` — the four quoted arms alone."
+		},
+		{
+			"name": "search-regex-nested-end-step-sacrifice",
+			"method": "GET",
+			"path": "/cards/search?q=fo%3A%2F%28%28sacrifice+%28this+creature%7Cit%29%5B%5E.%5D%2Aend+step%29%7C%28end+step%5B%5E.%5D%2Asacrifice+%28this+creature%7Cit%29%29%29%2F+t%3Acreature",
+			"note": "x66 R33: all 18,760 creatures on api.scryfall.com 2026-10-03 with `Invalid expression “fo:/((sacrifice (th…” was ignored. Too many nested groups.`, where this port answered the 86 the regex matches."
 		}
 	]
 }

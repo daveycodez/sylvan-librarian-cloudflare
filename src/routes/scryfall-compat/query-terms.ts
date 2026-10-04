@@ -1302,6 +1302,71 @@ function regexReason(pattern: string): string {
 }
 
 /**
+ * SCRYFALL REFUSES A REGEX WHOSE PARENTHESES NEST THREE DEEP, and it decides that by counting
+ * characters, before the pattern is ever compiled.
+ *
+ * Reported from mtg-seeker (x66): three shipped queries — a removal-battle, an attacking-matters
+ * and an end-step-sacrifice supplement — each carried one regex nested three deep. This port
+ * evaluated them (814, and 86 where Scryfall answers all 18,760 creatures) and said nothing, while
+ * api.scryfall.com dropped the regex and answered the REST of the query with a warning. A query
+ * validated here and shipped there returned a different set of cards with no error on either side.
+ *
+ * Measured on api.scryfall.com 2026-10-03, anchor `t:instant` = 3,909, one request per row. A row
+ * that answers 3,909 carrying `Too many nested groups.` is a regex that was dropped:
+ *
+ *   o:/destroy ((target|another) (nonblack|nonwhite)|that) creature/   116    depth 2 runs
+ *   o:/destroy ((target (nonblack|nonwhite))|that) creature/           400    alone: nothing is left
+ *   t:instant o:/destroy (((target))) creature/                        3,909  depth 3
+ *   t:instant o:/destroy (?:(?:(?:target))) creature/                  3,909  non-capturing counts
+ *   (?=…) (?!…) (?<=…) (?<!…) (?i:…) (?<a>…) (?>…), three deep          3,909  every kind of group
+ *   t:instant o:/(destroy) (target) (creature)/                        152    siblings do not nest
+ *   t:instant o:/(a)(b)(c)(d)(e)(f)(g)(h)(i)(j)(k)/                    404    nor do eleven of them
+ *   t:instant o:/((destroy)(( target))) creature/                      3,909  depth, not adjacency
+ *
+ * IT IS A COUNT OF THE TWO CHARACTERS, NOT OF GROUPS. A parenthesis that is escaped, or inside a
+ * bracket expression, or inside a `(?#` comment, opens and closes a level like any other:
+ *
+ *   t:instant o:/destroy (?:(?:[(]?target)) creature/                  3,909  `[(]` is a third level
+ *   t:instant o:/destroy (?:(?:\(?target)) creature/                   3,909  and so is `\(`
+ *   t:instant o:/\(\(\(/    o:/[(][(][(]/                              3,909  three literals, no group
+ *   t:instant o:/(\)(\)(a)))/    o:/([)]([)](a)))/                     404    a real depth of 3, and it
+ *                                                                             RUNS: each `\)` closed one
+ *   t:instant o:/())(((a)/                                             3,909  + `parentheses () not
+ *                              balanced.` — the counter went to -1 and came back to 2, so it is not
+ *                              clamped at zero, and the compiler spoke instead
+ *
+ * Every regex keyword takes it (`name:`, `t:`, `ft:`, `fo:`, `mana:` measured), a `-` is echoed
+ * with the term, and two such terms earn two warnings. WHERE IT SITS among the other refusals is
+ * measured too: after the unknown-regex-keyword sentence (`a:/(((x)))/` earns that one), before
+ * the compiler's (`o:/(((a/` and `o:/(((a)))[/` are "nested", not "not balanced"), and it still
+ * spends the seven-operator budget — six plain regexes and this one are a 400.
+ *
+ * COST: one pass over the pattern's characters at parse time, on a term that is already a regex.
+ * Nothing reaches the engine.
+ */
+const MAX_REGEX_PAREN_DEPTH = 2;
+const NESTED_GROUPS_REASON = "Too many nested groups.";
+
+function nestsTooDeep(pattern: string): boolean {
+	let depth = 0;
+	for (const ch of pattern) {
+		if (ch === "(") {
+			if (++depth > MAX_REGEX_PAREN_DEPTH) return true;
+		} else if (ch === ")") depth--;
+	}
+	return false;
+}
+
+/**
+ * Why Scryfall refuses a regex it has not compiled yet, or null — the checks it runs on the
+ * pattern's TEXT, in the order it runs them.
+ */
+function regexTextReason(pattern: string): string | null {
+	if (nestsTooDeep(pattern)) return NESTED_GROUPS_REASON;
+	return null;
+}
+
+/**
  * An apostrophe the LEXER keeps inside a word rather than opening a string: preceded by a word
  * character and followed by one (or by the end of input) — `don't`, `urza's`, `urza'` mid-type.
  * The lexer's own rule lives in tokenizer.ts (`scanWordEnd`), where it is consulted only while a
@@ -1698,8 +1763,15 @@ function classifyLeaf(term: string): LeafVerdict {
 	// A regex literal that will not compile. Validated here so the answer is Scryfall's 400 rather
 	// than the engine's 503 — `routes.ts` also maps a filter-build failure to a bad request, for
 	// the patterns this check accepts and Rust's `regex` crate does not.
-	if (rawValue.length >= 2 && rawValue.startsWith("/") && rawValue.endsWith("/")) {
+	if (isRegexLiteral(rawValue)) {
 		const pattern = rawValue.slice(1, -1);
+		// The refusals Scryfall decides on the pattern's text come first — `o:/(((a/` is "nested",
+		// not "not balanced". Not on the colour columns, where the slashes are value characters and
+		// no regex is ever read (`c:/w/` is `c:w`); `mana:/…/` is a real regex and takes them.
+		if (!REGEX_VALUE_FIRST_KEYWORDS.has(keyword) || MANA_COST_KEYWORDS.has(keyword)) {
+			const textReason = regexTextReason(pattern);
+			if (textReason !== null) return { keep: false, reason: textReason };
+		}
 		try {
 			new RegExp(toJsValidationPattern(pattern));
 		} catch {
