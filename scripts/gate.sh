@@ -146,6 +146,15 @@ mkdir -p "$PERF_DIR/store"
 ./target/release/examples/memprobe build --rows "$PERF_DIR/rows.jsonl" --out "$PERF_DIR/store" >/dev/null
 STORE="$(find "$PERF_DIR/store" -name 'card-store-*.store' | head -1)"
 
+# MEASURED UP TO THREE TIMES, AND ANY CLEAN RUN PASSES (backlog x64). Each row is a mean over 15
+# iterations of a call that takes microseconds, so one scheduler hiccup on a busy machine doubles
+# it: on 2026-10-04 `autocomplete` read 59, 61 and 35 us in gate runs that had other builds beside
+# them and 14-21 us alone, on code that did not touch it. A route that really became a scan is
+# 4x over the limit EVERY time (the calibration table below), so three tries cannot hide one.
+# And a failure here stops the gate before its last two steps, the differentials, which is the
+# expensive thing to lose to noise.
+perf_ok=0
+for perf_attempt in 1 2 3; do
 ./target/release/examples/memprobe routebench --store "$STORE" --iters 15 > "$PERF_DIR/route.txt" 2>/dev/null
 cat "$PERF_DIR/route.txt"
 
@@ -177,7 +186,7 @@ cat "$PERF_DIR/route.txt"
 # It is a TRIPWIRE for "this became a scan again", not a benchmark. Note the reference
 # (`fuzzy_card_by_name`, trigram similarity per card) is far costlier per card than the scans it
 # guards, which is exactly why a regressed route lands at ~15% and not ~100%.
-awk '
+if awk '
     /^fuzzy_card_by_name/      { for (i=1;i<=NF;i++) if ($i=="us") scan  = $(i-1) }
     /^exact_card_by_name/      { for (i=1;i<=NF;i++) if ($i=="us") exact = $(i-1) }
     /^cards_containing_all_wo/ { for (i=1;i<=NF;i++) if ($i=="us") words = $(i-1) }
@@ -206,7 +215,10 @@ awk '
         printf "  %-28s %6d us  %6.1f%% of a full scan  (limit %d%%)%s\n", name, got, pct, limit, (pct > limit ? "   FAIL" : "")
         if (pct > limit) fail = 1
     }
-' "$PERF_DIR/route.txt"
+' "$PERF_DIR/route.txt"; then perf_ok=1; break; fi
+printf '\n  perf ratios: attempt %d was over a limit; measuring again\n' "$perf_attempt"
+done
+[ "$perf_ok" = 1 ] || { printf '\n  perf ratios: over a limit in all three measurements\n'; exit 1; }
 
 # ── wasm build fit ────────────────────────────────────────────────────────────
 # The in-Worker nightly build runs under wasm-import's --max-memory cap, so
