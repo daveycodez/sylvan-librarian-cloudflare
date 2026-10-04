@@ -2792,6 +2792,18 @@
 			"method": "GET",
 			"path": "/cards/search?q=pt*a+t%3Ainstant",
 			"note": "2026-10-04. The starred spelling of the same word: `power*sink` is Power Sink, and `pt*a` is every name whose collated form holds `pta`. A parse error here before."
+		},
+		{
+			"name": "numeric-value-star-is-zero",
+			"method": "GET",
+			"path": "/cards/search?q=toughness%3D*+e%3Akhm",
+			"note": "2026-10-04. 1: `*` is the number zero on a numeric column (`pow=*` = `pow=0` = 1,049, `tou=*` 431, `pow>*` 17,943). This port ignored the term with `Unknown keyword “toughness”.` and answered the whole set."
+		},
+		{
+			"name": "numeric-value-x-is-zero",
+			"method": "GET",
+			"path": "/cards/search?q=cmc%3Ex+e%3Akhm",
+			"note": "2026-10-04. 267, the set's cards with a mana value above 0: `x`, `y` and `z` are zero too (`pow=x` 1,049, `cmc=y` 1,432, `loy=z` 4, `usd>x e:khm` 305). `Failed to parse query` here before."
 		}
 	]
 }

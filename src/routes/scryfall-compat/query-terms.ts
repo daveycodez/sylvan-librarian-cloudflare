@@ -587,6 +587,52 @@ const COLLECTOR_LEADING_INTEGER_RE = /^(\d+)[A-Za-z-][A-Za-z0-9-]*$/;
 /** The mana-value spellings, whose negated equality earns the value sentence instead. */
 const MANA_VALUE_KEYWORDS: ReadonlySet<string> = new Set(["cmc", "mv", "manavalue"]);
 
+/**
+ * `*`, `x`, `y` AND `z` ARE THE NUMBER ZERO where a numeric column takes its value — the four
+ * things a card prints where a number goes, read as Scryfall reads them off the card.
+ *
+ * Measured on api.scryfall.com 2026-10-04, one request per row. `pow=0` is 1,049, `tou=0` 431,
+ * `pt=0` 406, `loy=0` 4, `cmc=0` 1,432:
+ *
+ *   pow=*  pow:*  power=*  pow=x  pow=X  pow=y  pow=z      1,049      tou=*  tou=x  tou=y   431
+ *   pt=*  pt=x  powtou=x  pt=z                              406        loy=x  loy=X  loy=*  loy=z  loy<=x   4
+ *   cmc=x  cmc=*  mv=x  cmc=y  cmc=z                      1,432      manavalue=* e:khm    38
+ *   pow>*  pow>x   17,943 = pow>0      pow>=x  18,978 = pow>=0      pow<x  pow<*  4      pow<=*  1,053
+ *   pow!=*         17,947              tou>x   18,553               cmc>x e:khm  267
+ *
+ * and on the columns where no card holds a zero the comparisons say the same (anchor `e:khm` =
+ * 305): `usd>x` `usd>=x` `usd>*` `prints>x` `year>x` `year>=x` `cn>x` `cn>=*` `artists>=x`
+ * `tix>=y` 305, `edhrec>x` 295 (the ranked ones), `usdfoil>x` 285 (the foil-priced ones), and
+ * `usd=x` `usd=*` `edhrec=x` `prints=x` `year=x` `cn=x` each a plain 404.
+ *
+ * ONLY THOSE FOUR, ONLY BARE, AND ONLY ALONE. `pow=a`, `pow=w`, `pow=?`, `pow=∞`, `pow=inf` and
+ * `pow=½` are the unknown-keyword sentence, and so are the quoted `pow="x"`, `pow="*"` and
+ * `pow='*'`. The negated equality is the sentence its numeric twin gets (`-pow=*` is `Unknown
+ * keyword “-pow”.`), which is why the leaf is re-read as `<kw><op>0` rather than answered here.
+ *
+ * This port ignored `*` with the unknown-keyword sentence and — `x` having been listed among the
+ * column names a comparison may name on its right — handed `pow=x` to a parser that refused it.
+ *
+ * NOT REPRODUCED: a value that only STARTS with one of these, or with a number. Scryfall's lexer
+ * ends the value there and reads the rest as a NAME word of its own — `pow=1a` is 2,743, exactly
+ * `pow=1 a`; `pow=2x` 234 = `pow=2 x`; `pow=xy` 200 = `pow=0 y`; `pow=xx` 46 = `pow=0 x`;
+ * `pow=1-1` 3,561 (a negated word); `pow=*1` 1; `pow=1*` `pow=1?` `pow=1.` 3,563 = `pow=1`;
+ * `pow=**` `pow=x*` `pow=***` 1,049; `pow=1+1` `pow=1+*` `pow=x+1` `pow=1d4` `pow=x2` `pow=1e1`
+ * 404. Here each is still the unknown-keyword sentence.
+ *
+ * COST: one regex test on a numeric leaf at parse time. Nothing reaches the engine.
+ */
+const ZERO_WORD_RE = /^[xyz*]$/i;
+
+/** `cn` / `number`: the string collector number under `:`/`=`, a number only under a comparison. */
+const STRING_NUMBER_KEYWORDS: ReadonlySet<string> = new Set(["cn", "number"]);
+
+/** Whether `keyword` reads `rawValue` as a number under `op` — the columns ZERO_WORD_RE applies to. */
+function readsNumber(keyword: string, equality: boolean): boolean {
+	if (MANA_VALUE_KEYWORDS.has(keyword) || NEGATED_EQUALITY_UNKNOWN_KEYWORD.has(keyword)) return true;
+	return STRING_NUMBER_KEYWORDS.has(keyword) && !equality;
+}
+
 const MANA_VALUE_REASON = "The value must be a number, or \u201ceven\u201d/\u201codd\u201d";
 
 /**
@@ -3137,7 +3183,8 @@ const CROSS_COLUMN_VALUES: ReadonlySet<string> = new Set([
 	"manavalue",
 	"loy",
 	"loyalty",
-	"x",
+	// `x` was here and is not a column: it is the number zero, as `*`, `y` and `z` are — see
+	// ZERO_WORD_RE, which answers it before this table is read.
 	// The collector number and the EDHREC rank, on the right as on the left (2026-10-03, anchor
 	// `e:khm` = 305): `pow>cn` = `pow>number` 1, `cmc<edhrec` = `cmc<edhrecrank` 295, and
 	// `collector>cn` and `collector=collector` are the same-sides refusal — which is only
@@ -3214,6 +3261,13 @@ function classifyLeaf(term: string): LeafVerdict {
 	if (rawValue === "") return { keep: true, text: danglingOperatorTerm(negated, match[2] as string, op) };
 
 	const equality = op === ":" || op === "=";
+
+	// `pow=*`, `tou>x`, `cmc=y`: the value is zero, and everything Scryfall says to the leaf is what
+	// it says to `<kw><op>0` — see ZERO_WORD_RE. The warning, if one comes, still echoes the term
+	// as written, because the caller echoes its own text.
+	if (ZERO_WORD_RE.test(rawValue) && readsNumber(keyword, equality)) {
+		return classifyLeaf(`${match[1]}${match[2]}${op}0`);
+	}
 
 	// BEFORE the negation rule below, and it is the one value validator that has to be: `-date>=zzzz`
 	// is dropped-and-warned exactly as its unnegated twin is, and it echoes the MINUS with it

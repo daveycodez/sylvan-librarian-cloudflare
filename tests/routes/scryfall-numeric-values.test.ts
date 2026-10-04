@@ -1,0 +1,117 @@
+// What a numeric column reads where a number goes: `*`, `x`, `y` and `z` are zero.
+//
+// Every expectation is a measurement on api.scryfall.com, 2026-10-04; the requests are recorded
+// beside the rule in src/routes/scryfall-compat/query-terms.ts (ZERO_WORD_RE).
+
+import { describe, expect, test } from "bun:test";
+import { EMPTY_TAG_ALIASES, parseScryfallQueryWithDirectives } from "../../src/parser";
+import { scryfallTermPolicy } from "../../src/routes/scryfall-compat/query-terms";
+
+const ANCHOR = "e:khm t:god";
+const ignored = (echo: string, reason: string) => `Invalid expression “${echo}” was ignored. ${reason}`;
+
+/** The term is kept, as `expected`, with no warning — and what is kept parses. */
+function expectKept(term: string, expected: string): void {
+	const policy = scryfallTermPolicy(`${term} ${ANCHOR}`);
+	expect([term, policy.query, policy.warnings]).toEqual([term, `${expected} ${ANCHOR}`, []]);
+	expect(() => parseScryfallQueryWithDirectives(policy.query, EMPTY_TAG_ALIASES)).not.toThrow();
+}
+
+/** The term is dropped, the rest of the query is kept, and the one warning is this sentence. */
+function expectIgnored(term: string, echo: string, reason: string): void {
+	const policy = scryfallTermPolicy(`${term} ${ANCHOR}`);
+	expect([term, policy.query, policy.warnings]).toEqual([term, ANCHOR, [ignored(echo, reason)]]);
+	const alone = scryfallTermPolicy(term);
+	expect([term, alone.allIgnored, alone.warnings]).toEqual([term, true, [ignored(echo, reason)]]);
+}
+
+describe("`*`, `x`, `y` and `z` are the number zero on a numeric column", () => {
+	// `pow=0` is 1,049 and so are `pow=*` `pow:*` `power=*` `pow=x` `pow=X` `pow=y` `pow=z`;
+	// `tou=*` `tou=x` `tou=y` 431; `pt=*` `pt=x` `powtou=x` `pt=z` 406; `loy=x` `loy=X` `loy=*`
+	// `loy=z` 4; `cmc=x` `cmc=*` `mv=x` `cmc=y` `cmc=z` 1,432.
+	test.each([
+		["pow=*", "pow=0"],
+		["pow:*", "pow:0"],
+		["power=*", "power=0"],
+		["pow=x", "pow=0"],
+		["pow=X", "pow=0"],
+		["pow=y", "pow=0"],
+		["pow=z", "pow=0"],
+		["tou=*", "tou=0"],
+		["toughness=x", "toughness=0"],
+		["pt=*", "pt=0"],
+		["powtou=x", "powtou=0"],
+		["loy=x", "loy=0"],
+		["loyalty=*", "loyalty=0"],
+		["cmc=x", "cmc=0"],
+		["mv=*", "mv=0"],
+		["manavalue=y", "manavalue=0"],
+	])("%s is %s", (term, expected) => {
+		expectKept(term, expected);
+	});
+
+	// `pow>*` `pow>x` 17,943 = `pow>0`; `pow>=x` 18,978; `pow<x` `pow<*` 4; `pow<=*` 1,053;
+	// `pow!=*` 17,947; and on columns no card holds a zero in (anchor `e:khm` = 305): `usd>x`
+	// `prints>x` `artists>=x` `tix>=y` `cn>x` `cn>=*` 305, `edhrec>x` 295, `usdfoil>x` 285.
+	test.each([
+		["pow>*", "pow>0"],
+		["pow>=x", "pow>=0"],
+		["pow<x", "pow<0"],
+		["pow<=*", "pow<=0"],
+		["pow!=*", "pow!=0"],
+		["usd>x", "usd>0"],
+		["usdfoil>x", "usdfoil>0"],
+		["tix>=y", "tix>=0"],
+		["edhrec>x", "edhrec>0"],
+		["prints>x", "prints>0"],
+		["artists>=x", "artists>=0"],
+		["collector=x", "collector=0"],
+		["cn>x", "cn>0"],
+		["cn>=*", "cn>=0"],
+	])("under a comparison, and on every numeric column: %s is %s", (term, expected) => {
+		expectKept(term, expected);
+	});
+
+	test("a year is compared the way the year 0 is: `year>x` is the anchor and `year=x` matches nothing", () => {
+		// `year>x e:khm` and `year>=x e:khm` are 305, `year=x` a 404.
+		expect(scryfallTermPolicy(`year>x ${ANCHOR}`).query).toBe(scryfallTermPolicy(`year>0 ${ANCHOR}`).query);
+		expect(scryfallTermPolicy(`year=x ${ANCHOR}`).query).toBe(scryfallTermPolicy(`year=0 ${ANCHOR}`).query);
+	});
+
+	test("the negated leaf is answered as its numeric twin is, echoing what was written", () => {
+		// `-pow=*` alone is the 400 carrying `Unknown keyword “-pow”.`; `-cmc=x e:khm` is the anchor
+		// carrying the value sentence, as `-cmc=0 e:khm` is; `-pow>x e:khm` is the silent tautology.
+		expectIgnored("-pow=*", "-pow=*", "Unknown keyword “-pow”.");
+		expectIgnored("-cmc=x", "-cmc=x", "The value must be a number, or “even”/“odd”");
+		expect(scryfallTermPolicy(`-pow>x ${ANCHOR}`)).toMatchObject({
+			query: scryfallTermPolicy(`-pow>0 ${ANCHOR}`).query,
+			warnings: [],
+		});
+	});
+
+	test("it composes under `or` and inside a group", () => {
+		// `pow=x or t:goblin e:khm` is 1,049.
+		expect(scryfallTermPolicy("pow=x or t:goblin e:khm").query).toBe("pow=0 or t:goblin e:khm");
+		expect(scryfallTermPolicy("(pow=* tou=*) e:khm").query).toBe("(pow=0 tou=0) e:khm");
+	});
+
+	test("only those four, only bare, and only alone", () => {
+		// `pow=a`, `pow=w`, `pow=?`, `pow=∞`, `pow=inf`, `pow=½` and the quoted `pow="x"`, `pow="*"`,
+		// `pow='*'` are each the 400 carrying the unknown-keyword sentence.
+		for (const term of ["pow=a", "pow=w", "pow=?", "pow=∞", "pow=inf", "pow=½", 'pow="x"', 'pow="*"', "pow='*'"]) {
+			expectIgnored(term, term, "Unknown keyword “pow”.");
+		}
+		// A value that only STARTS with one is a different thing on Scryfall (the rest is a name
+		// word) and is not reproduced: it is still the unknown-keyword sentence here.
+		for (const term of ["pow=xx", "pow=x*", "pow=**", "pow=x2", "pow=1a"]) {
+			expectIgnored(term, term, "Unknown keyword “pow”.");
+		}
+	});
+
+	test("a column that is not numeric does not read them as zero", () => {
+		// `cn=x e:khm` is a 404 on Scryfall either way; under `:`/`=` it is the string collector number.
+		for (const term of ["o:x", "t:*", "name:x", "cn=x", "number:*", "e:x"]) {
+			expect(scryfallTermPolicy(`${term} ${ANCHOR}`).query).toBe(`${term} ${ANCHOR}`);
+		}
+	});
+});
