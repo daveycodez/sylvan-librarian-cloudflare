@@ -247,14 +247,23 @@ export interface AbandonedEngine {
  *   },
  */
 export const ABANDONED_ENGINES: readonly AbandonedEngine[] = [
-	// DeckGen's engine-wnam-p8, alone: engine-wnam-p10 is left in place as the live reproduction
-	// for cloudflare/workerd#7607. Read the replacement's `placement: colo=` line and a day of
-	// `slow gather` counts under `engine-wnam-p8-e1` before deciding on p10.
+	// DeckGen's engine-wnam-p8, first and alone (3d6678a1). Over the next 16.5 hours its `slow
+	// gather` lines went 899 -> 9 against the same hours of 10-03, on traffic down 18%.
 	{
 		id: "977e77a7bd4e8d4da79e3df14ae9c3059a01d9ec8b9e9324fd8c35411b8ff447",
 		name: "engine-wnam-p8",
 		since: "2026-10-04T02:00:00Z",
 		why: "x56: 1,327 of its 3,949 gathers stalled on 10-03 (every other wnam coordinator but p10: 44–78); it has shared an isolate with engine-wnam-p10 since 10-02 12:57 UTC",
+	},
+	// DeckGen's engine-wnam-p10, sixteen hours after p8. It was left as the live reproduction for
+	// cloudflare/workerd#7607, which had no reply by then; with p8 gone from its isolate it fell
+	// 1,002 -> 205 over those hours and was still the outlier (every other wnam coordinator 7–26).
+	// Deleting this entry returns the name to the old object.
+	{
+		id: "669242d40ff0a82acea97ae47009b9698e2bc39877c89632ea7a7d4fdac88691",
+		name: "engine-wnam-p10",
+		since: "2026-10-04T19:00:00Z",
+		why: "x56: 205 slow gathers in 16.5 h on 10-04 after engine-wnam-p8 left its isolate (p8-e1: 9; every other wnam coordinator 7–26); 1,470 of its 4,073 gathers stalled on 10-03",
 	},
 ];
 
