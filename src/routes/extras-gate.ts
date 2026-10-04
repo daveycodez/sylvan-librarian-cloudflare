@@ -623,6 +623,14 @@ export interface ExtrasGateSpellings {
 export interface ExtrasGateRequest {
 	includeExtras?: boolean;
 	includeVariations?: boolean;
+	/**
+	 * Set codes in the tree that the CALLER wrote there for a set the query named by its name or a
+	 * retired code — they are not the conditional trigger a typed code is. Measured on
+	 * api.scryfall.com 2026-10-04: `e:plst` is 5,323 and `e:"the list"` 5,257 (= `e:plst
+	 * -is:extra`), `e:mb1` 5,257 and `e:mb1 include:extras` 5,323, `e:unk` 521 and
+	 * `e:"unknown event"` a 404. See SET_KEYWORDS in scryfall-compat/query-terms.ts.
+	 */
+	quietSets?: readonly string[];
 }
 
 export interface ExtrasGateResult {
@@ -693,7 +701,8 @@ export async function applyExtrasGate(
 	let extrasForced = triggers.forced;
 	if (!extrasForced && triggers.sets.length > 0) {
 		const withExtras = new Set(await engine.setsWithExtras());
-		extrasForced = triggers.sets.some((code) => withExtras.has(code));
+		const quiet = requested.quietSets ?? [];
+		extrasForced = triggers.sets.some((code) => withExtras.has(code) && !quiet.includes(code));
 	}
 	const includeExtras = extrasForced || requested.includeExtras === true;
 	const includeVariations =

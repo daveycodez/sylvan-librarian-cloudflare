@@ -106,6 +106,30 @@
 // guilds allegiance strixhaven classic arabian nights fallen empires starter midnight crimson
 // machine wilds caverns murders edge modern horizons guild core commander restored.
 //
+// ─── `e:` / `set:` / `s:` / `edition:` READ THE SAME NAMES ───────────────────────────────────
+//
+// Measured on api.scryfall.com 2026-10-04, one request per row, each count the set's own:
+//
+//   e:zendikar = set:zendikar = s:zendikar = edition:zendikar = e:Zendikar = e=zendikar   234 = e:zen
+//   e:"return to ravnica" = e:returntoravnica 254   e:"urza's saga" = e:urzassaga 335
+//   e:kaldheim-commander = e:kaldheim_commander 119   e:"duel decks elves vs. goblins" 56
+//   e:"kamigawa neon dynasty" 287, e:"kamigawa: neon dynasty" 404   e:"ravnica city of guilds" 291,
+//   e:"ravnica: city of guilds" 404          the colon rule again
+//   e:zendika  e:"tales of middle-earth"  e:"10th edition"  e:commander  e:mystery   404
+//
+// and every nickname above answers here with its set's count (all 36 asked: `e:saga` 335,
+// `e:legacy` 143, `e:shards` 234, `e:alpha` 289, `e:"double feature"` 532 …) while `e:urza`,
+// `e:alara`, `e:tarkir` and `e:eldritch` are 404. One table, two keywords. `in:zendikar` reads it
+// too (7 goblins, as `in:zen`), and is not answered here.
+//
+// A SET NAMED THIS WAY DOES NOT OPEN EXTRAS, where its code does — which is the one thing the
+// rewrite to `e:<code>` would get wrong, and why the term policy tells the extras gate which
+// codes it wrote: `e:plst` is 5,323 and `e:"the list"` 5,257 (= `e:plst -is:extra`);
+// `e:mb2` 385 and `e:"mystery booster 2"` 264; `e:unk` 521 and `e:"unknown event"` a 404, as
+// `e:"world championship decks 1997"` and `e:"mystery booster playtest cards 2019"` are — sets
+// whose every card is an extra. (`block:` opens extras whatever it is given, so the same names
+// answer there.)
+//
 //   bun run set-blocks
 //
 // Run by hand and the diff committed, for the reasons scripts/generate-set-dates.ts gives. A set
@@ -175,6 +199,12 @@ const NICKNAMES: readonly (readonly [string, string])[] = [
 	["lordoftheringstalesofmiddleearth", "ltr"],
 ];
 
+/**
+ * Scryfall's retired and alternate set codes, as `[alias, set code]` — exactly the ones measured to
+ * answer. See the header for the counts, and for the list measured NOT to answer.
+ */
+const ALIASES: readonly (readonly [string, string])[] = [];
+
 async function main(): Promise<void> {
 	const res = await fetch(SETS_URL, {
 		headers: { "User-Agent": "sylvan-librarian-cloudflare/generate-set-blocks", Accept: "application/json" },
@@ -234,6 +264,17 @@ async function main(): Promise<void> {
 	}
 	const nameRows = [...names].map(([key, own]) => `${key}:${own}`).sort();
 
+	// `alias:code`. An alias that is a set's own code, or a name key, would never be reached or
+	// would shadow one; neither exists today and either is refused.
+	const aliasRows: string[] = [];
+	for (const [alias, own] of ALIASES) {
+		if (!codes.has(own)) throw new Error(`alias ${alias} names ${own}, which /sets does not have`);
+		if (codes.has(alias)) throw new Error(`alias ${alias} is also a set code`);
+		if (names.has(alias)) throw new Error(`alias ${alias} is also a set name`);
+		aliasRows.push(`${alias}:${own}`);
+	}
+	aliasRows.sort();
+
 	const source = `// GENERATED FILE - do not edit. Built by scripts/generate-set-blocks.ts from api.scryfall.com/sets.
 //
 // The two set-object fields \`block:\` / \`b:\` are a function of — \`parent_set_code\` and
@@ -251,6 +292,9 @@ const SET_BLOCKS =
 // Token sets are not here — see the generator.
 const SET_NAMES =
 	"${nameRows.join("|")}";
+
+// \`alias:code\` rows joined by \`|\`: the retired and alternate codes Scryfall still answers to.
+const SET_ALIASES = "${aliasRows.join("|")}";
 
 interface SetBlocks {
 	/** set code -> [parent set code or "", block code or ""] */
@@ -312,26 +356,63 @@ function setNames(): ReadonlyMap<string, string> {
 	return namesParsed;
 }
 
+let aliasesParsed: ReadonlyMap<string, string> | null = null;
+
+function setAliases(): ReadonlyMap<string, string> {
+	if (aliasesParsed === null) {
+		const built = new Map<string, string>();
+		for (const row of SET_ALIASES.split("|")) {
+			const sep = row.indexOf(":");
+			if (sep < 0) continue;
+			built.set(row.slice(0, sep), row.slice(sep + 1));
+		}
+		aliasesParsed = built;
+	}
+	return aliasesParsed;
+}
+
 /** What Scryfall drops from a set name written as a value: spaces, \`'\`, \`.\`, \`-\` and \`_\`. */
 const NAME_SEPARATORS_RE = /[\\s'._-]/g;
 const NAME_KEY_RE = /^[a-z0-9]+$/;
 
 /**
+ * The shortest value \`setNameCode\` can resolve through SET_NAMES: no name key in the table is
+ * shorter. A value under it that is no alias is a set code as written, so \`e:khm\` costs one
+ * lookup in the alias map (${aliasRows.length} rows) and never parses the names.
+ */
+const SHORTEST_NAME_KEY = ${Math.min(...[...names.keys()].map((key) => key.length))};
+
+/**
+ * The set code a value names when it is NOT itself one: a retired or alternate code, the set's
+ * whole name with case and the five separators ignored, or one of the measured nicknames. null
+ * when it names nothing here — the value is then a set code as written, known or not. A value
+ * carrying any other character (a colon above all) is no name: \`e:"kamigawa: neon dynasty"\`
+ * answers nothing on api.scryfall.com where \`e:"kamigawa neon dynasty"\` answers the set.
+ *
+ * No name key is also a set code (the generator refuses one), so this never has to ask whether
+ * the value is a code first.
+ */
+export function setNameCode(value: string): string | null {
+	const lower = value.toLowerCase();
+	const alias = setAliases().get(lower);
+	if (alias !== undefined) return alias;
+	if (lower.length < SHORTEST_NAME_KEY) return null;
+	const key = lower.replace(NAME_SEPARATORS_RE, "");
+	if (!NAME_KEY_RE.test(key)) return null;
+	return setNames().get(key) ?? null;
+}
+
+/**
  * The set code a \`block:\` value names, or null when it names none this table knows.
  *
- * A set or block CODE in the table above is itself. Otherwise the value is read as a set NAME —
- * the whole name, with case and the five separators ignored — or as one of the measured
- * nicknames. A value carrying any other character (a colon above all) is no name:
- * \`block:"kamigawa: neon dynasty"\` answers nothing on api.scryfall.com where
- * \`block:"kamigawa neon dynasty"\` answers the set.
+ * A set or block CODE in the table above is itself. Otherwise the value is read as \`e:\` reads
+ * it — a retired code, a set NAME or a nickname; see \`setNameCode\`.
  */
 export function blockValueCode(value: string): string | null {
 	const lower = value.toLowerCase();
 	const { sets, members } = setBlocks();
 	if (sets.has(lower) || members.has(lower)) return lower;
-	const key = lower.replace(NAME_SEPARATORS_RE, "");
-	if (!NAME_KEY_RE.test(key)) return null;
-	return setNames().get(key) ?? null;
+	return setNameCode(lower);
 }
 `;
 

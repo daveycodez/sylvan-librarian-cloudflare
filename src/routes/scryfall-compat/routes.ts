@@ -646,6 +646,7 @@ export async function cardsSearchHandler(
 		{
 			includeExtras: policy.include.extras || asBool(params.include_extras),
 			includeVariations: policy.include.variations || asBool(params.include_variations),
+			quietSets: policy.quietSets,
 		},
 	);
 	const { includeExtras, includeVariations } = gate;
@@ -1179,6 +1180,7 @@ export async function cardsRandomHandler(
 			{
 				includeExtras: policy.include.extras || asBool(params.include_extras),
 				includeVariations: policy.include.variations || asBool(params.include_variations),
+				quietSets: policy.quietSets,
 			},
 		);
 		filterTreeJson = canonicalStringify(gate.tree as FilterValue);

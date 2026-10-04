@@ -59,7 +59,7 @@ import { SUPPORTED_HAS_VALUES, SUPPORTED_IS_VALUES } from "../../parser/rewrite"
 import { isKnownSetCode } from "../../parser/set-dates.gen";
 import { isWordCont, type Token, TT, tokenize } from "../../parser/tokenizer";
 import { DIRECTIVE_TABLES } from "../enums";
-import { blockSetCodes, blockValueCode } from "./set-blocks.gen";
+import { blockSetCodes, blockValueCode, setNameCode } from "./set-blocks.gen";
 
 /** Scryfall's syntax budget, independent of the engine's post-rewrite safety budget. */
 export const TOO_MANY_REGEX_DETAILS = "Too many regular expression operators used";
@@ -498,6 +498,36 @@ function blockTerm(value: string): string {
 		.map((member) => `e:${member}`)
 		.join(" or ")})`;
 }
+
+/**
+ * `e:` / `set:` / `s:` / `edition:` — A SET IS NAMED BY ITS CODE, ITS NAME OR A RETIRED CODE.
+ *
+ * `e:zendikar` is `e:zen`'s 234 on api.scryfall.com, `set:"the list"` is The List and `e:mb1` — a
+ * code no set has any more — is The List too (2026-10-04). The value is read exactly as `block:`
+ * reads one: the set's whole name with case, spaces, apostrophes, periods, hyphens and
+ * underscores ignored, one of Scryfall's nicknames (`e:shards`, `e:alpha`), or one of its retired
+ * codes (`e:dar`, `e:7e`). `setNameCode` resolves it from the generated table, whose generator
+ * carries every measurement, and the term is respelled with the code. A value that names nothing
+ * is left as the code it would be: `e:nonsense`, `e:zendika` and `e:"kamigawa: neon dynasty"`
+ * are plain 404s there and here.
+ *
+ * Under `:` and `=`, in both polarities (`-e:zendikar` is the complement, as `-e:zen` is). Under a
+ * comparison the keyword matches nothing, by the rule every text keyword follows
+ * (`e!=zendikar` is a 404).
+ *
+ * A SET NAMED THIS WAY DOES NOT OPEN EXTRAS, AND ITS CODE DOES: `e:plst` is 5,323 and
+ * `e:"the list"` 5,257, `e:mb1` 5,257 and `e:mb1 include:extras` 5,323; `e:unk` is 521 and
+ * `e:"unknown event"` a 404. The extras gate decides that from the set codes in the parse tree
+ * (extras-gate.ts, the conditional trigger), where a respelled term is indistinguishable from a
+ * typed one — so the verdict names the code it wrote, and `TermPolicyResult.quietSets` hands the
+ * gate the codes that were ONLY ever written by this rule. A code the query also spells itself
+ * (`e:plst or e:"the list"`) still fires.
+ *
+ * COST: for a value of three characters or fewer, one lookup in a 24-row map; the name table is
+ * parsed on the first longer value that is not an alias. A query without the keyword touches
+ * neither.
+ */
+const SET_KEYWORDS: ReadonlySet<string> = new Set(["e", "s", "set", "edition"]);
 
 /**
  * Scryfall cannot express a NEGATED numeric EQUALITY, and says so in two different sentences.
@@ -2429,6 +2459,12 @@ export interface TermPolicyResult {
 	 * already REMOVED from `query`, for the caller to fold with `applyDirectives`.
 	 */
 	directives: DirectiveFound[];
+	/**
+	 * Set codes this policy wrote into `query` for a set NAMED by its name or a retired code, and
+	 * that the query spells nowhere itself — the ones that must not open extras. See SET_KEYWORDS.
+	 * Absent when there is none, which is every query without such a term.
+	 */
+	quietSets?: readonly string[];
 }
 
 /**
@@ -3414,8 +3450,12 @@ function numericValueSplit(term: string): string | null {
 
 /** The verdict on one leaf term: keep it (possibly rewritten), or drop it with Scryfall's reason. */
 type LeafVerdict =
-	/** Kept, possibly rewritten; `include` is what the term switches on besides (see BLOCK_KEYWORDS). */
-	| { keep: true; text: string; include?: readonly (keyof IncludeOptions)[] }
+	/**
+	 * Kept, possibly rewritten; `include` is what the term switches on besides (see BLOCK_KEYWORDS),
+	 * and `namedSet` / `typedSet` the set code a set term was respelled to or spelled with (see
+	 * SET_KEYWORDS).
+	 */
+	| { keep: true; text: string; include?: readonly (keyof IncludeOptions)[]; namedSet?: string; typedSet?: string }
 	| { keep: false; reason: string }
 	/** A display option: removed from the query, never a term, with its own warning if any. */
 	| {
@@ -3688,6 +3728,13 @@ function classifyLeaf(term: string): LeafVerdict {
 	if (BLOCK_KEYWORDS.has(keyword)) {
 		return { keep: true, text: `${match[1]}${blockTerm(value)}`, include: ["extras"] };
 	}
+	// `e:zendikar`, `set:"the list"`, `e:mb1`: the set's code, where the value names one that is
+	// not its code — see SET_KEYWORDS. Equality only reaches here; a pattern is not a name.
+	if (SET_KEYWORDS.has(keyword) && !isRegexLiteral(rawValue)) {
+		const code = setNameCode(value);
+		if (code === null) return { keep: true, text: term, typedSet: loweredValue };
+		return { keep: true, text: `${match[1]}${match[2]}${op}${code}`, namedSet: code };
+	}
 	// `lore:""` is the unknown-keyword sentence, minus included — see LORE_KEYWORDS. A value that
 	// is only spaces is a value.
 	if (LORE_KEYWORDS.has(keyword) && value === "") {
@@ -3787,6 +3834,9 @@ interface PolicyScan {
 	readonly warnings: string[];
 	readonly include: IncludeOptions;
 	readonly directives: DirectiveFound[];
+	/** Set codes written for a named set, and set codes the query spelled — see SET_KEYWORDS. */
+	readonly namedSets: Set<string>;
+	readonly typedSets: Set<string>;
 }
 
 function policyLevel(source: string, scan: PolicyScan): string | null {
@@ -3823,6 +3873,8 @@ function policyLevel(source: string, scan: PolicyScan): string | null {
 		const verdict = classifyLeaf(piece.text);
 		if (verdict.keep) {
 			for (const option of verdict.include ?? []) scan.include[option] = true;
+			if (verdict.namedSet !== undefined) scan.namedSets.add(verdict.namedSet);
+			if (verdict.typedSet !== undefined) scan.typedSets.add(verdict.typedSet);
 			if (verdict.text !== piece.text) changed = true;
 			kept.push({ ...piece, text: verdict.text });
 			continue;
@@ -3868,6 +3920,8 @@ export function scryfallTermPolicy(rawQuery: string): TermPolicyResult {
 		warnings: [],
 		include: { extras: false, variations: false, multilingual: false },
 		directives: [],
+		namedSets: new Set(),
+		typedSets: new Set(),
 	};
 	const { include, directives } = scan;
 	if (unbalancedParens(folded)) {
@@ -3876,7 +3930,10 @@ export function scryfallTermPolicy(rawQuery: string): TermPolicyResult {
 	const query = policyLevel(folded, scan);
 	const warnings = scan.warnings;
 	if (query !== null && query.trim() !== "") {
-		return { query, warnings, allIgnored: false, unclosedParens: false, include, directives };
+		const result: TermPolicyResult = { query, warnings, allIgnored: false, unclosedParens: false, include, directives };
+		const quietSets = [...scan.namedSets].filter((code) => !scan.typedSets.has(code));
+		if (quietSets.length > 0) result.quietSets = quietSets;
+		return result;
 	}
 	// Nothing survived, and now the only way that happens is a term Scryfall refused: a dangling
 	// operator is REWRITTEN rather than dropped (danglingOperatorTerm), so `q=t:` no longer empties

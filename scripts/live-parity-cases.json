@@ -2864,6 +2864,18 @@
 			"method": "GET",
 			"path": "/cards/search?q=power%2Fsink",
 			"note": "2026-10-04. Power Sink: a slash ends a bare name word (`fire/ice` is `fire ice`'s 4), a run of hyphens glues what follows (`power--sink`, `power-\"sink\"` are Power Sink) and a hyphen with nothing behind it is dropped (`power-` is `power`'s 77, `fire-` 324). Each was `Failed to parse query` here, for every word."
+		},
+		{
+			"name": "set-named-by-its-name",
+			"method": "GET",
+			"path": "/cards/search?q=e%3Azendikar",
+			"note": "2026-10-04. 234 = `e:zen`: `e:`/`set:`/`s:`/`edition:` read a set's whole name (case, spaces, apostrophes, periods, hyphens, underscores ignored) or a nickname, as `block:` does — `e:\"return to ravnica\"` 254, `e:saga` 335. A 404 here."
+		},
+		{
+			"name": "set-named-by-its-name-does-not-open-extras",
+			"method": "GET",
+			"path": "/cards/search?q=e%3A%22the+list%22+or+cmc%3D3",
+			"note": "2026-10-04. 12,129, echoing include_extras=false, where `e:plst or cmc=3` is 12,408 and echoes true: a set named by its name is not the conditional extras trigger its code is (`e:\"unknown event\"` is a 404 against `e:unk`'s 521)."
 		}
 	]
 }
