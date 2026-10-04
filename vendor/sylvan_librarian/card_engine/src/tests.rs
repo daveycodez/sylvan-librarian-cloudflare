@@ -12948,9 +12948,9 @@ fn self_reference_composes_binds_per_face_and_refuses_to_narrow() {
     // An ESCAPED tilde expands too, because Scryfall's does: `o:/\~/` answers the same 19,228 as
     // `o:/~/` there (2026-08-28), so the backslash does not protect it.
     assert!(sre(r"\~").expect(r"\~ compiles").has_self_reference());
-    // Bracket expressions are left alone, the same policy the `\s…` shorthands keep: substituting
-    // an alternation into a class would turn a pattern that reads perfectly well into an error.
-    assert!(!sre("[~]").expect("[~] compiles").has_self_reference());
+    // A tilde inside a bracket expression selects the substituted text too: the pattern is not
+    // rewritten, the tilde is a literal, and `o:/have [~] deal/` is 1 on Risk Factor there.
+    assert!(sre("[~]").expect("[~] compiles").has_self_reference());
     // And a pattern with no `~` is untouched, so nothing else pays for this.
     assert!(!sre("draw a card").expect("compiles").has_self_reference());
     assert!(!re("~").expect("compiles").has_self_reference(), "the plain entry point never expands");
@@ -13143,8 +13143,8 @@ fn a_quoted_phrase_expands_the_self_reference_on_the_oracle_columns_only() {
     match dotted {
         FilterExpr::TextRegex { regex, .. } => {
             assert!(regex.has_self_reference());
-            assert!(regex.is_match("\u{10400} deals 1 damage."), "the literal phrase matches");
-            assert!(!regex.is_match("\u{10400} deals 1 damageX"), "the `.` must not be a wildcard");
+            assert!(regex.is_match("~ deals 1 damage."), "the literal phrase matches");
+            assert!(!regex.is_match("~ deals 1 damageX"), "the `.` must not be a wildcard");
         }
         _ => panic!("a tilde phrase must build a text regex"),
     }

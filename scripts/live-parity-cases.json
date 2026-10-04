@@ -1789,6 +1789,60 @@
 			"method": "GET",
 			"path": "/cards/search?q=%21%22Abomination%22+%28o%3A%2Fblocks%5B%5E%0A%5Dor%2F+or+o%3A%2Fblocks%5B%5E%2C.%0A%5Dor%2F%29+or+%21%22Tiller+Engine%22+o%3A%2Fchoose+one+%E2%80%94%0A%E2%80%A2+untap%2F",
 			"note": "The other side of the same rule, a 404 on both sides as written: `[^<LF>]` is `[^ ]` and cannot take the space, and a raw line break after \"choose one —\" on Tiller Engine is a space, which the real line break there is not (the escape `\\n` in that position is 1 — see search-whitespace-class-still-crosses-a-line-break). Before the fix this port answered both cards."
+		},
+		{
+			"name": "search-self-reference-text-probes",
+			"method": "GET",
+			"path": "/cards/search?q=%21%22Risk+Factor%22+o%3A%2Fhave+.+deal%7C~~~%2F+o%3A%2Fhave+%5B~%5D+deal%2F+o%3A%2Fhave%5Cb+~%2F+o%3A%22have+~+deal%22+o%3A%2Fhave+risk+factor+deal%2F",
+			"note": "THE RULE ISOLATED. api.scryfall.com keeps two texts: a pattern with no `~` reads the oracle text as printed, a pattern with a `~` ANYWHERE reads one in which each self-reference has been replaced by a literal `~`, and the pattern's tilde is an ordinary character. On Risk Factor (\"Target opponent may have Risk Factor deal 4 damage to them.\"), 2026-10-04, each alone: `have risk factor deal` 1; `have risk factor deal|~~~` 404; `have . deal|~~~` 1; `have [~] deal` 1; `have [\\w ]+ deal|~~~` 404; `~\\b deal` 404; `have \\b~` 404; `have\\b ~` 1. This case ANDs five of the 1s and is 1 card on both sides; before the fix `have . deal|~~~` and `have [~] deal` were 404 here."
+		},
+		{
+			"name": "search-self-reference-text-negative-probes",
+			"method": "GET",
+			"path": "/cards/search?q=%21%22Risk+Factor%22+%28o%3A%2Fhave+risk+factor+deal%7C~~~%2F+or+o%3A%2Fhave+%5B%5Cw+%5D%2B+deal%7C~~~%2F+or+o%3A%2F~%5Cb+deal%2F%29+or+%21%22Honeymoon+Hearse%22+o%3A%2Fthis+vehicle+becomes%7C~~~%2F+or+%21%22Michelangelo%2C+On+the+Scene%22+o%3A%2Freturn+this+card%7C~~~%2F+or+%21%22Case+of+the+Market+Melee%22+o%3A%2Fwhen+~+enters%2F",
+			"note": "The 404 half, as written a 404 on both sides. The name is not in the tilde text and is not a word character there (Risk Factor); the \"this Vehicle\" and \"this card\" PHRASES are replaced by the same tilde (Honeymoon Hearse, Michelangelo, On the Scene — `: . becomes|~~~` and `when . dies, return . to|~~~` are each 1); and names are replaced before phrases, so Case of the Market Melee, whose short name is \"Case\", reads \"when this ~ enters\" (`o:/when this ~ enters/` is 1). Before the fix this port answered all four cards."
+		},
+		{
+			"name": "search-report-r23-burn",
+			"method": "GET",
+			"path": "/cards/search?q=o%3A%2F%28%5E%7C%5B%2C%3A.%E2%80%94%5D+%29%28~%7Cthis+%5Cw%2B%7Ctarget+%5B%5Cw+%5D%2B%29+deals%3F+%28%5B1-9X%5D%7Cthat+much%7Cdamage%29%2F+OR+o%3A%22token+dies%2C+it+deals+1+damage%22+OR+o%3A%22is+dealt+damage%2C+it+deals%22",
+			"note": "mtg-seeker report R23 (2026-10-04). Scryfall 2,168; this port 2,171 — Risk Factor and Skullscorch through `target [\\w ]+` running across the card's own name (\"Target opponent may have Risk Factor deal 4 damage\"), which is a non-word `~` in Scryfall's text, and Case of the Market Melee through `this \\w+` over \"this Case\", which reads \"this ~\" there."
+		},
+		{
+			"name": "search-report-r23-burn-repaired-wording",
+			"method": "GET",
+			"path": "/cards/search?q=o%3A%2F%28%5E%7C%5B%2C%3A.%E2%80%94%5D+%29%28%5B%5E.%5Cn%5D%2A+%28may+have%7Chas%29+%29%3F%28~%7Cthis+%5Cw%2B%7Ctarget+%5B%5Cw+%5D%2B%29+deals%3F+%28%5B1-9X%5D%7Cthat+much%7Cdamage%29%2F+OR+o%3A%22token+dies%2C+it+deals+1+damage%22+OR+o%3A%22is+dealt+damage%2C+it+deals%22",
+			"note": "R23, second form. Scryfall 2,204; this port 2,205 — Case of the Market Melee."
+		},
+		{
+			"name": "search-report-r27-activate-from-graveyard",
+			"method": "GET",
+			"path": "/cards/search?q=o%3A%2F%5E%5B%5E%3A%22%5Cn%5D%2A%3A+Return+~+from+your+graveyard%2F+OR+o%3A%2Fsacrifice+%28~%7Cthis+creature%29+or+another%5B%5E.%5Cn%5D%2Ait+perpetually+gains+%22%5B%5E%3A%5Cn%5D%2AExile+this+card+from+your+graveyard%3A%2F",
+			"note": "R27. Scryfall 116; this port 117 — Effluence Devourer: the pattern holds a `~`, so it is matched against the text in which \"Exile this card from your graveyard:\" reads \"exile ~ from your graveyard:\", and the literal `this card` finds nothing."
+		},
+		{
+			"name": "search-report-r28-burn-any",
+			"method": "GET",
+			"path": "/cards/search?q=o%3A%2F%28%5E%7C%5B%2C%3A.%E2%80%94%5D+%29%28~%7Cthis+%5Cw%2B%7Ctarget+%5B%5Cw+%5D%2B%29+deals%3F+%5B%5E.%5Cn%5D%2Adamage+%5B%5E.%5Cn%5D%2Ato+any+target%2F+OR+o%3A%2FWhen+%28~%7Cthis+%5Cw%2B%29+%28enters%7Cdies%29%2C+it+deals+%5B%5E.%5Cn%5D%2Adamage+to+any+target%2F",
+			"note": "R28. Scryfall 623; this port 624 — Case of the Market Melee (\"When this ~ enters, it deals 1 damage to any target\" is not `When (~|this \\w+) enters`)."
+		},
+		{
+			"name": "search-report-r34-cheat-death",
+			"method": "GET",
+			"path": "/cards/search?q=keyword%3Apersist+OR+keyword%3Aundying+OR+o%3A%2F%5BWw%5Dhen+~+dies%2C+return+%28it%7Cthis+card%29%7Cdies%2C+return+it+to+the+battlefield%2F",
+			"note": "R34. Scryfall 104; this port 105 — Michelangelo, On the Scene: \"When Michelangelo dies, return this card to your hand\" reads \"when ~ dies, return ~ to your hand\", so `return (it|this card)` does not match."
+		},
+		{
+			"name": "search-report-r36-animate",
+			"method": "GET",
+			"path": "/cards/search?q=keyword%3Acrew+OR+keyword%3A%22living+metal%22+OR+%28-t%3Acreature+-o%3A%22target+noncreature%22+o%3A%2F%5E%5B%5E%22%5Cn%5D%2A%28~+becomes+a+copy+of+%28target%7Cthat+card%29%7CThis+Vehicle+becomes+an+artifact+creature%29%2F%29+OR+keyword%3Aearthbend",
+			"note": "R36. Scryfall 244; this port 247 — Honeymoon Hearse, Invasion Submersible and Tangle Tumbler through the literal `This Vehicle becomes an artifact creature`, in a pattern that also holds a `~`: Scryfall's text for such a pattern reads \"~ becomes an artifact creature\". (No Vehicle matches that arm on Scryfall at all; the Vehicles in its answer arrive by keyword:crew.)"
+		},
+		{
+			"name": "search-report-r36b-animate-newline-anchor",
+			"method": "GET",
+			"path": "/cards/search?q=keyword%3Acrew+OR+keyword%3A%22living+metal%22+OR+%28-t%3Acreature+-o%3A%22target+noncreature%22+o%3A%2F%28%5E%7C%5Cn%29%5B%5E%22%5Cn%5D%2A%28~+becomes+a+copy+of+%28target%7Cthat+card%29%7CThis+Vehicle+becomes+an+artifact+creature%29%2F%29+OR+keyword%3Aearthbend",
+			"note": "R36, with `(^|\\n)` in place of `^`: the same 244 against 247 and the same three Vehicles, which is what showed the anchor was never the difference."
 		}
 	]
 }

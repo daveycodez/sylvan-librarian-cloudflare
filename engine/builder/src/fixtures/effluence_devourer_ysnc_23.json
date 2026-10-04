@@ -1,0 +1,147 @@
+{
+ "all_parts": [
+  {
+   "component": "combo_piece",
+   "id": "100de667-d39f-40e7-9bd4-bed0f0ed5316",
+   "name": "Effluence Devourer",
+   "object": "related_card",
+   "type_line": "Creature — Crocodile",
+   "uri": "https://api.scryfall.com/cards/100de667-d39f-40e7-9bd4-bed0f0ed5316"
+  },
+  {
+   "component": "token",
+   "id": "d1821a53-1799-4162-b0b6-f8ab84a55c30",
+   "name": "Ooze",
+   "object": "related_card",
+   "type_line": "Token Creature — Ooze",
+   "uri": "https://api.scryfall.com/cards/d1821a53-1799-4162-b0b6-f8ab84a55c30"
+  }
+ ],
+ "arena_id": 81960,
+ "artist": "Gaboleps",
+ "artist_ids": [
+  "0c37cdfe-5651-4ae6-a3c8-e7153509f970"
+ ],
+ "booster": false,
+ "border_color": "black",
+ "card_back_id": "0aeebaf5-8c7d-4636-9e82-8c27447861f7",
+ "cmc": 3.0,
+ "collector_number": "23",
+ "color_identity": [
+  "B",
+  "G",
+  "R"
+ ],
+ "colors": [
+  "B",
+  "G",
+  "R"
+ ],
+ "digital": true,
+ "finishes": [
+  "nonfoil"
+ ],
+ "foil": false,
+ "frame": "2015",
+ "full_art": false,
+ "game_changer": false,
+ "games": [
+  "arena"
+ ],
+ "highres_image": false,
+ "id": "100de667-d39f-40e7-9bd4-bed0f0ed5316",
+ "illustration_id": "46902a91-9a37-4944-879f-a817166b33cb",
+ "image_status": "lowres",
+ "image_updated_at": "2026-07-13T06:08:19Z",
+ "image_uris": {
+  "art": "https://cards.scryfall.io/art/front/1/0/100de667-d39f-40e7-9bd4-bed0f0ed5316.webp?1783922899",
+  "art_crop": "https://cards.scryfall.io/art_crop/front/1/0/100de667-d39f-40e7-9bd4-bed0f0ed5316.jpg?1783922899",
+  "border_crop": "https://cards.scryfall.io/border_crop/front/1/0/100de667-d39f-40e7-9bd4-bed0f0ed5316.jpg?1783922899",
+  "crop": "https://cards.scryfall.io/crop/front/1/0/100de667-d39f-40e7-9bd4-bed0f0ed5316.webp?1783922899",
+  "display": "https://cards.scryfall.io/display/front/1/0/100de667-d39f-40e7-9bd4-bed0f0ed5316.webp?1783922899",
+  "grid": "https://cards.scryfall.io/grid/front/1/0/100de667-d39f-40e7-9bd4-bed0f0ed5316.webp?1783922899",
+  "large": "https://cards.scryfall.io/large/front/1/0/100de667-d39f-40e7-9bd4-bed0f0ed5316.jpg?1783922899",
+  "normal": "https://cards.scryfall.io/normal/front/1/0/100de667-d39f-40e7-9bd4-bed0f0ed5316.jpg?1783922899",
+  "png": "https://cards.scryfall.io/png/front/1/0/100de667-d39f-40e7-9bd4-bed0f0ed5316.png?1783922899",
+  "small": "https://cards.scryfall.io/small/front/1/0/100de667-d39f-40e7-9bd4-bed0f0ed5316.jpg?1783922899",
+  "thumb": "https://cards.scryfall.io/thumb/front/1/0/100de667-d39f-40e7-9bd4-bed0f0ed5316.webp?1783922899"
+ },
+ "keywords": [
+  "Blitz"
+ ],
+ "lang": "en",
+ "layout": "normal",
+ "legalities": {
+  "alchemy": "not_legal",
+  "brawl": "legal",
+  "commander": "not_legal",
+  "competitivebrawl": "legal",
+  "duel": "not_legal",
+  "future": "not_legal",
+  "gladiator": "legal",
+  "historic": "legal",
+  "legacy": "not_legal",
+  "modern": "not_legal",
+  "oathbreaker": "not_legal",
+  "oldschool": "not_legal",
+  "pauper": "not_legal",
+  "paupercommander": "not_legal",
+  "penny": "not_legal",
+  "pioneer": "not_legal",
+  "predh": "not_legal",
+  "premodern": "not_legal",
+  "standard": "not_legal",
+  "standardbrawl": "not_legal",
+  "timeless": "legal",
+  "tlr": "not_legal",
+  "vintage": "not_legal"
+ },
+ "mana_cost": "{B}{R}{G}",
+ "multiverse_ids": [
+  571326
+ ],
+ "name": "Effluence Devourer",
+ "nonfoil": true,
+ "object": "card",
+ "oracle_id": "2a097ff7-6ae3-4773-8bbc-7c827075d92e",
+ "oracle_text": "Whenever you sacrifice Effluence Devourer or another creature, it perpetually gains \"{2}, Exile this card from your graveyard: Create an X/X green Ooze creature token, where X is this card's power. Activate only as a sorcery.\"\nBlitz {B}{R}{G} (If you cast this spell for its blitz cost, it gains haste and \"When this creature dies, draw a card.\" Sacrifice it at the beginning of the next end step.)",
+ "oversized": false,
+ "power": "4",
+ "prices": {
+  "eur": null,
+  "eur_foil": null,
+  "tix": null,
+  "usd": null,
+  "usd_etched": null,
+  "usd_foil": null
+ },
+ "prints_search_uri": "https://api.scryfall.com/cards/search?order=released&q=oracleid%3A2a097ff7-6ae3-4773-8bbc-7c827075d92e&unique=prints",
+ "promo": false,
+ "rarity": "mythic",
+ "related_uris": {
+  "edhrec": "https://edhrec.com/route/?cc=Effluence+Devourer",
+  "gatherer": "https://gatherer.wizards.com/Pages/Card/Details.aspx?multiverseid=571326&printed=false",
+  "tcgplayer_infinite_articles": "https://partner.tcgplayer.com/c/4931599/1830156/21018?subId1=api&trafcat=tcgplayer.com%2Fsearch%2Farticles&u=https%3A%2F%2Fwww.tcgplayer.com%2Fsearch%2Farticles%3FproductLineName%3Dmagic%26q%3DEffluence%2BDevourer",
+  "tcgplayer_infinite_decks": "https://partner.tcgplayer.com/c/4931599/1830156/21018?subId1=api&trafcat=tcgplayer.com%2Fsearch%2Fdecks&u=https%3A%2F%2Fwww.tcgplayer.com%2Fsearch%2Fdecks%3FproductLineName%3Dmagic%26q%3DEffluence%2BDevourer"
+ },
+ "released_at": "2022-06-02",
+ "reprint": false,
+ "reserved": false,
+ "rulings_uri": "https://api.scryfall.com/cards/100de667-d39f-40e7-9bd4-bed0f0ed5316/rulings",
+ "scryfall_set_uri": "https://scryfall.com/sets/ysnc?utm_source=api",
+ "scryfall_uri": "https://scryfall.com/card/ysnc/23/effluence-devourer?utm_source=api",
+ "security_stamp": "arena",
+ "set": "ysnc",
+ "set_id": "64e1763b-7bcc-45a1-b1b2-69277b754caf",
+ "set_name": "Alchemy: New Capenna",
+ "set_search_uri": "https://api.scryfall.com/cards/search?order=set&q=e%3Aysnc&unique=prints",
+ "set_type": "alchemy",
+ "set_uri": "https://api.scryfall.com/sets/64e1763b-7bcc-45a1-b1b2-69277b754caf",
+ "story_spotlight": false,
+ "textless": false,
+ "toughness": "3",
+ "type_line": "Creature — Crocodile",
+ "uri": "https://api.scryfall.com/cards/100de667-d39f-40e7-9bd4-bed0f0ed5316",
+ "variation": false,
+ "watermark": "riveteers"
+}

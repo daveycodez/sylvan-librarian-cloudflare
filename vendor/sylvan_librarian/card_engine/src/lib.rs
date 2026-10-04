@@ -8717,15 +8717,12 @@ fn regex_required_factors(pattern: &str) -> Vec<String> {
         }
     }
     let raw = pattern.strip_prefix(crate::regex_compat::QUERY_REGEX_FLAGS).unwrap_or(pattern);
-    // A `~` PATTERN IS UNNARROWABLE, and this is the line that says so. The sentinel `~` compiles
-    // to stands in for the card's own name, which the MATCHER writes into a copy of the text at
-    // evaluation time — it is in no stored string and therefore in no trigram posting, so any
-    // factor extracted from a pattern containing it would narrow to a set that excludes the very
-    // cards the fix exists to find. Nothing structural saves this: the expansion is an
-    // alternation, which the walk below already flushes on, but a factor could still be built
-    // from the literal run BESIDE it and that run is only a required factor of the SUBSTITUTED
-    // text, not of the stored one. `o:/~ deals/` is the shape — " deals" survives substitution
-    // and "rankle" does not.
+    // A `~` PATTERN IS NOT NARROWED, and this is the line that says so. It is matched against a
+    // text the MATCHER builds at evaluation time, with each self-reference replaced by a tilde —
+    // a text that is in no stored string and therefore in no trigram posting. A factor holding a
+    // tilde would narrow to nothing. (A factor without one is still a substring of the stored
+    // text, so narrowing on those alone would be sound; it is declined wholesale, as it always
+    // was, and is an optimisation left on the table rather than a correctness rule.)
     if raw.contains(crate::regex_compat::SELF_REF_SENTINEL) {
         return Vec::new();
     }

@@ -1,0 +1,121 @@
+{
+ "arena_id": 91381,
+ "artist": "Carlos Palma Cruchaga",
+ "artist_ids": [
+  "f0c43e1b-1853-4abc-8a1b-d7dda6c1d592"
+ ],
+ "booster": false,
+ "border_color": "black",
+ "card_back_id": "0aeebaf5-8c7d-4636-9e82-8c27447861f7",
+ "cmc": 2.0,
+ "collector_number": "13",
+ "color_identity": [
+  "R"
+ ],
+ "colors": [
+  "R"
+ ],
+ "digital": true,
+ "finishes": [
+  "nonfoil"
+ ],
+ "foil": false,
+ "frame": "2015",
+ "full_art": false,
+ "game_changer": false,
+ "games": [
+  "arena"
+ ],
+ "highres_image": true,
+ "id": "277801e8-f464-4712-bf71-586330af1a62",
+ "illustration_id": "9b88192d-4724-41e2-8e92-c66e6c28b324",
+ "image_status": "highres_scan",
+ "image_updated_at": "2026-07-13T03:13:56Z",
+ "image_uris": {
+  "art": "https://cards.scryfall.io/art/front/2/7/277801e8-f464-4712-bf71-586330af1a62.webp?1783912436",
+  "art_crop": "https://cards.scryfall.io/art_crop/front/2/7/277801e8-f464-4712-bf71-586330af1a62.jpg?1783912436",
+  "border_crop": "https://cards.scryfall.io/border_crop/front/2/7/277801e8-f464-4712-bf71-586330af1a62.jpg?1783912436",
+  "crop": "https://cards.scryfall.io/crop/front/2/7/277801e8-f464-4712-bf71-586330af1a62.webp?1783912436",
+  "display": "https://cards.scryfall.io/display/front/2/7/277801e8-f464-4712-bf71-586330af1a62.webp?1783912436",
+  "grid": "https://cards.scryfall.io/grid/front/2/7/277801e8-f464-4712-bf71-586330af1a62.webp?1783912436",
+  "large": "https://cards.scryfall.io/large/front/2/7/277801e8-f464-4712-bf71-586330af1a62.jpg?1783912436",
+  "normal": "https://cards.scryfall.io/normal/front/2/7/277801e8-f464-4712-bf71-586330af1a62.jpg?1783912436",
+  "png": "https://cards.scryfall.io/png/front/2/7/277801e8-f464-4712-bf71-586330af1a62.png?1783912436",
+  "small": "https://cards.scryfall.io/small/front/2/7/277801e8-f464-4712-bf71-586330af1a62.jpg?1783912436",
+  "thumb": "https://cards.scryfall.io/thumb/front/2/7/277801e8-f464-4712-bf71-586330af1a62.webp?1783912436"
+ },
+ "keywords": [
+  "Solved"
+ ],
+ "lang": "en",
+ "layout": "case",
+ "legalities": {
+  "alchemy": "not_legal",
+  "brawl": "legal",
+  "commander": "not_legal",
+  "competitivebrawl": "legal",
+  "duel": "not_legal",
+  "future": "not_legal",
+  "gladiator": "legal",
+  "historic": "legal",
+  "legacy": "not_legal",
+  "modern": "not_legal",
+  "oathbreaker": "not_legal",
+  "oldschool": "not_legal",
+  "pauper": "not_legal",
+  "paupercommander": "not_legal",
+  "penny": "not_legal",
+  "pioneer": "not_legal",
+  "predh": "not_legal",
+  "premodern": "not_legal",
+  "standard": "not_legal",
+  "standardbrawl": "not_legal",
+  "timeless": "legal",
+  "tlr": "not_legal",
+  "vintage": "not_legal"
+ },
+ "mana_cost": "{1}{R}",
+ "multiverse_ids": [],
+ "name": "Case of the Market Melee",
+ "nonfoil": true,
+ "object": "card",
+ "oracle_id": "d9233055-44d3-49ee-8926-ced8e042f043",
+ "oracle_text": "When this Case enters, it deals 1 damage to any target.\nDamage isn't removed from creatures during cleanup steps.\nTo solve — Three or more creatures are damaged.\nSolved — Whenever you attack with one or more creatures, this Case deals that much damage divided as you choose among any number of targets.",
+ "oversized": false,
+ "prices": {
+  "eur": null,
+  "eur_foil": null,
+  "tix": null,
+  "usd": null,
+  "usd_etched": null,
+  "usd_foil": null
+ },
+ "prints_search_uri": "https://api.scryfall.com/cards/search?order=released&q=oracleid%3Ad9233055-44d3-49ee-8926-ced8e042f043&unique=prints",
+ "promo": false,
+ "promo_types": [
+  "alchemy"
+ ],
+ "rarity": "uncommon",
+ "related_uris": {
+  "edhrec": "https://edhrec.com/route/?cc=Case+of+the+Market+Melee",
+  "tcgplayer_infinite_articles": "https://partner.tcgplayer.com/c/4931599/1830156/21018?subId1=api&trafcat=tcgplayer.com%2Fsearch%2Farticles&u=https%3A%2F%2Fwww.tcgplayer.com%2Fsearch%2Farticles%3FproductLineName%3Dmagic%26q%3DCase%2Bof%2Bthe%2BMarket%2BMelee",
+  "tcgplayer_infinite_decks": "https://partner.tcgplayer.com/c/4931599/1830156/21018?subId1=api&trafcat=tcgplayer.com%2Fsearch%2Fdecks&u=https%3A%2F%2Fwww.tcgplayer.com%2Fsearch%2Fdecks%3FproductLineName%3Dmagic%26q%3DCase%2Bof%2Bthe%2BMarket%2BMelee"
+ },
+ "released_at": "2024-03-05",
+ "reprint": false,
+ "reserved": false,
+ "rulings_uri": "https://api.scryfall.com/cards/277801e8-f464-4712-bf71-586330af1a62/rulings",
+ "scryfall_set_uri": "https://scryfall.com/sets/ymkm?utm_source=api",
+ "scryfall_uri": "https://scryfall.com/card/ymkm/13/case-of-the-market-melee?utm_source=api",
+ "set": "ymkm",
+ "set_id": "3879667a-f0b8-4bc2-8662-7c861e22b4e9",
+ "set_name": "Alchemy: Murders at Karlov Manor",
+ "set_search_uri": "https://api.scryfall.com/cards/search?order=set&q=e%3Aymkm&unique=prints",
+ "set_type": "alchemy",
+ "set_uri": "https://api.scryfall.com/sets/3879667a-f0b8-4bc2-8662-7c861e22b4e9",
+ "story_spotlight": false,
+ "textless": false,
+ "type_line": "Enchantment — Case",
+ "uri": "https://api.scryfall.com/cards/277801e8-f464-4712-bf71-586330af1a62",
+ "variation": false
+}

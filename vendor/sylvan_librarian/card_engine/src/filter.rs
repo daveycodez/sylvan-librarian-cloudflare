@@ -1,7 +1,9 @@
 use memchr::memmem;
 use rkyv::Archived;
 use serde_json::Value;
-use super::regex_compat::{CompiledRegex, QUERY_REGEX_FLAGS, REGEX_COMPILE_ERR_PREFIX, SELF_REF_SENTINEL, SelfRefScope};
+use super::regex_compat::{
+    CompiledRegex, QUERY_REGEX_FLAGS, REGEX_COMPILE_ERR_PREFIX, SELF_REF_SENTINEL, SELF_REF_THIS_PHRASES, SelfRefScope,
+};
 use super::{AOracleCard, APrinting, AStrings, ManaCost, str_at, mana_lane, lane_add, lane_get, lanes_ge, LANES8_HI, mana_pip_counts, mana_cmc, mana_bare_generic, color_list_to_mask, card_type_str_to_bit, trigram_candidates, trigram_min_posting, ARTIST_NONE, NONE_STR, FlavorIndex, NameBigramIndex, NO_TYPE_LINE_INDEX, FaceFlavorNames, PrintedNameIndex, OracleTextIndex, SortedTrigramIndex, TypeLineIndex, flavor_fingerprint, flavor_match_sets};
 use super::legality::{LEGALITY_LEGAL, LEGALITY_BANNED, LEGALITY_RESTRICTED, format_shift};
 
@@ -960,13 +962,16 @@ fn legendary_short_name(name: &str) -> &str {
 ///
 /// Longest name first, so "Rankle, Master of Pranks" is consumed before the "Rankle" inside it.
 ///
-/// Borrows when no name occurs, which is the common case by a wide margin: 3,046 of the 19,228
-/// cards `o:/~/` matches do so through a NAME (`o:/~/ -o:/this/`), so roughly nine candidates in
-/// ten never allocate at all.
+/// Borrows when neither a name nor a phrase occurs — about four candidates in ten (`o:/~/` is
+/// 19,407 of ~33,900 cards).
+///
+/// THEN THE PHRASES, in the text and not in the pattern — "this creature", "this Vehicle", "this
+/// card" and the rest of [`SELF_REF_THIS_PHRASES`] become the same `~`, because that is the text
+/// Scryfall matches a `~` pattern against (see [`SELF_REF_SENTINEL`] for the probes). Names FIRST:
+/// Case of the Market Melee's short name is "Case", so "When this Case enters" reads "when this ~
+/// enters" there — `o:/when this ~ enters/` is 1 and `o:/when ~ enters/` is 404 — and "this ~" is
+/// no longer a phrase by the time the phrases are looked for.
 fn with_self_reference<'a>(text: &'a str, names: &[&str]) -> std::borrow::Cow<'a, str> {
-    if !names.iter().any(|n| !n.is_empty() && text.contains(n)) {
-        return std::borrow::Cow::Borrowed(text);
-    }
     let mut out = std::borrow::Cow::Borrowed(text);
     for name in names {
         if name.is_empty() || !out.contains(name) {
@@ -974,7 +979,46 @@ fn with_self_reference<'a>(text: &'a str, names: &[&str]) -> std::borrow::Cow<'a
         }
         out = std::borrow::Cow::Owned(replace_bounded(&out, name));
     }
+    if let Some(replaced) = replace_this_phrases(&out) {
+        out = std::borrow::Cow::Owned(replaced);
+    }
     out
+}
+
+/// Write the sentinel over every `\bthis <noun>\b`, or `None` when the text holds none.
+///
+/// One `find` per "this " in the text and no regex: the nouns are a fixed list, none a prefix of
+/// another, and the text is already lowercase. The boundary on each side is the one `\b` draws,
+/// so "this creature's" is replaced up to the apostrophe and "this spellbook" is left alone.
+fn replace_this_phrases(text: &str) -> Option<String> {
+    const THIS: &str = "this ";
+    let mut out: Option<String> = None;
+    let mut copied = 0usize;
+    let mut from = 0usize;
+    while let Some(at) = text[from..].find(THIS) {
+        let start = from + at;
+        let noun_at = start + THIS.len();
+        from = noun_at;
+        if text[..start].chars().next_back().is_some_and(is_word_char) {
+            continue;
+        }
+        let rest = &text[noun_at..];
+        let Some(noun) = SELF_REF_THIS_PHRASES
+            .iter()
+            .find(|n| rest.starts_with(**n) && !rest[n.len()..].chars().next().is_some_and(is_word_char))
+        else {
+            continue;
+        };
+        let buf = out.get_or_insert_with(|| String::with_capacity(text.len()));
+        buf.push_str(&text[copied..start]);
+        buf.push(SELF_REF_SENTINEL);
+        copied = noun_at + noun.len();
+        from = copied;
+    }
+    out.map(|mut buf| {
+        buf.push_str(&text[copied..]);
+        buf
+    })
 }
 
 /// `\w` as the compiled patterns mean it: the regex crate's Unicode `\w` is
@@ -4685,7 +4729,7 @@ fn build_text_filter(attr: &str, op: &str, rhs: &Value, orig: &str) -> Result<Fi
         // `~` EXPANDS IN A QUOTED PHRASE EXACTLY AS IT DOES IN A REGEX, and only this entry point
         // was missing it: `fo:"~ dies"` answered 0 here against 822 on api.scryfall.com, while
         // `fo:/~ dies/` answered 822 on both. A quoted value reaches this branch as a plain
-        // substring and never met `translate_self_reference`, so the alias was matched as the
+        // substring and never met the self-reference machinery, so the alias was matched as the
         // literal tilde — and no oracle text contains one.
         //
         // The two forms are the SAME SEARCH there, measured 2026-09-18 in one pass so corpus
@@ -4701,11 +4745,10 @@ fn build_text_filter(attr: &str, op: &str, rhs: &Value, orig: &str) -> Result<Fi
         // the Hidden's Phyrexian-script flavor text — so flavor keeps `TextContains` and its
         // literal tilde, and name/type/mana never reach here as text columns at all.
         //
-        // `regex::escape` writes `\~`, which `translate_self_reference` expands (an escaped tilde
-        // is still the alias — Scryfall's `o:/\~/` answers `o:/~/`'s count). It neutralises every
-        // other metacharacter the phrase carries, so `o:"draw a card."` stays an exact phrase
-        // rather than letting its `.` become a wildcard, and no bracket expression can form for
-        // the class-tracking in `translate_self_reference` to skip over.
+        // `regex::escape` writes `\~`, a literal tilde — which is what selects the substituted
+        // text (see `SELF_REF_SENTINEL`). It neutralises every other metacharacter the phrase
+        // carries, so `o:"draw a card."` stays an exact phrase rather than letting its `.` become
+        // a wildcard.
         if word.contains('~')
             && matches!(tsf, TextSearchField::OracleTextLower | TextSearchField::FullOracleTextLower)
         {

@@ -110,17 +110,40 @@ pub(crate) struct CompiledRegex {
     self_reference: bool,
 }
 
-/// The character `~` compiles to, and the one this engine writes into a card's own text in place
-/// of its name before matching. See `translate_self_reference`.
+/// What this engine writes into a card's text in place of each self-reference before a `~`
+/// pattern is matched against it: the tilde itself.
 ///
-/// U+10400 DESERET CAPITAL LETTER LONG I, chosen for two properties and not for taste. It is
-/// `\p{Alphabetic}`, so the `\b` the compiled alternation puts around it means exactly what the
-/// `\b` around the phrase alternatives means — the boundary is enforced by the regex engine
-/// rather than by a hand-rolled scan that would have to re-implement Unicode `\w`. And it is
-/// absent from the corpus: the whole 2026-05-31 bulk dump carries 17 astral-plane characters in
-/// its searchable text, every one an Egyptian hieroglyph from the Amonkhet flavor text
-/// (U+130xx-U+133xx), and nothing in the Deseret block at all.
-pub(crate) const SELF_REF_SENTINEL: char = '\u{10400}';
+/// SCRYFALL KEEPS TWO TEXTS AND THE PATTERN PICKS ONE. A pattern with no `~` is matched against
+/// the oracle text as printed. A pattern with a `~` ANYWHERE in it is matched against a second
+/// text in which every self-reference has been REPLACED by a literal `~` — and in that pattern
+/// the `~` is an ordinary character. Measured on api.scryfall.com 2026-10-04, the `|~~~` arm
+/// being a way to put a tilde in the pattern without changing what else it can match:
+///
+/// | scoped to | pattern | answer | so |
+/// |---|---|---|---|
+/// | Risk Factor ("…may have Risk Factor deal 4 damage…") | `have risk factor deal` | 1 | the plain text has the name |
+/// | | `have risk factor deal\|~~~` | 404 | the tilde text does not |
+/// | | `have . deal\|~~~` | 1 | it has ONE character there |
+/// | | `have [~] deal` | 1 | which is a tilde, and a class can name it |
+/// | | `have [\w ]+ deal\|~~~` | 404 | and it is not a word character |
+/// | | `~\b deal` / `have \b~` | 404 | so no boundary stands between it and a space |
+/// | Honeymoon Hearse ("…: This Vehicle becomes…") | `this vehicle becomes\|~~~` | 404 | the PHRASES are replaced too |
+/// | | `: . becomes\|~~~` | 1 | by the same one character |
+/// | Michelangelo, On the Scene ("When Michelangelo dies, return this card…") | `when . dies, return . to\|~~~` | 1 | short name and "this card" alike |
+/// | Case of the Market Melee ("When this Case enters…") | `when ~ enters` | 404 | names go first: "Case" is its short name |
+/// | | `when this ~ enters` | 1 | so the text reads "this ~" |
+///
+/// This engine used to keep the phrases in the text and expand the pattern's `~` into an
+/// alternation of them plus a private-use LETTER standing for the name. That answered a bare `~`
+/// correctly and went wrong wherever a pattern said more: `(~|this \w+|target [\w ]+) deals`
+/// crossed the name as if it were a word (Risk Factor, Skullscorch, Case of the Market Melee), and
+/// `~ becomes…|This Vehicle becomes an artifact creature` found a phrase Scryfall's text no longer
+/// holds (Honeymoon Hearse, Invasion Submersible, Tangle Tumbler). mtg-seeker's reports R23, R27,
+/// R28, R34 and R36 of 2026-10-04 are all this.
+///
+/// The tilde is safe to write into the text because no oracle text holds one (checked over the
+/// whole corpus 2026-10-04; flavor text does, twice, and flavor is never substituted).
+pub(crate) const SELF_REF_SENTINEL: char = '~';
 
 /// The self-reference phrases `~` aliases, for EVERY card and independent of its own card types.
 ///
@@ -161,16 +184,16 @@ pub(crate) const SELF_REF_SENTINEL: char = '\u{10400}';
 /// card the phrase reaches is a card `~` reaches, which is what makes them members rather than a
 /// coincidence, and the two probes in the format above are Arms Depot and Ferris Wheel, both 1.
 /// Their absence was 47 of the 53 names `o:/~/` missed here.
-const SELF_REF_THIS_PHRASES: &[&str] = &[
+pub(crate) const SELF_REF_THIS_PHRASES: &[&str] = &[
     "creature", "spell", "land", "artifact", "enchantment", "card", "aura", "token", "equipment",
     "vehicle", "permanent", "saga", "siege", "class", "spacecraft", "case", "contraption",
     "attraction",
 ];
 
-/// Where `~` is being expanded, which decides WHICH alternatives it gets.
+/// Whether a `~` in the pattern is the self-reference, which the COLUMN decides.
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub(crate) enum SelfRefScope {
-    /// No expansion: `~` is the literal tilde.
+    /// Not the alias: `~` is the literal tilde, matched against the text as stored.
     ///
     /// EVERY COLUMN BUT THE TWO ORACLE ONES, and `ft:` is the one that took two measurements to
     /// place. `name:/~/`, `t:/~/` and `mana:/~/` are all 404 on api.scryfall.com (2026-08-28) —
@@ -196,83 +219,6 @@ pub(crate) enum SelfRefScope {
     ///
     /// The direction that makes sense agrees exactly: `fo:/~/ -o:/~/` is 2,817 on both.
     Oracle,
-}
-
-/// The alternation `~` expands to: the sentinel that stands in for whichever of the card's own
-/// names the substitution found, plus — on rules text only — the fixed phrase family.
-///
-/// The sentinel is BARE, with no `\b` of its own, because the substitution has already checked
-/// the boundary against the NAME's edges. That is not a simplification: for a name ending in
-/// punctuation Scryfall's `\b<name>\b` demands a word character AFTER the punctuation, so
-/// `!"Kaboom!" o:/~/` is 404 even though the card's text opens "Kaboom! deals damage" — and a
-/// sentinel wearing its own `\b` would have called it a match. See `with_self_reference`.
-fn self_reference_alternation(_scope: SelfRefScope) -> String {
-    format!(
-        r"(?:\bthis (?:{})\b|{})",
-        SELF_REF_THIS_PHRASES.join("|"),
-        SELF_REF_SENTINEL
-    )
-}
-
-/// Replace every `~` outside a bracket expression with [`self_reference_alternation`].
-///
-/// An ESCAPED tilde expands too, which is Scryfall's behaviour and not an oversight here:
-/// `o:/\~/` answers the same 19,228 as `o:/~/` (2026-08-28), so the backslash does not protect
-/// it. Bracket expressions are left alone for the same reason the `\s…` shorthands are — see
-/// `translate_query_escapes`.
-pub(crate) fn translate_self_reference(pattern: &str, scope: SelfRefScope) -> String {
-    if !pattern.contains('~') {
-        return pattern.to_string();
-    }
-    let expansion = self_reference_alternation(scope);
-    let chars: Vec<char> = pattern.chars().collect();
-    let mut out = String::with_capacity(pattern.len() + expansion.len());
-    let mut class_pos: Option<usize> = None;
-    let mut i = 0usize;
-    while i < chars.len() {
-        let c = chars[i];
-        if c == '\\' {
-            // `\~` loses the backslash and expands; every other escape is copied whole so the
-            // class-tracking below never sees an escaped `[` or `]` as a delimiter.
-            match chars.get(i + 1) {
-                Some('~') if class_pos.is_none() => {
-                    out.push_str(&expansion);
-                    i += 2;
-                    continue;
-                }
-                Some(&next) => {
-                    out.push('\\');
-                    out.push(next);
-                    class_pos = class_pos.map(|n| n + 2);
-                    i += 2;
-                    continue;
-                }
-                None => {
-                    out.push('\\');
-                    break;
-                }
-            }
-        }
-        if c == '~' && class_pos.is_none() {
-            out.push_str(&expansion);
-            i += 1;
-            continue;
-        }
-        match class_pos {
-            None => {
-                if c == '[' {
-                    class_pos = Some(0);
-                }
-            }
-            Some(0) if c == '^' => {}
-            Some(0) if c == ']' => class_pos = Some(1),
-            Some(_) if c == ']' => class_pos = None,
-            Some(n) => class_pos = Some(n + 1),
-        }
-        out.push(c);
-        i += 1;
-    }
-    out
 }
 
 /// Lowercase a query pattern, which is the first thing api.scryfall.com does to it.
@@ -355,7 +301,7 @@ impl CompiledRegex {
         Self::compile(pattern, SelfRefScope::None)
     }
 
-    /// Compile with `~` expanded to the self-reference alternation.
+    /// Compile a pattern whose `~` is the self-reference: see [`SELF_REF_SENTINEL`].
     ///
     /// A SEPARATE ENTRY POINT BECAUSE THE COLUMN DECIDES, and Scryfall's answer says so out loud:
     /// `name:/~/` is 404 on api.scryfall.com (2026-08-28). If `~` were the card's name there, that
@@ -371,15 +317,12 @@ impl CompiledRegex {
     fn compile(pattern: &str, scope: SelfRefScope) -> Result<Self, String> {
         // Folded FIRST, before the alias or any escape is read — see `fold_query_case`.
         let folded = fold_query_case(pattern);
-        let source = if scope == SelfRefScope::None {
-            folded.into_owned()
-        } else {
-            translate_self_reference(&folded, scope)
-        };
-        // The EXPANSION is what matters, not the request: `o:/draw/` asked for expansion and got
-        // none, so it must not pay the substitution or lose the narrow.
-        let self_reference = source.contains(SELF_REF_SENTINEL);
-        let translated = translate_query_escapes(&source);
+        // A `~` ANYWHERE in the pattern selects the substituted text — bare, escaped or inside a
+        // bracket expression (`o:/have [~] deal/` is 1 on Risk Factor). The pattern itself is not
+        // rewritten: the tilde is a literal, and the text is what changes. A pattern without one
+        // (`o:/draw/` asked for the alias and has none) pays nothing and keeps the narrow.
+        let self_reference = scope != SelfRefScope::None && folded.contains(SELF_REF_SENTINEL);
+        let translated = translate_query_escapes(&folded);
         let cased = format!("{QUERY_REGEX_FLAGS}{translated}");
         match Regex::new(&cased) {
             Ok(re) => Ok(CompiledRegex { engine: RegexEngine::Fast(re), self_reference }),
@@ -468,7 +411,7 @@ impl CompiledRegex {
         matches!(self.engine, RegexEngine::Backtrack(_))
     }
 
-    /// True when `~` was expanded into this pattern, so matching it needs the per-card
+    /// True when this pattern holds a `~` on an oracle column, so matching it needs the per-card
     /// substitution — and so the #734 trigram narrow must decline.
     #[inline]
     pub(crate) fn has_self_reference(&self) -> bool {
