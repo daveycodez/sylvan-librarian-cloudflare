@@ -62,6 +62,12 @@ const DERIVED_EXPANSIONS: ReadonlyMap<string, string> = new Map([
 	],
 	["is\u0000party", "t:creature (t:cleric or t:rogue or t:warrior or t:wizard or kw:changeling)"],
 	["is\u0000outlaw", "t:assassin or t:mercenary or t:pirate or t:rogue or t:warlock or kw:changeling"],
+	// Measured on api.scryfall.com 2026-10-04: both differences between `is:etb` and
+	// `fo:enters` are empty. The full 7,890-card list includes reminder text and either face,
+	// replacement effects and other-object triggers. The final `s` is deliberate: the
+	// 216 cards with only `enter` (Clone, Welcoming Vampire, venture reminder text) are OUT.
+	// Keep this on full Oracle text: `o:enters` drops reminder-only matches such as fabricate.
+	["is\u0000etb", "fo:enters"],
 	// NO `is:vanilla` HERE — it is an ENGINE predicate now; see ENGINE_IS_VALUES below and
 	// `FilterExpr::VanillaFace`. Two rewrites lived here and neither could reach the answer:
 	// `t:creature o=""` was `t:creature` exactly (18,753, because `o=""` is a tautology on

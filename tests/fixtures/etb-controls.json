@@ -1,0 +1,1567 @@
+{
+	"measured_at": "2026-10-04 America/Los_Angeles",
+	"source": "https://api.scryfall.com/cards/search?q=is%3Aetb",
+	"cards": [
+		{
+			"etb": true,
+			"card": {
+				"id": "4945031e-1158-474c-9e50-1ec817acc767",
+				"oracle_id": "5a70ccfa-d12d-4e62-a1a4-f05cda2fd442",
+				"name": "Abandoned Outpost",
+				"lang": "en",
+				"layout": "normal",
+				"set": "ody",
+				"set_name": "Odyssey",
+				"set_type": "expansion",
+				"collector_number": "312",
+				"released_at": "2001-10-01",
+				"type_line": "Land",
+				"oracle_text": "This land enters tapped.\n{T}: Add {W}.\n{T}, Sacrifice this land: Add one mana of any color.",
+				"mana_cost": "",
+				"cmc": 0,
+				"colors": [],
+				"color_identity": ["W"],
+				"keywords": [],
+				"legalities": {
+					"modern": "not_legal",
+					"commander": "legal"
+				},
+				"digital": false,
+				"games": ["paper", "mtgo"],
+				"finishes": ["nonfoil", "foil"],
+				"rarity": "common",
+				"border_color": "black",
+				"frame": "1997",
+				"reprint": false,
+				"promo": false,
+				"full_art": false,
+				"oversized": false,
+				"variation": false,
+				"image_status": "highres_scan"
+			},
+			"draw": false
+		},
+		{
+			"etb": true,
+			"card": {
+				"id": "f3728fbb-3a99-443a-b514-40f9990669c5",
+				"oracle_id": "ba6c3c72-c014-45c6-a0b4-59eb9a65303e",
+				"name": "Academy Elite",
+				"lang": "en",
+				"layout": "normal",
+				"set": "c16",
+				"set_name": "Commander 2016",
+				"set_type": "commander",
+				"collector_number": "81",
+				"released_at": "2016-11-11",
+				"type_line": "Creature — Human Wizard",
+				"oracle_text": "This creature enters with X +1/+1 counters on it, where X is the number of instant and sorcery cards in all graveyards.\n{2}{U}, Remove a +1/+1 counter from this creature: Draw a card, then discard a card.",
+				"mana_cost": "{3}{U}",
+				"cmc": 4,
+				"power": "0",
+				"toughness": "0",
+				"colors": ["U"],
+				"color_identity": ["U"],
+				"keywords": [],
+				"legalities": {
+					"modern": "not_legal",
+					"commander": "legal"
+				},
+				"digital": false,
+				"games": ["paper"],
+				"finishes": ["nonfoil"],
+				"rarity": "rare",
+				"border_color": "black",
+				"frame": "2015",
+				"reprint": true,
+				"promo": false,
+				"full_art": false,
+				"oversized": false,
+				"variation": false,
+				"image_status": "highres_scan"
+			},
+			"draw": true
+		},
+		{
+			"etb": true,
+			"card": {
+				"id": "aa453daf-6ceb-4e45-bfb3-f6f45835ac11",
+				"oracle_id": "f5af0d1b-531e-4053-848a-5e0fa1022f9a",
+				"name": "Accomplished Automaton",
+				"lang": "en",
+				"layout": "normal",
+				"set": "2xm",
+				"set_name": "Double Masters",
+				"set_type": "masters",
+				"collector_number": "230",
+				"released_at": "2020-08-07",
+				"type_line": "Artifact Creature — Construct",
+				"oracle_text": "Fabricate 1 (When this creature enters, put a +1/+1 counter on it or create a 1/1 colorless Servo artifact creature token.)",
+				"mana_cost": "{7}",
+				"cmc": 7,
+				"power": "5",
+				"toughness": "7",
+				"colors": [],
+				"color_identity": [],
+				"keywords": ["Fabricate"],
+				"legalities": {
+					"modern": "legal",
+					"commander": "legal"
+				},
+				"digital": false,
+				"games": ["paper", "mtgo"],
+				"finishes": ["nonfoil", "foil"],
+				"rarity": "common",
+				"border_color": "black",
+				"frame": "2015",
+				"reprint": true,
+				"promo": false,
+				"full_art": false,
+				"oversized": false,
+				"variation": false,
+				"image_status": "highres_scan"
+			},
+			"draw": false
+		},
+		{
+			"etb": true,
+			"card": {
+				"id": "0d3c0c43-2d6d-49b8-a112-07611a23ae69",
+				"oracle_id": "0a56e2ad-684d-45a7-9145-479d1505bba2",
+				"name": "Adaptive Snapjaw",
+				"lang": "en",
+				"layout": "normal",
+				"set": "gtc",
+				"set_name": "Gatecrash",
+				"set_type": "expansion",
+				"collector_number": "113",
+				"released_at": "2013-02-01",
+				"type_line": "Creature — Lizard Beast",
+				"oracle_text": "Evolve (Whenever a creature you control enters, if that creature has greater power or toughness than this creature, put a +1/+1 counter on this creature.)",
+				"mana_cost": "{4}{G}",
+				"cmc": 5,
+				"power": "6",
+				"toughness": "2",
+				"colors": ["G"],
+				"color_identity": ["G"],
+				"keywords": ["Evolve"],
+				"legalities": {
+					"modern": "legal",
+					"commander": "legal"
+				},
+				"digital": false,
+				"games": ["paper", "mtgo"],
+				"finishes": ["nonfoil", "foil"],
+				"rarity": "common",
+				"border_color": "black",
+				"frame": "2003",
+				"reprint": false,
+				"promo": false,
+				"full_art": false,
+				"oversized": false,
+				"variation": false,
+				"image_status": "highres_scan"
+			},
+			"draw": false
+		},
+		{
+			"etb": true,
+			"card": {
+				"id": "0ce562a9-ca35-4f31-8618-bc26d3d40169",
+				"oracle_id": "45892ec2-8996-444f-a61c-5151926baa0b",
+				"name": "Aethersnatch",
+				"lang": "en",
+				"layout": "normal",
+				"set": "c15",
+				"set_name": "Commander 2015",
+				"set_type": "commander",
+				"collector_number": "9",
+				"released_at": "2015-11-13",
+				"type_line": "Instant",
+				"oracle_text": "Gain control of target spell. You may choose new targets for it. (If that spell becomes a permanent, it enters under your control.)",
+				"mana_cost": "{4}{U}{U}",
+				"cmc": 6,
+				"colors": ["U"],
+				"color_identity": ["U"],
+				"keywords": [],
+				"legalities": {
+					"modern": "not_legal",
+					"commander": "legal"
+				},
+				"digital": false,
+				"games": ["paper"],
+				"finishes": ["nonfoil"],
+				"rarity": "rare",
+				"border_color": "black",
+				"frame": "2015",
+				"reprint": false,
+				"promo": false,
+				"full_art": false,
+				"oversized": false,
+				"variation": false,
+				"image_status": "highres_scan"
+			},
+			"draw": false
+		},
+		{
+			"etb": false,
+			"card": {
+				"id": "d45ec78e-6190-46af-8057-834f5ca41ec8",
+				"oracle_id": "fd19a009-d1ab-4148-a829-3d4c3af1b0b2",
+				"name": "Archelos, Lagoon Mystic",
+				"lang": "en",
+				"layout": "normal",
+				"set": "dmc",
+				"set_name": "Dominaria United Commander",
+				"set_type": "commander",
+				"collector_number": "140",
+				"released_at": "2022-09-09",
+				"type_line": "Legendary Creature — Turtle Shaman",
+				"oracle_text": "As long as Archelos is tapped, other permanents enter tapped.\nAs long as Archelos is untapped, other permanents enter untapped.",
+				"mana_cost": "{1}{B}{G}{U}",
+				"cmc": 4,
+				"power": "2",
+				"toughness": "4",
+				"colors": ["B", "G", "U"],
+				"color_identity": ["B", "G", "U"],
+				"keywords": [],
+				"legalities": {
+					"modern": "not_legal",
+					"commander": "legal"
+				},
+				"digital": false,
+				"games": ["paper", "mtgo"],
+				"finishes": ["nonfoil"],
+				"rarity": "rare",
+				"border_color": "black",
+				"frame": "2015",
+				"reprint": true,
+				"promo": false,
+				"full_art": false,
+				"oversized": false,
+				"variation": false,
+				"image_status": "highres_scan"
+			},
+			"draw": false
+		},
+		{
+			"etb": true,
+			"card": {
+				"id": "be8439e6-f779-49f0-806a-b04995697a6a",
+				"oracle_id": "37688720-03de-4eca-a82d-a0afe8d58adc",
+				"name": "Baleful Strix",
+				"lang": "en",
+				"layout": "normal",
+				"set": "otc",
+				"set_name": "Outlaws of Thunder Junction Commander",
+				"set_type": "commander",
+				"collector_number": "215",
+				"released_at": "2024-04-19",
+				"type_line": "Artifact Creature — Bird",
+				"oracle_text": "Flying, deathtouch\nWhen this creature enters, draw a card.",
+				"mana_cost": "{U}{B}",
+				"cmc": 2,
+				"power": "1",
+				"toughness": "1",
+				"colors": ["B", "U"],
+				"color_identity": ["B", "U"],
+				"keywords": ["Deathtouch", "Flying"],
+				"legalities": {
+					"modern": "not_legal",
+					"commander": "legal"
+				},
+				"digital": false,
+				"games": ["paper", "mtgo"],
+				"finishes": ["nonfoil"],
+				"rarity": "rare",
+				"border_color": "black",
+				"frame": "2015",
+				"reprint": true,
+				"promo": false,
+				"full_art": false,
+				"oversized": false,
+				"variation": false,
+				"image_status": "highres_scan"
+			},
+			"draw": true
+		},
+		{
+			"etb": false,
+			"card": {
+				"id": "b9b1e53f-1384-4860-9944-e68922afc65c",
+				"oracle_id": "11f55ec5-b9a3-4670-8afb-31d29478fb59",
+				"name": "Bar the Gate",
+				"lang": "en",
+				"layout": "normal",
+				"set": "afr",
+				"set_name": "Adventures in the Forgotten Realms",
+				"set_type": "expansion",
+				"collector_number": "47",
+				"released_at": "2021-07-23",
+				"type_line": "Instant",
+				"oracle_text": "Counter target creature or planeswalker spell. Venture into the dungeon. (Enter the first room or advance to the next room.)",
+				"mana_cost": "{2}{U}",
+				"cmc": 3,
+				"colors": ["U"],
+				"color_identity": ["U"],
+				"keywords": ["Venture into the dungeon"],
+				"legalities": {
+					"modern": "legal",
+					"commander": "legal"
+				},
+				"digital": false,
+				"games": ["arena", "paper", "mtgo"],
+				"finishes": ["nonfoil", "foil"],
+				"rarity": "common",
+				"border_color": "black",
+				"frame": "2015",
+				"reprint": false,
+				"promo": false,
+				"full_art": false,
+				"oversized": false,
+				"variation": false,
+				"image_status": "highres_scan"
+			},
+			"draw": false
+		},
+		{
+			"etb": false,
+			"card": {
+				"id": "492c2f9a-51e7-4e0f-9899-23bf43ea988b",
+				"oracle_id": "d3a0b660-358c-41bd-9cd2-41fbf3491b1a",
+				"name": "Birds of Paradise",
+				"lang": "en",
+				"layout": "normal",
+				"set": "msc",
+				"set_name": "Marvel Super Heroes Commander",
+				"set_type": "commander",
+				"collector_number": "170",
+				"released_at": "2026-06-26",
+				"type_line": "Creature — Bird",
+				"oracle_text": "Flying\n{T}: Add one mana of any color.",
+				"mana_cost": "{G}",
+				"cmc": 1,
+				"power": "0",
+				"toughness": "1",
+				"colors": ["G"],
+				"color_identity": ["G"],
+				"keywords": ["Flying"],
+				"legalities": {
+					"modern": "legal",
+					"commander": "legal"
+				},
+				"digital": false,
+				"games": ["paper", "mtgo"],
+				"finishes": ["nonfoil", "foil"],
+				"rarity": "rare",
+				"border_color": "black",
+				"frame": "2015",
+				"reprint": true,
+				"promo": false,
+				"full_art": false,
+				"oversized": false,
+				"variation": false,
+				"image_status": "highres_scan"
+			},
+			"draw": false
+		},
+		{
+			"etb": false,
+			"card": {
+				"id": "e2f12f6f-9383-47e6-a44f-2834ad130e51",
+				"oracle_id": "3f0c9466-5ab9-4205-a84f-b4b27b5a678e",
+				"name": "Bloodbraid Elf",
+				"lang": "en",
+				"layout": "normal",
+				"set": "2x2",
+				"set_name": "Double Masters 2022",
+				"set_type": "masters",
+				"collector_number": "184",
+				"released_at": "2022-07-08",
+				"type_line": "Creature — Elf Berserker",
+				"oracle_text": "Haste (This creature can attack and {T} as soon as it comes under your control.)\nCascade (When you cast this spell, exile cards from the top of your library until you exile a nonland card that costs less. You may cast it without paying its mana cost. Put the exiled cards on the bottom in a random order.)",
+				"mana_cost": "{2}{R}{G}",
+				"cmc": 4,
+				"power": "3",
+				"toughness": "2",
+				"colors": ["G", "R"],
+				"color_identity": ["G", "R"],
+				"keywords": ["Haste", "Cascade"],
+				"legalities": {
+					"modern": "legal",
+					"commander": "legal"
+				},
+				"digital": false,
+				"games": ["paper", "mtgo"],
+				"finishes": ["nonfoil", "foil"],
+				"rarity": "uncommon",
+				"border_color": "black",
+				"frame": "2015",
+				"reprint": true,
+				"promo": false,
+				"full_art": false,
+				"oversized": false,
+				"variation": false,
+				"image_status": "highres_scan"
+			},
+			"draw": false
+		},
+		{
+			"etb": false,
+			"card": {
+				"id": "fd353a11-4f3c-472b-b954-4427968c09cf",
+				"oracle_id": "5f83fd2f-c4cb-4bcf-a4db-0238df251740",
+				"name": "Bloodfray Giant",
+				"lang": "en",
+				"layout": "normal",
+				"set": "rvr",
+				"set_name": "Ravnica Remastered",
+				"set_type": "masters",
+				"collector_number": "101",
+				"released_at": "2024-01-12",
+				"type_line": "Creature — Giant",
+				"oracle_text": "Trample\nUnleash (You may have this creature enter with a +1/+1 counter on it. It can't block as long as it has a +1/+1 counter on it.)",
+				"mana_cost": "{2}{R}{R}",
+				"cmc": 4,
+				"power": "4",
+				"toughness": "3",
+				"colors": ["R"],
+				"color_identity": ["R"],
+				"keywords": ["Trample", "Unleash"],
+				"legalities": {
+					"modern": "legal",
+					"commander": "legal"
+				},
+				"digital": false,
+				"games": ["paper", "mtgo"],
+				"finishes": ["nonfoil", "foil"],
+				"rarity": "uncommon",
+				"border_color": "black",
+				"frame": "2015",
+				"reprint": true,
+				"promo": false,
+				"full_art": false,
+				"oversized": false,
+				"variation": false,
+				"image_status": "highres_scan"
+			},
+			"draw": false
+		},
+		{
+			"etb": false,
+			"card": {
+				"id": "09ac0b2b-d4d3-4977-b241-7788239362de",
+				"oracle_id": "9e107382-f683-44ed-ada1-775d3ac79dd0",
+				"name": "Clattering Skeletons",
+				"lang": "en",
+				"layout": "normal",
+				"set": "afr",
+				"set_name": "Adventures in the Forgotten Realms",
+				"set_type": "expansion",
+				"collector_number": "93",
+				"released_at": "2021-07-23",
+				"type_line": "Creature — Skeleton",
+				"oracle_text": "When this creature dies, venture into the dungeon. (Enter the first room or advance to the next room.)",
+				"mana_cost": "{3}{B}",
+				"cmc": 4,
+				"power": "4",
+				"toughness": "3",
+				"colors": ["B"],
+				"color_identity": ["B"],
+				"keywords": ["Venture into the dungeon"],
+				"legalities": {
+					"modern": "legal",
+					"commander": "legal"
+				},
+				"digital": false,
+				"games": ["arena", "paper", "mtgo"],
+				"finishes": ["nonfoil", "foil"],
+				"rarity": "common",
+				"border_color": "black",
+				"frame": "2015",
+				"reprint": false,
+				"promo": false,
+				"full_art": false,
+				"oversized": false,
+				"variation": false,
+				"image_status": "highres_scan"
+			},
+			"draw": false
+		},
+		{
+			"etb": false,
+			"card": {
+				"id": "5e648262-3b9b-4c58-8e29-48356e3cb064",
+				"oracle_id": "42226b87-0746-4ebf-9fd0-108d508462af",
+				"name": "Clone",
+				"lang": "en",
+				"layout": "normal",
+				"set": "m14",
+				"set_name": "Magic 2014",
+				"set_type": "core",
+				"collector_number": "47",
+				"released_at": "2013-07-19",
+				"type_line": "Creature — Shapeshifter",
+				"oracle_text": "You may have this creature enter as a copy of any creature on the battlefield.",
+				"mana_cost": "{3}{U}",
+				"cmc": 4,
+				"power": "0",
+				"toughness": "0",
+				"colors": ["U"],
+				"color_identity": ["U"],
+				"keywords": [],
+				"legalities": {
+					"modern": "legal",
+					"commander": "legal"
+				},
+				"digital": false,
+				"games": ["paper", "mtgo"],
+				"finishes": ["nonfoil", "foil"],
+				"rarity": "rare",
+				"border_color": "black",
+				"frame": "2003",
+				"reprint": true,
+				"promo": false,
+				"full_art": false,
+				"oversized": false,
+				"variation": false,
+				"image_status": "highres_scan"
+			},
+			"draw": false
+		},
+		{
+			"etb": false,
+			"card": {
+				"id": "08b9a296-3b76-4f8f-9d71-7c9af92bb3b4",
+				"oracle_id": "3f3b2c10-21f8-4e13-be83-4ef3fa36e123",
+				"name": "Elvish Mystic",
+				"lang": "en",
+				"layout": "normal",
+				"set": "hoc",
+				"set_name": "The Hobbit Eternal",
+				"set_type": "eternal",
+				"collector_number": "205",
+				"released_at": "2026-08-14",
+				"type_line": "Creature — Elf Druid",
+				"oracle_text": "{T}: Add {G}.",
+				"mana_cost": "{G}",
+				"cmc": 1,
+				"power": "1",
+				"toughness": "1",
+				"colors": ["G"],
+				"color_identity": ["G"],
+				"keywords": [],
+				"legalities": {
+					"modern": "legal",
+					"commander": "legal"
+				},
+				"digital": false,
+				"games": ["paper", "arena", "mtgo"],
+				"finishes": ["nonfoil"],
+				"rarity": "common",
+				"border_color": "black",
+				"frame": "2015",
+				"reprint": true,
+				"promo": false,
+				"full_art": false,
+				"oversized": false,
+				"variation": false,
+				"image_status": "highres_scan"
+			},
+			"draw": false
+		},
+		{
+			"etb": false,
+			"card": {
+				"id": "0a135e09-b534-4836-9a10-3a9a4a9f8c53",
+				"oracle_id": "753cb2b2-24ce-484f-a2d0-be6fd2c67ebd",
+				"name": "Grafdigger's Cage",
+				"lang": "en",
+				"layout": "normal",
+				"set": "m20",
+				"set_name": "Core Set 2020",
+				"set_type": "core",
+				"collector_number": "227",
+				"released_at": "2019-07-12",
+				"type_line": "Artifact",
+				"oracle_text": "Creature cards in graveyards and libraries can't enter the battlefield.\nPlayers can't cast spells from graveyards or libraries.",
+				"mana_cost": "{1}",
+				"cmc": 1,
+				"colors": [],
+				"color_identity": [],
+				"keywords": [],
+				"legalities": {
+					"modern": "legal",
+					"commander": "legal"
+				},
+				"digital": false,
+				"games": ["arena", "paper", "mtgo"],
+				"finishes": ["nonfoil", "foil"],
+				"rarity": "rare",
+				"border_color": "black",
+				"frame": "2015",
+				"reprint": true,
+				"promo": false,
+				"full_art": false,
+				"oversized": false,
+				"variation": false,
+				"image_status": "highres_scan"
+			},
+			"draw": false
+		},
+		{
+			"etb": false,
+			"card": {
+				"id": "663b3e6f-1099-4de8-a0a7-6f1919c38010",
+				"oracle_id": "3d21f710-6bbc-41ae-a8e5-02debe3e02bd",
+				"name": "Hushbringer",
+				"lang": "en",
+				"layout": "normal",
+				"set": "eld",
+				"set_name": "Throne of Eldraine",
+				"set_type": "expansion",
+				"collector_number": "18",
+				"released_at": "2019-10-04",
+				"type_line": "Creature — Faerie",
+				"oracle_text": "Flying, lifelink\nCreatures entering or dying don't cause abilities to trigger.",
+				"mana_cost": "{1}{W}",
+				"cmc": 2,
+				"power": "1",
+				"toughness": "2",
+				"colors": ["W"],
+				"color_identity": ["W"],
+				"keywords": ["Flying", "Lifelink"],
+				"legalities": {
+					"modern": "legal",
+					"commander": "legal"
+				},
+				"digital": false,
+				"games": ["arena", "paper", "mtgo"],
+				"finishes": ["nonfoil", "foil"],
+				"rarity": "rare",
+				"border_color": "black",
+				"frame": "2015",
+				"reprint": false,
+				"promo": false,
+				"full_art": false,
+				"oversized": false,
+				"variation": false,
+				"image_status": "highres_scan"
+			},
+			"draw": false
+		},
+		{
+			"etb": false,
+			"card": {
+				"id": "6a0b230b-d391-4998-a3f7-7b158a0ec2cd",
+				"oracle_id": "68954295-54e3-4303-a6bc-fc4547a4e3a3",
+				"name": "Llanowar Elves",
+				"lang": "en",
+				"layout": "normal",
+				"set": "fdn",
+				"set_name": "Foundations",
+				"set_type": "core",
+				"collector_number": "227",
+				"released_at": "2024-11-15",
+				"type_line": "Creature — Elf Druid",
+				"oracle_text": "{T}: Add {G}.",
+				"mana_cost": "{G}",
+				"cmc": 1,
+				"power": "1",
+				"toughness": "1",
+				"colors": ["G"],
+				"color_identity": ["G"],
+				"keywords": [],
+				"legalities": {
+					"modern": "legal",
+					"commander": "legal"
+				},
+				"digital": false,
+				"games": ["paper", "arena", "mtgo"],
+				"finishes": ["nonfoil", "foil"],
+				"rarity": "common",
+				"border_color": "black",
+				"frame": "2015",
+				"reprint": true,
+				"promo": false,
+				"full_art": false,
+				"oversized": false,
+				"variation": false,
+				"image_status": "highres_scan"
+			},
+			"draw": false
+		},
+		{
+			"etb": true,
+			"card": {
+				"id": "7c024bae-5631-4e20-ac69-df392ac9e109",
+				"oracle_id": "ea5103f5-27e0-4eb1-902c-7f34652d6bf3",
+				"name": "Orcish Bowmasters",
+				"lang": "en",
+				"layout": "normal",
+				"set": "ltr",
+				"set_name": "The Lord of the Rings: Tales of Middle-earth",
+				"set_type": "draft_innovation",
+				"collector_number": "103",
+				"released_at": "2023-06-23",
+				"type_line": "Creature — Orc Archer",
+				"oracle_text": "Flash\nWhen this creature enters and whenever an opponent draws a card except the first one they draw in each of their draw steps, this creature deals 1 damage to any target. Then amass Orcs 1.",
+				"mana_cost": "{1}{B}",
+				"cmc": 2,
+				"power": "1",
+				"toughness": "1",
+				"colors": ["B"],
+				"color_identity": ["B"],
+				"keywords": ["Amass", "Flash"],
+				"legalities": {
+					"modern": "legal",
+					"commander": "legal"
+				},
+				"digital": false,
+				"games": ["paper", "mtgo", "arena"],
+				"finishes": ["nonfoil", "foil"],
+				"rarity": "rare",
+				"border_color": "black",
+				"frame": "2015",
+				"reprint": false,
+				"promo": false,
+				"full_art": false,
+				"oversized": false,
+				"variation": false,
+				"image_status": "lowres"
+			},
+			"draw": false
+		},
+		{
+			"etb": true,
+			"card": {
+				"id": "32fd8b7c-baf3-4d3d-be6f-044a917b11a0",
+				"oracle_id": "3640c29b-1534-4952-b297-619ade948431",
+				"name": "Roaming Throne",
+				"lang": "en",
+				"layout": "normal",
+				"set": "lci",
+				"set_name": "The Lost Caverns of Ixalan",
+				"set_type": "expansion",
+				"collector_number": "258",
+				"released_at": "2023-11-17",
+				"type_line": "Artifact Creature — Golem",
+				"oracle_text": "Ward {2}\nAs this creature enters, choose a creature type.\nThis creature is the chosen type in addition to its other types.\nIf a triggered ability of another creature you control of the chosen type triggers, it triggers an additional time.",
+				"mana_cost": "{4}",
+				"cmc": 4,
+				"power": "4",
+				"toughness": "4",
+				"colors": [],
+				"color_identity": [],
+				"keywords": ["Ward"],
+				"legalities": {
+					"modern": "legal",
+					"commander": "legal"
+				},
+				"digital": false,
+				"games": ["paper", "mtgo", "arena"],
+				"finishes": ["nonfoil", "foil"],
+				"rarity": "rare",
+				"border_color": "black",
+				"frame": "2015",
+				"reprint": false,
+				"promo": false,
+				"full_art": false,
+				"oversized": false,
+				"variation": false,
+				"image_status": "highres_scan"
+			},
+			"draw": false
+		},
+		{
+			"etb": true,
+			"card": {
+				"id": "ea630ba1-22f9-4a10-bdc6-0d03128214f4",
+				"oracle_id": "aa854d50-444c-49d9-bfb1-5476b33c1c0b",
+				"name": "Scute Swarm",
+				"lang": "en",
+				"layout": "normal",
+				"set": "dsc",
+				"set_name": "Duskmourn: House of Horror Commander",
+				"set_type": "commander",
+				"collector_number": "197",
+				"released_at": "2024-09-27",
+				"type_line": "Creature — Insect",
+				"oracle_text": "Landfall — Whenever a land you control enters, create a 1/1 green Insect creature token. If you control six or more lands, create a token that's a copy of this creature instead.",
+				"mana_cost": "{2}{G}",
+				"cmc": 3,
+				"power": "1",
+				"toughness": "1",
+				"colors": ["G"],
+				"color_identity": ["G"],
+				"keywords": ["Landfall"],
+				"legalities": {
+					"modern": "legal",
+					"commander": "legal"
+				},
+				"digital": false,
+				"games": ["paper", "mtgo"],
+				"finishes": ["nonfoil"],
+				"rarity": "rare",
+				"border_color": "black",
+				"frame": "2015",
+				"reprint": true,
+				"promo": false,
+				"full_art": false,
+				"oversized": false,
+				"variation": false,
+				"image_status": "highres_scan"
+			},
+			"draw": false
+		},
+		{
+			"etb": true,
+			"card": {
+				"id": "235d1ffc-72aa-40a2-95dc-3f6a8d495061",
+				"oracle_id": "53542c79-a62a-4d6a-97db-5296e9c68302",
+				"name": "Tangled Florahedron // Tangled Vale",
+				"lang": "en",
+				"layout": "modal_dfc",
+				"set": "znr",
+				"set_name": "Zendikar Rising",
+				"set_type": "expansion",
+				"collector_number": "211",
+				"released_at": "2020-09-25",
+				"type_line": "Creature — Elemental // Land",
+				"cmc": 2,
+				"color_identity": ["G"],
+				"keywords": [],
+				"legalities": {
+					"modern": "legal",
+					"commander": "legal"
+				},
+				"digital": false,
+				"games": ["arena", "paper", "mtgo"],
+				"finishes": ["nonfoil", "foil"],
+				"rarity": "uncommon",
+				"border_color": "black",
+				"frame": "2015",
+				"reprint": false,
+				"promo": false,
+				"full_art": false,
+				"oversized": false,
+				"variation": false,
+				"image_status": "highres_scan",
+				"card_faces": [
+					{
+						"name": "Tangled Florahedron",
+						"mana_cost": "{1}{G}",
+						"type_line": "Creature — Elemental",
+						"oracle_text": "{T}: Add {G}.",
+						"colors": ["G"],
+						"power": "1",
+						"toughness": "1"
+					},
+					{
+						"name": "Tangled Vale",
+						"mana_cost": "",
+						"type_line": "Land",
+						"oracle_text": "This land enters tapped.\n{T}: Add {G}.",
+						"colors": []
+					}
+				]
+			},
+			"draw": false
+		},
+		{
+			"etb": true,
+			"card": {
+				"id": "a1e048e0-19d2-4076-892d-f8b3104dee37",
+				"oracle_id": "ab8d5f5c-1976-4f77-8ed2-8d28ee666741",
+				"name": "Tireless Provisioner",
+				"lang": "en",
+				"layout": "normal",
+				"set": "moc",
+				"set_name": "March of the Machine Commander",
+				"set_type": "commander",
+				"collector_number": "313",
+				"released_at": "2023-04-21",
+				"type_line": "Creature — Elf Scout",
+				"oracle_text": "Landfall — Whenever a land you control enters, create a Food token or a Treasure token. (Food is an artifact with \"{2}, {T}, Sacrifice this token: You gain 3 life.\" Treasure is an artifact with \"{T}, Sacrifice this token: Add one mana of any color.\")",
+				"mana_cost": "{2}{G}",
+				"cmc": 3,
+				"power": "3",
+				"toughness": "2",
+				"colors": ["G"],
+				"color_identity": ["G"],
+				"keywords": ["Treasure", "Food", "Landfall"],
+				"legalities": {
+					"modern": "legal",
+					"commander": "legal"
+				},
+				"digital": false,
+				"games": ["paper", "mtgo"],
+				"finishes": ["nonfoil"],
+				"rarity": "uncommon",
+				"border_color": "black",
+				"frame": "2015",
+				"reprint": true,
+				"promo": false,
+				"full_art": false,
+				"oversized": false,
+				"variation": false,
+				"image_status": "highres_scan"
+			},
+			"draw": false
+		},
+		{
+			"etb": false,
+			"card": {
+				"id": "dbf02a38-d10d-463e-ab99-e7fd848a1bd3",
+				"oracle_id": "97326cad-b13c-4e52-82ce-850a39e5ff08",
+				"name": "Torpor Orb",
+				"lang": "en",
+				"layout": "normal",
+				"set": "big",
+				"set_name": "The Big Score",
+				"set_type": "expansion",
+				"collector_number": "27",
+				"released_at": "2024-04-19",
+				"type_line": "Artifact",
+				"oracle_text": "Creatures entering don't cause abilities to trigger.",
+				"mana_cost": "{2}",
+				"cmc": 2,
+				"colors": [],
+				"color_identity": [],
+				"keywords": [],
+				"legalities": {
+					"modern": "legal",
+					"commander": "legal"
+				},
+				"digital": false,
+				"games": ["paper", "arena", "mtgo"],
+				"finishes": ["nonfoil", "foil"],
+				"rarity": "mythic",
+				"border_color": "black",
+				"frame": "2015",
+				"reprint": true,
+				"promo": false,
+				"full_art": false,
+				"oversized": false,
+				"variation": false,
+				"image_status": "highres_scan"
+			},
+			"draw": false
+		},
+		{
+			"etb": false,
+			"card": {
+				"id": "35a69bb5-b8e6-4558-9563-10c7a3662f93",
+				"oracle_id": "605c1ee0-5e8a-4e0a-a99b-42a38873f822",
+				"name": "Welcoming Vampire",
+				"lang": "en",
+				"layout": "normal",
+				"set": "tdc",
+				"set_name": "Tarkir: Dragonstorm Commander",
+				"set_type": "commander",
+				"collector_number": "140",
+				"released_at": "2025-04-11",
+				"type_line": "Creature — Vampire",
+				"oracle_text": "Flying\nWhenever one or more other creatures you control with power 2 or less enter, draw a card. This ability triggers only once each turn.",
+				"mana_cost": "{2}{W}",
+				"cmc": 3,
+				"power": "2",
+				"toughness": "3",
+				"colors": ["W"],
+				"color_identity": ["W"],
+				"keywords": ["Flying"],
+				"legalities": {
+					"modern": "legal",
+					"commander": "legal"
+				},
+				"digital": false,
+				"games": ["paper", "mtgo"],
+				"finishes": ["nonfoil"],
+				"rarity": "rare",
+				"border_color": "black",
+				"frame": "2015",
+				"reprint": true,
+				"promo": false,
+				"full_art": false,
+				"oversized": false,
+				"variation": false,
+				"image_status": "lowres"
+			},
+			"draw": false
+		}
+	],
+	"queries": [
+		{
+			"q": "is:etb",
+			"tree": {
+				"node_type": "CardBinaryOperatorNode",
+				"kwargs": {
+					"lhs": {
+						"node_type": "CardAttributeNode",
+						"kwargs": {
+							"attribute_name": "oracle_text",
+							"original_attribute": "fo"
+						}
+					},
+					"op": ":",
+					"rhs": {
+						"node_type": "StringValueNode",
+						"kwargs": {
+							"value": "enters"
+						}
+					}
+				}
+			},
+			"expected": [
+				"Abandoned Outpost",
+				"Academy Elite",
+				"Accomplished Automaton",
+				"Adaptive Snapjaw",
+				"Aethersnatch",
+				"Baleful Strix",
+				"Orcish Bowmasters",
+				"Roaming Throne",
+				"Scute Swarm",
+				"Tangled Florahedron // Tangled Vale",
+				"Tireless Provisioner"
+			]
+		},
+		{
+			"q": "has:etb",
+			"tree": {
+				"node_type": "CardBinaryOperatorNode",
+				"kwargs": {
+					"lhs": {
+						"node_type": "CardAttributeNode",
+						"kwargs": {
+							"attribute_name": "oracle_text",
+							"original_attribute": "fo"
+						}
+					},
+					"op": ":",
+					"rhs": {
+						"node_type": "StringValueNode",
+						"kwargs": {
+							"value": "enters"
+						}
+					}
+				}
+			},
+			"expected": [
+				"Abandoned Outpost",
+				"Academy Elite",
+				"Accomplished Automaton",
+				"Adaptive Snapjaw",
+				"Aethersnatch",
+				"Baleful Strix",
+				"Orcish Bowmasters",
+				"Roaming Throne",
+				"Scute Swarm",
+				"Tangled Florahedron // Tangled Vale",
+				"Tireless Provisioner"
+			]
+		},
+		{
+			"q": "not:etb",
+			"tree": {
+				"node_type": "NotNode",
+				"kwargs": {
+					"operand": {
+						"node_type": "CardBinaryOperatorNode",
+						"kwargs": {
+							"lhs": {
+								"node_type": "CardAttributeNode",
+								"kwargs": {
+									"attribute_name": "oracle_text",
+									"original_attribute": "fo"
+								}
+							},
+							"op": ":",
+							"rhs": {
+								"node_type": "StringValueNode",
+								"kwargs": {
+									"value": "enters"
+								}
+							}
+						}
+					}
+				}
+			},
+			"expected": [
+				"Archelos, Lagoon Mystic",
+				"Bar the Gate",
+				"Birds of Paradise",
+				"Bloodbraid Elf",
+				"Bloodfray Giant",
+				"Clattering Skeletons",
+				"Clone",
+				"Elvish Mystic",
+				"Grafdigger's Cage",
+				"Hushbringer",
+				"Llanowar Elves",
+				"Torpor Orb",
+				"Welcoming Vampire"
+			]
+		},
+		{
+			"q": "-is:etb",
+			"tree": {
+				"node_type": "NotNode",
+				"kwargs": {
+					"operand": {
+						"node_type": "CardBinaryOperatorNode",
+						"kwargs": {
+							"lhs": {
+								"node_type": "CardAttributeNode",
+								"kwargs": {
+									"attribute_name": "oracle_text",
+									"original_attribute": "fo"
+								}
+							},
+							"op": ":",
+							"rhs": {
+								"node_type": "StringValueNode",
+								"kwargs": {
+									"value": "enters"
+								}
+							}
+						}
+					}
+				}
+			},
+			"expected": [
+				"Archelos, Lagoon Mystic",
+				"Bar the Gate",
+				"Birds of Paradise",
+				"Bloodbraid Elf",
+				"Bloodfray Giant",
+				"Clattering Skeletons",
+				"Clone",
+				"Elvish Mystic",
+				"Grafdigger's Cage",
+				"Hushbringer",
+				"Llanowar Elves",
+				"Torpor Orb",
+				"Welcoming Vampire"
+			]
+		},
+		{
+			"q": "-not:etb",
+			"tree": {
+				"node_type": "NotNode",
+				"kwargs": {
+					"operand": {
+						"node_type": "NotNode",
+						"kwargs": {
+							"operand": {
+								"node_type": "CardBinaryOperatorNode",
+								"kwargs": {
+									"lhs": {
+										"node_type": "CardAttributeNode",
+										"kwargs": {
+											"attribute_name": "oracle_text",
+											"original_attribute": "fo"
+										}
+									},
+									"op": ":",
+									"rhs": {
+										"node_type": "StringValueNode",
+										"kwargs": {
+											"value": "enters"
+										}
+									}
+								}
+							}
+						}
+					}
+				}
+			},
+			"expected": [
+				"Abandoned Outpost",
+				"Academy Elite",
+				"Accomplished Automaton",
+				"Adaptive Snapjaw",
+				"Aethersnatch",
+				"Baleful Strix",
+				"Orcish Bowmasters",
+				"Roaming Throne",
+				"Scute Swarm",
+				"Tangled Florahedron // Tangled Vale",
+				"Tireless Provisioner"
+			]
+		},
+		{
+			"q": "is:etb t:creature",
+			"tree": {
+				"node_type": "AndNode",
+				"kwargs": {
+					"operands": [
+						{
+							"node_type": "CardBinaryOperatorNode",
+							"kwargs": {
+								"lhs": {
+									"node_type": "CardAttributeNode",
+									"kwargs": {
+										"attribute_name": "oracle_text",
+										"original_attribute": "fo"
+									}
+								},
+								"op": ":",
+								"rhs": {
+									"node_type": "StringValueNode",
+									"kwargs": {
+										"value": "enters"
+									}
+								}
+							}
+						},
+						{
+							"node_type": "CardBinaryOperatorNode",
+							"kwargs": {
+								"lhs": {
+									"node_type": "CardAttributeNode",
+									"kwargs": {
+										"attribute_name": "card_types",
+										"original_attribute": "t"
+									}
+								},
+								"op": ":",
+								"rhs": ["Creature"]
+							}
+						}
+					]
+				}
+			},
+			"expected": [
+				"Academy Elite",
+				"Accomplished Automaton",
+				"Adaptive Snapjaw",
+				"Baleful Strix",
+				"Orcish Bowmasters",
+				"Roaming Throne",
+				"Scute Swarm",
+				"Tangled Florahedron // Tangled Vale",
+				"Tireless Provisioner"
+			]
+		},
+		{
+			"q": "(is:etb or !\"Birds of Paradise\") t:creature",
+			"tree": {
+				"node_type": "AndNode",
+				"kwargs": {
+					"operands": [
+						{
+							"node_type": "OrNode",
+							"kwargs": {
+								"operands": [
+									{
+										"node_type": "CardBinaryOperatorNode",
+										"kwargs": {
+											"lhs": {
+												"node_type": "CardAttributeNode",
+												"kwargs": {
+													"attribute_name": "oracle_text",
+													"original_attribute": "fo"
+												}
+											},
+											"op": ":",
+											"rhs": {
+												"node_type": "StringValueNode",
+												"kwargs": {
+													"value": "enters"
+												}
+											}
+										}
+									},
+									{
+										"node_type": "ExactNameNode",
+										"kwargs": {
+											"value": "birdsofparadise"
+										}
+									}
+								]
+							}
+						},
+						{
+							"node_type": "CardBinaryOperatorNode",
+							"kwargs": {
+								"lhs": {
+									"node_type": "CardAttributeNode",
+									"kwargs": {
+										"attribute_name": "card_types",
+										"original_attribute": "t"
+									}
+								},
+								"op": ":",
+								"rhs": ["Creature"]
+							}
+						}
+					]
+				}
+			},
+			"expected": [
+				"Academy Elite",
+				"Accomplished Automaton",
+				"Adaptive Snapjaw",
+				"Baleful Strix",
+				"Birds of Paradise",
+				"Orcish Bowmasters",
+				"Roaming Throne",
+				"Scute Swarm",
+				"Tangled Florahedron // Tangled Vale",
+				"Tireless Provisioner"
+			]
+		},
+		{
+			"q": "-(is:etb or !\"Birds of Paradise\") t:creature",
+			"tree": {
+				"node_type": "AndNode",
+				"kwargs": {
+					"operands": [
+						{
+							"node_type": "NotNode",
+							"kwargs": {
+								"operand": {
+									"node_type": "OrNode",
+									"kwargs": {
+										"operands": [
+											{
+												"node_type": "CardBinaryOperatorNode",
+												"kwargs": {
+													"lhs": {
+														"node_type": "CardAttributeNode",
+														"kwargs": {
+															"attribute_name": "oracle_text",
+															"original_attribute": "fo"
+														}
+													},
+													"op": ":",
+													"rhs": {
+														"node_type": "StringValueNode",
+														"kwargs": {
+															"value": "enters"
+														}
+													}
+												}
+											},
+											{
+												"node_type": "ExactNameNode",
+												"kwargs": {
+													"value": "birdsofparadise"
+												}
+											}
+										]
+									}
+								}
+							}
+						},
+						{
+							"node_type": "CardBinaryOperatorNode",
+							"kwargs": {
+								"lhs": {
+									"node_type": "CardAttributeNode",
+									"kwargs": {
+										"attribute_name": "card_types",
+										"original_attribute": "t"
+									}
+								},
+								"op": ":",
+								"rhs": ["Creature"]
+							}
+						}
+					]
+				}
+			},
+			"expected": [
+				"Archelos, Lagoon Mystic",
+				"Bloodbraid Elf",
+				"Bloodfray Giant",
+				"Clattering Skeletons",
+				"Clone",
+				"Elvish Mystic",
+				"Hushbringer",
+				"Llanowar Elves",
+				"Welcoming Vampire"
+			]
+		},
+		{
+			"q": "(fo:/when(ever)? (~|this creature|this permanent) enters.*?draws? [^.]*cards?/) t:creature",
+			"tree": {
+				"node_type": "AndNode",
+				"kwargs": {
+					"operands": [
+						{
+							"node_type": "CardBinaryOperatorNode",
+							"kwargs": {
+								"lhs": {
+									"node_type": "CardAttributeNode",
+									"kwargs": {
+										"attribute_name": "oracle_text",
+										"original_attribute": "fo"
+									}
+								},
+								"op": ":",
+								"rhs": {
+									"node_type": "RegexValueNode",
+									"kwargs": {
+										"value": "when(ever)? (~|this creature|this permanent) enters.*?draws? [^.]*cards?"
+									}
+								}
+							}
+						},
+						{
+							"node_type": "CardBinaryOperatorNode",
+							"kwargs": {
+								"lhs": {
+									"node_type": "CardAttributeNode",
+									"kwargs": {
+										"attribute_name": "card_types",
+										"original_attribute": "t"
+									}
+								},
+								"op": ":",
+								"rhs": ["Creature"]
+							}
+						}
+					]
+				}
+			},
+			"expected": ["Baleful Strix", "Orcish Bowmasters"]
+		},
+		{
+			"q": "(fo:/when(ever)? (~|this creature|this permanent) enters.*?draws? [^.]*cards?/) t:creature otag:draw",
+			"tree": {
+				"node_type": "AndNode",
+				"kwargs": {
+					"operands": [
+						{
+							"node_type": "CardBinaryOperatorNode",
+							"kwargs": {
+								"lhs": {
+									"node_type": "CardAttributeNode",
+									"kwargs": {
+										"attribute_name": "oracle_text",
+										"original_attribute": "fo"
+									}
+								},
+								"op": ":",
+								"rhs": {
+									"node_type": "RegexValueNode",
+									"kwargs": {
+										"value": "when(ever)? (~|this creature|this permanent) enters.*?draws? [^.]*cards?"
+									}
+								}
+							}
+						},
+						{
+							"node_type": "CardBinaryOperatorNode",
+							"kwargs": {
+								"lhs": {
+									"node_type": "CardAttributeNode",
+									"kwargs": {
+										"attribute_name": "card_types",
+										"original_attribute": "t"
+									}
+								},
+								"op": ":",
+								"rhs": ["Creature"]
+							}
+						},
+						{
+							"node_type": "CardBinaryOperatorNode",
+							"kwargs": {
+								"lhs": {
+									"node_type": "CardAttributeNode",
+									"kwargs": {
+										"attribute_name": "card_oracle_tags",
+										"original_attribute": "otag"
+									}
+								},
+								"op": ":",
+								"rhs": ["draw"]
+							}
+						}
+					]
+				}
+			},
+			"expected": ["Baleful Strix"]
+		},
+		{
+			"q": "(fo:/when(ever)? (~|this creature|this permanent) enters.*?draws? [^.]*cards?/) t:creature otag:draw is:etb",
+			"tree": {
+				"node_type": "AndNode",
+				"kwargs": {
+					"operands": [
+						{
+							"node_type": "CardBinaryOperatorNode",
+							"kwargs": {
+								"lhs": {
+									"node_type": "CardAttributeNode",
+									"kwargs": {
+										"attribute_name": "oracle_text",
+										"original_attribute": "fo"
+									}
+								},
+								"op": ":",
+								"rhs": {
+									"node_type": "RegexValueNode",
+									"kwargs": {
+										"value": "when(ever)? (~|this creature|this permanent) enters.*?draws? [^.]*cards?"
+									}
+								}
+							}
+						},
+						{
+							"node_type": "CardBinaryOperatorNode",
+							"kwargs": {
+								"lhs": {
+									"node_type": "CardAttributeNode",
+									"kwargs": {
+										"attribute_name": "card_types",
+										"original_attribute": "t"
+									}
+								},
+								"op": ":",
+								"rhs": ["Creature"]
+							}
+						},
+						{
+							"node_type": "CardBinaryOperatorNode",
+							"kwargs": {
+								"lhs": {
+									"node_type": "CardAttributeNode",
+									"kwargs": {
+										"attribute_name": "card_oracle_tags",
+										"original_attribute": "otag"
+									}
+								},
+								"op": ":",
+								"rhs": ["draw"]
+							}
+						},
+						{
+							"node_type": "CardBinaryOperatorNode",
+							"kwargs": {
+								"lhs": {
+									"node_type": "CardAttributeNode",
+									"kwargs": {
+										"attribute_name": "oracle_text",
+										"original_attribute": "fo"
+									}
+								},
+								"op": ":",
+								"rhs": {
+									"node_type": "StringValueNode",
+									"kwargs": {
+										"value": "enters"
+									}
+								}
+							}
+						}
+					]
+				}
+			},
+			"expected": ["Baleful Strix"]
+		}
+	]
+}

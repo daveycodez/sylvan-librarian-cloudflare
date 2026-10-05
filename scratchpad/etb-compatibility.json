@@ -1,0 +1,169 @@
+{
+  "measured_at": "2026-10-04 America/Los_Angeles",
+  "implementation": "is:etb -> fo:enters; existing has alias and not negation",
+  "public_symmetrical_differences": {
+    "is:etb -fo:enters": 0,
+    "fo:enters -is:etb": 0
+  },
+  "alias_differences": [
+    {
+      "key": "has",
+      "cards": 0
+    },
+    {
+      "key": "not",
+      "cards": 0
+    },
+    {
+      "key": "alias-is",
+      "cards": 0
+    },
+    {
+      "key": "alias-not",
+      "cards": 0
+    }
+  ],
+  "serial_network_requests": 232,
+  "minimum_request_gap_ms": 558.1450462341309,
+  "request_policy": "single serial stream, 500 ms after each response, 60-second backoff after HTTP 429; no additional network requests for native validation",
+  "native_corpus": {
+    "printings": 8259,
+    "cards": 8225,
+    "source": "all public enter/enters results, targeted controls, and complete multi-face, grouped and negated query results; draw tags independently fetched via fo:enters otag:draw"
+  },
+  "production_validation": "Existing deployed engine queried using the equivalent fo:enters expansion. Native is:etb spelling validated through the patched routes and committed WASM on the cached live corpus. Production is:etb awaits approved deployment.",
+  "data_or_index_rebuild_required": false,
+  "results": [
+    {
+      "label": "predicate",
+      "query": "is:etb",
+      "public_cards": 7890,
+      "public_pages": 46,
+      "production_expansion_cards": 7890,
+      "production_expansion_pages": 46,
+      "native_cards": 7890,
+      "native_pages": 46,
+      "oracle_ids": 7890,
+      "missing": [],
+      "extra": [],
+      "production_missing": [],
+      "production_extra": [],
+      "native_warnings": []
+    },
+    {
+      "label": "creatures",
+      "query": "is:etb t:creature",
+      "public_cards": 5477,
+      "public_pages": 32,
+      "production_expansion_cards": 5477,
+      "production_expansion_pages": 32,
+      "native_cards": 5477,
+      "native_pages": 32,
+      "oracle_ids": 5477,
+      "missing": [],
+      "extra": [],
+      "production_missing": [],
+      "production_extra": [],
+      "native_warnings": []
+    },
+    {
+      "label": "combined",
+      "query": "(fo:/when(ever)? (~|this creature|this permanent) enters.*?draws? [^.]*cards?/) t:creature otag:draw is:etb",
+      "public_cards": 345,
+      "public_pages": 2,
+      "production_expansion_cards": 345,
+      "production_expansion_pages": 2,
+      "native_cards": 345,
+      "native_pages": 2,
+      "oracle_ids": 345,
+      "missing": [],
+      "extra": [],
+      "production_missing": [],
+      "production_extra": [],
+      "native_warnings": []
+    },
+    {
+      "label": "grouped",
+      "query": "(is:etb or t:land) e:khm",
+      "public_cards": 123,
+      "public_pages": 1,
+      "production_expansion_cards": 123,
+      "production_expansion_pages": 1,
+      "native_cards": 122,
+      "native_pages": 1,
+      "oracle_ids": 123,
+      "missing": [
+        {
+          "name": "Kardur, Doomscourge",
+          "oracle_text": "When Kardur enters, until your next turn, creatures your opponents control attack each combat if able and attack a player other than you if able.\nWhenever an attacking creature dies, each opponent loses 1 life and you gain 1 life."
+        }
+      ],
+      "extra": [],
+      "production_missing": [],
+      "production_extra": [],
+      "native_warnings": []
+    },
+    {
+      "label": "negated",
+      "query": "not:etb e:khm t:creature",
+      "public_cards": 95,
+      "public_pages": 1,
+      "production_expansion_cards": 95,
+      "production_expansion_pages": 1,
+      "native_cards": 96,
+      "native_pages": 1,
+      "oracle_ids": 95,
+      "missing": [],
+      "extra": [
+        {
+          "name": "Kardur, Doomscourge",
+          "oracle_text": "When Kardur enters, until your next turn, creatures your opponents control attack each combat if able and attack a player other than you if able.\nWhenever an attacking creature dies, each opponent loses 1 life and you gain 1 life.\n//\nWhen Kardur enters, until your next turn, creatures your opponents control attack each combat if able and attack a player other than you if able.\nWhenever an attacking creature dies, each opponent loses 1 life and you gain 1 life."
+        }
+      ],
+      "production_missing": [],
+      "production_extra": [],
+      "native_warnings": []
+    },
+    {
+      "label": "faces",
+      "query": "is:etb (is:dfc or is:adventure)",
+      "public_cards": 276,
+      "public_pages": 2,
+      "production_expansion_cards": 276,
+      "production_expansion_pages": 2,
+      "native_cards": 276,
+      "native_pages": 2,
+      "oracle_ids": 276,
+      "missing": [],
+      "extra": [],
+      "production_missing": [],
+      "production_extra": [],
+      "native_warnings": []
+    }
+  ],
+  "remaining_native_corpus_discrepancy": {
+    "card": "Kardur, Doomscourge",
+    "oracle_text": "When Kardur enters, until your next turn, creatures your opponents control attack each combat if able and attack a player other than you if able.\nWhenever an attacking creature dies, each opponent loses 1 life and you gain 1 life.",
+    "observed": "In the temporary mixed-printing corpus, the normal dsc/223 and khm/216 printings fail fo:enters while the reversible sld/1807 printing matches it. This causes one missing ID in the grouped KHM case and the same extra ID in its negated case.",
+    "scope": "The discrepancy also occurs with fo:enters, so it is independent of the added is:etb alias. The production mirror, queried with fo:enters, matches Scryfall on every page of these same cases. The exact cause inside the limited corpus was not established; no engine, importer, or tag-index changes were made for it."
+  },
+  "quality_gate": {
+    "command": "bun run gate",
+    "exit_code": 0,
+    "bun_tests_passed": 6912,
+    "bun_tests_skipped": 22,
+    "checks": [
+      "clippy 1.97.1",
+      "cargo test --release --workspace",
+      "WASM importer link and query-engine check",
+      "TypeScript typecheck",
+      "Biome",
+      "Bun tests",
+      "performance ratios",
+      "10-partition real-corpus WASM fit",
+      "WASM/native store differential",
+      "N=2/N=10 partition differential"
+    ]
+  },
+  "request_policy_change": "The initial exploratory probes mistakenly used 120 ms and overlapping streams. They were stopped after the user corrected this. Every request recorded in the completed audit log uses a single serial stream with a minimum 500 ms gap and 60-second HTTP 429 backoff."
+}
