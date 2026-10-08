@@ -215,8 +215,13 @@ fn jv_opt_u8(d: &Value, key: &str) -> Option<u8> {
     jv_opt_f32(d, key).map(|v| v as u8)
 }
 
-fn jv_opt_u16(d: &Value, key: &str) -> Option<u16> {
-    jv_opt_f32(d, key).map(|v| v as u16)
+/// `collector_number_int`, read as an integer and not through `jv_opt_f32`: f32 is exact only to
+/// 2^24, and the `as u16` this replaced stored every number above 65,535 as 65,535 (see
+/// `Printing::collector_number_int`). A negative or fractional value reads as absent.
+fn jv_opt_collector_int(d: &Value, key: &str) -> Option<u32> {
+    let v = d.get(key)?;
+    let n = v.as_i64().or_else(|| v.as_f64().filter(|f| f.fract() == 0.0).map(|f| f as i64))?;
+    crate::collector_int_from_i64(n)
 }
 
 fn jv_opt_u32(d: &Value, key: &str) -> Option<u32> {
@@ -711,7 +716,7 @@ pub(crate) fn card_from_json(
         creature_toughness: jv_opt_f32(d, "creature_toughness"),
         planeswalker_loyalty: jv_opt_u8(d, "planeswalker_loyalty"),
         card_rarity_int: jv_opt_u8(d, "card_rarity_int"),
-        collector_number_int: jv_opt_u16(d, "collector_number_int"),
+        collector_number_int: jv_opt_collector_int(d, "collector_number_int"),
         edhrec_rank: jv_opt_u32(d, "edhrec_rank"),
         price_usd: jv_opt_price_cents(d, "price_usd"),
         price_eur: jv_opt_price_cents(d, "price_eur"),
@@ -1374,7 +1379,7 @@ fn encode_card_row(r: &CardRow) -> Vec<u8> {
     e.opt(&r.creature_toughness, |e, &v| e.f32v(v));
     e.opt(&r.planeswalker_loyalty, |e, &v| e.u8v(v));
     e.opt(&r.card_rarity_int, |e, &v| e.u8v(v));
-    e.opt(&r.collector_number_int, |e, &v| e.u16v(v));
+    e.opt(&r.collector_number_int, |e, &v| e.u32v(v));
     e.opt(&r.edhrec_rank, |e, &v| e.u32v(v));
     e.opt(&r.price_usd, |e, &v| e.u32v(v));
     e.opt(&r.price_eur, |e, &v| e.u32v(v));
@@ -1537,7 +1542,7 @@ fn decode_card_row(buf: &[u8]) -> Result<CardRow, EngineError> {
         creature_toughness: d.opt(|d| d.f32v()),
         planeswalker_loyalty: d.opt(|d| d.u8v()),
         card_rarity_int: d.opt(|d| d.u8v()),
-        collector_number_int: d.opt(|d| d.u16v()),
+        collector_number_int: d.opt(|d| d.u32v()),
         edhrec_rank: d.opt(|d| d.u32v()),
         price_usd: d.opt(|d| d.u32v()),
         price_eur: d.opt(|d| d.u32v()),
@@ -7339,7 +7344,7 @@ mod tests {
     fn set_collector_number(r: &mut Value, cn: &str) {
         r["collector_number"] = json!(cn);
         let digits: String = cn.chars().filter(char::is_ascii_digit).collect();
-        match digits.parse::<u16>() {
+        match digits.parse::<u32>() {
             Ok(n) => r["collector_number_int"] = json!(n),
             Err(_) => {
                 if let Value::Object(map) = r {
@@ -7411,7 +7416,7 @@ mod tests {
         // (measured against api.scryfall.com over the whole set, 2026-08-16) and is what an
         // int-only key cannot express. "UB" carries no digits at all and leads the set, which is
         // where Scryfall puts the corpus's five digit-free numbers (`e:unk` answers CAa, CAb, UB,
-        // CA01, ... , measured the same day) and what `Option<u16>`'s own `None < Some` gives.
+        // CA01, ... , measured the same day) and what `Option<u32>`'s own `None < Some` gives.
         // Distinct oracles so the partition cut splits them, which is
         // what makes `partitioned_key_streams_merge_to_the_unpartitioned_order` prove the BYTE
         // encoding rather than just the in-archive rank.
@@ -7472,6 +7477,29 @@ mod tests {
             set_collector_number(&mut r, cn);
             r["released_at"] = json!(date);
             r["edhrec_rank"] = json!(660);
+            rows.push(r);
+        }
+        // `order=set`'s second key ACROSS 65,535, the ceiling of the u16 the number used to be stored
+        // in: Magic Online's prm runs into the 100,000s, and every number past the ceiling was
+        // stored AS the ceiling, so these rows tied on the integer and fell to the string — which
+        // puts "103404" ahead of "65642". Distinct oracles so the cut splits them and the key's
+        // four integer bytes are on trial in the merge; a date of their own so no other test's
+        // block moves.
+        for (oracle, cn) in [
+            ("oracle-hi-1", "80937"),
+            ("oracle-hi-2", "103404"),
+            ("oracle-hi-3", "65642"),
+            ("oracle-hi-4", "62501"),
+            ("oracle-hi-5", "80887"),
+            ("oracle-hi-6", "65535"),
+            ("oracle-hi-7", "65536"),
+        ] {
+            let scry = format!("row-{oracle}-prm");
+            let mut r = mk("Magic Online Promo Filler", oracle, &scry, "en", 150.0);
+            r["card_set_code"] = json!("prm");
+            set_collector_number(&mut r, cn);
+            r["released_at"] = json!("2019-03-07");
+            r["edhrec_rank"] = json!(670);
             rows.push(r);
         }
         // The near-tie name pairs the cross-partition NAME lanes are proven on, placed (by the
@@ -7702,6 +7730,120 @@ mod tests {
         let mut shapes = vec!["157s", "157★s", "157", "157★", "1389★", "1389", "S7", "7★", "7"];
         shapes.sort_by_key(|c| crate::collector_collation_key(c));
         assert_eq!(shapes, ["1389", "1389★", "157", "157★", "157★s", "157s", "7", "7★", "S7"]);
+    }
+
+    /// `order=set` across 65,535: prm's numbers in numeric order, in one archive and merged from a
+    /// cut. The stored number was a u16 filled by a saturating cast, so every number past it tied
+    /// at 65,535 and the string broke the tie — "103404" ahead of "65536" ahead of "65642".
+    #[test]
+    fn order_set_counts_past_65535() {
+        let rows = differential_rows();
+        let (_b, store) = build_store(&rows);
+        let prm = json!({
+            "node_type": "CardBinaryOperatorNode",
+            "kwargs": {
+                "op": ":",
+                "lhs": { "node_type": "CardAttributeNode",
+                         "kwargs": { "attribute_name": "card_set_code", "original_attribute": "set" } },
+                "rhs": { "node_type": "StringValueNode", "kwargs": { "value": "prm" } },
+            }
+        });
+        let opts = |direction: &str| QueryOptions {
+            unique: "prints".to_owned(),
+            orderby: "set".to_owned(),
+            direction: direction.to_owned(),
+            limit: 100,
+            fields: Some(vec!["collector_number".to_owned()]),
+            ..QueryOptions::default()
+        };
+        let numbers = |s: &BufferStore, direction: &str| -> Vec<String> {
+            s.query_value(&prm, &opts(direction))
+                .expect("query")
+                .rows
+                .iter()
+                .map(|r| r["collector_number"].as_str().expect("collector_number").to_owned())
+                .collect()
+        };
+        let want = ["62501", "65535", "65536", "65642", "80887", "80937", "103404"];
+        assert_eq!(numbers(&store, "asc"), want);
+        let mut reversed = want.to_vec();
+        reversed.reverse();
+        assert_eq!(numbers(&store, "desc"), reversed);
+
+        // The cut: each partition's key stream, merged bytewise, names the same rows in the same
+        // order as the whole store's — and the seven rows do split.
+        let partitions = partitioned_stores(&rows, 4);
+        for direction in ["asc", "desc"] {
+            let keys_opts = keys_opts("set", direction, "prints", false);
+            let reference: Vec<Vec<u8>> = store.query_keys(&prm, &keys_opts, 0).expect("keys").keys.into_iter().map(|(k, _)| k).collect();
+            assert_eq!(reference.len(), want.len());
+            let streams: Vec<Vec<Vec<u8>>> = partitions
+                .iter()
+                .map(|p| p.query_keys(&prm, &keys_opts, 0).expect("partition keys").keys.into_iter().map(|(k, _)| k).collect())
+                .collect();
+            assert!(streams.iter().filter(|s| !s.is_empty()).count() >= 2, "the prm rows must split across the cut");
+            let mut merged: Vec<Vec<u8>> = streams.into_iter().flatten().collect();
+            merged.sort_unstable();
+            assert_eq!(merged, reference, "order=set {direction}");
+        }
+    }
+
+    /// `cn` comparisons past 65,535 answer the same from a cut as from one archive: each row is in
+    /// exactly one partition, so the partitions' totals sum to the whole store's, and the whole
+    /// store's are the numbers themselves.
+    #[test]
+    fn collector_number_comparisons_past_65535_sum_across_partitions() {
+        let rows = differential_rows();
+        let (_b, store) = build_store(&rows);
+        let partitions = partitioned_stores(&rows, 4);
+        let cn = |op: &str, v: u32| {
+            json!({
+                "node_type": "CardBinaryOperatorNode",
+                "kwargs": {
+                    "op": op,
+                    "lhs": { "node_type": "CardAttributeNode",
+                             "kwargs": { "attribute_name": "collector_number_int", "original_attribute": "cn" } },
+                    "rhs": { "node_type": "NumericValueNode", "kwargs": { "value": v } },
+                }
+            })
+        };
+        let opts = QueryOptions {
+            unique: "prints".to_owned(),
+            orderby: "set".to_owned(),
+            limit: 100,
+            fields: Some(vec!["collector_number".to_owned()]),
+            ..QueryOptions::default()
+        };
+        let numbers = |s: &BufferStore, tree: &Value| -> Vec<String> {
+            let mut out: Vec<String> = s
+                .query_value(tree, &opts)
+                .expect("query")
+                .rows
+                .iter()
+                .map(|r| r["collector_number"].as_str().expect("collector_number").to_owned())
+                .collect();
+            out.sort();
+            out
+        };
+        for (op, v, want) in [
+            (":", 80_937, vec!["80937"]),
+            ("=", 65_536, vec!["65536"]),
+            (">", 65_535, vec!["103404", "65536", "65642", "80887", "80937"]),
+            (">=", 65_535, vec!["103404", "65535", "65536", "65642", "80887", "80937"]),
+            (">", 80_936, vec!["103404", "80937"]),
+            (">=", 103_404, vec!["103404"]),
+            (">", 103_404, vec![]),
+        ] {
+            let tree = cn(op, v);
+            assert_eq!(numbers(&store, &tree), want, "cn{op}{v} in one archive");
+            let mut cut: Vec<String> = partitions.iter().flat_map(|p| numbers(p, &tree)).collect();
+            cut.sort();
+            assert_eq!(cut, want, "cn{op}{v} across the cut");
+        }
+        // Below the old ceiling nothing above it leaks in: `cn<65536` used to be every row.
+        let below = numbers(&store, &cn("<", 65_536));
+        assert!(below.contains(&"62501".to_owned()) && below.contains(&"65535".to_owned()));
+        assert!(["65536", "65642", "80887", "80937", "103404"].iter().all(|n| !below.contains(&(*n).to_owned())), "{below:?}");
     }
 
     /// `order=name` collates the way Scryfall does: accents folded, every non-alphanumeric removed.

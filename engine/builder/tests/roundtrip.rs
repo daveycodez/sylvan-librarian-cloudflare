@@ -55,7 +55,7 @@ fn card_row(
         "card_set_code": set_code,
         "set_name": set_name,
         "collector_number": collector_number,
-        "collector_number_int": collector_number.parse::<u16>().ok(),
+        "collector_number_int": collector_number.parse::<u32>().ok(),
         "oracle_text": oracle_text,
         "flavor_text": "",
         "type_line": type_line,

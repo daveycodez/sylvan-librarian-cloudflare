@@ -171,7 +171,7 @@ fn field_num(card: &AOracleCard, printing: Option<&APrinting>, f: NumField) -> N
         NumField::Loyalty            => known(card.planeswalker_loyalty.as_ref().map(|v| f32::from(*v))),
         NumField::EdhrEc             => known(card.edhrec_rank.as_ref().map(|v| u32::from(*v) as f32)),
         NumField::RarityInt          => printing.map_or(NumVal::PDep, |p| known(p.card_rarity_int.as_ref().map(|v| f32::from(*v)))),
-        NumField::CollectorNumberInt => printing.map_or(NumVal::PDep, |p| known(p.collector_number_int.as_ref().map(|v| u16::from(*v) as f32))),
+        NumField::CollectorNumberInt => printing.map_or(NumVal::PDep, |p| p.collector_int().map_or(NumVal::Null, |n| NumVal::Known(f64::from(n)))),
         // The COALESCED search key, not the raw column: `usd` falls back to the foil and then the
         // etched price on api.scryfall.com, which is 121 cards on `usd>=500` alone. See
         // `crate::search_price_usd_cents` — the range index the planner narrows with is built from

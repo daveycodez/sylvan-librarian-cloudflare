@@ -1965,8 +1965,25 @@ export async function gzipBytes(bytes: Uint8Array): Promise<Uint8Array> {
  *
  *      GENERATION-ONLY: the stored ranks move back, and a rebuild is the only way to move them,
  *      so the number goes forward rather than back to 67.
+ *
+ *   71 (2026-10-08): A COLLECTOR NUMBER ABOVE 65,535 IS THE NUMBER IT IS. The engine kept the
+ *      numeric collector number as an `Option<u16>` and every loader filled it with a saturating
+ *      cast, so each number past the ceiling was STORED as 65,535. Reported by the client that
+ *      pins printings as `(e:<set> cn:<number>)`: `e:prm cn:80937` was a 404 where
+ *      api.scryfall.com answers Crystalline Giant, `e:prm cn>65535` a 404 against Scryfall's
+ *      1,951, and `e:prm cn<65536` every card in the set. 2,195 rows of the 2026-09-24 corpus are
+ *      above it — Magic Online's prm and pz2, and the dated promos of pmei, pwcs and ana, whose
+ *      "2026-25" is 202,625 (Scryfall concatenates the digits as this port does: `e:pmei
+ *      cn>=202410` is 34 there). `order=set` moves with it — those printings all tied on the
+ *      integer and fell to the string.
+ *
+ *      Paired with ARCHIVE_FORMAT_VERSION 2026100403 -> 2026100801 and SORT_KEY_VERSION 3 -> 4,
+ *      and NEITHER ROW GROWS: the number is one u32 holding `n + 1` in the four bytes the option
+ *      took (tag, pad, u16), with `collector_rank` moved ahead of it. The header cannot see a
+ *      reshuffle that keeps 304 bytes, which is why the format moves; the sort key's collector
+ *      segment carries four bytes of integer where it carried two, which is why its version does.
  */
-export const STORE_CONTENT_GENERATION = 70;
+export const STORE_CONTENT_GENERATION = 71;
 
 /**
  * Chunk key for a store. Keyed by store_key, so publishes never collide.

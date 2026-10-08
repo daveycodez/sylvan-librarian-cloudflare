@@ -1244,7 +1244,6 @@ struct Printing {
     released_at_int: Option<u32>,      // yyyymmdd, parsed once at load; date/year filters and prefer use this
 
     card_rarity_int: Option<u8>,       // 0-5
-    collector_number_int: Option<u16>, // some sets exceed i8::MAX
     // Dense rank of (collector_number_int, collector_number) in that order, assigned post-load by
     // assign_collector_ranks; `order=set`'s SECOND key. Scryfall orders a set by collector number
     // and this port had no component for it at all, so `order=set&q=e:khm` was unordered within
@@ -1265,7 +1264,27 @@ struct Printing {
     // padding already sitting after `collector_number_int` — declared up beside the other two
     // ranks it opened a fresh 16-byte lane in `APrinting` instead, ~8.6MB of archive for a number
     // that never needed the width. `the_archived_row_sizes_stay_pinned` is what holds that.
+    //
+    // AHEAD of `collector_number_int` since 2026100801: the rank takes the two bytes after the
+    // 2-byte `card_rarity_int`, which leaves one aligned u32 for the number itself.
     collector_rank: u16,
+    // The collector number's digits as one integer ("123a" -> 123, "2025-25" -> 202525, "★" ->
+    // None), which is what `cn>=`/`cn<` and bare `cn:` compare and what `order=set` sorts by.
+    //
+    // u32 SINCE 2026100801, AND IT WAS A BUG THAT IT WAS NOT (upstream has the same field and
+    // the same cast). It was `Option<u16>` and every loader filled it with a saturating
+    // `as u16`, so each number above 65,535 was STORED as 65,535: `e:prm cn:80937` matched nothing
+    // where api.scryfall.com answers Crystalline Giant, `e:prm cn>65535` was empty against
+    // Scryfall's 1,951, `e:prm cn<65536` was every card in the set, and all of those printings
+    // tied on the integer under `order=set`. 2,195 rows of the 2026-09-24 corpus are above the
+    // old ceiling — Magic Online's prm (1,950 of them, into the 100,000s) and pz2 (197), and the
+    // dated promos of pmei, pwcs and ana, whose "2026-25" is 202,625.
+    //
+    // The row does not grow for it. `Option<u16>` archived as four bytes (tag, pad, value); this
+    // is four bytes too, holding `n + 1` with 0 for None (`CollectorInt`), so the absent case
+    // still orders below every present one. Read it through `APrinting::collector_int`.
+    #[rkyv(with = CollectorInt)]
+    collector_number_int: Option<u32>,
     // Integer cents, not f32 dollars: every real price is exactly cent-precise (checked against
     // the corpus, 0 of 81,540 priced printings differ from their rounded-to-cent value by more
     // than 0.001), and storing the lossy f32 approximation instead of the exact integer caused
@@ -1404,7 +1423,7 @@ struct CardRow {
     creature_toughness: Option<f32>,
     planeswalker_loyalty: Option<u8>,
     card_rarity_int: Option<u8>,
-    collector_number_int: Option<u16>,
+    collector_number_int: Option<u32>,
     edhrec_rank: Option<u32>,
     price_usd: Option<u32>, // integer cents -- see Printing's field for why
     price_eur: Option<u32>,
@@ -1562,6 +1581,51 @@ pub(crate) fn divergent_of<'a>(card: &'a AOracleCard, printing: &APrinting) -> O
 // Type aliases for the archived (mmap-backed) store types
 pub(crate) type AOracleCard = Archived<OracleCard>;
 pub(crate) type APrinting = Archived<Printing>;
+
+/// The largest collector integer a row can hold: `CollectorInt` stores `n + 1`, and
+/// `int_range_bounds` works in half-open u32 ranges, so `u32::MAX` itself is never a value.
+pub(crate) const COLLECTOR_INT_MAX: u32 = u32::MAX - 1;
+
+/// A loader's integer as a collector number: negative is absent, and anything past the ceiling is
+/// the ceiling (the builder already nulls numbers outside i32, so nothing real reaches it).
+pub(crate) fn collector_int_from_i64(n: i64) -> Option<u32> {
+    (n >= 0).then(|| u32::try_from(n).map_or(COLLECTOR_INT_MAX, |v| v.min(COLLECTOR_INT_MAX)))
+}
+
+/// How `Printing::collector_number_int` is archived: one u32 holding `n + 1`, 0 for None. Four
+/// bytes where rkyv's own `Option<u32>` is eight, which is the whole reason it exists — the
+/// printing row has no padding left (see the field). 0 for None keeps `Option`'s order in the
+/// stored value: absent below every present number.
+struct CollectorInt;
+
+impl rkyv::with::ArchiveWith<Option<u32>> for CollectorInt {
+    type Archived = Archived<u32>;
+    type Resolver = ();
+
+    fn resolve_with(field: &Option<u32>, (): (), out: rkyv::Place<Self::Archived>) {
+        field.map_or(0, |n| n.min(COLLECTOR_INT_MAX) + 1).resolve((), out);
+    }
+}
+
+impl<S: rkyv::rancor::Fallible + ?Sized> rkyv::with::SerializeWith<Option<u32>, S> for CollectorInt {
+    fn serialize_with(_: &Option<u32>, _: &mut S) -> Result<(), S::Error> {
+        Ok(())
+    }
+}
+
+impl<D: rkyv::rancor::Fallible + ?Sized> rkyv::with::DeserializeWith<Archived<u32>, Option<u32>, D> for CollectorInt {
+    fn deserialize_with(field: &Archived<u32>, _: &mut D) -> Result<Option<u32>, D::Error> {
+        Ok(u32::from(*field).checked_sub(1))
+    }
+}
+
+impl ArchivedPrinting {
+    /// `collector_number_int` as stored by `CollectorInt`.
+    #[inline]
+    pub(crate) fn collector_int(&self) -> Option<u32> {
+        u32::from(self.collector_number_int).checked_sub(1)
+    }
+}
 
 /// SCRYFALL'S `usd` SEARCH KEY IS `COALESCE(usd, usd_foil, usd_etched)`, AND ITS `prices.usd`
 /// FIELD IS NOT — the two are different questions about the same printing, and this store answers
@@ -2134,13 +2198,18 @@ fn opt_u8(d: &Bound<PyDict>, key: &str) -> Option<u8> {
 }
 
 #[cfg(feature = "python")]
-fn opt_u16(d: &Bound<PyDict>, key: &str) -> Option<u16> {
-    opt_f32(d, key).map(|v| v as u16)
-}
-
-#[cfg(feature = "python")]
 fn opt_u32(d: &Bound<PyDict>, key: &str) -> Option<u32> {
     opt_f32(d, key).map(|v| v as u32)
+}
+
+/// `collector_number_int`, read as an integer and not through `opt_f32`: f32 is exact only to
+/// 2^24, and the narrower `as u16` this replaced stored every number above 65,535 as 65,535 (see
+/// `Printing::collector_number_int`). A negative or non-integer value reads as absent.
+#[cfg(feature = "python")]
+fn opt_collector_int(d: &Bound<PyDict>, key: &str) -> Option<u32> {
+    let v = d.get_item(key).ok().flatten()?;
+    let n = v.extract::<i64>().ok().or_else(|| v.extract::<f64>().ok().filter(|f| f.fract() == 0.0).map(|f| f as i64))?;
+    collector_int_from_i64(n)
 }
 
 #[cfg(feature = "python")]
@@ -2634,7 +2703,7 @@ fn card_from_pydict(d: &Bound<PyDict>, it: &mut Interner, vocab: &mut VocabInter
         creature_toughness: opt_i8(d, "creature_toughness"),
         planeswalker_loyalty: opt_u8(d, "planeswalker_loyalty"),
         card_rarity_int: opt_u8(d, "card_rarity_int"),
-        collector_number_int: opt_u16(d, "collector_number_int"),
+        collector_number_int: opt_collector_int(d, "collector_number_int"),
         edhrec_rank: opt_u32(d, "edhrec_rank"),
         price_usd: opt_price_cents(d, "price_usd"),
         price_eur: opt_price_cents(d, "price_eur"),
@@ -5454,7 +5523,7 @@ fn order_annex_by_language(foreign: &mut [Printing], foreign_offsets: &[u32], co
 /// bytewise tiebreak produces and what a plain string order does not ("A-40" would land past
 /// every number).
 ///
-/// `Option<u16>`'s own `Ord` puts a numberless collector number ("★") first ascending, and
+/// `Option<u32>`'s own `Ord` puts a numberless collector number ("★") first ascending, and
 /// `push_collector_segment` reproduces exactly that with its presence byte, so the in-archive rank
 /// and the cross-partition bytes agree at the absent case as well as at every present one.
 ///
@@ -5462,12 +5531,12 @@ fn order_annex_by_language(foreign: &mut [Printing], foreign_offsets: &[u32], co
 /// collector number is collated once: the key is a function of the interned string alone, so the
 /// ~16k distinct numbers are sorted instead of the ~100k rows, and no key is built per comparison.
 fn assign_collector_ranks(printings: &mut [Printing], foreign: &mut [Printing], strings: &[String]) {
-    let mut ids: Vec<(Option<u16>, u32)> =
+    let mut ids: Vec<(Option<u32>, u32)> =
         printings.iter().chain(foreign.iter()).map(|p| (p.collector_number_int, p.collector_number_id)).collect();
     ids.sort_unstable();
     ids.dedup();
     let text_of = |id: u32| strings.get(id as usize).map_or("", String::as_str);
-    let mut keyed: Vec<((Option<u16>, String), u32)> =
+    let mut keyed: Vec<((Option<u32>, String), u32)> =
         ids.into_iter().map(|(int, id)| ((int, collector_collation_key(text_of(id))), id)).collect();
     keyed.sort_unstable();
     // Dense over the (int, collation key) pairs. Distinct ids never share a key — the key ends in
@@ -11031,7 +11100,7 @@ fn same_set_group_base(p: &APrinting, siblings: &[APrinting], tier: f64, ids: &P
     let number = |q: &APrinting| {
         (
             // A number that does not parse sorts LOWEST — never mistaken for the latest sheet.
-            q.collector_number_int.as_ref().map_or(0, |v| u16::from(*v)),
+            q.collector_int().unwrap_or(0),
             str_at(strings, u32::from(q.collector_number_id)).unwrap_or(""),
         )
     };
@@ -11818,7 +11887,11 @@ fn page_cmp(a: &Match, b: &Match) -> std::cmp::Ordering {
 /// the raw string. A version-2 key is a byte shorter under `released` and orders `★` after the
 /// letters, so a merge across the two would disagree about exactly the same-date and same-number
 /// rows this version exists to fix.
-pub const SORT_KEY_VERSION: u8 = 3;
+/// 3 -> 4: the collector segment's integer is four bytes where it was two, because the stored
+/// number is a u32 (see `Printing::collector_number_int`). A version-3 key is two bytes shorter
+/// under `set` and `released` and carries 65,535 for every number above it, so a merge across the
+/// two would compare a number byte against a string byte.
+pub const SORT_KEY_VERSION: u8 = 4;
 
 /// One string-primary segment. Present values are the raw bytes plus a terminator OUTSIDE the
 /// alphabet (names never contain NUL), so a prefix compares before its extensions; descending
@@ -11855,12 +11928,12 @@ fn push_str_segment(key: &mut Vec<u8>, value: Option<&str>, descending: bool) {
 /// The rank itself cannot go on the wire for the reason the section header gives — partition A
 /// ranking `{1, 5, 9}` as `{0, 1, 2}` and partition B ranking `{2, 3}` as `{0, 1}` interleaves
 /// wrongly under a bytewise merge, and `partitioned_key_streams_merge_to_the_unpartitioned_order`
-/// is what catches it. The pair is emitted so that its byte order IS `Option<u16>`'s `Ord` followed
+/// is what catches it. The pair is emitted so that its byte order IS `Option<u32>`'s `Ord` followed
 /// by the string's: a presence byte (absent below present, matching `None < Some(_)`), the integer
-/// big-endian, then the raw string through `push_str_segment`. Descending complements each,
+/// big-endian in FOUR bytes (two until SORT_KEY_VERSION 4, when the stored number was a u16), then the raw string through `push_str_segment`. Descending complements each,
 /// exactly as `push_str_segment` does, so the whole segment reverses with the primary it belongs to.
 fn push_collector_segment(key: &mut Vec<u8>, data: &Archived<CardData>, p: &APrinting, descending: bool) {
-    match (p.collector_number_int.as_ref().map(|v| u16::from(*v)), descending) {
+    match (p.collector_int(), descending) {
         (None, false) => key.push(0x00),
         (None, true) => key.push(0xFF),
         (Some(n), false) => {
@@ -20781,7 +20854,16 @@ const ARCHIVE_MAGIC: [u8; 8] = *b"ATCARDS\0";
 //                `new:rarity` with nothing, and an OLD reader on this store would read the bit as
 //                part of the order index and list a flagged printing's `games` in the wrong order.
 //                Paired with STORE_CONTENT_GENERATION 66; SORT_KEY_VERSION does not move.
-const ARCHIVE_FORMAT_VERSION: u32 = 2026100403;
+//   2026100801 — THE COLLECTOR NUMBER IS A u32. `Printing::collector_number_int` was
+//                `Option<u16>`, filled by a saturating cast, so every number above 65,535 was
+//                stored as 65,535 and `e:prm cn:80937` matched nothing. It is now one u32 holding
+//                `n + 1` (`CollectorInt`), in the same four bytes the option took, and
+//                `collector_rank` moves ahead of it into the two bytes after `card_rarity_int`.
+//                `size_of::<APrinting>` is still 304, so the header cannot see the change: a reader
+//                pairing this code with a 2026100403 store would read (tag, pad, u16) as one
+//                integer and the old number as the rank. Paired with STORE_CONTENT_GENERATION 71
+//                and SORT_KEY_VERSION 4 (the collector segment's integer widens with the field).
+const ARCHIVE_FORMAT_VERSION: u32 = 2026100801;
 const ARCHIVE_HEADER_LEN: usize = 16;
 
 fn archive_header() -> [u8; ARCHIVE_HEADER_LEN] {
@@ -21610,8 +21692,8 @@ fn build_card_data_sorted(
             set_name_id: row.set_name_id,
             released_at_int: row.released_at_int,
             card_rarity_int: row.card_rarity_int,
-            collector_number_int: row.collector_number_int,
             collector_rank: 0, // placeholder; assign_collector_ranks fills it below
+            collector_number_int: row.collector_number_int,
             price_usd: row.price_usd,
             price_eur: row.price_eur,
             price_tix: row.price_tix,
@@ -21735,7 +21817,7 @@ fn build_card_data_sorted(
     let price_usd_idx = build_printing_value_index(&printings, &cards, &offsets, build_search_price_usd_cents);
     let price_eur_idx = build_printing_value_index(&printings, &cards, &offsets, build_search_price_eur_cents);
     let price_tix_idx = build_printing_value_index(&printings, &cards, &offsets, |p| p.price_tix);
-    let collector_number_idx = build_printing_value_index(&printings, &cards, &offsets, |p| p.collector_number_int.map(u32::from));
+    let collector_number_idx = build_printing_value_index(&printings, &cards, &offsets, |p| p.collector_number_int);
     let released_at_cards = build_range_card_counts(&released_at_idx, &printing_to_card, cards.len(), &printings, &artwork_base);
     let price_usd_cards = build_range_card_counts(&price_usd_idx, &printing_to_card, cards.len(), &printings, &artwork_base);
     let price_eur_cards = build_range_card_counts(&price_eur_idx, &printing_to_card, cards.len(), &printings, &artwork_base);
