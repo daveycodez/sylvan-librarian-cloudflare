@@ -71,7 +71,8 @@ export const UNIQUE_ON = {
  * is Tidus. A Universes Beyond printing under the card's own name is a candidate, ranked below
  * every in-universe one whatever its tier (Farewell answers the extended-art neo/436 over the
  * borderless pip/353); a card printed only in Universes Beyond sets takes the offset uniformly and
- * its tiers decide as usual. A serialized printing is preferred last of all (Urabrask, the Great
+ * its tiers decide as usual. The reader's language leads everything, paper included — English
+ * paper, English digital, then any other language. A serialized printing is preferred last of all (Urabrask, the Great
  * Work answers mom/299 over the serialized mom/341).
  * Two more rules, both about being able to READ the answer: a textless printing ranks below the
  * plain ones (Moonshaker Cavalry answers its extended-art woe/325, not the Store Championship

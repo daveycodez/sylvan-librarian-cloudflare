@@ -46,7 +46,7 @@ class PreferOrder(enum.StrEnum):
     # bonus-slot card, and inside one set the newest sheet of its own art first (the
     # higher number only on one release date) while a same-art finish twin yields; a set that prints both a showcase
     # and a borderless answers its showcase (Clarion Conqueror: tdm/400 over tdm/377); a digital-only
-    # printing never answers while a paper one exists; the retro tier reads 1993 as well as 1997; English above every other language;
+    # printing never answers while a paper one exists; the retro tier reads 1993 as well as 1997; English above every other language, ahead even of paper over digital;
     # a flavor-named (crossover) printing, or an English one printed under another name, a
     # reversible card, or a white-bordered one, is never a candidate, and a Universes Beyond
     # printing ranks below every in-universe one whatever its tier, and a serialized printing is

@@ -18778,6 +18778,28 @@ fn prefer_borderless_prefers_paper_among_non_candidates() {
         p.compat.flags = COMPAT_DIGITAL;
     }
     assert_eq!(representative(&data, "borderless", "name", "asc"), 1, "all digital non-candidates: the default pick");
+    // THE LANGUAGE LEADS PAPER, down here too — "Battra, Dark Destroyer": make id 1 the English
+    // Magic Online printing and every other printing a Japanese PAPER one, and the English answers.
+    let en = data.coll_vocab.len() as u16;
+    data.coll_vocab.push("en".to_owned());
+    let ja = data.coll_vocab.len() as u16;
+    data.coll_vocab.push("ja".to_owned());
+    for p in &mut data.printings {
+        p.compat.flags = 0;
+        p.compat.lang_id = ja;
+    }
+    data.printings[0].compat.flags = COMPAT_DIGITAL;
+    data.printings[0].compat.lang_id = en;
+    assert_eq!(representative(&data, "borderless", "name", "asc"), 1, "English digital over foreign paper among non-candidates");
+    // ...and among CANDIDATES: drop the flavor names and it is still the English digital printing,
+    // over a Japanese paper BORDERLESS one.
+    for p in &mut data.printings {
+        p.flavor_name_id = NONE_STR;
+    }
+    assert_eq!(representative(&data, "borderless", "name", "asc"), 1, "English digital over a foreign paper borderless");
+    // English paper over English digital, as ever: make id 2 English paper.
+    data.printings[1].compat.lang_id = en;
+    assert_eq!(representative(&data, "borderless", "name", "asc"), 2, "English paper over English digital");
 }
 
 /// The eur and tix `*_high` prefers pick the dearest printing by the same search-price chain the

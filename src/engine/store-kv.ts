@@ -1940,8 +1940,19 @@ export async function gzipBytes(bytes: Uint8Array): Promise<Uint8Array> {
  *
  *      GENERATION-ONLY: `prefer_score` is a stored VALUE and the order the printings are stored
  *      in follows it. No layout, no format version, neither row touched.
+ *
+ *   69 (2026-10-08): THE READER'S LANGUAGE AHEAD OF PAPER. Generation 68 put paper first outright,
+ *      and "Battra, Dark Destroyer" — Dirge Bat's Godzilla printing, in paper only in Japan
+ *      (iko/386), in English only on Magic Online (prm/80935) — answered the Japanese card to an
+ *      English search, where api.scryfall.com and generation 67 answer the English one. The order
+ *      is now English paper, English digital, then every other language: `NOT has_english` leads,
+ *      `NOT paper` follows, the pin third. A label is an English printing wherever an English one
+ *      exists, so moving the language ahead of the pin moves nothing the pin decided.
+ *      `prefer:borderless` takes the same order in the engine.
+ *
+ *      GENERATION-ONLY, like 68: stored ranks move, nothing else.
  */
-export const STORE_CONTENT_GENERATION = 68;
+export const STORE_CONTENT_GENERATION = 69;
 
 /**
  * Chunk key for a store. Keyed by store_key, so publishes never collide.

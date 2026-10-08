@@ -11266,7 +11266,10 @@ fn printing_is_universes_beyond(p: &APrinting, ids: &PreferClassIds) -> bool {
 /// below every tier, key, language and crossover: Urabrask, the Great Work answers the ordinary
 /// showcase mom/299 over the serialized double-rainbow mom/341.
 /// Najeela answers her etched cmr/514, Thrasios his Special Guests spg/16. A card's
-/// original printing never carries a flavor name, so a candidate always exists — and where a
+/// original printing never carries a flavor name, so a candidate always exists. THE READER'S
+/// LANGUAGE LEADS all of it, paper included: English paper, then English digital, then any other
+/// language — "Battra, Dark Destroyer" was printed in paper only in Japan and in English only on
+/// Magic Online, and an English search answers prm/80935, not the Japanese iko/386. And where a
 /// query narrows the pool to non-candidates alone (`!"Bio-Quartz Spacegodzilla"`), paper still
 /// beats digital among them: the Godzilla card iko/378, not Magic Online's prm/80909. A DIGITAL-ONLY
 /// printing never answers while a paper one exists; a card that exists only digitally (an
@@ -11375,6 +11378,12 @@ fn prefer_score(card: &AOracleCard, p: &APrinting, prefer: Prefer, strings: &ASt
     // non-member, and inside each half the store's own prefer_score decides — which is what makes
     // `prefer:atypical` answer the store's BEST atypical printing rather than its first one.
     const CLASS_BONUS: f64 = 1.0e9;
+    // `prefer:borderless`'s language step. Larger than everything an English printing can lose —
+    // digital (64) plus the non-candidates' band (32), 96 — by more than the tier span, so the
+    // reader's language decides before paper does: an English Magic Online printing ranks above a
+    // paper printing in another language. It was 16, under the digital offset, which answered a
+    // Japanese paper card to an English search wherever the English printing was digital.
+    const LANGUAGE_OFFSET: f64 = -128.0;
     let default_score = || p.prefer_score.as_ref().map(|v| f32::from(*v)).unwrap_or(0.0) as f64;
     let class_score = |member: bool| if member { CLASS_BONUS + default_score() } else { default_score() };
     match prefer {
@@ -11425,9 +11434,13 @@ fn prefer_score(card: &AOracleCard, p: &APrinting, prefer: Prefer, strings: &ASt
                 // of Brokkos, Apex of Forever that carry that flavor name — and with the band
                 // flat the default order answered the Magic Online prm/80909 over the paper
                 // Godzilla card iko/378. No tiers in this band, by design (a card printed only in
-                // white borders answers its canonical printing); only the digital offset.
+                // white borders answers its canonical printing); only the digital offset — and
+                // the LANGUAGE offset above it, the same as in the candidates' band: "Battra, Dark
+                // Destroyer" was printed in paper only in Japan (iko/386) and in English only on
+                // Magic Online (prm/80935), and an English search answers the English one.
                 let digital = if compat_flag(&p.compat, COMPAT_DIGITAL) { -64.0 } else { 0.0 };
-                return default_score() + (digital - 32.0) * CLASS_BONUS;
+                let language = if foreign { LANGUAGE_OFFSET } else { 0.0 };
+                return default_score() + (language + digital - 32.0) * CLASS_BONUS;
             }
             let frame_tier = borderless_frame_tier(p, siblings, &ids, strings);
             // INSIDE a tier, a printing with a text box outranks a full-art one: Iron Man, Titan
@@ -11488,10 +11501,12 @@ fn prefer_score(card: &AOracleCard, p: &APrinting, prefer: Prefer, strings: &ASt
             };
             let finish = if nonfoil || (p.compat.promo_types.is_empty() && !set_sold_nonfoil()) { 0.03125 } else { 0.0 };
             // A row with no language recorded (a fixture) is not demoted; only a KNOWN other
-            // language is. Sixteen steps down puts every non-English printing below every
-            // English one — flavor-named ones included — while the tiers still order the
-            // non-English rows among themselves for a `lang:` query.
-            let language_offset = if foreign { -16.0 } else { 0.0 };
+            // language is. THE LANGUAGE LEADS EVERYTHING: `LANGUAGE_OFFSET` puts every
+            // non-English printing below every English one — digital, crossover, serialized and
+            // non-candidate ones included — so the order is English paper, English digital, then
+            // the rest. The tiers still order the non-English rows among themselves for a
+            // `lang:` query, whose pool is one language and takes the offset uniformly.
+            let language_offset = if foreign { LANGUAGE_OFFSET } else { 0.0 };
             // A UNIVERSES BEYOND printing ranks below every in-universe one — eight steps, clear of
             // the tiers and every key above, so any in-universe printing of the card answers before
             // any crossover does (Farewell answers Kamigawa's extended-art neo/436 over Fallout's
@@ -11506,8 +11521,8 @@ fn prefer_score(card: &AOracleCard, p: &APrinting, prefer: Prefer, strings: &ASt
             // ordinary showcase mom/299. Still not an exclusion: a card printed only in serialized
             // form takes the offset uniformly and its tiers decide.
             let serialized_offset = if printing_is_serialized(p, &ids) { -24.0 } else { 0.0 };
-            // A DIGITAL-ONLY printing is never this prefer's answer while any paper printing
-            // exists — below every tier, every language and every crossover. Tropical Island's
+            // A DIGITAL-ONLY printing is never this prefer's answer while any paper printing of
+            // ITS LANGUAGE exists — below every tier and every crossover, above every other language. Tropical Island's
             // three retro-frame printings were all Magic Online (prm/43620, me3, me4) and it
             // answered one; its paper retro printings are Alpha through Revised. The tiers still
             // order the digital rows among THEMSELVES, so a card that exists only digitally (an
