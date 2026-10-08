@@ -3274,6 +3274,132 @@
 					}
 				}
 			}
+		},
+		{
+			"name": "group-of-a-child-is-its-parent-its-siblings-and-its-own-children",
+			"method": "GET",
+			"path": "/cards/search?q=g%3Aecc+is%3Atoken&unique=prints&order=set",
+			"note": "2026-10-08. `g:`/`group:` is a set's RELEASE GROUP: the set, its children, its parent and its parent's other children — one step each way over the catalog's `parent_set_code`, never the whole family (src/routes/scryfall-compat/set-groups.ts carries the 58 sets it was measured on). `g:ecc` is 777, all seven Lorwyn Eclipsed sets: these 24 tokens are tecl's 12 (a sibling's) and tecc's 12 (its own child's). A 400 `Unknown keyword “g”` here before."
+		},
+		{
+			"name": "group-of-a-root-stops-at-its-children",
+			"method": "GET",
+			"path": "/cards/search?q=g%3Aecl+is%3Atoken&unique=prints&order=set",
+			"note": "2026-10-08. 12, tecl's alone: `g:ecl` is 764 of the family's 777, because tecc is a child of ecc and a grandchild is no child. `g:tecl`, `g:aecl`, `g:pecl` and `g:yecl` are the same 764."
+		},
+		{
+			"name": "group-of-a-grandchild-is-it-and-its-parent",
+			"method": "GET",
+			"path": "/cards/search?q=group%3Atecc+r%3Amythic&unique=prints&order=set",
+			"note": "2026-10-08. 24, every one in ecc: `g:tecc` is 189 = tecc + ecc, and none of ecl's 408 — the grandparent is not in a grandchild's group. Spelled `group:`, which is the same keyword."
+		},
+		{
+			"name": "group-negated-on-the-term-keeps-the-named-set",
+			"method": "GET",
+			"path": "/cards/search?q=-g%3Atecc+g%3Aecc+is%3Atoken&unique=prints&order=set",
+			"note": "2026-10-08. 24, tecc's 12 among them. `-g:tecc` is NOT the complement of `g:tecc`: it drops the rest of the group (ecc) and keeps the set it names — `-g:tecc e:tecc` is 13 and `-g:tecc e:ecc` a 404; `-g:ecc` is 117,902 = `-(e:aecl or e:ecl or e:pecl or e:tecc or e:tecl or e:yecl)` where the complement of `g:ecc` is 117,726."
+		},
+		{
+			"name": "group-negated-as-a-group-is-the-complement",
+			"method": "GET",
+			"path": "/cards/search?q=-%28g%3Atecc%29+g%3Aecc+is%3Atoken&unique=prints&order=set",
+			"note": "2026-10-08. 12, tecl's alone: with the minus on parentheses the term inside is positive, and tecc goes with ecc. `-(g:ecc) e:ecc` is a 404 where `-g:ecc e:ecc` is all 176 of ecc."
+		},
+		{
+			"name": "group-negated-on-the-term-drops-the-parent-and-the-siblings",
+			"method": "GET",
+			"path": "/cards/search?q=-g%3Aecc+g%3Aecc+r%3Amythic&unique=prints&order=set",
+			"note": "2026-10-08. 24, all ecc's: of the group's mythics only the named set's remain — ecl's and pecl's are gone."
+		},
+		{
+			"name": "group-unknown-code-is-a-plain-404",
+			"method": "GET",
+			"path": "/cards/search?q=g%3Azzzz",
+			"note": "2026-10-08. Honored and naming no set: Scryfall's ordinary 404 with no `warnings` key, as `e:zzzz` is. `g:ec`, `g:\" ecc \"`, `g:e.c.c` and `g:ecc,hob` are the same 404 — no prefixes, no lists."
+		},
+		{
+			"name": "group-overrides-an-explicit-include-extras-false",
+			"method": "GET",
+			"path": "/cards/search?q=g%3Ahoc&unique=prints&order=set&include_extras=false",
+			"note": "2026-10-08. 494 (hob 321, hoc 158, thob 15) with next_page echoing include_extras=true: the term opens extras unconditionally, as `block:` does and `e:` does not — `g:7ed or cmc=3`, `g:war or cmc=3`, `-g:lea or cmc=3` and `g:zzzz or cmc=3` (8,302) all echo true where `e:war or cmc=3` and `e:zzzz or cmc=3` (8,089) echo false."
+		},
+		{
+			"name": "group-pattern-is-ignored-with-its-sentence",
+			"method": "GET",
+			"path": "/cards/search?q=g%3A%2Fecc%2F+e%3Alea+t%3Agoblin",
+			"note": "2026-10-08. `e:lea t:goblin`'s 3 carrying `Unknown regular expression keyword “g”.`"
+		},
+		{
+			"name": "group-empty-value-is-ignored-minus-and-all",
+			"method": "GET",
+			"path": "/cards/search?q=-group%3A%22%22+e%3Alea+t%3Agoblin",
+			"note": "2026-10-08. The 3 carrying `Unknown keyword “-group”.` — the minus inside the quotes, the keyword as it was spelled."
+		},
+		{
+			"name": "group-empty-value-alone-is-all-terms-ignored",
+			"method": "GET",
+			"path": "/cards/search?q=g%3A%22%22",
+			"note": "2026-10-08. 400 `All of your terms were ignored.` carrying `Invalid expression “g:\"\"” was ignored. Unknown keyword “g”.` — the same sentence this port gave every `g:` term before it answered them."
+		},
+		{
+			"name": "group-named-by-a-set-name",
+			"method": "GET",
+			"path": "/cards/search?q=g%3A%22the+hobbit%22+is%3Atoken&unique=prints&order=set",
+			"note": "2026-10-08. 15 = `g:hob is:token`: the value is read as `e:` reads one — a code, a retired code, or the set's whole name. `g:\"Lorwyn Eclipsed Commander\"` is `g:ecc`'s 777 and `g:\"lorwyn eclipsed\"` `g:ecl`'s 764."
+		},
+		{
+			"name": "group-named-by-a-retired-code",
+			"method": "GET",
+			"path": "/cards/search?q=g%3Adar+is%3Atoken&unique=prints&order=set",
+			"note": "2026-10-08. 14, tdom's: `g:dar` is Dominaria's group (dom, pdom, tdom — 414)."
+		},
+		{
+			"name": "group-final-fantasy-commander-reaches-both-ways",
+			"method": "GET",
+			"path": "/cards/search?q=g%3Afic+is%3Atoken&unique=prints&order=set",
+			"note": "2026-10-08. 49 = tfin 36 + wfin 2 + tfic 11: Final Fantasy Commander is a child of fin with two children of its own, so `g:fic` is the whole family's 1,370."
+		},
+		{
+			"name": "group-final-fantasy-root-leaves-out-its-grandchildren",
+			"method": "GET",
+			"path": "/cards/search?q=g%3Afin+is%3Atoken&unique=prints&order=set",
+			"note": "2026-10-08. 38: the same without tfic's 11. `g:fin` is 1,335 of the family's 1,370 — neither tfic nor afic, the two children of fic."
+		},
+		{
+			"name": "group-final-fantasy-grandchild-and-its-sibling",
+			"method": "GET",
+			"path": "/cards/search?q=g%3Aafic+t%3Acard&unique=prints&order=set",
+			"note": "2026-10-08. 26 = afic 24 + tfic 2: `g:afic` = `g:tfic` = 521 is the two grandchildren and their parent fic, and nothing of fin."
+		},
+		{
+			"name": "group-and-group-is-what-both-hold",
+			"method": "GET",
+			"path": "/cards/search?q=g%3Aecc+g%3Atecc+is%3Atoken&unique=prints&order=set",
+			"note": "2026-10-08. 12, tecc's: `g:ecc g:tecc` is 189, the two sets both groups hold. `g:ecc g:hob` is a 404 and `g:ecc or g:hob` 1,271."
+		},
+		{
+			"name": "group-comparison-matches-nothing",
+			"method": "GET",
+			"path": "/cards/search?q=g%3E%3Decc",
+			"note": "2026-10-08. A 404 with no warning, like every text keyword under a comparison; `g<=ecc` and `g!=ecc` too, and none opens extras. (`g>war` and `g<war` are NOT this: Scryfall reads them as a name search for `gwar` — 11 cards — which this port answers as nothing, as it does `e>war`.)"
+		},
+		{
+			"name": "group-unique-cards-across-the-sets",
+			"method": "GET",
+			"path": "/cards/search?q=g%3Aecc+t%3Aelf+r%3Arare",
+			"note": "2026-10-08. 15 cards, one row each over ecl, ecc and yecl: the default `unique=cards` and `order=name` over a group."
+		},
+		{
+			"name": "group-the-hobbit-across-its-three-sets",
+			"method": "GET",
+			"path": "/cards/search?q=g%3Ahob+t%3Adragon&unique=prints&order=set",
+			"note": "2026-10-08. 15 = hob 11 + hoc 3 + thob 1. A root whose children have none is its whole family: `g:hob` = `g:hoc` = `g:thob` = 494."
+		},
+		{
+			"name": "group-negated-on-a-child-keeps-the-child",
+			"method": "GET",
+			"path": "/cards/search?q=-g%3Afic+g%3Afic+t%3Agod&unique=prints&order=set",
+			"note": "2026-10-08. 2, fic's own: `g:fic t:god` is 15 over fin, pfin, fca and fic, and the minus on the term drops every set but the one it names."
 		}
 	]
 }
