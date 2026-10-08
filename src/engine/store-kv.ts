@@ -1923,8 +1923,25 @@ export async function gzipBytes(bytes: Uint8Array): Promise<Uint8Array> {
  *      and `?fuzzy=` from its records, so a blob without them would route the search away from the
  *      partition that answers it. The archive is untouched: no layout, no format version, neither
  *      row, and the engine reads the doubled names off the divergent records it already stores.
+ *
+ *   68 (2026-10-08): PAPER BEFORE DIGITAL IN A CARD'S OWN ORDER — THE ONE PLACE THIS PORT
+ *      CHOOSES NOT TO ANSWER LIKE SCRYFALL. A card's printing order led with Scryfall's label
+ *      and then recency, which is api.scryfall.com's order and so answers a Magic Online or Arena
+ *      printing wherever Scryfall does: Tropical Island is Vintage Masters' vma/321, and the
+ *      Godzilla-series Brokkos, Apex of Forever is Magic Online's prm/80909 over the paper box
+ *      topper iko/378 it copies, under `unique=art` and under its flavor name alike. The rank now
+ *      leads with one key ahead of the pin: a slot printed in paper sorts before one that is not
+ *      (`engine/builder/src/ranks.rs`, which carries the argument). Asked for on 2026-10-08 as a
+ *      deliberate divergence. A card that exists only digitally orders exactly as before.
+ *
+ *      Where paper displaces a digital label, the card's paper representative takes the pin
+ *      bonus as well, so the order of CARDS against each other — containment, exact-name ties —
+ *      does not move.
+ *
+ *      GENERATION-ONLY: `prefer_score` is a stored VALUE and the order the printings are stored
+ *      in follows it. No layout, no format version, neither row touched.
  */
-export const STORE_CONTENT_GENERATION = 67;
+export const STORE_CONTENT_GENERATION = 68;
 
 /**
  * Chunk key for a store. Keyed by store_key, so publishes never collide.

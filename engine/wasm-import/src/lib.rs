@@ -116,7 +116,7 @@ use serde_json::Value;
 use sylvan_store_builder::ranks::PrintingRanks;
 use sylvan_store_builder::tags::{TagAccumulator, TagData, TagKind};
 use sylvan_store_builder::transform::{
-    art_tags_of, finalize_row, illust_count_qualifies, illustration_ids, is_name_routing_key, is_pinned, transform_row,
+    art_tags_of, finalize_row, illust_count_qualifies, illustration_ids, is_name_routing_key, transform_row,
     ArtistSpellings, CorpusPassDraft, CorpusTables, FunnyCards, PinnedPrintings, RowDraft, NAME_KEYS_STAMP, ORACLE_PAIR_BYTES,
 };
 
@@ -1279,7 +1279,7 @@ pub extern "C" fn finalize_drafts(ptr: *mut u8, len: usize) -> i64 {
             // export/restore already carries across DO evictions, plus the slots those labels
             // named (agg's per-card pass). Unconditional, matching transform.rs's PIN_BONUS doc —
             // this port answers like Scryfall.
-            let pinned = is_pinned(&draft, &s.tags.labels, &s.agg.pins);
+            let pinned = s.agg.ranks.pinned(&draft, &s.tags.labels, &s.agg.pins);
             let rank = s.agg.ranks.rank_of(&draft);
             let is_funny = s.agg.funny.is_funny(&draft);
             let row =
