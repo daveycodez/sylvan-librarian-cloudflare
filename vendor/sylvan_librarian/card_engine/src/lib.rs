@@ -11266,7 +11266,9 @@ fn printing_is_universes_beyond(p: &APrinting, ids: &PreferClassIds) -> bool {
 /// below every tier, key, language and crossover: Urabrask, the Great Work answers the ordinary
 /// showcase mom/299 over the serialized double-rainbow mom/341.
 /// Najeela answers her etched cmr/514, Thrasios his Special Guests spg/16. A card's
-/// original printing never carries a flavor name, so a candidate always exists. A DIGITAL-ONLY
+/// original printing never carries a flavor name, so a candidate always exists — and where a
+/// query narrows the pool to non-candidates alone (`!"Bio-Quartz Spacegodzilla"`), paper still
+/// beats digital among them: the Godzilla card iko/378, not Magic Online's prm/80909. A DIGITAL-ONLY
 /// printing never answers while a paper one exists; a card that exists only digitally (an
 /// Alchemy card) still ranks its own printings by the tiers. The retro tier reads the 1993
 /// frame as well as 1997, so Tropical Island answers a black-bordered Alpha or Beta, not the
@@ -11418,7 +11420,14 @@ fn prefer_score(card: &AOracleCard, p: &APrinting, prefer: Prefer, strings: &ASt
             // language: Blood Crypt's ecl/349 prints the land twice with two arts, and a white
             // border is never the printing to reach for. See `printing_is_borderless_candidate`.
             if !printing_is_borderless_candidate(card, p, &ids, strings) {
-                return default_score() - 32.0 * CLASS_BONUS;
+                // PAPER STILL BEATS DIGITAL down here. A query can narrow the pool to excluded
+                // printings alone — `!"Bio-Quartz Spacegodzilla"` matches only the two printings
+                // of Brokkos, Apex of Forever that carry that flavor name — and with the band
+                // flat the default order answered the Magic Online prm/80909 over the paper
+                // Godzilla card iko/378. No tiers in this band, by design (a card printed only in
+                // white borders answers its canonical printing); only the digital offset.
+                let digital = if compat_flag(&p.compat, COMPAT_DIGITAL) { -64.0 } else { 0.0 };
+                return default_score() + (digital - 32.0) * CLASS_BONUS;
             }
             let frame_tier = borderless_frame_tier(p, siblings, &ids, strings);
             // INSIDE a tier, a printing with a text box outranks a full-art one: Iron Man, Titan

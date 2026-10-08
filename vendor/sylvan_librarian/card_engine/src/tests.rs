@@ -18745,6 +18745,41 @@ fn prefer_borderless_prefers_a_serialized_printing_last() {
     assert_eq!(representative(&data, "borderless", "name", "asc"), 2, "all serialized: the tiers decide");
 }
 
+/// Among NON-CANDIDATES paper still beats digital — the pool a flavor-name query leaves:
+/// `!"Bio-Quartz Spacegodzilla"` matches only the flavor-named printings of Brokkos, Apex of
+/// Forever, Magic Online's prm/80909 and the paper Godzilla card iko/378, and the paper one answers.
+/// No tiers in that band: among paper non-candidates the default order decides.
+#[test]
+fn prefer_borderless_prefers_paper_among_non_candidates() {
+    let mut data = class_prefer_store();
+    let legendary = data.printings[0].compat.frame_effects[0];
+    let (black, borderless) = (data.printings[0].card_border_id, data.printings[2].card_border_id);
+    data.strings.push("Bio-Quartz Spacegodzilla".to_owned());
+    let godzilla = (data.strings.len() - 1) as u32;
+    for (i, p) in data.printings.iter_mut().enumerate() {
+        p.compat.promo_types = vec![];
+        p.compat.finishes = FINISH_NONFOIL | FINISH_FOIL;
+        p.card_is_tags = vec![];
+        p.compat.frame_effects = vec![legendary];
+        p.card_border_id = black;
+        p.flavor_name_id = godzilla;
+        p.card_set_code = InlineStr::from_str(["aaa", "bbb", "ccc", "ddd"][i]);
+    }
+    // Every printing flavor-named, so none is a candidate; id 1 leads the default order.
+    assert_eq!(representative(&data, "borderless", "name", "asc"), 1, "all non-candidates: the default pick");
+    // id 1 digital: the next paper printing answers.
+    data.printings[0].compat.flags = COMPAT_DIGITAL;
+    assert_eq!(representative(&data, "borderless", "name", "asc"), 2, "paper over digital among non-candidates");
+    // No tiers down here: a borderless id 4 does not climb past id 2.
+    data.printings[3].card_border_id = borderless;
+    assert_eq!(representative(&data, "borderless", "name", "asc"), 2, "no tiers among non-candidates");
+    // Every printing digital: the default order again.
+    for p in &mut data.printings {
+        p.compat.flags = COMPAT_DIGITAL;
+    }
+    assert_eq!(representative(&data, "borderless", "name", "asc"), 1, "all digital non-candidates: the default pick");
+}
+
 /// The eur and tix `*_high` prefers pick the dearest printing by the same search-price chain the
 /// orderings read, an unpriced printing losing to any priced one; `*_low` were already reachable
 /// under a price ordering and are now spellable.
