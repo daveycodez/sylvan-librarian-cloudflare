@@ -33,6 +33,7 @@ import type { RouteContext } from "../registry";
 import { ManaCostError, parseManaCost } from "./mana";
 import { errorObject, notFoundError } from "./objects";
 import { asBool, scryfallCatalogJson, scryfallJson, scryfallListJson } from "./respond";
+import { type SetGroups, setGroupsOf } from "./set-groups";
 
 // ─── cache tiers ─────────────────────────────────────────────────────────────
 //
@@ -252,6 +253,44 @@ export async function keywordCatalogWords(ctx: RouteContext): Promise<string[] |
 		return words;
 	} catch (err) {
 		console.error("Reference data: the keyword catalogs could not be read", err);
+		return null;
+	}
+}
+
+/** How long an isolate answers `g:` from the catalog it parsed — see `setGroupsFor`. */
+const SET_GROUPS_MEMO_MS = 3_600_000;
+
+/** Per KV namespace, so two bindings (or two test fakes) never share a catalog. */
+const SET_GROUPS_MEMO = new WeakMap<object, { at: number; groups: SetGroups }>();
+
+/**
+ * The release groups of the mirrored set catalog, for the search surface's `g:` / `group:` term
+ * (GROUP_KEYWORDS in query-terms.ts) — or null when the catalog is unpublished or unreadable,
+ * which that reader takes as "no code is a set". The same value `/sets` serves.
+ *
+ * THE STORED SHAPE IS THE BARE `data` ARRAY — the sets list carries no counted-array header,
+ * unlike the catalogs above (reference-kv.ts: "The sets list and the symbology list need no such
+ * header"), so it is parsed whole and `readCountedArray` would refuse it.
+ *
+ * PARSED ONCE PER ISOLATE AND HOUR, not per request and not per read: the value is ~630KB, about
+ * a millisecond of `JSON.parse`, and `readValue`'s own memo lasts a minute — a `g:` term on every
+ * request would otherwise re-read and re-parse it sixty times an hour. An hour is the staleness
+ * the mirrored routes already serve under. A catalog that could not be read is not remembered:
+ * the next request with the term asks again.
+ */
+export async function setGroupsFor(ctx: RouteContext): Promise<SetGroups | null> {
+	try {
+		const kv: object = ctx.env.STORE_KV;
+		const memo = SET_GROUPS_MEMO.get(kv);
+		const now = Date.now();
+		if (memo !== undefined && now - memo.at < SET_GROUPS_MEMO_MS) return memo.groups;
+		const value = await readValue(ctx, setsListKey());
+		if (value === null) return null;
+		const groups = setGroupsOf(JSON.parse(new TextDecoder().decode(value)));
+		if (groups !== null) SET_GROUPS_MEMO.set(kv, { at: now, groups });
+		return groups;
+	} catch (err) {
+		console.error("Reference data: the set catalog could not be read", err);
 		return null;
 	}
 }

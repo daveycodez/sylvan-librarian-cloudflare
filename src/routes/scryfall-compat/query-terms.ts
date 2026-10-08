@@ -60,6 +60,7 @@ import { isKnownSetCode } from "../../parser/set-dates.gen";
 import { isWordCont, type Token, TT, tokenize } from "../../parser/tokenizer";
 import { DIRECTIVE_TABLES } from "../enums";
 import { blockSetCodes, blockValueCode, setNameCode } from "./set-blocks.gen";
+import { NO_SET_GROUPS, type SetGroups } from "./set-groups";
 
 /** Scryfall's syntax budget, independent of the engine's post-rewrite safety budget. */
 export const TOO_MANY_REGEX_DETAILS = "Too many regular expression operators used";
@@ -485,6 +486,81 @@ function blockTerm(value: string): string {
 	return `(${blockSetCodes(code)
 		.map((member) => `e:${member}`)
 		.join(" or ")})`;
+}
+
+/**
+ * `g:` / `group:` — every card of a set's RELEASE GROUP, named by any set of it.
+ *
+ * NOT A COLUMN, like `block:` above: a group is a list of SETS, and which sets is a function of
+ * the set catalog's `parent_set_code` — the set, its children, its parent and its parent's other
+ * children, one step each way and never the whole family. set-groups.ts carries the rule and its
+ * measurements, and the term is rewritten here into the `e:` terms it means: `g:ecc` →
+ * `(e:aecl or e:ecc or e:ecl or e:pecl or e:tecc or e:tecl or e:yecl)`.
+ *
+ * THE CATALOG IS READ, NOT COMMITTED. `TermPolicyContext.setGroups` is the mirrored `/sets` value;
+ * without it the term is left as written and the result says `asksSets`, and
+ * `scryfallTermPolicyFor` reads the catalog and runs the policy again. A catalog that could not
+ * be read lists no set, so every value is then the unknown code below — never a guess at a group.
+ *
+ * Measured on api.scryfall.com 2026-10-08 — counts by printing, but for the two 290s, which are
+ * `e:lea` by card:
+ *
+ *   g:ecc = group:ecc = g=ecc = group=ecc = G:ecc = GROUP:ecc = g:ECC = g:"ecc" = g:'ecc'    777
+ *   g:zzzz, g:ec, g:" ecc ", g:e.c.c, g:ecc,hob     404, no warning — honored, naming no set
+ *   g:zzzz or e:lea                                 295, the other arm
+ *   g:ecc g:tecc                                    189 — the two sets both groups hold
+ *   g:ecc or g:hob                                  1,271
+ *   g>=ecc  g<=ecc  g!=ecc                          404 (the comparison rule)
+ *   g:/ecc/ e:lea       290 + Unknown regular expression keyword “g”.   (“-g” when negated)
+ *   g:"" e:lea          290 + Unknown keyword “g”.   (“-g” when negated, “group” under group:)
+ *   g:                  the bare word `g`, a name search (danglingOperatorTerm)
+ *
+ * THE VALUE IS READ AS `e:` READS ONE — a code, a retired code or the set's name: `g:dar` is
+ * Dominaria's group (414), `g:"Lorwyn Eclipsed Commander"` and `g:lorwyneclipsedcommander` are
+ * `g:ecc`'s 777, `g:"lorwyn eclipsed"` is `g:ecl`'s 764, `g:lorwyn` is `g:lrw`'s 315, `g:alpha`
+ * 295. `setNameCode` resolves it, with what that table leaves out: a token set's name
+ * (`g:"lorwyn eclipsed tokens"` is 764 there and a 404 here).
+ *
+ * NEGATED ON THE TERM, THE NAMED SET STAYS. `-g:ecc` is NOT the complement of `g:ecc`: it drops
+ * the other six sets and keeps ecc itself —
+ *
+ *   -g:ecc e:ecc   176 (all of ecc)      -g:ecc e:ecl, e:tecl, e:tecc   404 each
+ *   -g:tecc e:tecc  13                   -g:tecc e:ecc   404          -g:tecc e:ecl   408
+ *   -g:ecl e:ecl   408                   -g:ecl e:ecc, e:tecl   404   -g:ecl e:tecc    13
+ *   -g:hoc e:hoc   158                   -g:hoc e:hob, e:thob   404
+ *   -g:lea = -g:zzzz = 118,503 (everything, extras on)
+ *   -g:ecc  117,902 = -(e:aecl or e:ecl or e:pecl or e:tecc or e:tecl or e:yecl)
+ *   -group:ecc e:ecc, -g=ecc e:ecc, -g:"Lorwyn Eclipsed Commander" e:ecc   176;   -g:dar e:dom  280
+ *
+ * — while a negated GROUP around it is the complement: `-(g:ecc)` is 117,726, `-(g:ecc) e:ecc` a
+ * 404, and `-(-g:ecc) e:ecl` 408. Both fall out of one rewrite: the minus on the term writes
+ * `-(<the other sets>)`, and a minus on parentheses negates the positive list inside them.
+ *
+ * IT OPENS EXTRAS UNCONDITIONALLY, as `block:` does and `e:` does not — on the term, in either
+ * polarity, whatever the value names: `g:7ed or cmc=3`, `g:war or cmc=3`, `-g:lea or cmc=3`,
+ * `-(g:war) or cmc=3`, `g:"war of the spark" or cmc=3` and `g:zzzz or cmc=3` (8,302, extras-on
+ * `cmc=3`) all echo include_extras=true where `e:7ed`, `e:war` and `e:zzzz or cmc=3` (8,089) echo
+ * false. Under a comparison it opens nothing (`g!=war or cmc=3` is 8,089, echoing false), and an
+ * ignored term opens nothing either.
+ *
+ * NOT REPRODUCED: `g>war` and `g<war` are 11 cards there — a NAME search for `gwar` ("Charging War
+ * Boar", "Ringwarden Owl"), as `e>war` is one for `ewar` — and nothing here, by the comparison
+ * rule every text keyword already follows.
+ *
+ * COST: a query without the keyword pays one set lookup on the keyword of each `:`/`=` leaf.
+ */
+const GROUP_KEYWORDS: ReadonlySet<string> = new Set(["g", "group"]);
+
+/** The `e:` terms a `g:` value means, with the term's own minus — or the term that says none. */
+function groupTerm(negated: boolean, value: string, groups: SetGroups): string {
+	const lower = value.toLowerCase();
+	const code = setNameCode(lower) ?? lower;
+	const others = groups.others(code);
+	if (others === null) return negated ? ALWAYS_MATCHES : NEVER_MATCHES;
+	// The minus on the term spares the set it names — see GROUP_KEYWORDS.
+	const members = negated ? others : [code, ...others].sort();
+	if (members.length === 0) return ALWAYS_MATCHES;
+	return `${negated ? "-" : ""}(${members.map((member) => `e:${member}`).join(" or ")})`;
 }
 
 /**
@@ -2486,6 +2562,7 @@ const KNOWN_KEYWORDS: ReadonlySet<string> = new Set([
 	...COLOR_KEYWORDS,
 	...GAME_KEYWORDS,
 	...BLOCK_KEYWORDS,
+	...GROUP_KEYWORDS,
 ]);
 
 /**
@@ -2607,14 +2684,25 @@ export interface TermPolicyResult {
 	 * every query without such a term.
 	 */
 	asksKeywords?: "carried" | "catalog";
+	/**
+	 * The query has a `g:` / `group:` term that was NOT rewritten, because the set catalog that
+	 * says which sets it means was not given — `query` still spells it, and no parser reads that.
+	 * See GROUP_KEYWORDS. Absent otherwise, which is every query without such a term.
+	 */
+	asksSets?: true;
 }
 
-/** What the policy may be told about the store it is answering for — see KEYWORD_ABILITY_KEYWORDS. */
+/**
+ * What the policy may be told about the store it is answering for — see KEYWORD_ABILITY_KEYWORDS
+ * and GROUP_KEYWORDS.
+ */
 export interface TermPolicyContext {
 	/** The keywords some card in the store carries: `keywordKey` → the keyword as the store spells it. */
 	keywords?: ReadonlyMap<string, string>;
 	/** The words of Scryfall's three keyword catalogs, as `keywordKey`s. */
 	catalogKeywords?: ReadonlySet<string>;
+	/** The release groups of the mirrored set catalog. */
+	setGroups?: SetGroups;
 }
 
 /**
@@ -3613,6 +3701,8 @@ type LeafVerdict =
 			typedSet?: string;
 			/** A `keyword:` term kept without its value being checked, and the table that would say. */
 			asksKeywords?: "carried" | "catalog";
+			/** A `g:` term kept as written, for want of the set catalog — see GROUP_KEYWORDS. */
+			asksSets?: true;
 	  }
 	| { keep: false; reason: string }
 	/** A display option: removed from the query, never a term, with its own warning if any. */
@@ -3720,6 +3810,21 @@ function classifyLeaf(term: string, context: TermPolicyContext = {}): LeafVerdic
 		// Honored there and unanswered here: left as written, to fail to parse.
 		if (NEW_HONORED_UNANSWERED.has(newValue)) return { keep: true, text: term };
 		return { keep: false, reason: `Checking if cards have a new “${newValue}” is not supported` };
+	}
+
+	// `g:` / `group:` become the sets of the release group, and open extras — see GROUP_KEYWORDS.
+	// Equality only reaches here: a comparison was answered above. Before the regex rule below,
+	// whose sentence carries no minus where this one's does.
+	if (GROUP_KEYWORDS.has(keyword)) {
+		const sign = negated ? "-" : "";
+		if (isRegexLiteral(rawValue)) {
+			return { keep: false, reason: `Unknown regular expression keyword \u201c${sign}${keyword}\u201d.` };
+		}
+		const groupValue = unquote(rawValue);
+		if (groupValue === "") return { keep: false, reason: `Unknown keyword \u201c${sign}${keyword}\u201d.` };
+		const groups = context.setGroups;
+		if (groups === undefined) return { keep: true, text: term, include: ["extras"], asksSets: true };
+		return { keep: true, text: groupTerm(negated, groupValue, groups), include: ["extras"] };
 	}
 
 	// AFTER the unknown-keyword rule, because Scryfall orders them that way: `types:/creature/`
@@ -4040,6 +4145,8 @@ interface PolicyScan {
 	/** What the caller knows of the store — see KEYWORD_ABILITY_KEYWORDS. */
 	readonly context: TermPolicyContext;
 	asksKeywords: "carried" | "catalog" | undefined;
+	/** A `g:` term is waiting on the set catalog — see GROUP_KEYWORDS. */
+	asksSets: boolean;
 }
 
 /** A piece of nothing but slashes — see policyLevel. */
@@ -4091,6 +4198,7 @@ function policyLevel(source: string, scan: PolicyScan): string | null {
 			if (verdict.asksKeywords !== undefined && scan.asksKeywords !== "carried") {
 				scan.asksKeywords = verdict.asksKeywords;
 			}
+			if (verdict.asksSets) scan.asksSets = true;
 			for (const option of verdict.include ?? []) scan.include[option] = true;
 			if (verdict.namedSet !== undefined) scan.namedSets.add(verdict.namedSet);
 			if (verdict.typedSet !== undefined) scan.typedSets.add(verdict.typedSet);
@@ -4143,6 +4251,7 @@ export function scryfallTermPolicy(rawQuery: string, context: TermPolicyContext 
 		typedSets: new Set(),
 		context,
 		asksKeywords: undefined,
+		asksSets: false,
 	};
 	const { include, directives } = scan;
 	if (unbalancedParens(folded)) {
@@ -4155,6 +4264,7 @@ export function scryfallTermPolicy(rawQuery: string, context: TermPolicyContext 
 		const quietSets = [...scan.namedSets].filter((code) => !scan.typedSets.has(code));
 		if (quietSets.length > 0) result.quietSets = quietSets;
 		if (scan.asksKeywords !== undefined) result.asksKeywords = scan.asksKeywords;
+		if (scan.asksSets) result.asksSets = true;
 		return result;
 	}
 	// Nothing survived, and now the only way that happens is a term Scryfall refused: a dangling
@@ -4169,6 +4279,35 @@ export interface KeywordTables {
 	carried(): Promise<Record<string, number>>;
 	/** Scryfall's `keyword-abilities`, `keyword-actions` and `ability-words` catalogs, or null when unread. */
 	catalogs(): Promise<readonly string[] | null>;
+	/**
+	 * The mirrored set catalog's release groups, for `g:` — see GROUP_KEYWORDS. A caller that has
+	 * no catalog to read leaves it out, and every `g:` value is then a code no catalog lists.
+	 */
+	setGroups?: SetGroupsReader;
+}
+
+/** Reads the set catalog's release groups: null when it is unpublished or could not be read. */
+export type SetGroupsReader = () => Promise<SetGroups | null>;
+
+/**
+ * `scryfallTermPolicy`, with `g:` / `group:` read against the set catalog — see GROUP_KEYWORDS.
+ *
+ * A query without the term costs exactly what `scryfallTermPolicy` costs and reads nothing; one
+ * with it reads the catalog (memoized per isolate by its reader) and runs the policy twice. A
+ * catalog that cannot say is one that lists no set: the term matches nothing, as an unknown code
+ * does, and is never left for a parser that does not know the keyword.
+ */
+export async function scryfallTermPolicyWithSets(
+	rawQuery: string,
+	setGroups: SetGroupsReader | undefined,
+): Promise<TermPolicyResult> {
+	const policy = scryfallTermPolicy(rawQuery);
+	if (policy.asksSets === undefined) return policy;
+	return scryfallTermPolicy(rawQuery, { setGroups: await readSetGroups(setGroups) });
+}
+
+async function readSetGroups(reader: SetGroupsReader | undefined): Promise<SetGroups> {
+	return (reader === undefined ? null : await reader()) ?? NO_SET_GROUPS;
 }
 
 /** One keyed map per catalog table, which the engine hands out once per store generation. */
@@ -4181,18 +4320,32 @@ const CARRIED_KEYWORDS = new WeakMap<Record<string, number>, ReadonlyMap<string,
  * A query without a `keyword:` term costs exactly what `scryfallTermPolicy` costs and asks
  * nothing. One with a term whose value a card carries asks `carried` (cached per isolate and
  * colo) and runs the policy twice; only a value no card carries asks for the catalogs.
+ *
+ * `g:` / `group:` is read the same way and first, against the set catalog — see GROUP_KEYWORDS
+ * and `scryfallTermPolicyWithSets`. A query with neither keyword asks nothing, and costs the one
+ * extra test of the result that says so.
  */
 export async function scryfallTermPolicyFor(rawQuery: string, tables: KeywordTables): Promise<TermPolicyResult> {
-	const policy = scryfallTermPolicy(rawQuery);
-	if (policy.asksKeywords === undefined) return policy;
+	let policy = scryfallTermPolicy(rawQuery);
+	if (policy.asksKeywords === undefined && policy.asksSets === undefined) return policy;
+	const context: TermPolicyContext = {};
+	if (policy.asksSets !== undefined) {
+		context.setGroups = await readSetGroups(tables.setGroups);
+		policy = scryfallTermPolicy(rawQuery, context);
+		if (policy.asksKeywords === undefined) return policy;
+	}
 	const counts = await tables.carried();
 	let keywords = CARRIED_KEYWORDS.get(counts);
 	if (keywords === undefined) {
 		keywords = new Map(Object.keys(counts).map((keyword) => [keywordKey(keyword), keyword.toLowerCase()]));
 		CARRIED_KEYWORDS.set(counts, keywords);
 	}
-	const carried = scryfallTermPolicy(rawQuery, { keywords });
+	const carried = scryfallTermPolicy(rawQuery, { ...context, keywords });
 	if (carried.asksKeywords === undefined) return carried;
 	const words = await tables.catalogs();
-	return scryfallTermPolicy(rawQuery, { keywords, catalogKeywords: new Set((words ?? []).map(keywordKey)) });
+	return scryfallTermPolicy(rawQuery, {
+		...context,
+		keywords,
+		catalogKeywords: new Set((words ?? []).map(keywordKey)),
+	});
 }

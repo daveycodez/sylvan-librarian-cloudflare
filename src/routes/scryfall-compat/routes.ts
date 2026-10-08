@@ -86,11 +86,12 @@ import {
 	type KeywordTables,
 	NESTED_DISPLAY_OPTIONS_DETAILS,
 	SCRYFALL_ONLY_ORDERS,
-	scryfallTermPolicy,
+	type SetGroupsReader,
 	scryfallTermPolicyFor,
+	scryfallTermPolicyWithSets,
 	TOO_MANY_REGEX_DETAILS,
 } from "./query-terms";
-import { keywordCatalogWords } from "./reference-routes";
+import { keywordCatalogWords, setGroupsFor } from "./reference-routes";
 import { asBool, scryfallCollectionBytes, scryfallCollectionResponse, scryfallJson, scryfallListJson } from "./respond";
 import { scryfallNegations, setAndCollectorNumber, TRUE_TREE } from "./trees";
 
@@ -1110,11 +1111,15 @@ export async function cardsAutocompleteHandler(
  * What `keyword:` is read against: the store's own keywords and the three keyword catalogs this
  * port mirrors — see KEYWORD_ABILITY_KEYWORDS in query-terms.ts. Nothing is read until the term
  * policy asks, which is only for a query with a `keyword:` term.
+ *
+ * And what `g:` / `group:` is read against: the mirrored set catalog — see GROUP_KEYWORDS there.
+ * Read only for a query with that term.
  */
 function keywordTables(ctx: RouteContext): KeywordTables {
 	return {
 		carried: async () => (await ctx.getEngine()).cardKeywordCounts(),
 		catalogs: () => keywordCatalogWords(ctx),
+		setGroups: () => setGroupsFor(ctx),
 	};
 }
 
@@ -1503,7 +1508,7 @@ export async function cardsCollectionHandler(
 
 	// THE BATCH'S `?q=` — this port's extension, see `collectionScope`. Parsed after the body is
 	// validated so a malformed identifier still answers Scryfall's own 400 first.
-	const scoped = await collectionScope(params.q, pretty, await ctx.tagAliases());
+	const scoped = await collectionScope(params.q, pretty, await ctx.tagAliases(), () => setGroupsFor(ctx));
 	if (scoped.refused) return scoped.refused;
 	const { scope, warnings } = scoped;
 
@@ -1616,6 +1621,7 @@ async function collectionScope(
 	q: string | undefined,
 	pretty: boolean,
 	tagAliases: TagAliasTables,
+	setGroups: SetGroupsReader,
 ): Promise<{ scope: CollectionScope | null; warnings: string[]; refused: Response | null }> {
 	if (!q?.trim()) return { scope: null, warnings: [], refused: null };
 	const refuse = (details: string, warnings: string[] | null) => ({
@@ -1623,7 +1629,9 @@ async function collectionScope(
 		warnings: [],
 		refused: scryfallJson(badRequestError(details, warnings), pretty, COLLECTION_REFUSED_CACHE),
 	});
-	const policy = scryfallTermPolicy(q);
+	// `g:` is the one term read against a catalog here, as on `/cards/search` — without it the
+	// term would reach a parser that does not know the keyword. `keyword:` stays unread, as it was.
+	const policy = await scryfallTermPolicyWithSets(q, setGroups);
 	if (policy.unclosedParens) return refuse(UNCLOSED_PARENS_DETAILS, null);
 	// A scope of nothing but display options is a scope with no filter — `q=prefer:oldest` is the
 	// whole point of this parameter — so only a query whose TERMS were all ignored is refused.

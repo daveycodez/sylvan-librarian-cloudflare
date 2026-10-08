@@ -834,6 +834,15 @@ The complete list of intentional differences:
   name and an unmeasured nickname still match nothing. It is a table of
   Scryfall's set objects (`src/routes/scryfall-compat/set-blocks.gen.ts`,
   refreshed with `bun run set-blocks`), and exists on `/cards/search` only.
+  `g:`/`group:` — a set's release group: the set, its children, its parent
+  and its parent's other children — is answered the same way, as the `e:`
+  terms it means, but from the mirrored `/sets` catalog rather than a
+  committed table (`src/routes/scryfall-compat/set-groups.ts`), so a new
+  set's tokens and promos join its group with the nightly import. Two things
+  it does not reproduce: a token set's NAME (`g:"lorwyn eclipsed tokens"`
+  answers there and matches nothing here; its code works), and `g>war`,
+  which Scryfall reads as a name search for `gwar`. Until the catalog has
+  been published a `g:` term matches nothing, as an unknown code does.
   `cube:` is a KNOWN_DEVIATION in the live-parity corpus
   (`search-cube-keyword-is-scryfalls-not-unknown`).
 - **Card images come from Scryfall's CDN**, not upstream's CloudFront mirror.
