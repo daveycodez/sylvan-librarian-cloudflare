@@ -1,0 +1,136 @@
+{
+ "all_parts": [
+  {
+   "component": "combo_piece",
+   "id": "9140a841-133d-49c1-bd0f-cf18de1f5d49",
+   "name": "Blowfly Infestation",
+   "object": "related_card",
+   "type_line": "Enchantment",
+   "uri": "https://api.scryfall.com/cards/9140a841-133d-49c1-bd0f-cf18de1f5d49"
+  },
+  {
+   "component": "combo_piece",
+   "id": "4c656845-5043-4718-8d9b-237c1abf5e3c",
+   "name": "Infestation",
+   "object": "related_card",
+   "type_line": "Creature \u2014 Elemental Incarnation",
+   "uri": "https://api.scryfall.com/cards/4c656845-5043-4718-8d9b-237c1abf5e3c"
+  }
+ ],
+ "artist": "Caio Monteiro",
+ "artist_ids": [
+  "d5053eb6-af72-47a0-b6e8-023cc3b9aefb"
+ ],
+ "booster": false,
+ "border_color": "black",
+ "card_back_id": "0aeebaf5-8c7d-4636-9e82-8c27447861f7",
+ "cmc": 3.0,
+ "collector_number": "32",
+ "color_identity": [
+  "B"
+ ],
+ "colors": [
+  "B"
+ ],
+ "digital": true,
+ "edhrec_rank": 3064,
+ "finishes": [
+  "nonfoil"
+ ],
+ "foil": false,
+ "frame": "2015",
+ "full_art": false,
+ "game_changer": false,
+ "games": [
+  "arena"
+ ],
+ "highres_image": false,
+ "id": "9140a841-133d-49c1-bd0f-cf18de1f5d49",
+ "illustration_id": "ab608ec9-073b-4531-8d60-b588a916165b",
+ "image_status": "lowres",
+ "image_updated_at": "2026-08-31T16:55:40Z",
+ "image_uris": {
+  "art": "https://cards.scryfall.io/art/front/9/1/9140a841-133d-49c1-bd0f-cf18de1f5d49.webp?1788195340",
+  "art_crop": "https://cards.scryfall.io/art_crop/front/9/1/9140a841-133d-49c1-bd0f-cf18de1f5d49.jpg?1788195340",
+  "border_crop": "https://cards.scryfall.io/border_crop/front/9/1/9140a841-133d-49c1-bd0f-cf18de1f5d49.jpg?1788195340",
+  "crop": "https://cards.scryfall.io/crop/front/9/1/9140a841-133d-49c1-bd0f-cf18de1f5d49.webp?1788195340",
+  "display": "https://cards.scryfall.io/display/front/9/1/9140a841-133d-49c1-bd0f-cf18de1f5d49.webp?1788195340",
+  "grid": "https://cards.scryfall.io/grid/front/9/1/9140a841-133d-49c1-bd0f-cf18de1f5d49.webp?1788195340",
+  "large": "https://cards.scryfall.io/large/front/9/1/9140a841-133d-49c1-bd0f-cf18de1f5d49.jpg?1788195340",
+  "normal": "https://cards.scryfall.io/normal/front/9/1/9140a841-133d-49c1-bd0f-cf18de1f5d49.jpg?1788195340",
+  "png": "https://cards.scryfall.io/png/front/9/1/9140a841-133d-49c1-bd0f-cf18de1f5d49.png?1788195340",
+  "small": "https://cards.scryfall.io/small/front/9/1/9140a841-133d-49c1-bd0f-cf18de1f5d49.jpg?1788195340",
+  "thumb": "https://cards.scryfall.io/thumb/front/9/1/9140a841-133d-49c1-bd0f-cf18de1f5d49.webp?1788195340"
+ },
+ "keywords": [],
+ "lang": "en",
+ "layout": "normal",
+ "legalities": {
+  "alchemy": "not_legal",
+  "brawl": "not_legal",
+  "commander": "legal",
+  "competitivebrawl": "not_legal",
+  "duel": "legal",
+  "future": "not_legal",
+  "gladiator": "not_legal",
+  "historic": "not_legal",
+  "legacy": "legal",
+  "modern": "legal",
+  "oathbreaker": "legal",
+  "oldschool": "not_legal",
+  "pauper": "not_legal",
+  "paupercommander": "not_legal",
+  "penny": "not_legal",
+  "pioneer": "not_legal",
+  "predh": "legal",
+  "premodern": "not_legal",
+  "standard": "not_legal",
+  "standardbrawl": "not_legal",
+  "timeless": "not_legal",
+  "tlr": "legal",
+  "vintage": "legal"
+ },
+ "mana_cost": "{2}{B}",
+ "multiverse_ids": [],
+ "name": "Blowfly Infestation",
+ "nonfoil": true,
+ "object": "card",
+ "oracle_id": "3859873f-2a0f-463b-8ed9-7f2ab5ed393a",
+ "oracle_text": "Whenever a creature dies, if it had a -1/-1 counter on it, put a -1/-1 counter on target creature.",
+ "oversized": false,
+ "penny_rank": 8531,
+ "prices": {
+  "eur": null,
+  "eur_foil": null,
+  "tix": null,
+  "usd": null,
+  "usd_etched": null,
+  "usd_foil": null
+ },
+ "prints_search_uri": "https://api.scryfall.com/cards/search?order=released&q=oracleid%3A3859873f-2a0f-463b-8ed9-7f2ab5ed393a&unique=prints",
+ "promo": false,
+ "rarity": "uncommon",
+ "related_uris": {
+  "edhrec": "https://edhrec.com/route/?cc=Blowfly+Infestation",
+  "tcgplayer_infinite_articles": "https://partner.tcgplayer.com/c/4931599/1830156/21018?subId1=api&trafcat=tcgplayer.com%2Fsearch%2Farticles&u=https%3A%2F%2Fwww.tcgplayer.com%2Fsearch%2Farticles%3FproductLineName%3Dmagic%26q%3DBlowfly%2BInfestation",
+  "tcgplayer_infinite_decks": "https://partner.tcgplayer.com/c/4931599/1830156/21018?subId1=api&trafcat=tcgplayer.com%2Fsearch%2Fdecks&u=https%3A%2F%2Fwww.tcgplayer.com%2Fsearch%2Fdecks%3FproductLineName%3Dmagic%26q%3DBlowfly%2BInfestation"
+ },
+ "released_at": "2026-02-03",
+ "reprint": true,
+ "reserved": false,
+ "rulings_uri": "https://api.scryfall.com/cards/9140a841-133d-49c1-bd0f-cf18de1f5d49/rulings",
+ "scryfall_set_uri": "https://scryfall.com/sets/yecl?utm_source=api",
+ "scryfall_uri": "https://scryfall.com/card/yecl/32/blowfly-infestation?utm_source=api",
+ "security_stamp": "arena",
+ "set": "yecl",
+ "set_id": "1898a31a-88cb-48ef-9d6b-f91822e509b7",
+ "set_name": "Alchemy: Lorwyn Eclipsed",
+ "set_search_uri": "https://api.scryfall.com/cards/search?order=set&q=e%3Ayecl&unique=prints",
+ "set_type": "alchemy",
+ "set_uri": "https://api.scryfall.com/sets/1898a31a-88cb-48ef-9d6b-f91822e509b7",
+ "story_spotlight": false,
+ "textless": false,
+ "type_line": "Enchantment",
+ "uri": "https://api.scryfall.com/cards/9140a841-133d-49c1-bd0f-cf18de1f5d49",
+ "variation": false
+}

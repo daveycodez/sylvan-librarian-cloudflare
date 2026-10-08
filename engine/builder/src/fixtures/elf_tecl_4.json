@@ -1,0 +1,164 @@
+{
+ "all_parts": [
+  {
+   "component": "combo_piece",
+   "id": "aea9b5c0-3b32-44be-9773-566b9daafa6b",
+   "name": "Scarblade's Malice",
+   "object": "related_card",
+   "type_line": "Instant",
+   "uri": "https://api.scryfall.com/cards/aea9b5c0-3b32-44be-9773-566b9daafa6b"
+  },
+  {
+   "component": "combo_piece",
+   "id": "3d5a3e25-c17a-47b1-a36d-d24d50e5bab3",
+   "name": "Stoic Grove-Guide",
+   "object": "related_card",
+   "type_line": "Creature \u2014 Elf Druid",
+   "uri": "https://api.scryfall.com/cards/3d5a3e25-c17a-47b1-a36d-d24d50e5bab3"
+  },
+  {
+   "component": "combo_piece",
+   "id": "0bef3905-24f8-419b-aeca-396adfc6d0dc",
+   "name": "Unforgiving Aim",
+   "object": "related_card",
+   "type_line": "Instant",
+   "uri": "https://api.scryfall.com/cards/0bef3905-24f8-419b-aeca-396adfc6d0dc"
+  },
+  {
+   "component": "token",
+   "id": "39b36f22-21f9-44fe-8a49-bdc859503342",
+   "name": "Elf",
+   "object": "related_card",
+   "type_line": "Token Creature \u2014 Elf",
+   "uri": "https://api.scryfall.com/cards/39b36f22-21f9-44fe-8a49-bdc859503342"
+  },
+  {
+   "component": "combo_piece",
+   "id": "a730b254-ff7c-4f89-a559-b44ad7fd6c6c",
+   "name": "Morcant's Eyes",
+   "object": "related_card",
+   "type_line": "Kindred Enchantment \u2014 Elf",
+   "uri": "https://api.scryfall.com/cards/a730b254-ff7c-4f89-a559-b44ad7fd6c6c"
+  }
+ ],
+ "artist": "Pete Venters",
+ "artist_ids": [
+  "d54c4a1a-c0c5-4834-84db-125d341f3ad8"
+ ],
+ "booster": false,
+ "border_color": "black",
+ "card_back_id": "0aeebaf5-8c7d-4636-9e82-8c27447861f7",
+ "cmc": 0.0,
+ "collector_number": "4",
+ "color_identity": [],
+ "colors": [
+  "B",
+  "G"
+ ],
+ "digital": false,
+ "finishes": [
+  "nonfoil",
+  "foil"
+ ],
+ "foil": true,
+ "frame": "2015",
+ "full_art": false,
+ "game_changer": false,
+ "games": [
+  "paper"
+ ],
+ "highres_image": true,
+ "id": "39b36f22-21f9-44fe-8a49-bdc859503342",
+ "illustration_id": "b67974e2-74f5-4214-9b00-dd0aa99fe3b3",
+ "image_status": "highres_scan",
+ "image_updated_at": "2026-07-13T00:58:47Z",
+ "image_uris": {
+  "art": "https://cards.scryfall.io/art/front/3/9/39b36f22-21f9-44fe-8a49-bdc859503342.webp?1783904327",
+  "art_crop": "https://cards.scryfall.io/art_crop/front/3/9/39b36f22-21f9-44fe-8a49-bdc859503342.jpg?1783904327",
+  "border_crop": "https://cards.scryfall.io/border_crop/front/3/9/39b36f22-21f9-44fe-8a49-bdc859503342.jpg?1783904327",
+  "crop": "https://cards.scryfall.io/crop/front/3/9/39b36f22-21f9-44fe-8a49-bdc859503342.webp?1783904327",
+  "display": "https://cards.scryfall.io/display/front/3/9/39b36f22-21f9-44fe-8a49-bdc859503342.webp?1783904327",
+  "grid": "https://cards.scryfall.io/grid/front/3/9/39b36f22-21f9-44fe-8a49-bdc859503342.webp?1783904327",
+  "large": "https://cards.scryfall.io/large/front/3/9/39b36f22-21f9-44fe-8a49-bdc859503342.jpg?1783904327",
+  "normal": "https://cards.scryfall.io/normal/front/3/9/39b36f22-21f9-44fe-8a49-bdc859503342.jpg?1783904327",
+  "png": "https://cards.scryfall.io/png/front/3/9/39b36f22-21f9-44fe-8a49-bdc859503342.png?1783904327",
+  "small": "https://cards.scryfall.io/small/front/3/9/39b36f22-21f9-44fe-8a49-bdc859503342.jpg?1783904327",
+  "thumb": "https://cards.scryfall.io/thumb/front/3/9/39b36f22-21f9-44fe-8a49-bdc859503342.webp?1783904327"
+ },
+ "keywords": [],
+ "lang": "en",
+ "layout": "token",
+ "legalities": {
+  "alchemy": "not_legal",
+  "brawl": "not_legal",
+  "commander": "not_legal",
+  "competitivebrawl": "not_legal",
+  "duel": "not_legal",
+  "future": "not_legal",
+  "gladiator": "not_legal",
+  "historic": "not_legal",
+  "legacy": "not_legal",
+  "modern": "not_legal",
+  "oathbreaker": "not_legal",
+  "oldschool": "not_legal",
+  "pauper": "not_legal",
+  "paupercommander": "not_legal",
+  "penny": "not_legal",
+  "pioneer": "not_legal",
+  "predh": "not_legal",
+  "premodern": "not_legal",
+  "standard": "not_legal",
+  "standardbrawl": "not_legal",
+  "timeless": "not_legal",
+  "tlr": "not_legal",
+  "vintage": "not_legal"
+ },
+ "mana_cost": "",
+ "multiverse_ids": [],
+ "name": "Elf",
+ "nonfoil": true,
+ "object": "card",
+ "oracle_id": "c52d1bba-36d5-4ecc-bea2-847285e0cb71",
+ "oracle_text": "",
+ "oversized": false,
+ "power": "2",
+ "prices": {
+  "eur": null,
+  "eur_foil": null,
+  "tix": null,
+  "usd": null,
+  "usd_etched": null,
+  "usd_foil": null
+ },
+ "prints_search_uri": "https://api.scryfall.com/cards/search?order=released&q=oracleid%3Ac52d1bba-36d5-4ecc-bea2-847285e0cb71&unique=prints",
+ "promo": false,
+ "purchase_uris": {
+  "cardhoarder": "https://www.cardhoarder.com/cards?affiliate_id=scryfall&data%5Bsearch%5D=Elf&ref=card-profile&utm_campaign=affiliate&utm_medium=card&utm_source=scryfall",
+  "cardmarket": "https://www.cardmarket.com/en/Magic/Products/Search?referrer=scryfall&searchString=Elf&utm_campaign=card_prices&utm_medium=text&utm_source=scryfall",
+  "tcgplayer": "https://partner.tcgplayer.com/c/4931599/1830156/21018?subId1=api&u=https%3A%2F%2Fwww.tcgplayer.com%2Fsearch%2Fmagic%2Fproduct%3FproductLineName%3Dmagic%26q%3DElf%26view%3Dgrid"
+ },
+ "rarity": "common",
+ "related_uris": {
+  "edhrec": "https://edhrec.com/route/?cc=Elf",
+  "tcgplayer_infinite_articles": "https://partner.tcgplayer.com/c/4931599/1830156/21018?subId1=api&trafcat=tcgplayer.com%2Fsearch%2Farticles&u=https%3A%2F%2Fwww.tcgplayer.com%2Fsearch%2Farticles%3FproductLineName%3Dmagic%26q%3DElf",
+  "tcgplayer_infinite_decks": "https://partner.tcgplayer.com/c/4931599/1830156/21018?subId1=api&trafcat=tcgplayer.com%2Fsearch%2Fdecks&u=https%3A%2F%2Fwww.tcgplayer.com%2Fsearch%2Fdecks%3FproductLineName%3Dmagic%26q%3DElf"
+ },
+ "released_at": "2026-01-23",
+ "reprint": false,
+ "reserved": false,
+ "rulings_uri": "https://api.scryfall.com/cards/39b36f22-21f9-44fe-8a49-bdc859503342/rulings",
+ "scryfall_set_uri": "https://scryfall.com/sets/tecl?utm_source=api",
+ "scryfall_uri": "https://scryfall.com/card/tecl/4/elf?utm_source=api",
+ "set": "tecl",
+ "set_id": "f5380338-65e9-4885-8989-b23350cd27de",
+ "set_name": "Lorwyn Eclipsed Tokens",
+ "set_search_uri": "https://api.scryfall.com/cards/search?order=set&q=e%3Atecl&unique=prints",
+ "set_type": "token",
+ "set_uri": "https://api.scryfall.com/sets/f5380338-65e9-4885-8989-b23350cd27de",
+ "story_spotlight": false,
+ "textless": false,
+ "toughness": "2",
+ "type_line": "Token Creature \u2014 Elf",
+ "uri": "https://api.scryfall.com/cards/39b36f22-21f9-44fe-8a49-bdc859503342",
+ "variation": false
+}
