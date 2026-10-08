@@ -1,0 +1,139 @@
+{
+ "artist": "Jinho Bae",
+ "artist_ids": [
+  "0cd53596-1525-42af-83ae-ff02401311ee"
+ ],
+ "booster": false,
+ "border_color": "black",
+ "card_back_id": "0aeebaf5-8c7d-4636-9e82-8c27447861f7",
+ "cardmarket_id": 864319,
+ "cmc": 5.0,
+ "collector_number": "2025-25",
+ "color_identity": [
+  "W"
+ ],
+ "colors": [
+  "W"
+ ],
+ "digital": false,
+ "edhrec_rank": 11855,
+ "finishes": [
+  "foil"
+ ],
+ "flavor_text": "Monk Gyatso taught Aang many things, most importantly to live with joy.",
+ "foil": true,
+ "frame": "2015",
+ "frame_effects": [
+  "legendary"
+ ],
+ "full_art": false,
+ "game_changer": false,
+ "games": [
+  "paper"
+ ],
+ "highres_image": true,
+ "id": "c7818c58-47f1-4031-8f7f-80b4b8c75530",
+ "illustration_id": "888ff0bb-89b7-42e2-8118-cd6ed74eb246",
+ "image_status": "highres_scan",
+ "image_updated_at": "2026-08-29T11:30:39Z",
+ "image_uris": {
+  "art": "https://cards.scryfall.io/art/front/c/7/c7818c58-47f1-4031-8f7f-80b4b8c75530.webp?1788003039",
+  "art_crop": "https://cards.scryfall.io/art_crop/front/c/7/c7818c58-47f1-4031-8f7f-80b4b8c75530.jpg?1788003039",
+  "border_crop": "https://cards.scryfall.io/border_crop/front/c/7/c7818c58-47f1-4031-8f7f-80b4b8c75530.jpg?1788003039",
+  "crop": "https://cards.scryfall.io/crop/front/c/7/c7818c58-47f1-4031-8f7f-80b4b8c75530.webp?1788003039",
+  "display": "https://cards.scryfall.io/display/front/c/7/c7818c58-47f1-4031-8f7f-80b4b8c75530.webp?1788003039",
+  "grid": "https://cards.scryfall.io/grid/front/c/7/c7818c58-47f1-4031-8f7f-80b4b8c75530.webp?1788003039",
+  "large": "https://cards.scryfall.io/large/front/c/7/c7818c58-47f1-4031-8f7f-80b4b8c75530.jpg?1788003039",
+  "normal": "https://cards.scryfall.io/normal/front/c/7/c7818c58-47f1-4031-8f7f-80b4b8c75530.jpg?1788003039",
+  "png": "https://cards.scryfall.io/png/front/c/7/c7818c58-47f1-4031-8f7f-80b4b8c75530.png?1788003039",
+  "small": "https://cards.scryfall.io/small/front/c/7/c7818c58-47f1-4031-8f7f-80b4b8c75530.jpg?1788003039",
+  "thumb": "https://cards.scryfall.io/thumb/front/c/7/c7818c58-47f1-4031-8f7f-80b4b8c75530.webp?1788003039"
+ },
+ "keywords": [
+  "Flying",
+  "Vigilance"
+ ],
+ "lang": "en",
+ "layout": "normal",
+ "legalities": {
+  "alchemy": "not_legal",
+  "brawl": "legal",
+  "commander": "legal",
+  "competitivebrawl": "legal",
+  "duel": "legal",
+  "future": "not_legal",
+  "gladiator": "legal",
+  "historic": "legal",
+  "legacy": "legal",
+  "modern": "not_legal",
+  "oathbreaker": "legal",
+  "oldschool": "not_legal",
+  "pauper": "not_legal",
+  "paupercommander": "not_legal",
+  "penny": "not_legal",
+  "pioneer": "not_legal",
+  "predh": "not_legal",
+  "premodern": "not_legal",
+  "standard": "not_legal",
+  "standardbrawl": "not_legal",
+  "timeless": "legal",
+  "tlr": "not_legal",
+  "vintage": "legal"
+ },
+ "mana_cost": "{3}{W}{W}",
+ "multiverse_ids": [],
+ "name": "Aang, Air Nomad",
+ "nonfoil": false,
+ "object": "card",
+ "oracle_id": "e46b2ac6-97d6-48f2-aba3-cd92f8e092c6",
+ "oracle_text": "Flying (This creature can't be blocked except by creatures with flying or reach.)\nVigilance (Attacking doesn't cause this creature to tap.)\nOther creatures you control have vigilance.",
+ "oversized": false,
+ "power": "5",
+ "prices": {
+  "eur": null,
+  "eur_foil": "4.70",
+  "tix": null,
+  "usd": null,
+  "usd_etched": null,
+  "usd_foil": "0.34"
+ },
+ "prints_search_uri": "https://api.scryfall.com/cards/search?order=released&q=oracleid%3Ae46b2ac6-97d6-48f2-aba3-cd92f8e092c6&unique=prints",
+ "promo": true,
+ "promo_types": [
+  "resale",
+  "mediainsert",
+  "universesbeyond"
+ ],
+ "purchase_uris": {
+  "cardhoarder": "https://www.cardhoarder.com/cards?affiliate_id=scryfall&data%5Bsearch%5D=Aang%2C+Air+Nomad&ref=card-profile&utm_campaign=affiliate&utm_medium=card&utm_source=scryfall",
+  "cardmarket": "https://www.cardmarket.com/en/Magic/Products?idProduct=864319&referrer=scryfall&utm_campaign=card_prices&utm_medium=text&utm_source=scryfall",
+  "tcgplayer": "https://partner.tcgplayer.com/c/4931599/1830156/21018?subId1=api&u=https%3A%2F%2Fwww.tcgplayer.com%2Fproduct%2F664955%3Fpage%3D1"
+ },
+ "rarity": "rare",
+ "related_uris": {
+  "edhrec": "https://edhrec.com/route/?cc=Aang%2C+Air+Nomad",
+  "tcgplayer_infinite_articles": "https://partner.tcgplayer.com/c/4931599/1830156/21018?subId1=api&trafcat=tcgplayer.com%2Fsearch%2Farticles&u=https%3A%2F%2Fwww.tcgplayer.com%2Fsearch%2Farticles%3FproductLineName%3Dmagic%26q%3DAang%252C%2BAir%2BNomad",
+  "tcgplayer_infinite_decks": "https://partner.tcgplayer.com/c/4931599/1830156/21018?subId1=api&trafcat=tcgplayer.com%2Fsearch%2Fdecks&u=https%3A%2F%2Fwww.tcgplayer.com%2Fsearch%2Fdecks%3FproductLineName%3Dmagic%26q%3DAang%252C%2BAir%2BNomad"
+ },
+ "released_at": "2025-11-21",
+ "reprint": false,
+ "reserved": false,
+ "rulings_uri": "https://api.scryfall.com/cards/c7818c58-47f1-4031-8f7f-80b4b8c75530/rulings",
+ "scryfall_set_uri": "https://scryfall.com/sets/pmei?utm_source=api",
+ "scryfall_uri": "https://scryfall.com/card/pmei/2025-25/aang-air-nomad?utm_source=api",
+ "security_stamp": "oval",
+ "set": "pmei",
+ "set_id": "80b77354-aa37-420c-a9a2-8a0c66989f23",
+ "set_name": "Media and Collaboration Promos",
+ "set_search_uri": "https://api.scryfall.com/cards/search?order=set&q=e%3Apmei&unique=prints",
+ "set_type": "promo",
+ "set_uri": "https://api.scryfall.com/sets/80b77354-aa37-420c-a9a2-8a0c66989f23",
+ "story_spotlight": false,
+ "tcgplayer_id": 664955,
+ "textless": false,
+ "toughness": "4",
+ "type_line": "Legendary Creature — Human Avatar Ally",
+ "uri": "https://api.scryfall.com/cards/c7818c58-47f1-4031-8f7f-80b4b8c75530",
+ "variation": false,
+ "watermark": "colorpie"
+}
