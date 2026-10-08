@@ -3400,6 +3400,66 @@
 			"method": "GET",
 			"path": "/cards/search?q=-g%3Afic+g%3Afic+t%3Agod&unique=prints&order=set",
 			"note": "2026-10-08. 2, fic's own: `g:fic t:god` is 15 over fin, pfin, fca and fic, and the minus on the term drops every set but the one it names."
+		},
+		{
+			"name": "cn-above-65535-the-pinned-printing",
+			"method": "GET",
+			"path": "/cards/search?q=e%3Aprm+cn%3A80937&unique=prints",
+			"note": "2026-10-08. 1, Crystalline Giant prm/80937 — the shape a client pins a printing with. A 404 here until generation 71: the numeric collector number was stored in sixteen bits by a saturating cast, so every number past 65,535 was stored AS 65,535."
+		},
+		{
+			"name": "cn-above-65535-without-a-set",
+			"method": "GET",
+			"path": "/cards/search?q=cn%3A80937&unique=prints",
+			"note": "2026-10-08. 1, the same printing: no other set numbers a card 80937."
+		},
+		{
+			"name": "number-above-65535",
+			"method": "GET",
+			"path": "/cards/search?q=e%3Aprm+number%3A80937&unique=prints",
+			"note": "2026-10-08. 1. `number:` is `cn:` under another spelling."
+		},
+		{
+			"name": "cn-window-one-wide-above-65535",
+			"method": "GET",
+			"path": "/cards/search?q=e%3Aprm+cn%3E80936+cn%3C80938&unique=prints",
+			"note": "2026-10-08. 1, prm/80937 again, by two comparisons."
+		},
+		{
+			"name": "cn-quoted-above-65535-is-the-string",
+			"method": "GET",
+			"path": "/cards/search?q=e%3Aprm+cn%3A%2280937%22&unique=prints",
+			"note": "2026-10-08. 1. Quoted, the value is the string collector number, which never had the ceiling; here so the two spellings stay the same answer."
+		},
+		{
+			"name": "cn-just-above-65535-in-set-order",
+			"method": "GET",
+			"path": "/cards/search?q=e%3Aprm+cn%3E65535+cn%3C65700&unique=prints&order=set",
+			"note": "2026-10-08. 13, prm/65642 to prm/65664 in collector order. Stored as 65,535 these matched neither bound."
+		},
+		{
+			"name": "cn-65535-itself-is-nobodys-number",
+			"method": "GET",
+			"path": "/cards/search?q=e%3Aprm+cn%3E%3D65535+cn%3C%3D65536&unique=prints",
+			"note": "2026-10-08. A 404: prm has no 65535 and no 65536. It was every prm printing numbered above the ceiling, 1,950 of them."
+		},
+		{
+			"name": "cn-greater-than-65535-page-one-in-set-order",
+			"method": "GET",
+			"path": "/cards/search?q=e%3Aprm+cn%3E65535&unique=prints&order=set",
+			"note": "2026-10-08. 1,951 (total_cards moves as Magic Online adds promos), page 1 in collector order from prm/65642. A 404 until generation 71; `e:prm cn<65536` is the other 1,144 and was all 3,095."
+		},
+		{
+			"name": "cn-six-digits-in-set-order-descending",
+			"method": "GET",
+			"path": "/cards/search?q=e%3Aprm+cn%3E%3D105000&unique=prints&order=set&dir=desc",
+			"note": "2026-10-08. 135, six-digit numbers from the top down. Tied at 65,535 these fell to the string half of the order, where \"105680\" sorts ahead of \"65642\"."
+		},
+		{
+			"name": "cn-dated-number-is-its-digits-run-together",
+			"method": "GET",
+			"path": "/cards/search?q=e%3Apwcs+cn%3E%3D202400&unique=prints&order=set",
+			"note": "2026-10-08. 9: pwcs/2024-01 to 2024-09 are 202,401 to 202,409 — the digits concatenated, the hyphen dropped — and `e:pmei cn>=202410` is 34 of pmei's 112 by the same rule."
 		}
 	]
 }
