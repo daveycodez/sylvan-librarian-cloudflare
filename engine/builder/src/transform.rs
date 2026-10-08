@@ -3311,7 +3311,7 @@ pub fn finalize(drafts: Vec<RowDraft>, tags: &TagData) -> impl Iterator<Item = V
             .copied()
             .unwrap_or(0);
         let cubecobra_score = cubecobra.get(&r.card_name).copied();
-        let pinned = ranks.pinned(&r, &tags.labels, &pins);
+        let pinned = is_pinned(&r, &tags.labels, &pins);
         let rank = ranks.rank_of(&r);
         let is_funny = funny.is_funny(&r);
         finalize_row(r, &oracle_tags, &art_tags, illustration_count, cubecobra_score, pinned, rank, is_funny)

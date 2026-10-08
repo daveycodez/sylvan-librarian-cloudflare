@@ -77,38 +77,6 @@
 //!     A digit-led List code (`plst/10E-321`) is a prefix too since 2026-09-25 — see
 //!     [`cn_has_set_prefix`], which is where the key lives now.
 //!
-//! PAPER BEFORE DIGITAL, THE ONE KEY THAT IS NOT SCRYFALL'S. The order as shipped is six keys,
-//! and the paper key sits ahead of the pin and behind the language:
-//!
-//! ```text
-//! NOT has_english > NOT paper > pin ASC > cn HAS A PREFIX > released_at DESC > cn_sort_key ASC
-//! ```
-//!
-//! THE LANGUAGE LEADS, and that is the reader's language rather than a fact about paper: an
-//! English printing on Magic Online is the card in the language the search is in, and a paper
-//! printing that exists only in Japanese is not. Dirge Bat's Godzilla printing "Battra, Dark
-//! Destroyer" is the case that set the order — it was printed in paper only in Japan (iko/386),
-//! its one English printing is Magic Online's prm/80935, and the paper key alone answered the
-//! Japanese card to an English search. English paper, then English digital, then the rest. A
-//! `lang:` search narrows the pool to one language before any of this is asked, so the key only
-//! ever decides a pool that spans languages. The label is an English printing wherever an English
-//! one exists, so putting the language ahead of the pin moves nothing the pin decided.
-//!
-//! Inside a language, a slot printed in paper (`games` holds `paper`) sorts before one that
-//! exists only on Magic Online or Arena, whatever else is true of either — the pin included.
-//! This is a DELIBERATE
-//! divergence, asked for on 2026-10-08 and the only one in this file: api.scryfall.com's own
-//! representative is a digital printing wherever its label names one (Tropical Island is
-//! Vintage Masters' vma/321) or wherever the scope's newest printing is one (the Godzilla-series
-//! Brokkos, Apex of Forever: Magic Online's prm/80909 over the paper box topper iko/378 it
-//! copies, under `unique=art` and under the flavor name alike). A card that exists only
-//! digitally has one value of the key and orders exactly as before.
-//!
-//! WHERE PAPER DISPLACES THE PIN the card's paper representative takes [`transform::PIN_BONUS`]
-//! as well as the labelled slot keeping it (see [`PrintingRanks::pinned`]), so the card's chosen
-//! printing carries the bonus in a paper scope and in a digital-only one alike and the order of
-//! CARDS against each other — which reads the chosen printing's score — does not move.
-//!
 //! WHY LANGUAGE OUTRANKS THE PREFIX, which no measurement decides. Scryfall's default search is
 //! English-only, so every corpus the prefix key was fitted on is English throughout and cannot
 //! constrain the two against each other. Putting `has_english` first leaves the prefix key's
@@ -166,18 +134,9 @@
 //!     part of this class and none of them generalises.
 
 use std::cmp::Reverse;
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 
-use crate::transform::{is_pinned, pin_key, PinKey, PinnedPrintings, RowDraft};
-
-/// What a slot's ORDER needs to know about the rows it swallows: whether any is English, and
-/// whether the printing exists in paper. Both are the same for every language of one printing
-/// in practice; OR-ing keeps the collapse honest where a row disagrees.
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct SlotFacts {
-    pub(crate) english: bool,
-    pub(crate) paper: bool,
-}
+use crate::transform::{pin_key, PinKey, PinnedPrintings, RowDraft};
 
 /// Ranks are clamped to this, and it is the multiplier's ceiling: the worst-ranked printing of a
 /// card scores 0 from the rank term. 1024 because the largest card in the corpus has 949 distinct
@@ -267,13 +226,10 @@ pub struct PrintingRanks {
     /// whether ANY row in that slot is English. DISTINCT is what collapses a printing's languages
     /// onto one rank; see the module doc. The flag is the slot-level residue of that collapse —
     /// the one thing about the languages a slot swallows that its ORDER still needs.
-    slots: HashMap<String, HashMap<(String, String, String), SlotFacts>>,
+    slots: HashMap<String, HashMap<(String, String, String), bool>>,
     /// The sealed answer: slot → rank. Keyed exactly as a pin is, so the two per-card facts a
     /// finalized row needs are asked in the same shape.
     ranks: HashMap<PinKey, u32>,
-    /// Cards whose labelled slot is NOT rank 0 — a paper slot displaced a digital pin. Their
-    /// rank-0 slot takes the pin bonus too; see [`PrintingRanks::pinned`].
-    displaced: HashSet<String>,
     sealed: bool,
 }
 
@@ -282,14 +238,12 @@ impl PrintingRanks {
     /// number has no addressable slot and is skipped, exactly as the pin skips it.
     pub fn observe(&mut self, r: &RowDraft) {
         if let (Some(set), Some(cn)) = (r.card_set_code.as_ref(), r.collector_number.as_ref()) {
-            let facts = self
+            *self
                 .slots
                 .entry(r.oracle_id.clone())
                 .or_default()
                 .entry((r.released_at.clone(), set.clone(), cn.clone()))
-                .or_default();
-            facts.english |= r.raw_lang_en;
-            facts.paper |= r.raw_has_paper;
+                .or_default() |= r.raw_lang_en;
         }
     }
 
@@ -310,15 +264,12 @@ impl PrintingRanks {
             // then the code) — the order `order=released` uses — which is how api.scryfall.com
             // orders 101 of the 143 such pairs in its 2026-09-25 `order=name` answers for the 791
             // re-measured oracle ids (the code order: 48; its reverse: 95).
-            ordered.sort_unstable_by_key(|((released_at, set, cn), facts)| {
+            ordered.sort_unstable_by_key(|((released_at, set, cn), has_english)| {
                 let key: PinKey = (oracle_id.clone(), set.clone(), cn.clone());
                 let date = released_at.replace('-', "").parse::<u32>().unwrap_or(0);
                 (
-                    // The reader's language, then paper before digital — the one divergence — and
-                    // only then the pin; module doc.
-                    u8::from(!facts.english),
-                    u8::from(!facts.paper),
                     u8::from(!pins.contains_key(&key)),
+                    u8::from(!has_english),
                     u8::from(cn_has_set_prefix(cn)),
                     Reverse(released_at.clone()),
                     cn_sort_key(cn),
@@ -327,12 +278,6 @@ impl PrintingRanks {
                     cn.clone(),
                 )
             });
-            let is_label = |((_, set, cn), _): &((String, String, String), SlotFacts)| {
-                pins.contains_key(&(oracle_id.clone(), set.clone(), cn.clone()))
-            };
-            if ordered.first().is_some_and(|first| !is_label(first)) && ordered.iter().any(is_label) {
-                self.displaced.insert(oracle_id.clone());
-            }
             for (rank, ((_, set, cn), _)) in ordered.into_iter().enumerate() {
                 self.ranks.insert((oracle_id.clone(), set, cn), rank as u32);
             }
@@ -343,14 +288,6 @@ impl PrintingRanks {
     /// displace a printing the rule actually ordered.
     pub fn rank_of(&self, r: &RowDraft) -> u32 {
         pin_key(r).and_then(|k| self.ranks.get(&k).copied()).unwrap_or(RANK_SPAN)
-    }
-
-    /// Whether `r` takes [`crate::transform::PIN_BONUS`]: it is pinned ([`is_pinned`]), or it sits
-    /// in the rank-0 slot of a card whose label a paper printing displaced. The second half is what
-    /// keeps the order of CARDS against each other where it was — that order reads the chosen
-    /// printing's score, and the chosen printing of such a card is its paper representative.
-    pub fn pinned(&self, r: &RowDraft, labels: &HashSet<String>, pins: &PinnedPrintings) -> bool {
-        is_pinned(r, labels, pins) || (self.displaced.contains(&r.oracle_id) && self.rank_of(r) == 0)
     }
 
     pub fn len(&self) -> usize {
@@ -397,9 +334,7 @@ mod tests {
             "o".to_owned(),
             slots
                 .iter()
-                .map(|(date, set, cn, en)| {
-                    ((date.to_string(), set.to_string(), cn.to_string()), SlotFacts { english: *en, paper: true })
-                })
+                .map(|(date, set, cn, en)| ((date.to_string(), set.to_string(), cn.to_string()), *en))
                 .collect(),
         );
         r.seal(&PinnedPrintings::default());
@@ -484,12 +419,10 @@ mod tests {
     }
 
     #[test]
-    fn language_outranks_the_prefix_and_the_pin() {
+    fn language_outranks_the_prefix_and_the_pin_outranks_both() {
         // The composition order, on one card: a prefixed ENGLISH slot beats an unprefixed
-        // foreign-only one (this is the choice no corpus could make, see the module doc) — and
-        // beats it even where the foreign-only slot is the labelled one, since the language leads.
-        // A label is an English printing wherever an English one exists, so this is the order
-        // stating itself, not a case the corpus holds.
+        // foreign-only one (this is the choice no corpus could make, see the module doc), and a
+        // pin beats everything regardless of either.
         assert_eq!(
             ranked(&[("2024-09-01", "plst", "USG-4", true), ("2025-01-01", "ren", "46", false)]),
             vec!["plst/USG-4", "ren/46"],
@@ -500,114 +433,14 @@ mod tests {
         r.slots.insert(
             "o".to_owned(),
             [
-                (("2024-09-01".to_owned(), "plst".to_owned(), "USG-4".to_owned()), SlotFacts { english: true, paper: true }),
-                (("2025-01-01".to_owned(), "ren".to_owned(), "46".to_owned()), SlotFacts { english: false, paper: true }),
+                (("2024-09-01".to_owned(), "plst".to_owned(), "USG-4".to_owned()), true),
+                (("2025-01-01".to_owned(), "ren".to_owned(), "46".to_owned()), false),
             ]
             .into_iter()
             .collect(),
         );
         r.seal(&pins);
-        assert_eq!(r.ranks[&("o".to_owned(), "plst".to_owned(), "USG-4".to_owned())], 0);
-        assert_eq!(r.ranks[&("o".to_owned(), "ren".to_owned(), "46".to_owned())], 1);
-    }
-
-    /// One card's slots, each `(date, set, cn, paper)` and all English, sealed under `pin`.
-    fn sealed_with_paper(slots: &[(&str, &str, &str, bool)], pin: Option<(&str, &str)>) -> PrintingRanks {
-        let all: Vec<_> = slots.iter().map(|&(date, set, cn, paper)| (date, set, cn, true, paper)).collect();
-        sealed_with_facts(&all, pin)
-    }
-
-    /// One card's slots, each `(date, set, cn, english, paper)`, sealed under `pin`.
-    fn sealed_with_facts(slots: &[(&str, &str, &str, bool, bool)], pin: Option<(&str, &str)>) -> PrintingRanks {
-        let mut pins = PinnedPrintings::default();
-        if let Some((set, cn)) = pin {
-            pins.pin_slot_for_test(("o".to_owned(), set.to_owned(), cn.to_owned()));
-        }
-        let mut r = PrintingRanks::default();
-        r.slots.insert(
-            "o".to_owned(),
-            slots
-                .iter()
-                .map(|(date, set, cn, english, paper)| {
-                    (
-                        (date.to_string(), set.to_string(), cn.to_string()),
-                        SlotFacts { english: *english, paper: *paper },
-                    )
-                })
-                .collect(),
-        );
-        r.seal(&pins);
-        r
-    }
-
-    fn order_of(r: &PrintingRanks) -> Vec<String> {
-        let mut out: Vec<_> = r.ranks.iter().map(|((_, set, cn), rank)| (*rank, format!("{set}/{cn}"))).collect();
-        out.sort_unstable();
-        out.into_iter().map(|(_, s)| s).collect()
-    }
-
-    #[test]
-    fn paper_sorts_before_digital_whatever_the_date_and_whatever_the_pin() {
-        // The Godzilla-series Brokkos: Magic Online's prm/80909 is NEWER than the paper box topper
-        // iko/378 it copies, and api.scryfall.com answers it. Here paper leads.
-        let r = sealed_with_paper(&[("2020-04-30", "prm", "80909", false), ("2020-04-24", "iko", "378", true)], None);
-        assert_eq!(order_of(&r), vec!["iko/378", "prm/80909"]);
-        assert!(r.displaced.is_empty(), "no label, nothing displaced");
-
-        // Tropical Island: Scryfall's label is Vintage Masters' vma/321, a digital printing. Paper
-        // leads the pin, in its own order (newest first), and the digital slots follow pin-first.
-        let r = sealed_with_paper(
-            &[
-                ("2014-06-16", "vma", "321", false),
-                ("2011-01-10", "me4", "254", false),
-                ("1994-04-11", "3ed", "288", true),
-                ("1993-10-04", "leb", "284", true),
-            ],
-            Some(("vma", "321")),
-        );
-        assert_eq!(order_of(&r), vec!["3ed/288", "leb/284", "vma/321", "me4/254"]);
-        assert!(r.displaced.contains("o"), "the label was displaced, so rank 0 takes the bonus too");
-
-        // A paper label stays rank 0 and nothing is displaced — every card but the divergent ones.
-        let r = sealed_with_paper(
-            &[("2014-06-16", "vma", "321", false), ("1993-10-04", "leb", "284", true), ("1994-04-11", "3ed", "288", true)],
-            Some(("leb", "284")),
-        );
-        assert_eq!(order_of(&r), vec!["leb/284", "3ed/288", "vma/321"]);
-        assert!(r.displaced.is_empty());
-
-        // A card that exists only digitally has one value of the key: the pin, then the date.
-        let r = sealed_with_paper(
-            &[("2020-04-30", "prm", "1", false), ("2021-01-01", "prm", "2", false)],
-            Some(("prm", "1")),
-        );
-        assert_eq!(order_of(&r), vec!["prm/1", "prm/2"]);
-        assert!(r.displaced.is_empty());
-    }
-
-    #[test]
-    fn the_readers_language_outranks_paper() {
-        // Dirge Bat's "Battra, Dark Destroyer": printed in paper only in Japan (iko/386), in
-        // English only on Magic Online (prm/80935). English digital before foreign-only paper.
-        let r = sealed_with_facts(
-            &[("2020-04-24", "iko", "386", false, true), ("2020-04-30", "prm", "80935", true, false)],
-            None,
-        );
-        assert_eq!(order_of(&r), vec!["prm/80935", "iko/386"]);
-
-        // The whole order on one card: English paper, English digital, then the foreign-only
-        // slots, paper before digital among those too.
-        let r = sealed_with_facts(
-            &[
-                ("2020-04-24", "iko", "386", false, true),
-                ("2020-04-30", "prm", "80935", true, false),
-                ("2020-04-24", "iko", "84", true, true),
-                ("2021-01-01", "xja", "1", false, false),
-            ],
-            Some(("iko", "84")),
-        );
-        assert_eq!(order_of(&r), vec!["iko/84", "prm/80935", "iko/386", "xja/1"]);
-        assert!(r.displaced.is_empty());
+        assert_eq!(r.ranks[&("o".to_owned(), "ren".to_owned(), "46".to_owned())], 0);
     }
 
     #[test]

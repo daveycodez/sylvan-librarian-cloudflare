@@ -1951,8 +1951,22 @@ export async function gzipBytes(bytes: Uint8Array): Promise<Uint8Array> {
  *      `prefer:borderless` takes the same order in the engine.
  *
  *      GENERATION-ONLY, like 68: stored ranks move, nothing else.
+ *
+ *   70 (2026-10-08): GENERATIONS 68 AND 69 REVERTED — A CARD'S OWN ORDER IS SCRYFALL'S AGAIN. The
+ *      paper-before-digital key of 68 and the language-ahead-of-paper key of 69 are both out of
+ *      the builder's rank, which is back to the order every generation up to 67 stored: the label,
+ *      then `has_english`, the collector-number prefix, recency. With no preference written this
+ *      port answers the printing api.scryfall.com answers, a Magic Online one included (Tropical
+ *      Island is vma/321 again; `!"Bio-Quartz Spacegodzilla"` is prm/80909 again).
+ *
+ *      `prefer:borderless` is untouched and keeps its own order in the engine — the reader's
+ *      language, then paper before digital, then its tiers — because that prefer is this API's
+ *      own and was never Scryfall's to match.
+ *
+ *      GENERATION-ONLY: the stored ranks move back, and a rebuild is the only way to move them,
+ *      so the number goes forward rather than back to 67.
  */
-export const STORE_CONTENT_GENERATION = 69;
+export const STORE_CONTENT_GENERATION = 70;
 
 /**
  * Chunk key for a store. Keyed by store_key, so publishes never collide.

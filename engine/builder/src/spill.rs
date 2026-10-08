@@ -63,7 +63,7 @@ use serde_json::Value;
 use crate::ranks::PrintingRanks;
 use crate::tags::TagData;
 use crate::transform::{
-    cubecobra_scores_from_pairs, finalize_row, illust_count_key, FunnyCards, PinnedPrintings, RowDraft,
+    cubecobra_scores_from_pairs, finalize_row, illust_count_key, is_pinned, FunnyCards, PinnedPrintings, RowDraft,
 };
 
 
@@ -311,7 +311,7 @@ impl Aggregates {
             .copied()
             .unwrap_or(0);
         let cubecobra_score = self.cubecobra.get(&draft.card_name).copied();
-        let pinned = self.ranks.pinned(&draft, &tags.labels, &self.pins);
+        let pinned = is_pinned(&draft, &tags.labels, &self.pins);
         let rank = self.ranks.rank_of(&draft);
         let is_funny = self.funny.is_funny(&draft);
         finalize_row(draft, &oracle_tags, &art_tags, illustration_count, cubecobra_score, pinned, rank, is_funny)
