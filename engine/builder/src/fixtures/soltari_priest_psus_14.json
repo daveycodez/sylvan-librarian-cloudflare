@@ -1,0 +1,133 @@
+{
+ "artist": "Dany Orizio",
+ "artist_ids": [
+  "fcd5ea36-64e0-4af0-992a-3c68a34a400f"
+ ],
+ "booster": false,
+ "border_color": "black",
+ "card_back_id": "0aeebaf5-8c7d-4636-9e82-8c27447861f7",
+ "cardmarket_id": 253847,
+ "cmc": 2.0,
+ "collector_number": "14",
+ "color_identity": [
+  "W"
+ ],
+ "colors": [
+  "W"
+ ],
+ "digital": false,
+ "edhrec_rank": 21471,
+ "finishes": [
+  "foil"
+ ],
+ "flavor_text": "\"In Rath,\" the priest said, \"there is even greater need for prayer.\"",
+ "foil": true,
+ "frame": "2003",
+ "full_art": false,
+ "game_changer": false,
+ "games": [
+  "paper"
+ ],
+ "highres_image": true,
+ "id": "6b622228-4ffe-4d05-ba2b-67c79bd34056",
+ "illustration_id": "45ad8540-149f-4e9c-b7eb-6595f01f3622",
+ "image_status": "highres_scan",
+ "image_updated_at": "2026-07-13T11:46:12Z",
+ "image_uris": {
+  "art": "https://cards.scryfall.io/art/front/6/b/6b622228-4ffe-4d05-ba2b-67c79bd34056.webp?1783943172",
+  "art_crop": "https://cards.scryfall.io/art_crop/front/6/b/6b622228-4ffe-4d05-ba2b-67c79bd34056.jpg?1783943172",
+  "border_crop": "https://cards.scryfall.io/border_crop/front/6/b/6b622228-4ffe-4d05-ba2b-67c79bd34056.jpg?1783943172",
+  "crop": "https://cards.scryfall.io/crop/front/6/b/6b622228-4ffe-4d05-ba2b-67c79bd34056.webp?1783943172",
+  "display": "https://cards.scryfall.io/display/front/6/b/6b622228-4ffe-4d05-ba2b-67c79bd34056.webp?1783943172",
+  "grid": "https://cards.scryfall.io/grid/front/6/b/6b622228-4ffe-4d05-ba2b-67c79bd34056.webp?1783943172",
+  "large": "https://cards.scryfall.io/large/front/6/b/6b622228-4ffe-4d05-ba2b-67c79bd34056.jpg?1783943172",
+  "normal": "https://cards.scryfall.io/normal/front/6/b/6b622228-4ffe-4d05-ba2b-67c79bd34056.jpg?1783943172",
+  "png": "https://cards.scryfall.io/png/front/6/b/6b622228-4ffe-4d05-ba2b-67c79bd34056.png?1783943172",
+  "small": "https://cards.scryfall.io/small/front/6/b/6b622228-4ffe-4d05-ba2b-67c79bd34056.jpg?1783943172",
+  "thumb": "https://cards.scryfall.io/thumb/front/6/b/6b622228-4ffe-4d05-ba2b-67c79bd34056.webp?1783943172"
+ },
+ "keywords": [
+  "Shadow",
+  "Protection"
+ ],
+ "lang": "en",
+ "layout": "normal",
+ "legalities": {
+  "alchemy": "not_legal",
+  "brawl": "not_legal",
+  "commander": "legal",
+  "competitivebrawl": "not_legal",
+  "duel": "legal",
+  "future": "not_legal",
+  "gladiator": "not_legal",
+  "historic": "not_legal",
+  "legacy": "legal",
+  "modern": "legal",
+  "oathbreaker": "legal",
+  "oldschool": "not_legal",
+  "pauper": "not_legal",
+  "paupercommander": "not_legal",
+  "penny": "not_legal",
+  "pioneer": "not_legal",
+  "predh": "legal",
+  "premodern": "legal",
+  "standard": "not_legal",
+  "standardbrawl": "not_legal",
+  "timeless": "not_legal",
+  "tlr": "legal",
+  "vintage": "legal"
+ },
+ "mana_cost": "{W}{W}",
+ "multiverse_ids": [],
+ "name": "Soltari Priest",
+ "nonfoil": false,
+ "object": "card",
+ "oracle_id": "f8c9cb9f-3a37-4004-9cde-f51ca5579e1a",
+ "oracle_text": "Protection from red\nShadow (This creature can block or be blocked by only creatures with shadow.)",
+ "oversized": false,
+ "penny_rank": 6577,
+ "power": "2",
+ "prices": {
+  "eur": null,
+  "eur_foil": "1.13",
+  "tix": null,
+  "usd": null,
+  "usd_etched": null,
+  "usd_foil": "4.82"
+ },
+ "prints_search_uri": "https://api.scryfall.com/cards/search?order=released&q=oracleid%3Af8c9cb9f-3a37-4004-9cde-f51ca5579e1a&unique=prints",
+ "promo": true,
+ "promo_types": [
+  "tourney"
+ ],
+ "purchase_uris": {
+  "cardhoarder": "https://www.cardhoarder.com/cards?affiliate_id=scryfall&data%5Bsearch%5D=Soltari+Priest&ref=card-profile&utm_campaign=affiliate&utm_medium=card&utm_source=scryfall",
+  "cardmarket": "https://www.cardmarket.com/en/Magic/Products?idProduct=253847&referrer=scryfall&utm_campaign=card_prices&utm_medium=text&utm_source=scryfall",
+  "tcgplayer": "https://partner.tcgplayer.com/c/4931599/1830156/21018?subId1=api&u=https%3A%2F%2Fwww.tcgplayer.com%2Fproduct%2F110933%3Fpage%3D1"
+ },
+ "rarity": "rare",
+ "related_uris": {
+  "edhrec": "https://edhrec.com/route/?cc=Soltari+Priest",
+  "tcgplayer_infinite_articles": "https://partner.tcgplayer.com/c/4931599/1830156/21018?subId1=api&trafcat=tcgplayer.com%2Fsearch%2Farticles&u=https%3A%2F%2Fwww.tcgplayer.com%2Fsearch%2Farticles%3FproductLineName%3Dmagic%26q%3DSoltari%2BPriest",
+  "tcgplayer_infinite_decks": "https://partner.tcgplayer.com/c/4931599/1830156/21018?subId1=api&trafcat=tcgplayer.com%2Fsearch%2Fdecks&u=https%3A%2F%2Fwww.tcgplayer.com%2Fsearch%2Fdecks%3FproductLineName%3Dmagic%26q%3DSoltari%2BPriest"
+ },
+ "released_at": "2007-01-01",
+ "reprint": true,
+ "reserved": false,
+ "rulings_uri": "https://api.scryfall.com/cards/6b622228-4ffe-4d05-ba2b-67c79bd34056/rulings",
+ "scryfall_set_uri": "https://scryfall.com/sets/psus?utm_source=api",
+ "scryfall_uri": "https://scryfall.com/card/psus/14/soltari-priest?utm_source=api",
+ "set": "psus",
+ "set_id": "7708825d-7afc-472a-ac35-348713ffb3e1",
+ "set_name": "Junior Super Series",
+ "set_search_uri": "https://api.scryfall.com/cards/search?order=set&q=e%3Apsus&unique=prints",
+ "set_type": "promo",
+ "set_uri": "https://api.scryfall.com/sets/7708825d-7afc-472a-ac35-348713ffb3e1",
+ "story_spotlight": false,
+ "tcgplayer_id": 110933,
+ "textless": false,
+ "toughness": "1",
+ "type_line": "Creature — Soltari Cleric",
+ "uri": "https://api.scryfall.com/cards/6b622228-4ffe-4d05-ba2b-67c79bd34056",
+ "variation": false
+}

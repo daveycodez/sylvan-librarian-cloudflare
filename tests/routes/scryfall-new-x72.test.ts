@@ -13,7 +13,7 @@ import { applyExtrasGate } from "../../src/routes/extras-gate";
 import { scryfallTermPolicy } from "../../src/routes/scryfall-compat/query-terms";
 
 /** One spelling of each `new:` value the store's `new_flags` answer. */
-const NEW_FLAG_VALUES = ["card", "paper"];
+const NEW_FLAG_VALUES = ["card", "paper", "frame"];
 
 const ignored = (echo: string, reason: string) => `Invalid expression “${echo}” was ignored. ${reason}`;
 
@@ -89,6 +89,9 @@ describe("the new: values the store's new_flags answer are the engine's is:new<v
 		["new=card", "is:newcard"],
 		["-new:card", "-is:newcard"],
 		["-new:paper", "-is:newcard"],
+		["new:frame", "is:newframe"],
+		["new:FRAME", "is:newframe"],
+		["-new:frame", "-is:newframe"],
 	])("%s", (q, rewritten) => {
 		const policy = scryfallTermPolicy(`${q} e:khm t:god`);
 		expect(policy.warnings).toEqual([]);
@@ -105,7 +108,7 @@ describe("the new: values the store's new_flags answer are the engine's is:new<v
 
 	test("the port's own spellings are not Scryfall values, under any separator", () => {
 		// `is:newcard` and `is:new_card` are each 25 of 25 carrying the sentence there.
-		for (const term of ["is:newcard", "is:new_card", "is:new-card", "not:newcard"]) {
+		for (const term of ["is:newcard", "is:new_card", "is:new-card", "not:newcard", "is:newframe", "is:new_frame"]) {
 			const value = term.slice(term.indexOf(":") + 1);
 			const policy = scryfallTermPolicy(`${term} e:khm t:god`);
 			expect(policy.query).toBe("e:khm t:god");
@@ -125,7 +128,6 @@ describe("the values Scryfall honors and this port does not answer fail to parse
 		"new:flavor",
 		"new:ft",
 		"new:flavortext",
-		"new:frame",
 		"new:illustration",
 		"new:foil",
 		"new:nonfoil",

@@ -5412,10 +5412,13 @@ pub(crate) fn printing_is_new_rarity(p: &APrinting) -> bool {
 /// `new:card`, and `new:paper`, `new:printed` and `new:cardboard`, which are the same list.
 pub(crate) const NEW_CARD: u32 = 1 << 0;
 
+/// `Printing::new_flags`: the printing is the first of its card in its FRAME — `new:frame`.
+pub(crate) const NEW_FRAME: u32 = 1 << 1;
+
 /// The engine's `is:` spelling of each `new:` value `Printing::new_flags` answers, and the bits
 /// it reads. None of these is a Scryfall `is:` value: the compat surface writes `new:<value>` as
 /// one (query-terms.ts NEW_VALUE_IS_TAGS) and drops the spelling when it is typed.
-pub(crate) const NEW_FLAG_IS_VALUES: &[(&str, u32)] = &[("newcard", NEW_CARD)];
+pub(crate) const NEW_FLAG_IS_VALUES: &[(&str, u32)] = &[("newcard", NEW_CARD), ("newframe", NEW_FRAME)];
 
 /// The printings Scryfall's own order puts FIRST among the rows of their card that share their
 /// release date and batch, where the keys `assign_new_flags` orders by say otherwise. MEASURED,
@@ -5444,6 +5447,10 @@ const NEW_ORDER_LEADS: &[u128] = &[0xbc9c_39d1_1e10_4cd3_a4b1_b6eb_7c1a_0b65];
 ///   `NEW_CARD`  new:card, new:paper, new:printed, new:cardboard — one list, 35,158 printings,
 ///               id for id. Eligible: a printing whose `games` hold `paper`. One group a card.
 ///               35,158 of 35,158 (with `NEW_ORDER_LEADS`; 35,157 without).
+///   `NEW_FRAME` new:frame — 45,058 printings. Every row is eligible, digital ones too; the
+///               group is the card's `frame` (1993, 1997, 2003, 2015, future) and nothing else —
+///               not the frame effects, not the border. 45,058 of 45,058 (45,057 without the
+///               lead).
 ///
 /// What the values share, each clause measured rather than read off the name:
 ///
@@ -5463,7 +5470,12 @@ const NEW_ORDER_LEADS: &[u128] = &[0xbc9c_39d1_1e10_4cd3_a4b1_b6eb_7c1a_0b65];
 ///   - NEGATION is the plain complement, over every row of every language. No value forces
 ///     extras or widens.
 fn assign_new_flags(printings: &mut [Printing], offsets: &[u32], foreign: &mut [Printing], coll_vocab: &[String]) {
-    let memorabilia = coll_vocab.iter().position(|s| s == "memorabilia").and_then(|i| u16::try_from(i).ok());
+    let vid = |word: &str| coll_vocab.iter().position(|s| s == word).and_then(|i| u16::try_from(i).ok());
+    let memorabilia = vid("memorabilia");
+    // The frame words as `card_frame_data` holds them (the builder title-cases the frame, so
+    // `future` is `Future`): a printing's frame is whichever of these it carries, 0 for none.
+    let frames: Vec<u16> = ["1993", "1997", "2003", "2015", "Future"].iter().filter_map(|word| vid(word)).collect();
+    let frame_of = |p: &Printing| p.card_frame_data.iter().find(|id| frames.contains(id)).map_or(0, |id| u64::from(*id) + 1);
     let key = |p: &Printing| {
         (
             p.released_at_int.unwrap_or(u32::MAX),
@@ -5496,6 +5508,7 @@ fn assign_new_flags(printings: &mut [Printing], offsets: &[u32], foreign: &mut [
             if p.compat.games & GAME_PAPER != 0 {
                 lead(NEW_CARD, 0);
             }
+            lead(NEW_FRAME, frame_of(p));
         }
         for (bit, _, i) in firsts {
             if rows[i].compat.flags & COMPAT_VARIATION == 0 {
@@ -21549,7 +21562,10 @@ const ARCHIVE_MAGIC: [u8; 8] = *b"ATCARDS\0";
 //                change: a reader pairing this code with a 2026100801 store would read the
 //                option's tag as the date — 1, or 0 — and the date as the flags. Paired with
 //                STORE_CONTENT_GENERATION 76; SORT_KEY_VERSION does not move.
-const ARCHIVE_FORMAT_VERSION: u32 = 2026100901;
+//   2026100902 — NEW:FRAME (LOCAL PATCH). Bit 1 of `Printing::new_flags`, clear in every
+//                2026100901 store: a reader pairing this code with one would answer `new:frame`
+//                with nothing. No layout moves. Paired with STORE_CONTENT_GENERATION 77.
+const ARCHIVE_FORMAT_VERSION: u32 = 2026100902;
 const ARCHIVE_HEADER_LEN: usize = 16;
 
 fn archive_header() -> [u8; ARCHIVE_HEADER_LEN] {

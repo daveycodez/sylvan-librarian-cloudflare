@@ -130,3 +130,35 @@ fn new_card_is_the_first_paper_printing_outside_memorabilia_in_the_measured_orde
         ]
     );
 }
+
+#[test]
+fn new_frame_is_the_first_printing_in_each_frame_digital_printings_too() {
+    let store = store_of(&[
+        // ONE GROUP A FRAME: Soltari Priest is new in the 1997 frame in Tempest and in the 2003
+        // frame as a 2007 promo; its Time Spiral reprint keeps the old frame and is not.
+        ("soltari_priest_tmp_46", true),
+        ("soltari_priest_tsb_14", true),
+        // THE COLLECTOR NUMBER IS ITS DIGITS AS ONE INTEGER: `psus/14` and the Japanese
+        // `pjjt/1N07` share 2007-01-01 and a batch, and 14 is before 107 — the number's first
+        // integer, 1, and the id both say `pjjt`.
+        ("soltari_priest_psus_14", true),
+        ("soltari_priest_pjjt_1n07_ja", true),
+        // A VARIATION IS NEVER FLAGGED, AND STILL LEADS: Zombify's Simplified Chinese `ody/171†`
+        // is the only row its card has in the 2015 frame before 2018, and neither it nor
+        // `a25/116` after it is `new:frame`.
+        ("zombify_ody_171", true),
+        ("zombify_ody_171_dagger_zhs", true),
+        ("zombify_a25_116", true),
+        // DIGITAL printings are eligible here: the Arena `ybro/24` is Rusko's first in its frame.
+        ("rusko_clockmaker_ybro_24", true),
+        ("rusko_clockmaker_mb2_263", true),
+        // MEMORABILIA is outside.
+        ("mirror_mirror_olep_48", true),
+        ("mirror_mirror_ugl_77", true),
+    ]);
+    assert_eq!(rows(&store, &is("newframe")), ["ody/171/en", "psus/14/en", "tmp/46/en", "ugl/77/en", "ybro/24/en"]);
+    assert_eq!(
+        rows(&store, &not(is("newframe"))),
+        ["a25/116/en", "mb2/263/en", "ody/171†/zhs", "olep/48/en", "pjjt/1N07/ja", "tsb/14/en"]
+    );
+}

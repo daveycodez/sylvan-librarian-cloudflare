@@ -2111,8 +2111,13 @@ export async function gzipBytes(bytes: Uint8Array): Promise<Uint8Array> {
  *      printing's release date is archived as one u32 (0 for none) where rkyv's option took
  *      eight bytes, and the four it gives back are `new_flags`, one bit a `new:` value; this is
  *      bit 0.
+ *
+ *   77 (2026-10-09): `new:frame`. The card's first printing in each frame — the same order and
+ *      the same canonical, non-memorabilia rows as generation 76, digital printings included, one
+ *      group a `frame` value: 45,058 of 45,058 printings, the list read whole. Bit 1 of
+ *      `new_flags`; paired with ARCHIVE_FORMAT_VERSION 2026100901 -> 2026100902, no layout moved.
  */
-export const STORE_CONTENT_GENERATION = 76;
+export const STORE_CONTENT_GENERATION = 77;
 
 /**
  * Chunk key for a store. Keyed by store_key, so publishes never collide.

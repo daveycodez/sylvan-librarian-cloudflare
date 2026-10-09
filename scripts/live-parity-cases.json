@@ -4073,6 +4073,30 @@
 			"method": "GET",
 			"path": "/cards/search?q=-new%3Acard+e%3Akhm+t%3Agod&unique=prints",
 			"note": "2026-10-09. 13 of the 25: the complement (-new:card lang:any is 510,145 of 545,303 rows corpus-wide)."
+		},
+		{
+			"name": "new-frame-is-the-first-printing-in-each-frame",
+			"method": "GET",
+			"path": "/cards/search?q=new%3Aframe+%21%22Soltari+Priest%22&unique=prints",
+			"note": "2026-10-09. tmp/46, psus/14 and tpr/32 — the 1997, 2003 and 2015 frames. psus/14 and not the Japanese pjjt/1N07 of the same date and batch: the collector number is its digits as one integer, 14 before 107."
+		},
+		{
+			"name": "new-frame-a-variation-leads-and-is-not-flagged",
+			"method": "GET",
+			"path": "/cards/search?q=new%3Aframe+%21%22Zombify%22&unique=prints",
+			"note": "2026-10-09. ody/171 and 8ed/174★ only: the Simplified Chinese misprint ody/171† is the card's first row in the 2015 frame and a variation, so it is not new, and neither is a25/116 after it."
+		},
+		{
+			"name": "new-frame-digital-printings-count",
+			"method": "GET",
+			"path": "/cards/search?q=new%3Aframe+%21%22Rusko%2C+Clockmaker%22&unique=prints",
+			"note": "2026-10-09. The Arena printing ybro/24, which new:card passes over: every game is eligible for new:frame (45,058 printings corpus-wide)."
+		},
+		{
+			"name": "new-frame-negated-is-every-other-row",
+			"method": "GET",
+			"path": "/cards/search?q=-new%3Aframe+e%3Akhm+t%3Agod&unique=prints",
+			"note": "2026-10-09. 13 of the 25: the showcase printings share the 2015 frame with the plain ones before them — the frame effects are no part of the group."
 		}
 	]
 }
