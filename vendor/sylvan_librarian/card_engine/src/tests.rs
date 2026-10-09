@@ -19630,18 +19630,19 @@ fn the_archived_row_sizes_stay_pinned() {
 }
 
 #[test]
-fn in_tags_are_the_union_over_canonical_and_annex_rows_under_each_namespaces_rule() {
+fn in_tags_are_the_union_over_canonical_rows_under_each_namespaces_rule_and_the_annex_gives_its_language() {
     // One card, three canonical printings and one annex row, each carrying one thing the others
     // do not, so every rule in `assign_in_tags` has a printing that exercises it alone:
     //   id 1  khm / expansion / en / rare / paper+arena / nonfoil only / booster / 2015 frame
     //   id 2  sld / box       / en / MYTHIC (decorative: must NOT count) / paper / nonfoil only
     //   id 3  tpr / masters   / en / rare / mtgo / foil only, DIGITAL (finish must NOT count)
-    //   annex pjsc / promo    / ja
+    //   annex pjsc / promo    / ja / UNCOMMON / paper foil / 1997 frame — an annex row gives its
+    //         set, set type and language, and none of the three things it alone carries here
     let mut vocab = VocabInterner::new();
     let card = stub_card(1, TYPE_CREATURE, &[], &mut vocab);
     let id = |v: &mut VocabInterner, w: &str| v.intern(w.to_owned()).expect("vocab");
     let (expansion, boxt, masters, promo) = (id(&mut vocab, "expansion"), id(&mut vocab, "box"), id(&mut vocab, "masters"), id(&mut vocab, "promo"));
-    let (en, ja, frame_2015) = (id(&mut vocab, "en"), id(&mut vocab, "ja"), id(&mut vocab, "2015"));
+    let (en, ja, frame_2015, frame_1997) = (id(&mut vocab, "en"), id(&mut vocab, "ja"), id(&mut vocab, "2015"), id(&mut vocab, "1997"));
     let mut data = store_of(vec![card], &[3], vocab);
     let set = |p: &mut Printing, code: &str, st: u16, lang: u16| {
         p.card_set_code = InlineStr::<8>::from_str(code);
@@ -19666,7 +19667,10 @@ fn in_tags_are_the_union_over_canonical_and_annex_rows_under_each_namespaces_rul
     data.printings[2].compat.flags = super::COMPAT_DIGITAL;
     let mut annex = stub_printing(9, 9, None);
     set(&mut annex, "pjsc", promo, ja);
-    annex.compat.finishes = FINISH_NONFOIL;
+    annex.card_rarity_int = Some(1);
+    annex.compat.finishes = FINISH_FOIL;
+    annex.compat.flags = 0;
+    annex.card_frame_data = vec![frame_1997];
     data.foreign = vec![annex];
     data.foreign_offsets = vec![0, 1];
 
@@ -19678,9 +19682,10 @@ fn in_tags_are_the_union_over_canonical_and_annex_rows_under_each_namespaces_rul
     ];
     expected.sort_unstable();
     assert_eq!(words, expected);
-    // The two rules that SUBTRACT, stated on their own: sld's mythic is decorative, and tpr's foil
-    // is digital-only. Neither word is in the union.
+    // The rules that SUBTRACT, stated on their own: sld's mythic is decorative, tpr's foil is
+    // digital-only, and the annex row's rarity, finish and frame are not read at all.
     assert!(!words.contains(&"mythic") && !words.contains(&"foil"));
+    assert!(!words.contains(&"uncommon") && !words.contains(&"1997"));
     // Sorted and deduped, which is what the binary-search arm in `tri()` relies on.
     let ids = &data.cards[0].card_in_tags;
     assert!(ids.windows(2).all(|w| w[0] < w[1]));

@@ -3893,6 +3893,60 @@
 			"method": "GET",
 			"path": "/cards/search?q=e%3Asld+%28cn%3A254+or+cn%3A255+or+cn%3A100%29&unique=art",
 			"note": "2026-10-09. 2 rows: sld/100 with its artwork, and sld/255 (Island) for the two art-less basic lands — two cards, one row, with no extras involved."
+		},
+		{
+			"name": "in-rarity-counts-a-box-set",
+			"method": "GET",
+			"path": "/cards/search?q=in%3Arare+e%3Akhm+t%3Abasic&unique=prints&order=set",
+			"note": "2026-10-09. khm/394-398, the five basic lands: each is rare in the 2017 Gift Pack (g17, a `box` set) and in nothing else whose rarity counts. A 404 here until generation 74, which read every `box` set as Secret Lair."
+		},
+		{
+			"name": "in-rarity-counts-the-multiverse-gift-box",
+			"method": "GET",
+			"path": "/cards/search?q=e%3Amgb+in%3Arare&order=set",
+			"note": "2026-10-09. All 10 cards of mgb, rare there and nowhere else for 9 of them (1 here until generation 74). `st:box -e:sld r:rare -in:rare` is a 404: only sld's rarity is skipped."
+		},
+		{
+			"name": "in-rarity-is-not-a-translations",
+			"method": "GET",
+			"path": "/cards/search?q=e%3Adrk+lang%3Ait+r%3Arare+-in%3Arare&order=set",
+			"note": "2026-10-09. 40 cards of The Dark, rare on their Italian row and uncommon in English: `in:rare` reads the English row. A 404 here until generation 74."
+		},
+		{
+			"name": "in-game-is-not-a-translations",
+			"method": "GET",
+			"path": "/cards/search?q=e%3Atmc+-in%3Aarena&order=set",
+			"note": "2026-10-09. 67: a translated tmc row lists `arena` where its English row does not, and does not make the card `in:arena` (30 here until generation 74)."
+		},
+		{
+			"name": "in-finish-is-not-a-translations",
+			"method": "GET",
+			"path": "/cards/search?q=e%3Athb+-in%3Afoil&order=set",
+			"note": "2026-10-09. 13 Theros Beyond Death cards nonfoil in English with a foil finish on a translated row (a 404 here until generation 74)."
+		},
+		{
+			"name": "in-booster-is-not-a-translations",
+			"method": "GET",
+			"path": "/cards/search?q=e%3Aohop+-in%3Abooster&include_extras=true&order=set",
+			"note": "2026-10-09. All 40 oversized Planechase planes: only a Spanish row says `booster` (1 here until generation 74)."
+		},
+		{
+			"name": "in-frame-is-not-a-translations",
+			"method": "GET",
+			"path": "/cards/search?q=e%3Achk+-in%3A2015+t%3Alegendary&order=set",
+			"note": "2026-10-09. 36: chk/131 Nezumi Shortfang is the 2003 frame in English and reads 2015 in German (34 here until generation 74)."
+		},
+		{
+			"name": "in-astral-is-a-game",
+			"method": "GET",
+			"path": "/cards/search?q=in%3Aastral&include_extras=true&order=set",
+			"note": "2026-10-09. The 12 Astral cards, = `game:astral`. A 404 here until generation 74: `in:` read the three games the packed byte holds."
+		},
+		{
+			"name": "in-sega-is-a-game",
+			"method": "GET",
+			"path": "/cards/search?q=in%3Asega&include_extras=true&order=set",
+			"note": "2026-10-09. The 10 Sega Dreamcast cards (a 404 here until generation 74)."
 		}
 	]
 }

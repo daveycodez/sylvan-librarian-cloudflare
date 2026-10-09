@@ -2046,8 +2046,34 @@ export async function gzipBytes(bytes: Uint8Array): Promise<Uint8Array> {
  *      GENERATION-ONLY: the batch is the high bits of the stored `release_set_key` and a key of
  *      the stored rank. `order=released` cannot change — (batch, code) is the same order with the
  *      boundary or without — so SORT_KEY_VERSION stays; no layout, no format version.
+ *
+ *   74 (2026-10-09): WHICH PRINTINGS `in:` COUNTS. `in:rare e:khm` under `unique=prints` was 125
+ *      here against api.scryfall.com's 130 — the five Kaldheim basic lands — and three rules of
+ *      `assign_in_tags` were behind that and its neighbours:
+ *
+ *      A `box` SET'S RARITY COUNTS; Secret Lair Drop's does not. The 2026-09-04 measurement read
+ *      "`box` 466" and every one of the 466 was `sld`: `st:box -e:sld r:rare -in:rare` is 0 there
+ *      and was 36 here. The basics are rare in the 2017 Gift Pack (`g17`), and in nothing else
+ *      that counts.
+ *
+ *      AN ANNEX ROW GIVES ITS LANGUAGE AND NOTHING ELSE. A translation's rarity, games, frame,
+ *      finishes and booster flag fed the union, and where they differ from the English row
+ *      Scryfall reads the English row: 40 cards of The Dark rare only in Italian, 12 of Homelands
+ *      uncommon only in translation, 38 cards `in:arena` by a translated row alone.
+ *
+ *      `astral` AND `sega` ARE GAMES: `in:astral` 12 and `in:sega` 10 there, 0 and 0 here.
+ *
+ *      Replayed over the 2026-09-24 bulk against Scryfall's whole lists, by Oracle id, cards over /
+ *      cards missing: `in:common` 0/0 (was 0/25), `in:uncommon` 0/0 (12/18), `in:rare` 0/0
+ *      (40/36), `in:mythic` 0/0 (0/9), `in:special` and `in:bonus` 0/0 as before, `in:arena` 0
+ *      over (38).
+ *
+ *      GENERATION-ONLY. `card_in_tags` holds the same kind of word in the same column; two words
+ *      join a vocabulary that already holds the games, nothing changes shape, and neither row
+ *      grows. A generation-73 store still LOADS, and would keep answering from the old union —
+ *      which is why this constant moves.
  */
-export const STORE_CONTENT_GENERATION = 73;
+export const STORE_CONTENT_GENERATION = 74;
 
 /**
  * Chunk key for a store. Keyed by store_key, so publishes never collide.

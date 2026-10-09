@@ -1,0 +1,132 @@
+{
+ "artist": "Bob Ross",
+ "artist_ids": [
+  "427dc649-c806-4097-b8b8-e3d9006b80fc"
+ ],
+ "booster": false,
+ "border_color": "black",
+ "card_back_id": "0aeebaf5-8c7d-4636-9e82-8c27447861f7",
+ "cardmarket_id": 523430,
+ "cmc": 0.0,
+ "collector_number": "100",
+ "color_identity": [
+  "W"
+ ],
+ "colors": [],
+ "digital": false,
+ "finishes": [
+  "nonfoil",
+  "foil"
+ ],
+ "foil": true,
+ "frame": "2015",
+ "full_art": false,
+ "game_changer": false,
+ "games": [
+  "paper",
+  "mtgo"
+ ],
+ "highres_image": true,
+ "id": "e20726fa-d99b-4e3d-8054-b7d313ceb02f",
+ "illustration_id": "d70f2e83-6c95-476e-b3d9-c6ce83b5c51c",
+ "image_status": "highres_scan",
+ "image_updated_at": "2026-07-13T07:43:04Z",
+ "image_uris": {
+  "art": "https://cards.scryfall.io/art/front/e/2/e20726fa-d99b-4e3d-8054-b7d313ceb02f.webp?1783928584",
+  "art_crop": "https://cards.scryfall.io/art_crop/front/e/2/e20726fa-d99b-4e3d-8054-b7d313ceb02f.jpg?1783928584",
+  "border_crop": "https://cards.scryfall.io/border_crop/front/e/2/e20726fa-d99b-4e3d-8054-b7d313ceb02f.jpg?1783928584",
+  "crop": "https://cards.scryfall.io/crop/front/e/2/e20726fa-d99b-4e3d-8054-b7d313ceb02f.webp?1783928584",
+  "display": "https://cards.scryfall.io/display/front/e/2/e20726fa-d99b-4e3d-8054-b7d313ceb02f.webp?1783928584",
+  "grid": "https://cards.scryfall.io/grid/front/e/2/e20726fa-d99b-4e3d-8054-b7d313ceb02f.webp?1783928584",
+  "large": "https://cards.scryfall.io/large/front/e/2/e20726fa-d99b-4e3d-8054-b7d313ceb02f.jpg?1783928584",
+  "normal": "https://cards.scryfall.io/normal/front/e/2/e20726fa-d99b-4e3d-8054-b7d313ceb02f.jpg?1783928584",
+  "png": "https://cards.scryfall.io/png/front/e/2/e20726fa-d99b-4e3d-8054-b7d313ceb02f.png?1783928584",
+  "small": "https://cards.scryfall.io/small/front/e/2/e20726fa-d99b-4e3d-8054-b7d313ceb02f.jpg?1783928584",
+  "thumb": "https://cards.scryfall.io/thumb/front/e/2/e20726fa-d99b-4e3d-8054-b7d313ceb02f.webp?1783928584"
+ },
+ "keywords": [],
+ "lang": "en",
+ "layout": "normal",
+ "legalities": {
+  "alchemy": "legal",
+  "brawl": "legal",
+  "commander": "legal",
+  "competitivebrawl": "legal",
+  "duel": "legal",
+  "future": "legal",
+  "gladiator": "legal",
+  "historic": "legal",
+  "legacy": "legal",
+  "modern": "legal",
+  "oathbreaker": "legal",
+  "oldschool": "not_legal",
+  "pauper": "legal",
+  "paupercommander": "legal",
+  "penny": "legal",
+  "pioneer": "legal",
+  "predh": "legal",
+  "premodern": "legal",
+  "standard": "legal",
+  "standardbrawl": "legal",
+  "timeless": "legal",
+  "tlr": "legal",
+  "vintage": "legal"
+ },
+ "mana_cost": "",
+ "mtgo_id": 85884,
+ "multiverse_ids": [],
+ "name": "Plains",
+ "nonfoil": true,
+ "object": "card",
+ "oracle_id": "bc71ebf6-2056-41f7-be35-b2e5c34afa99",
+ "oracle_text": "({T}: Add {W}.)",
+ "oversized": false,
+ "preview": {
+  "previewed_at": "2020-11-25",
+  "source": "Wizards of the Coast",
+  "source_uri": "https://magic.wizards.com/en/articles/archive/news/announcing-secret-lairs-secretversary-superdrop-2020-11-25"
+ },
+ "prices": {
+  "eur": "1.82",
+  "eur_foil": "2.09",
+  "tix": "0.02",
+  "usd": "3.47",
+  "usd_etched": null,
+  "usd_foil": "3.57"
+ },
+ "prints_search_uri": "https://api.scryfall.com/cards/search?order=released&q=oracleid%3Abc71ebf6-2056-41f7-be35-b2e5c34afa99&unique=prints",
+ "produced_mana": [
+  "W"
+ ],
+ "promo": false,
+ "purchase_uris": {
+  "cardhoarder": "https://www.cardhoarder.com/cards/85884?affiliate_id=scryfall&ref=card-profile&utm_campaign=affiliate&utm_medium=card&utm_source=scryfall",
+  "cardmarket": "https://www.cardmarket.com/en/Magic/Products?idProduct=523430&referrer=scryfall&utm_campaign=card_prices&utm_medium=text&utm_source=scryfall",
+  "tcgplayer": "https://partner.tcgplayer.com/c/4931599/1830156/21018?subId1=api&u=https%3A%2F%2Fwww.tcgplayer.com%2Fproduct%2F228732%3Fpage%3D1"
+ },
+ "rarity": "rare",
+ "related_uris": {
+  "edhrec": "https://edhrec.com/route/?cc=Plains",
+  "tcgplayer_infinite_articles": "https://partner.tcgplayer.com/c/4931599/1830156/21018?subId1=api&trafcat=tcgplayer.com%2Fsearch%2Farticles&u=https%3A%2F%2Fwww.tcgplayer.com%2Fsearch%2Farticles%3FproductLineName%3Dmagic%26q%3DPlains",
+  "tcgplayer_infinite_decks": "https://partner.tcgplayer.com/c/4931599/1830156/21018?subId1=api&trafcat=tcgplayer.com%2Fsearch%2Fdecks&u=https%3A%2F%2Fwww.tcgplayer.com%2Fsearch%2Fdecks%3FproductLineName%3Dmagic%26q%3DPlains"
+ },
+ "released_at": "2020-11-30",
+ "reprint": true,
+ "reserved": false,
+ "rulings_uri": "https://api.scryfall.com/cards/e20726fa-d99b-4e3d-8054-b7d313ceb02f/rulings",
+ "scryfall_set_uri": "https://scryfall.com/sets/sld?utm_source=api",
+ "scryfall_uri": "https://scryfall.com/card/sld/100/plains?utm_source=api",
+ "security_stamp": "oval",
+ "set": "sld",
+ "set_id": "4d92a8a7-ccb0-437d-abdc-9d70fc5ed672",
+ "set_name": "Secret Lair Drop",
+ "set_search_uri": "https://api.scryfall.com/cards/search?order=set&q=e%3Asld&unique=prints",
+ "set_type": "box",
+ "set_uri": "https://api.scryfall.com/sets/4d92a8a7-ccb0-437d-abdc-9d70fc5ed672",
+ "story_spotlight": false,
+ "tcgplayer_id": 228732,
+ "textless": false,
+ "type_line": "Basic Land — Plains",
+ "uri": "https://api.scryfall.com/cards/e20726fa-d99b-4e3d-8054-b7d313ceb02f",
+ "variation": false
+}

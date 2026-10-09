@@ -1025,10 +1025,10 @@ struct OracleCard {
     card_oracle_tags: Vec<u16>,
     /// `in:` — everything this CARD "has ever been printed in", as coll_vocab ids, sorted and
     /// deduped: set codes, set types, games, languages, rarities, frame years, `foil`/`nonfoil`,
-    /// `booster`. Decided at build by `assign_in_tags` over the card's canonical printings AND its
-    /// annex rows, for the same reason `single_set` is: `tri()` holds one card and one printing
-    /// and can never ask "does SOME printing of this card". Card-space, read through
-    /// `CollField::InTags` exactly as `card_subtypes` is.
+    /// `booster`. Decided at build by `assign_in_tags` over the card's canonical printings, and its
+    /// annex rows for the languages, for the same reason `single_set` is: `tri()` holds one card
+    /// and one printing and can never ask "does SOME printing of this card". Card-space, read
+    /// through `CollField::InTags` exactly as `card_subtypes` is.
     card_in_tags: Vec<u16>,
     // 2 bits per format, positions from the FORMAT_SHIFTS registry. The word
     // shared by this card's printings; exact unless legality_divergent.
@@ -5367,13 +5367,36 @@ pub(crate) fn printing_is_new_rarity(p: &APrinting) -> bool {
 /// The set types whose RARITY Scryfall does not count toward `in:<rarity>`.
 ///
 /// Measured 2026-09-04 with `r:rare st:<type> -in:rare` over every set type, `include_extras=true`
-/// so an extras-only card is visible: `box` 466, `promo` 550, `masterpiece` 47, `memorabilia` 18,
-/// `from_the_vault` 2, and ZERO for the other eighteen — `commander` 0 and `is:booster` 0 pin that
+/// so an extras-only card is visible: `promo` 550, `masterpiece` 47, `memorabilia` 18,
+/// `from_the_vault` 2, and ZERO for eighteen others — `commander` 0 and `is:booster` 0 pin that
 /// the rule is the set type and not the booster flag. It is the set types where rarity is
-/// decorative: every Secret Lair card is "rare", every masterpiece "mythic". Kutzil, Malamet
-/// Exemplar is the shape — rare in `sld/2782`, uncommon in every Ixalan printing, and not
-/// `in:rare` on api.scryfall.com.
-const IN_TAGS_RARITY_EXCLUDED_SET_TYPES: &[&str] = &["box", "masterpiece", "promo", "memorabilia", "from_the_vault"];
+/// decorative: every masterpiece is "mythic", every judge promo "rare". Kor Haven is the shape —
+/// mythic in `exp/41`, rare in Nemesis, and not `in:mythic` on api.scryfall.com.
+///
+/// `box` WAS IN THIS LIST until 2026-10-09 and is not a rule. The same measurement read `box` 466,
+/// and all 466 were Secret Lair, which is one `box` set of many: `st:box -e:sld r:rare -in:rare`
+/// is 0 there. See IN_TAGS_RARITY_EXCLUDED_SETS.
+const IN_TAGS_RARITY_EXCLUDED_SET_TYPES: &[&str] = &["masterpiece", "promo", "memorabilia", "from_the_vault"];
+
+/// The one SET whose rarity Scryfall does not count though its set type's does: Secret Lair Drop.
+///
+/// Measured 2026-10-09 over all six of api.scryfall.com's `in:<rarity>` lists (35,946 cards,
+/// `include_extras=true`), each set sorted by whether a card whose only printing at some rarity
+/// is in that set answers the term. NEVER: `sld` (755 such cards — Kutzil, Malamet Exemplar is
+/// rare in `sld/2782`, uncommon in Ixalan, and not `in:rare`) and every such set of the four types
+/// above (110 promo sets, 78 memorabilia, 16 masterpiece, 10 from_the_vault). ALWAYS: every other
+/// `box` set that can say — `mgb`, `psdg`, `slc`, `slz`, `ath`, `td0`, `past`, `q07`, `gn3` — and
+/// so `g17`, whose foil basic lands are the only counted rare printing Plains, Island, Swamp,
+/// Mountain and Forest have: with `box` excluded, `in:rare e:khm` under `unique=prints` was 125
+/// here against 130, the five Kaldheim basics. No field of the set object tells `sld` from `slc`
+/// (both `box`, neither foil-only nor digital), so it is the code.
+const IN_TAGS_RARITY_EXCLUDED_SETS: &[&str] = &["sld"];
+
+/// The two games the packed `games` byte has no bit for (`games_pack` keeps paper, mtgo, arena).
+/// A printing carries them as `card_is_tags` members, which is what `game:astral` reads, and `in:`
+/// reads them from there too: `in:astral` is 12 cards on api.scryfall.com and `in:sega` 10
+/// (`include_extras=true`, 2026-10-09), and both were 0 here while `in:` read the byte alone.
+const IN_TAGS_TAGGED_GAMES: &[(&str, &str)] = &[("game_astral", "astral"), ("game_sega", "sega")];
 
 /// Decide `OracleCard.card_in_tags` — the whole of `in:` — for every card.
 ///
@@ -5388,30 +5411,45 @@ const IN_TAGS_RARITY_EXCLUDED_SET_TYPES: &[&str] = &["box", "masterpiece", "prom
 /// each spelling: `in:khm` is 5,318 printings under `unique=prints` where `e:khm` is 425, because
 /// the card's every printing comes back once one of them qualifies; and it sees printings the
 /// default corpus hides — `in:arena` is 16,090 against `game:arena`'s 16,070, both 16,232 with
-/// `include_extras=true`. So the walk runs over every stored row of the card, extras included, and
-/// over the ANNEX, which is where the languages live: `in:ja` is 30,545 cards, almost none of them
-/// with a Japanese canonical row.
+/// `include_extras=true`. So the walk runs over every stored canonical row of the card, extras
+/// included.
 ///
-/// Per namespace, which printings count (the residual after each rule is 0-2 cards on the live
-/// data, every one of them in `fra`, a set released the day before the measurement whose
-/// aggregate Scryfall had not yet rebuilt):
-///   - set code, set type, game, language, frame, booster: EVERY printing.
-///   - rarity: every printing NOT in IN_TAGS_RARITY_EXCLUDED_SET_TYPES.
-///   - foil / nonfoil: every printing that is NOT digital-only — `is:foil is:digital -in:foil` is
-///     1,197 there (Tempest Remastered and the Treasure Chest sets are MTGO-only, Alchemy is
-///     Arena-only) and `is:foil -is:digital -in:foil` is the 2 `fra` stragglers.
+/// THE ANNEX GIVES ITS LANGUAGE AND NOTHING ELSE. `in:ja` is 30,545 cards, almost none of them
+/// with a Japanese canonical row, so the languages are read from every row; but every other
+/// namespace is a union over the printings `default_cards` holds — one row per printing, the
+/// English one where there is one. Until 2026-10-09 the annex rows fed every namespace, on the
+/// premise that a translation carries what its English row does. It mostly does, and where it
+/// does not Scryfall answers from the English row: 40 cards of The Dark are uncommon in English
+/// and rare on their Italian row (`e:drk lang:it r:rare -in:rare` is 40 there and was 0 here), 12
+/// Homelands cards are common in English and uncommon on a translation, a translated row lists
+/// `arena` where its English row does not (`tmc`), and likewise the frame (`chk/131` in German),
+/// the finishes (`thb/277`) and the booster flag (`ohop` in Spanish). Probed 2026-10-09 per
+/// namespace with cards whose ONLY row carrying a word is an annex row — 24 by rarity, 12 by
+/// `arena`, 3 by frame, 15 by finish, 12 by booster: 0 of the 66 answer there, 65 answered here.
+/// The same probe over digital-only, oversized, token, art-series and other extras printings: a
+/// canonical row counts whatever it is, 36 of 36 by set, set type, game and frame for each.
+///
+/// Per namespace, which printings count:
+///   - language: EVERY row, canonical and annex. Set code and set type are read there too — an
+///     annex row never differs from its canonical row in either, so no measurement can see it.
+///   - game, frame, booster: every CANONICAL printing.
+///   - rarity: every canonical printing NOT in IN_TAGS_RARITY_EXCLUDED_SET_TYPES and not in
+///     IN_TAGS_RARITY_EXCLUDED_SETS.
+///   - foil / nonfoil: every canonical printing that is NOT digital-only — `is:foil is:digital
+///     -in:foil` is 1,197 there (Tempest Remastered and the Treasure Chest sets are MTGO-only,
+///     Alchemy is Arena-only).
 ///
 /// The words are interned into `coll_vocab` here — set codes and rarity names live nowhere else —
 /// so this has to run before the sorted permutation of the vocab is cut.
 ///
-/// MEASURED against a store built from the 2026-09-04 bulk, local / api.scryfall.com: `in:paper`
-/// 32,729 = 32,729, `in:khm` 323 = 323 and 5,318 = 5,318 under `unique=prints`, `in:ja` 30,545 =
-/// 30,545, `in:core` 3,578 = 3,578, `in:memorabilia` 935 = 935, `in:commander` 6,031 = 6,031,
-/// `in:1997` 6,803 = 6,803, `in:future` 232 = 232, `in:special` 244 = 244 — exact. Within 1%:
-/// `in:rare` 10,895 / 10,883, `in:foil` 28,933 / 28,730, `in:nonfoil` 32,642 / 32,828,
-/// `in:booster` 28,326 / 28,307. The residual runs the way a stale aggregate on the far side
-/// would (`e:fra -in:fra` is 2 THERE — its own newest set is not yet in its own `in:`), and is
-/// recorded rather than chased.
+/// MEASURED 2026-10-09, the rarity rule replayed over the 2026-09-24 bulk against each of
+/// api.scryfall.com's whole lists — cards the rule has that the list lacks / the reverse:
+/// `in:common` 12,745 0/0, `in:uncommon` 11,258 0/0, `in:rare` 11,636 0/0, `in:mythic` 2,534 0/0,
+/// `in:special` 245 0/0, `in:bonus` 9 0/0. The rule it replaces: 0/25, 12/18, 40/36, 0/9, 0/0,
+/// 0/0. And earlier, against a store built from the 2026-09-04 bulk: `in:paper` 32,729 = 32,729,
+/// `in:khm` 323 = 323 and 5,318 = 5,318 under `unique=prints`, `in:ja` 30,545 = 30,545,
+/// `in:core` 3,578 = 3,578, `in:memorabilia` 935 = 935, `in:commander` 6,031 = 6,031,
+/// `in:1997` 6,803 = 6,803, `in:future` 232 = 232.
 fn assign_in_tags(
     cards: &mut [OracleCard],
     printings: &[Printing],
@@ -5421,6 +5459,10 @@ fn assign_in_tags(
     coll_vocab: &mut Vec<String>,
 ) {
     let mut by_word: HashMap<String, u16> = coll_vocab.iter().enumerate().map(|(i, s)| (s.clone(), i as u16)).collect();
+    // The tagged games' `card_is_tags` ids, read before any word is interned: a tag no printing
+    // carries is not in the vocabulary, and then no row can name that game.
+    let tagged_games: Vec<(u16, &str)> =
+        IN_TAGS_TAGGED_GAMES.iter().filter_map(|&(tag, game)| by_word.get(tag).map(|&vid| (vid, game))).collect();
     let mut intern = |word: &str, coll_vocab: &mut Vec<String>| -> u16 {
         if let Some(&id) = by_word.get(word) {
             return id;
@@ -5436,25 +5478,34 @@ fn assign_in_tags(
     };
     for (cid, card) in cards.iter_mut().enumerate() {
         let mut tags: Vec<u16> = Vec::new();
-        let rows = printings[offsets[cid] as usize..offsets[cid + 1] as usize]
-            .iter()
-            .chain(foreign[foreign_offsets[cid] as usize..foreign_offsets[cid + 1] as usize].iter());
-        for p in rows {
-            // Set code, set type, language: as stored. The set type and language are already vocab
-            // words (CompatFields interns them); the set code is not, and is interned here.
+        let canonical = &printings[offsets[cid] as usize..offsets[cid + 1] as usize];
+        let annex = &foreign[foreign_offsets[cid] as usize..foreign_offsets[cid + 1] as usize];
+        // Every row, the annex included — set code, set type, language: as stored. The set type
+        // and language are already vocab words (CompatFields interns them); the set code is not,
+        // and is interned here.
+        for p in canonical.iter().chain(annex) {
             tags.push(intern(p.card_set_code.as_str(), coll_vocab));
-            let set_type = vocab_str(coll_vocab, p.compat.set_type_id);
             if p.compat.set_type_id != VOCAB_NONE {
                 tags.push(p.compat.set_type_id);
             }
             if p.compat.lang_id != VOCAB_NONE {
                 tags.push(p.compat.lang_id);
             }
+        }
+        // Every other namespace: the canonical rows alone.
+        for p in canonical {
+            let set_type = vocab_str(coll_vocab, p.compat.set_type_id);
             for game in games_to_names(p.compat.games) {
                 tags.push(intern(game, coll_vocab));
             }
-            // Rarity: not from the set types where it is decorative.
-            let rarity_counts = set_type.as_deref().is_none_or(|t| !IN_TAGS_RARITY_EXCLUDED_SET_TYPES.contains(&t));
+            for &(tag, game) in &tagged_games {
+                if p.card_is_tags.contains(&tag) {
+                    tags.push(intern(game, coll_vocab));
+                }
+            }
+            // Rarity: not from the sets where it is decorative.
+            let rarity_counts = set_type.as_deref().is_none_or(|t| !IN_TAGS_RARITY_EXCLUDED_SET_TYPES.contains(&t))
+                && !IN_TAGS_RARITY_EXCLUDED_SETS.contains(&p.card_set_code.as_str());
             if rarity_counts && let Some(name) = p.card_rarity_int.and_then(rarity_int_to_text) {
                 tags.push(intern(name, coll_vocab));
             }

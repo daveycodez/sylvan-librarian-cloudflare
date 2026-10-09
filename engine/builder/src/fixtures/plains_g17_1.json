@@ -1,0 +1,127 @@
+{
+ "artist": "Mark Poole",
+ "artist_ids": [
+  "bfdeaf09-f915-4058-8e8b-bcac3bc43c33"
+ ],
+ "booster": false,
+ "border_color": "black",
+ "card_back_id": "0aeebaf5-8c7d-4636-9e82-8c27447861f7",
+ "cardmarket_id": 311217,
+ "cmc": 0.0,
+ "collector_number": "1",
+ "color_identity": [
+  "W"
+ ],
+ "colors": [],
+ "digital": false,
+ "finishes": [
+  "foil"
+ ],
+ "foil": true,
+ "frame": "2015",
+ "full_art": false,
+ "game_changer": false,
+ "games": [
+  "paper"
+ ],
+ "highres_image": true,
+ "id": "f7720870-b6cc-4833-930d-6da05b36d17a",
+ "illustration_id": "6007fdf7-c9db-4c33-8415-1836b051bf22",
+ "image_status": "highres_scan",
+ "image_updated_at": "2026-07-13T09:40:25Z",
+ "image_uris": {
+  "art": "https://cards.scryfall.io/art/front/f/7/f7720870-b6cc-4833-930d-6da05b36d17a.webp?1783935625",
+  "art_crop": "https://cards.scryfall.io/art_crop/front/f/7/f7720870-b6cc-4833-930d-6da05b36d17a.jpg?1783935625",
+  "border_crop": "https://cards.scryfall.io/border_crop/front/f/7/f7720870-b6cc-4833-930d-6da05b36d17a.jpg?1783935625",
+  "crop": "https://cards.scryfall.io/crop/front/f/7/f7720870-b6cc-4833-930d-6da05b36d17a.webp?1783935625",
+  "display": "https://cards.scryfall.io/display/front/f/7/f7720870-b6cc-4833-930d-6da05b36d17a.webp?1783935625",
+  "grid": "https://cards.scryfall.io/grid/front/f/7/f7720870-b6cc-4833-930d-6da05b36d17a.webp?1783935625",
+  "large": "https://cards.scryfall.io/large/front/f/7/f7720870-b6cc-4833-930d-6da05b36d17a.jpg?1783935625",
+  "normal": "https://cards.scryfall.io/normal/front/f/7/f7720870-b6cc-4833-930d-6da05b36d17a.jpg?1783935625",
+  "png": "https://cards.scryfall.io/png/front/f/7/f7720870-b6cc-4833-930d-6da05b36d17a.png?1783935625",
+  "small": "https://cards.scryfall.io/small/front/f/7/f7720870-b6cc-4833-930d-6da05b36d17a.jpg?1783935625",
+  "thumb": "https://cards.scryfall.io/thumb/front/f/7/f7720870-b6cc-4833-930d-6da05b36d17a.webp?1783935625"
+ },
+ "keywords": [],
+ "lang": "en",
+ "layout": "normal",
+ "legalities": {
+  "alchemy": "legal",
+  "brawl": "legal",
+  "commander": "legal",
+  "competitivebrawl": "legal",
+  "duel": "legal",
+  "future": "legal",
+  "gladiator": "legal",
+  "historic": "legal",
+  "legacy": "legal",
+  "modern": "legal",
+  "oathbreaker": "legal",
+  "oldschool": "not_legal",
+  "pauper": "legal",
+  "paupercommander": "legal",
+  "penny": "legal",
+  "pioneer": "legal",
+  "predh": "legal",
+  "premodern": "legal",
+  "standard": "legal",
+  "standardbrawl": "legal",
+  "timeless": "legal",
+  "tlr": "legal",
+  "vintage": "legal"
+ },
+ "mana_cost": "",
+ "multiverse_ids": [],
+ "name": "Plains",
+ "nonfoil": false,
+ "object": "card",
+ "oracle_id": "bc71ebf6-2056-41f7-be35-b2e5c34afa99",
+ "oracle_text": "({T}: Add {W}.)",
+ "oversized": false,
+ "prices": {
+  "eur": null,
+  "eur_foil": "0.62",
+  "tix": null,
+  "usd": null,
+  "usd_etched": null,
+  "usd_foil": "0.52"
+ },
+ "prints_search_uri": "https://api.scryfall.com/cards/search?order=released&q=oracleid%3Abc71ebf6-2056-41f7-be35-b2e5c34afa99&unique=prints",
+ "produced_mana": [
+  "W"
+ ],
+ "promo": true,
+ "promo_types": [
+  "instore",
+  "giftbox"
+ ],
+ "purchase_uris": {
+  "cardhoarder": "https://www.cardhoarder.com/cards?affiliate_id=scryfall&data%5Bsearch%5D=Plains&ref=card-profile&utm_campaign=affiliate&utm_medium=card&utm_source=scryfall",
+  "cardmarket": "https://www.cardmarket.com/en/Magic/Products?idProduct=311217&referrer=scryfall&utm_campaign=card_prices&utm_medium=text&utm_source=scryfall",
+  "tcgplayer": "https://partner.tcgplayer.com/c/4931599/1830156/21018?subId1=api&u=https%3A%2F%2Fwww.tcgplayer.com%2Fproduct%2F148752%3Fpage%3D1"
+ },
+ "rarity": "rare",
+ "related_uris": {
+  "edhrec": "https://edhrec.com/route/?cc=Plains",
+  "tcgplayer_infinite_articles": "https://partner.tcgplayer.com/c/4931599/1830156/21018?subId1=api&trafcat=tcgplayer.com%2Fsearch%2Farticles&u=https%3A%2F%2Fwww.tcgplayer.com%2Fsearch%2Farticles%3FproductLineName%3Dmagic%26q%3DPlains",
+  "tcgplayer_infinite_decks": "https://partner.tcgplayer.com/c/4931599/1830156/21018?subId1=api&trafcat=tcgplayer.com%2Fsearch%2Fdecks&u=https%3A%2F%2Fwww.tcgplayer.com%2Fsearch%2Fdecks%3FproductLineName%3Dmagic%26q%3DPlains"
+ },
+ "released_at": "2017-10-20",
+ "reprint": true,
+ "reserved": false,
+ "rulings_uri": "https://api.scryfall.com/cards/f7720870-b6cc-4833-930d-6da05b36d17a/rulings",
+ "scryfall_set_uri": "https://scryfall.com/sets/g17?utm_source=api",
+ "scryfall_uri": "https://scryfall.com/card/g17/1/plains?utm_source=api",
+ "set": "g17",
+ "set_id": "e8b03e62-498f-49c9-8228-55436c7f9cb6",
+ "set_name": "2017 Gift Pack",
+ "set_search_uri": "https://api.scryfall.com/cards/search?order=set&q=e%3Ag17&unique=prints",
+ "set_type": "box",
+ "set_uri": "https://api.scryfall.com/sets/e8b03e62-498f-49c9-8228-55436c7f9cb6",
+ "story_spotlight": false,
+ "tcgplayer_id": 148752,
+ "textless": false,
+ "type_line": "Basic Land — Plains",
+ "uri": "https://api.scryfall.com/cards/f7720870-b6cc-4833-930d-6da05b36d17a",
+ "variation": false
+}
