@@ -4475,6 +4475,42 @@
 			"method": "GET",
 			"path": "/cards/search?q=new%3Alanguage+is%3Avariation+lang%3Aany&unique=prints&include_extras=true",
 			"note": "2026-10-09. 404 over every language: each variation's plain twin of the same day leads its language (285,762 with variations and without)."
+		},
+		{
+			"name": "is-misprint-holds-its-variations",
+			"method": "GET",
+			"path": "/cards/search?q=is%3Amisprint+is%3Avariation+lang%3Aany&unique=prints&include_extras=true",
+			"note": "2026-10-09, generation 88. 36 rows: m20/206†, mkm/310†, Fifth Edition's five, Final Fantasy's four, ody/72† in English and Japanese, the Spanish mir/87†, the Russian ptor/67† and 67†a … The lists had been read without include_variations=true, which hides every one of them; the port answered a 404."
+		},
+		{
+			"name": "is-misprint-variation-in-two-languages",
+			"method": "GET",
+			"path": "/cards/search?q=%21%22Cephalid+Looter%22+is%3Amisprint+lang%3Aany&unique=prints&include_variations=true",
+			"note": "2026-10-09. ody/72† in English and in Japanese — a collector number in every language it has — and not the plain ody/72. The port answered a 404."
+		},
+		{
+			"name": "is-misprint-variation-hidden-by-default",
+			"method": "GET",
+			"path": "/cards/search?q=%21%22Corpse+Knight%22+is%3Amisprint&unique=prints",
+			"note": "2026-10-09. 404 by default: the card's one misprint is the variation m20/206†, which the search's own default hides. With include_variations=true it is that row."
+		},
+		{
+			"name": "not-misprint-among-variations",
+			"method": "GET",
+			"path": "/cards/search?q=-is%3Amisprint+is%3Avariation+lang%3Aany&unique=prints&include_extras=true",
+			"note": "2026-10-09. 86 of the 122 variation rows: Portal's 35, Arabian Nights' 14, ten of Murders at Karlov Manor's eleven … The port answered all 122."
+		},
+		{
+			"name": "is-covered-among-variations",
+			"method": "GET",
+			"path": "/cards/search?q=is%3Acovered+is%3Avariation+lang%3Aany&unique=prints&include_extras=true",
+			"note": "2026-10-09. 46 rows, ph18/4† among them (Heroes of the Realm 2018 is covered whole) and NOT iko/275y, mid/57† or om1/117†. The port answered 48: the four rows were tagged by the tier rule, the variations having been skipped as rows no search returns."
+		},
+		{
+			"name": "not-covered-among-variations",
+			"method": "GET",
+			"path": "/cards/search?q=-is%3Acovered+is%3Avariation+lang%3Aany&unique=prints&include_extras=true",
+			"note": "2026-10-09. 76 rows, every one English: the Arena-only iko/275y and mid/57† and Through the Omenpaths' om1/117† are in their cards' first run. The port answered 74."
 		}
 	]
 }

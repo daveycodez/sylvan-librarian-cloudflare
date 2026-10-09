@@ -106,6 +106,45 @@ fn covered_is_every_printing_outside_the_default_tier() {
 }
 
 #[test]
+fn a_variation_is_covered_or_not_as_scryfall_records_it() {
+    // A search hides `variation: true` printings unless it is asked for them, and the table was
+    // first read without asking: its 122 variation rows were skipped as rows "no search returns"
+    // and fell to the rule. Read with `include_variations=true` (2026-10-09), four of them are on
+    // the other side of it: the Arena-only iko/275y and mid/57† and Through the Omenpaths'
+    // om1/117† are NOT covered — each is in its card's first run — and ph18/4† is, with the rest
+    // of Heroes of the Realm 2018. Their plain twins beside them, as Scryfall answers those.
+    let store = store_of(&[
+        ("zilortha_strength_incarnate_iko_275", true),
+        ("zilortha_strength_incarnate_iko_275y", true),
+        ("grafted_identity_mid_57", true),
+        ("grafted_identity_mid_57_dagger", true),
+        ("supportive_parents_om1_117", true),
+        ("supportive_parents_om1_117_dagger", true),
+        ("the_legend_of_arena_ph18_4", true),
+        ("the_legend_of_arena_ph18_4_dagger", true),
+    ]);
+    assert_eq!(rows(&store, &is("covered"), false), ["iko/275/en", "om1/117/en", "ph18/4/en", "ph18/4†/en"]);
+    assert_eq!(rows(&store, &not(is("covered")), false), ["iko/275y/en", "mid/57/en", "mid/57†/en", "om1/117†/en"]);
+}
+
+#[test]
+fn a_misprint_that_is_a_variation_is_in_the_list() {
+    // 36 of `is:misprint`'s rows are variations (`is:misprint is:variation lang:any`, 2026-10-09)
+    // and none was in the table: Corpse Knight's m20/206†, Cephalid Looter's ody/72† in English
+    // AND Japanese, Reality Ripple's Spanish mir/87†. The plain twins are not misprints.
+    let store = store_of(&[
+        ("corpse_knight_m20_206", true),
+        ("corpse_knight_m20_206_dagger", true),
+        ("cephalid_looter_ody_72", true),
+        ("cephalid_looter_ody_72_dagger", true),
+        ("cephalid_looter_ody_72_dagger_ja", false),
+        ("reality_ripple_mir_87_dagger_es", true),
+    ]);
+    assert_eq!(rows(&store, &is("misprint"), true), ["m20/206†/en", "mir/87†/es", "ody/72†/en", "ody/72†/ja"]);
+    assert_eq!(rows(&store, &not(is("misprint")), true), ["m20/206/en", "ody/72/en"]);
+}
+
+#[test]
 fn jumpstart_is_four_sets_and_the_booster_cards_of_six_more() {
     // 1,760 printings: all of jmp, j21, j25 and ajmp — but for j21/25, an Arena printing of
     // Static Discharge that is not in it — and mom/323-337 with their like. Jumpstart 2022 is

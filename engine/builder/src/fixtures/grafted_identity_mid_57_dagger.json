@@ -1,0 +1,121 @@
+{
+ "artist": "Manuel Castañón",
+ "artist_ids": [
+  "35f11eeb-36ff-4059-bb70-d1274f5bd858"
+ ],
+ "booster": false,
+ "border_color": "black",
+ "card_back_id": "0aeebaf5-8c7d-4636-9e82-8c27447861f7",
+ "cmc": 4.0,
+ "collector_number": "57†",
+ "color_identity": [
+  "U"
+ ],
+ "colors": [
+  "U"
+ ],
+ "digital": true,
+ "edhrec_rank": 19251,
+ "finishes": [
+  "nonfoil"
+ ],
+ "flavor_text": "Autonomy is only skin deep.",
+ "foil": false,
+ "frame": "2015",
+ "full_art": false,
+ "game_changer": false,
+ "games": [
+  "arena"
+ ],
+ "highres_image": false,
+ "id": "0bebd764-e5ed-4164-a9f8-3c595691eb49",
+ "illustration_id": "276639b4-8d44-40c8-9b9c-5a9b8cae2a95",
+ "image_status": "lowres",
+ "image_updated_at": "2026-07-13T06:54:02Z",
+ "image_uris": {
+  "art": "https://cards.scryfall.io/art/front/0/b/0bebd764-e5ed-4164-a9f8-3c595691eb49.webp?1783925642",
+  "art_crop": "https://cards.scryfall.io/art_crop/front/0/b/0bebd764-e5ed-4164-a9f8-3c595691eb49.jpg?1783925642",
+  "border_crop": "https://cards.scryfall.io/border_crop/front/0/b/0bebd764-e5ed-4164-a9f8-3c595691eb49.jpg?1783925642",
+  "crop": "https://cards.scryfall.io/crop/front/0/b/0bebd764-e5ed-4164-a9f8-3c595691eb49.webp?1783925642",
+  "display": "https://cards.scryfall.io/display/front/0/b/0bebd764-e5ed-4164-a9f8-3c595691eb49.webp?1783925642",
+  "grid": "https://cards.scryfall.io/grid/front/0/b/0bebd764-e5ed-4164-a9f8-3c595691eb49.webp?1783925642",
+  "large": "https://cards.scryfall.io/large/front/0/b/0bebd764-e5ed-4164-a9f8-3c595691eb49.jpg?1783925642",
+  "normal": "https://cards.scryfall.io/normal/front/0/b/0bebd764-e5ed-4164-a9f8-3c595691eb49.jpg?1783925642",
+  "png": "https://cards.scryfall.io/png/front/0/b/0bebd764-e5ed-4164-a9f8-3c595691eb49.png?1783925642",
+  "small": "https://cards.scryfall.io/small/front/0/b/0bebd764-e5ed-4164-a9f8-3c595691eb49.jpg?1783925642",
+  "thumb": "https://cards.scryfall.io/thumb/front/0/b/0bebd764-e5ed-4164-a9f8-3c595691eb49.webp?1783925642"
+ },
+ "keywords": [
+  "Enchant"
+ ],
+ "lang": "en",
+ "layout": "normal",
+ "legalities": {
+  "alchemy": "not_legal",
+  "brawl": "legal",
+  "commander": "legal",
+  "competitivebrawl": "legal",
+  "duel": "legal",
+  "future": "not_legal",
+  "gladiator": "legal",
+  "historic": "legal",
+  "legacy": "legal",
+  "modern": "legal",
+  "oathbreaker": "legal",
+  "oldschool": "not_legal",
+  "pauper": "not_legal",
+  "paupercommander": "not_legal",
+  "penny": "legal",
+  "pioneer": "legal",
+  "predh": "not_legal",
+  "premodern": "not_legal",
+  "standard": "not_legal",
+  "standardbrawl": "not_legal",
+  "timeless": "legal",
+  "tlr": "not_legal",
+  "vintage": "legal"
+ },
+ "mana_cost": "{2}{U}{U}",
+ "multiverse_ids": [],
+ "name": "Grafted Identity",
+ "nonfoil": true,
+ "object": "card",
+ "oracle_id": "e4fb97b5-0d4a-4c9a-bd51-42ff723b5854",
+ "oracle_text": "As an additional cost to cast this spell, sacrifice a creature.\nEnchant creature\nYou control enchanted creature.\nEnchanted creature gets +1/+1.",
+ "oversized": false,
+ "prices": {
+  "eur": null,
+  "eur_foil": null,
+  "tix": null,
+  "usd": null,
+  "usd_etched": null,
+  "usd_foil": null
+ },
+ "prints_search_uri": "https://api.scryfall.com/cards/search?order=released&q=oracleid%3Ae4fb97b5-0d4a-4c9a-bd51-42ff723b5854&unique=prints",
+ "promo": false,
+ "rarity": "rare",
+ "related_uris": {
+  "edhrec": "https://edhrec.com/route/?cc=Grafted+Identity",
+  "tcgplayer_infinite_articles": "https://partner.tcgplayer.com/c/4931599/1830156/21018?subId1=api&trafcat=tcgplayer.com%2Fsearch%2Farticles&u=https%3A%2F%2Fwww.tcgplayer.com%2Fsearch%2Farticles%3FproductLineName%3Dmagic%26q%3DGrafted%2BIdentity",
+  "tcgplayer_infinite_decks": "https://partner.tcgplayer.com/c/4931599/1830156/21018?subId1=api&trafcat=tcgplayer.com%2Fsearch%2Fdecks&u=https%3A%2F%2Fwww.tcgplayer.com%2Fsearch%2Fdecks%3FproductLineName%3Dmagic%26q%3DGrafted%2BIdentity"
+ },
+ "released_at": "2021-09-24",
+ "reprint": false,
+ "reserved": false,
+ "rulings_uri": "https://api.scryfall.com/cards/0bebd764-e5ed-4164-a9f8-3c595691eb49/rulings",
+ "scryfall_set_uri": "https://scryfall.com/sets/mid?utm_source=api",
+ "scryfall_uri": "https://scryfall.com/card/mid/57%E2%80%A0/grafted-identity?utm_source=api",
+ "security_stamp": "oval",
+ "set": "mid",
+ "set_id": "44b8eb8f-fa23-401a-98b5-1fbb9871128e",
+ "set_name": "Innistrad: Midnight Hunt",
+ "set_search_uri": "https://api.scryfall.com/cards/search?order=set&q=e%3Amid&unique=prints",
+ "set_type": "expansion",
+ "set_uri": "https://api.scryfall.com/sets/44b8eb8f-fa23-401a-98b5-1fbb9871128e",
+ "story_spotlight": false,
+ "textless": false,
+ "type_line": "Enchantment — Aura",
+ "uri": "https://api.scryfall.com/cards/0bebd764-e5ed-4164-a9f8-3c595691eb49",
+ "variation": true,
+ "variation_of": "2559846b-03d6-4a2c-97e1-c71f107e9f24"
+}

@@ -9,7 +9,9 @@
 // day: every row of every language, which is what says how wide a key can be. Without it the file
 // is downloaded to the cache directory.
 //
-// WHAT IS MEASURED, per value, always `unique=prints&include_extras=true`:
+// WHAT IS MEASURED, per value, always `unique=prints&include_extras=true&include_variations=true`
+// (`searchQuery`, the nightly's own): a search leaves `variation: true` printings out unless it is
+// asked for them, and a list read without them is short of them.
 //
 //   gateway lair     `is:V` must answer nothing (a 404 with no warning). Nothing is written.
 //   beginner         must be the same printings as `intro` (both differences empty); a synonym.
@@ -27,10 +29,16 @@
 //                    print_tiers.tsv): everything outside the default tier is covered. The list
 //                    is the rows where that rule and Scryfall's record differ, each way.
 //
-// A ROW SCRYFALL'S SEARCH DOES NOT HOLD is not evidence. On 2026-10-09 the bulk file carried 122
-// rows no search returns (92 of them English: the `†` misprint variants added that week), so
-// "the list lacks this row" is checked before it is written down as an exception: the row is asked
-// for by set, number and language, and only one the search does return is listed `not`.
+// A ROW SCRYFALL'S SEARCH DOES NOT HOLD is not evidence, so "the list lacks this row" is checked
+// before it is written down as an exception: the row is asked for by set, number and language,
+// and only one the search does return is listed `not`. THE VARIATIONS ARE NOT SUCH ROWS. The first
+// table (2026-10-09) counted 122 rows of the bulk file "no search returns", 92 of them English,
+// and they were exactly the `variation: true` printings — the `†` and `★` twins, Portal's `d`
+// numbers — which the search holds and hides by default. Skipped as unindexed, they were tagged by
+// rule alone: none of the 36 that are `is:misprint` was, and four were on the wrong side of
+// `is:covered`. Read with them the same day, every row of the bulk file is in an answer (0 rows
+// "no search returns"). The probe stays for a row that really is in none — a card object newer or
+// older than the bulk file.
 //
 // IT STOPS on a shape it does not understand: a value that should answer nothing and answers, a
 // synonym that is no longer one, a list that is not exact at any key, a key holding a tab or a

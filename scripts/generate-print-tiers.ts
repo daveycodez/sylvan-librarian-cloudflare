@@ -24,6 +24,15 @@
 // majority of its plain English rows' labels, and the table holds the sets where that is not the
 // default for the set's type — the same default `set_tier` applies to a set nobody measured.
 //
+// VARIATIONS ARE READ (`include_variations=true`). A search leaves `variation: true` printings out
+// unless it is asked for them, and until 2026-10-09 this did not ask: the harvest held none of the
+// 17 the two queries match. Read with them (36,821 rows where 36,804 were) no set's tier moves —
+// the table is the same 40 sets, entry for entry, as the same harvest with its variations taken
+// out again. Where a variation is NOT in its set's tier (three of the 92 English ones: iko/275y,
+// mid/57†, om1/117†, each in its card's first run) it departs one printing at a time, which is not
+// this table's to record: it is `is:covered`'s (is_lists.tsv), and the rank reads it there
+// (ranks.rs `recorded_tier`).
+//
 // Run by hand and commit the diff, like `bun run release-batches`: the nightly import cannot touch
 // committed code. A table change moves stored ranks, so it ships with a STORE_CONTENT_GENERATION
 // bump.
@@ -32,7 +41,7 @@ import { readFileSync, writeFileSync } from "node:fs";
 
 const OUT = "engine/builder/src/print_tiers.tsv";
 const UA = "sylvan-librarian-cloudflare/generate-print-tiers (the tier of each set in a card's own print order)";
-const GAP_MS = 500;
+const GAP_MS = Number(process.env.SCRYFALL_GAP_MS ?? 500);
 /** The harvest: enough reprints to place a set against its neighbours, and every token. */
 const QUERIES = ["prints>=8 -t:basic", "is:token"];
 
@@ -200,14 +209,22 @@ export function measure(rows: readonly Row[]): Map<string, { type: string; votes
 // ── the harvest ──────────────────────────────────────────────────────────────────────────────────
 
 async function harvest(query: string): Promise<Row[]> {
-	const qs = new URLSearchParams({ q: query, unique: "prints", order: "name", include_extras: "true" });
+	// VARIATIONS IN: a search leaves `variation: true` printings out unless it is asked for them, and
+	// a row the sequence does not show cannot be where its date rises.
+	const qs = new URLSearchParams({
+		q: query,
+		unique: "prints",
+		order: "name",
+		include_extras: "true",
+		include_variations: "true",
+	});
 	let url: string | null = `https://api.scryfall.com/cards/search?${qs}`;
 	const rows: Row[] = [];
 	while (url) {
 		const res = await fetch(url, { headers: { "User-Agent": UA, Accept: "application/json" } });
 		await sleep(GAP_MS);
 		if (res.status === 429) {
-			await sleep(65_000);
+			await sleep((Number(res.headers.get("retry-after")) || 60) * 1000 + 5000);
 			continue;
 		}
 		const body = (await res.json()) as { data?: Row[]; has_more?: boolean; next_page?: string; total_cards?: number };

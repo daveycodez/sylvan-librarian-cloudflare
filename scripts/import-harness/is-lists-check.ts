@@ -115,6 +115,10 @@ export function listsWorld(corpus: Corpus): ListsWorld {
 			is,
 		};
 		if (Array.isArray(c.all_parts) && c.all_parts.length > 0) card.all_parts = c.all_parts;
+		// One row in nineteen is a VARIATION, which the fake Scryfall answers only to a request
+		// that asks for variations: every list and every read set holds some, so a refresh that
+		// reads without them publishes a store this check finds short.
+		if (hash(`variation ${key}`) % 19 === 0) card.variation = true;
 		cards.push(card);
 	}
 	const bySize = [...perSet].sort(([, a], [, b]) => a - b || (a < b ? -1 : 1)).map(([code]) => code);

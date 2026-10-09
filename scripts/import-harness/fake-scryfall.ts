@@ -7,6 +7,11 @@
 // envelope — `total_cards`, `has_more`, a 404 `not_found` for no match. With no `lang:` term a
 // printing answers with its English row, or its only one, as Scryfall's default does.
 //
+// A VARIATION IS HIDDEN UNLESS IT IS ASKED FOR, as on api.scryfall.com: a row marked `variation`
+// is in an answer only when the request sends `include_variations=true`. `/sets` counts it either
+// way (`card_count` does: `e:mkm` is 440 rows by default and 451 with variations, and 451 is the
+// count). A refresh that stops sending the parameter reads lists short of those rows here too.
+//
 // A term it does not know is answered with a WARNING, as Scryfall answers one, so a query this
 // file was not taught fails the refresh's own check instead of matching everything.
 
@@ -20,6 +25,8 @@ export interface FakeCard {
 	collector_number: string;
 	lang: string;
 	all_parts?: unknown[];
+	/** A `variation: true` printing: in no answer unless the request asks for variations. */
+	variation?: boolean;
 	/** The `is:` values this row is in. */
 	is: string[];
 }
@@ -50,9 +57,9 @@ export class FakeScryfall {
 		return new Set(this.cards.filter((c) => c.set === code).map((c) => c.collector_number)).size;
 	}
 
-	/** The rows `q` answers, in a stable order. */
-	rows(q: string, unique: string): FakeCard[] | { warning: string } {
-		let rows = [...this.cards];
+	/** The rows `q` answers, in a stable order — every one of them, or without the variations. */
+	rows(q: string, unique: string, includeVariations = true): FakeCard[] | { warning: string } {
+		let rows = includeVariations ? [...this.cards] : this.cards.filter((c) => !c.variation);
 		let lang: string | null = null;
 		for (const term of q.split(" ").filter(Boolean)) {
 			const negated = term.startsWith("-");
@@ -121,7 +128,11 @@ export class FakeScryfall {
 		}
 		if (url.pathname !== "/cards/search") return { status: 404, body: { object: "error", code: "not_found" } };
 		const q = url.searchParams.get("q") ?? "";
-		const rows = this.rows(q, url.searchParams.get("unique") ?? "cards");
+		const rows = this.rows(
+			q,
+			url.searchParams.get("unique") ?? "cards",
+			url.searchParams.get("include_variations") === "true",
+		);
 		if (!Array.isArray(rows)) {
 			return {
 				status: 200,
@@ -140,7 +151,11 @@ export class FakeScryfall {
 				object: "list",
 				total_cards: rows.length,
 				has_more: page * this.pageRows < rows.length,
-				data: data.map(({ is: _is, ...card }) => ({ object: "card", ...card })),
+				data: data.map(({ is: _is, variation, ...card }) => ({
+					object: "card",
+					...card,
+					variation: variation === true,
+				})),
 			},
 		};
 	}

@@ -2,7 +2,7 @@
 #
 # set code <TAB> tier: where a set's PLAIN English printings sit in a card's own order when that is
 # not what its set type says (0 = the default tier, 1 = after it, 2 = last). See ranks.rs.
-# 36804 printings read, 462 sets measured, 422 of them where their type puts them.
+# 36821 printings read, 462 sets measured, 422 of them where their type puts them.
 40k	1
 acr	1
 blc	1

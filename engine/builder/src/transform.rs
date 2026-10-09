@@ -1411,6 +1411,14 @@ pub const LAIR_IS_TAG: &str = "lair";
 /// list or none did. Where none did the list itself is the data (`is_lists.tsv`, see
 /// [`crate::is_lists`]); counts are printings by default / rows of every language.
 ///
+/// THE COUNTS ARE A DEFAULT SEARCH'S, WHICH HIDES VARIATIONS, and so was the first table: it was
+/// read without `include_variations=true`, and the 122 `variation: true` rows of the bulk file —
+/// in no answer — were set aside as rows "no search returns" and left to each value's rule. Read
+/// with them the same day they are in three lists: `covered` holds 46 of the 122 (56,102 /
+/// 479,699 with variations shown), `misprint` 36 (190 / 491) and `related` 21 (22,360 / 91,293);
+/// `spikey` holds 3 (4,730 / 14,806) by its cards. The table is the lists with them, and the
+/// builder run over the whole 2026-10-09 `all_cards` file tags exactly those rows, id for id.
+///
 /// `is:covered` — 56,079 / 479,653. A PRINTING OUTSIDE THE DEFAULT TIER OF ITS CARD'S OWN ORDER:
 /// `-is:covered` is exactly the first run of `unique=prints order=name` (Counterspell's 27 of 88:
 /// dsc/114 down to lea/54, and none of its 61 promos, Secret Lairs, List reprints or gold-bordered
@@ -1441,8 +1449,11 @@ pub const JUMPSTART_IS_TAG: &str = "jumpstart";
 
 /// `is:misprint` — 155 / 455. A list of ROWS in 63 sets with nothing in common on the card
 /// object: 4bb/50 is the Spanish Serra Angel, and 300 rows of the same printings in other
-/// languages are out. NOT the `†` variants Scryfall numbers its misprints with: none of the 86
-/// is in it.
+/// languages are out. AND 36 OF THE `†` AND `★` VARIATIONS Scryfall numbers its misprints with —
+/// `is:misprint is:variation lang:any`: m20/206†, mkm/310†, the five of Fifth Edition, ody/72† in
+/// English and Japanese — where this said "none of the 86 is in it": the list had been read as a
+/// default search returns it, which hides every variation. The other 86 variation rows are not
+/// misprints (Portal's `†` and `d` twins, Arabian Nights', ten of Murders at Karlov Manor's eleven).
 pub const MISPRINT_IS_TAG: &str = "misprint";
 
 /// `is:related` — 22,339 / 91,272. A CARD with related cards: some printing of it carries

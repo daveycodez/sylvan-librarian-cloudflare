@@ -229,11 +229,11 @@ describe("what a night may cost on the free plan", () => {
 		// Each alarm pays the chain's fixed toll and writes its progress row; the last writes three more.
 		const rowsWritten = alarms * (FIXED_ROWS_WRITTEN_PER_ALARM + 1) + 3;
 		expect(rowsWritten).toBeLessThan(MAX_DAY_ROWS_WRITTEN / 1000);
-		// The fixed part of the worst night — every small list whole (422, 92, 5,989 and 455 rows of
+		// The fixed part of the worst night — every small list whole (422, 92, 5,989 and 491 rows of
 		// 175 a page; 72 and 678 cards), the foreign rows whole, three sizes and /sets — leaves the
 		// sets most of the night's requests.
 		const pages = (rows: number) => Math.ceil(rows / SCRYFALL_PAGE_ROWS);
-		const fixed = pages(422) + pages(92) + pages(5989) + pages(455) + pages(72) + pages(678) + pages(3226) + 3 + 1;
+		const fixed = pages(422) + pages(92) + pages(5989) + pages(491) + pages(72) + pages(678) + pages(3226) + 3 + 1;
 		expect(fixed).toBe(70);
 		expect(IS_LISTS_NIGHT_REQUESTS - fixed).toBeGreaterThanOrEqual(170);
 		// One request a second, and a slow answer on every one of them: still inside the deadline's
@@ -552,6 +552,47 @@ describe("a night of the refresh", () => {
 		// It stands until it is measured.
 		const fourth = await runNight(fake, compiled, third.state, night(4));
 		expect(fourth.line).toContain("1 covered and -1 uncovered English rows");
+	});
+
+	test("a variation is a row of its lists and of its set: every request asks for them", async () => {
+		const fake = world();
+		// A misprint twin of new/1, as Scryfall files one: `variation: true`, its own number, and in
+		// no answer unless `include_variations=true` is sent. Not covered; a Spanish one that is.
+		const twin = (n: number, lang: string, is: string[]): FakeCard => ({
+			id: uuid(700 + fake.cards.length),
+			oracle_id: uuid(9021),
+			name: "New 1",
+			set: "new",
+			collector_number: `${n}†`,
+			lang,
+			is,
+			variation: true,
+		});
+		fake.cards.push(twin(1, "en", ["misprint"]), twin(2, "es", ["misprint", "covered"]));
+		// Hidden by default, as on api.scryfall.com — and counted by /sets all the same.
+		expect(rowsOf(fake, "is:misprint lang:any")).toBe(3);
+		expect((fake.rows("is:misprint lang:any", "prints", false) as FakeCard[]).length).toBe(1);
+		expect(fake.printings("new")).toBe(8);
+		const compiled = compiledFor(fake);
+		const first = await runNight(fake, compiled, null, night(1));
+		const searches = first.asked.filter((path) => path.startsWith("/cards/search"));
+		expect(searches.length).toBeGreaterThan(10);
+		for (const path of searches) expect(path).toContain("include_variations=true");
+		const table = composeOverride(compiled, first.state) as string;
+		// The list: three rows, read whole on its probe — the two variations among them.
+		expect(first.line).toContain("misprint first read (3)");
+		expect(table).toContain("misprint\trow\tnew\ten\t1†\n");
+		expect(table).toContain("misprint\trow\tnew\tes\t2†\n");
+		// The set: its two halves are its `card_count` — the English variation out of `covered`
+		// by its own row, and the Spanish one a row the foreign answer does not name.
+		expect(first.line).toContain("new (1/6/1)");
+		expect(first.state.sets.new).toMatchObject({ count: 8, cov: 1, unc: 6 });
+		expect(table).toContain("covered\tnot-row\tnew\ten\t1† 2 3 4 5 6\n");
+		expect(table).not.toContain("covered\tnot-row\tnew\tes");
+		// The sizes are the same scope as the reads, so the next night they reconcile.
+		const second = await runNight(fake, compiled, first.state, night(2));
+		expect(second.asked).toHaveLength(11);
+		expect(second.line).toContain("reconcile with the sets read");
 	});
 
 	test("another compiled table starts the state over", async () => {

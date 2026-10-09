@@ -2176,8 +2176,33 @@ export async function gzipBytes(bytes: Uint8Array): Promise<Uint8Array> {
  *      bit still means what it meant to every reader — "this row is the one `new:<value>`
  *      answers" — so ARCHIVE_FORMAT_VERSION stays 2026100911. An older store read by this code is
  *      read correctly and answers as generation 86 did; the generation is what rebuilds it.
+ *
+ *   88 (2026-10-09): THE `is:` LISTS HOLD THEIR VARIATIONS — generation 87's mistake, in the table
+ *      generation 75 copied. `bun run is-lists` and the nightly's refresh read every list
+ *      without `include_variations=true`, so the 122 `variation: true` rows of the corpus were
+ *      in no answer; the generator set them aside as rows "no search returns" and each fell to
+ *      its value's rule. Read with them the same day: `is:misprint is:variation lang:any` is 36
+ *      rows on api.scryfall.com and was none here (m20/206†, mkm/310†, Fifth Edition's five,
+ *      ody/72† in English and Japanese …), and `is:covered is:variation lang:any` 46 against 48 —
+ *      iko/275y, mid/57† and om1/117† are not covered and ph18/4† is. `intro`, `invitational`,
+ *      `jumpstart` and `spellbook` hold no variation, `spikey` 3 and `related` 21, as they were.
+ *
+ *      `searchQuery` (src/import-is-lists.ts), which builds every request of both, sends the
+ *      parameter; the table is regenerated — 40 rows more in `misprint` and `covered`, no other
+ *      line moved, 0 rows of the bulk file in no answer — and the builder run over the whole
+ *      2026-10-09 `all_cards` file tags exactly Scryfall's rows for each of the eight values, id
+ *      for id in every language (examples/is_lists_audit.rs: 545,425 rows, 479,699 covered,
+ *      491 misprint). The tier table was read again with variations too (36,821 rows) and names
+ *      the same 40 sets.
+ *
+ *      GENERATION-ONLY: the same tags in the same collection index, 40 rows gaining or losing
+ *      one. No layout, no format version, neither row touched, nothing read at query time that
+ *      was not. The regenerated table is another base for the nightly's stored refresh
+ *      (`is-lists:state`), which starts over from it; its nightly request count does not move
+ *      (three pages of `misprint` either way, and a set's cost was already reckoned from
+ *      `card_count`, which counts variations).
  */
-export const STORE_CONTENT_GENERATION = 87;
+export const STORE_CONTENT_GENERATION = 88;
 
 /**
  * Chunk key for a store. Keyed by store_key, so publishes never collide.

@@ -28,8 +28,11 @@
 //                                              last read is read again — `e:S is:covered`,
 //                                              `e:S -is:covered`, `e:S is:related` — and written
 //                                              down ABSOLUTELY, every printing of it in or out,
-//                                              so nothing here evaluates the tier rule. The
-//                                              first night reads the sets released in the
+//                                              so nothing here evaluates the tier rule. That
+//                                              count (`card_count`) holds a set's VARIATIONS, and
+//                                              so do the reads (`searchQuery`): `e:mkm` is 451
+//                                              rows with them, as `/sets` says, and 440 without.
+//                                              The first night reads the sets released in the
 //                                              IS_LISTS_RECENT_DAYS before the compiled table was
 //                                              measured and takes the rest as they stand.
 //
@@ -46,6 +49,10 @@
 //   a set moved +3 to +30 each (a 300-printing set is ~7; Secret Lair's 2,833 is ~30)
 //   worst case  IS_LISTS_NIGHT_REQUESTS (240), whatever moved: what does not fit waits a night.
 //               70 of them are the fixed part on the night everything is refetched whole.
+//   variations  cost no request: 122 rows of the corpus, 36 of them in `misprint` (491 rows where a
+//               default search shows 455, three pages either way) and none a row of another
+//               language that is not covered; and a set's cost was already reckoned from
+//               `card_count`, which counts them.
 //   pacing      one request a second (IS_LISTS_GAP_MS; Scryfall asks for 50–100 ms and at most
 //               ten a second), IS_LISTS_SLICE_REQUESTS (30) an alarm — under the 50 subrequests
 //               an invocation gets — so at most 8 alarms and ~6 minutes of wall time, ~15 s on a
@@ -183,9 +190,18 @@ export interface ApiCard {
 	all_parts?: unknown[];
 }
 
-/** `/cards/search`'s query string for page `page` of `q`: every printing, extras in. */
+/**
+ * `/cards/search`'s query string for page `page` of `q`: every printing, extras AND VARIATIONS in.
+ *
+ * A search leaves `variation: true` printings out unless `include_variations=true` is sent (or the
+ * query names `is:variation`), and until 2026-10-09 this did not send it: the 122 variation rows
+ * were in no answer, so `is:misprint is:variation lang:any` was 36 rows on api.scryfall.com and
+ * none here, and a set's read was short of `/sets`' `card_count` by its variations (`e:mkm` 440
+ * rows against 451; 451 with them). Every request of the night and of `bun run is-lists` is built
+ * here, so a list, its size probe and a set's read are all the same scope.
+ */
 export function searchQuery(q: string, unique: "prints" | "cards" = "prints", page = 1): string {
-	const params = new URLSearchParams({ q, unique, include_extras: "true" });
+	const params = new URLSearchParams({ q, unique, include_extras: "true", include_variations: "true" });
 	if (page > 1) params.set("page", String(page));
 	return `?${params}`;
 }
