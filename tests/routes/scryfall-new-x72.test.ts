@@ -132,6 +132,10 @@ describe("the new: values the store's new_flags answer are the engine's is:new<v
 		// `new:sega e:khm t:god` is a 404 with no warning: honored, and empty there.
 		["new:sega", "is:newsega"],
 		["-new:sega", "-is:newsega"],
+		// `new:dreamcast` is a 404 on the anchor with no warning too, and psdg/1-10 with extras in.
+		["new:dreamcast", "is:newsega"],
+		["new:Dreamcast", "is:newsega"],
+		["-new:dreamcast", "-is:newsega"],
 		// `new:games` is 12 on the anchor and 42,123 corpus-wide, as `new:game`.
 		["new:game", "is:newgame"],
 		["new:games", "is:newgame"],
@@ -208,6 +212,8 @@ describe("a value Scryfall does not know is ignored with its sentence", () => {
 		["new:printing", "new:printing", "printing"],
 		["new:reprint", "new:reprint", "reprint"],
 		["new:microp", "new:microp", "microp"],
+		["new:dream", "new:dream", "dream"],
+		["new:dc", "new:dc", "dc"],
 	])("%s", (term, echo, value) => {
 		const policy = scryfallTermPolicy(`${term} e:khm t:god`);
 		expect(policy.query).toBe("e:khm t:god");

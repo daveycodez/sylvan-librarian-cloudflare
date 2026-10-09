@@ -4391,6 +4391,18 @@
 			"method": "GET",
 			"path": "/cards/search?q=new%3Amicrop+e%3Akhm+t%3Agod&unique=prints",
 			"note": "2026-10-09. All 25 with `Checking if cards have a new “microp” is not supported`: the names are a table, not a prefix match."
+		},
+		{
+			"name": "new-dreamcast-is-new-sega",
+			"method": "GET",
+			"path": "/cards/search?q=new%3Adreamcast&unique=prints&include_extras=true",
+			"note": "2026-10-09. psdg/1-10, Japanese, the ten of new:sega id for id (`new:sega -new:dreamcast` and its reverse are each a 404; `-new:dreamcast` 118,493 as `-new:sega`). The port ignored the value with a sentence Scryfall does not say."
+		},
+		{
+			"name": "new-dreamcast-is-honored-and-empty-without-extras",
+			"method": "GET",
+			"path": "/cards/search?q=new%3Adreamcast+e%3Akhm+t%3Agod&unique=prints",
+			"note": "2026-10-09. 404 with no warning, as new:sega."
 		}
 	]
 }

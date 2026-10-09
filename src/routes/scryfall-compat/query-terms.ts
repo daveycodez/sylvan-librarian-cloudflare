@@ -2123,8 +2123,10 @@ const NEW_KEYWORDS: ReadonlySet<string> = new Set(["new"]);
  *                    twelve Astral cards, past/1-12. 12 of 12 (extras in; a 404 without, as
  *                    `game:astral` is). `new:microprose` and `new:micro` are the same twelve, id
  *                    for id, and `new:astral -new:micro` and its reverse are each a 404.
- *   sega             the card's first printing whose `games` hold `sega`: the ten Dreamcast
+ *   sega, dreamcast  the card's first printing whose `games` hold `sega`: the ten Dreamcast
  *                    cards, psdg/1-10, Japanese. 10 of 10 (extras in; a 404 without).
+ *                    `new:dreamcast` is the same ten, id for id; `new:sega -new:dreamcast` and its
+ *                    reverse are each a 404.
  *   game, games      the card's first printing in ANY game it lists: the union of the five lists
  *                    above, read from their bits. All 42,122 read, and one over: `new:mtgo`'s afc/311.
  *   foil             the card's first PAPER printing whose `finishes` hold `foil` — not etched, not
@@ -2162,6 +2164,7 @@ const NEW_VALUE_IS_TAGS: ReadonlyMap<string, string> = new Map([
 	["microprose", "newastral"],
 	["micro", "newastral"],
 	["sega", "newsega"],
+	["dreamcast", "newsega"],
 	["game", "newgame"],
 	["games", "newgame"],
 	["foil", "newfoil"],
