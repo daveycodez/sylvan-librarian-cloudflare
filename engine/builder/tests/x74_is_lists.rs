@@ -1,4 +1,4 @@
-//! The `is:` classes that are Scryfall's own record (generation 74), through the whole native
+//! The `is:` classes that are Scryfall's own record (generation 75), through the whole native
 //! pipeline: Scryfall JSON → transform → finalize → store → query. Real card objects (the
 //! fixtures are card objects verbatim), each value asked the tree the parser emits for it.
 //!

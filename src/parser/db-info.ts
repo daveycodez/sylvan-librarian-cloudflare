@@ -679,7 +679,7 @@ export const VERGELAND_IS_TAG = "vergeland";
 export const TIMESHIFTED_IS_TAG = "timeshifted";
 
 /**
- * THE LAST ELEVEN OF SCRYFALL_UNANSWERED_IS_VALUES (generation 74) — the values two sweeps found
+ * THE LAST ELEVEN OF SCRYFALL_UNANSWERED_IS_VALUES (generation 75) — the values two sweeps found
  * no rule for. Each was read whole on api.scryfall.com on 2026-10-09 (`unique=prints`, extras in,
  * by default and with `lang:any`) against the same day's bulk files; counts are printings by
  * default / rows of every language. What each is, and what was tried, is at the builder's
