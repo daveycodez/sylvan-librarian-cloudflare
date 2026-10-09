@@ -2125,8 +2125,12 @@ export async function gzipBytes(bytes: Uint8Array): Promise<Uint8Array> {
  *   79 (2026-10-09): `new:arena`, and `new:mtga`. The card's first printing on Arena — the order
  *      and rows of generation 76 over the printings whose `games` hold `arena`: 16,284 of 16,284,
  *      the list read whole. Bit 3 of `new_flags`; ARCHIVE_FORMAT_VERSION 2026100903 -> 2026100904.
+ *
+ *   80 (2026-10-09): `new:astral`. The card's first printing in Astral — the order and rows of
+ *      generation 76 over the printings tagged `game_astral`: 12 of 12, the list read whole. Bit 4
+ *      of `new_flags`; ARCHIVE_FORMAT_VERSION 2026100904 -> 2026100905.
  */
-export const STORE_CONTENT_GENERATION = 79;
+export const STORE_CONTENT_GENERATION = 80;
 
 /**
  * Chunk key for a store. Keyed by store_key, so publishes never collide.

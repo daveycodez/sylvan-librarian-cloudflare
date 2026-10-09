@@ -4145,6 +4145,18 @@
 			"method": "GET",
 			"path": "/cards/search?q=-new%3Aarena+%21%22Rusko%2C+Clockmaker%22&unique=prints",
 			"note": "2026-10-09. mb2/263: the card began on Arena, so its paper printing is the one that is not new there."
+		},
+		{
+			"name": "new-astral-is-the-twelve-astral-cards",
+			"method": "GET",
+			"path": "/cards/search?q=new%3Aastral&unique=prints&include_extras=true",
+			"note": "2026-10-09. past/1-12, each card's first (and only) printing whose games hold astral."
+		},
+		{
+			"name": "new-astral-is-honored-and-empty-without-extras",
+			"method": "GET",
+			"path": "/cards/search?q=new%3Aastral+e%3Akhm+t%3Agod&unique=prints",
+			"note": "2026-10-09. 404 with no warning: the value is honored, and nothing on the anchor is new there."
 		}
 	]
 }

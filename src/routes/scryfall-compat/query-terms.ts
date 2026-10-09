@@ -2112,6 +2112,8 @@ const NEW_KEYWORDS: ReadonlySet<string> = new Set(["new"]);
  *                    digital one, outside memorabilia. 31,261 of 31,262: the other is a card
  *                    object that changed between the bulk file and the list (afc/42 gained `mtgo`).
  *   arena, mtga      the card's first printing whose `games` hold `arena`. 16,284 of 16,284.
+ *   astral           the card's first printing whose `games` hold `astral`: the twelve Astral
+ *                    cards, past/1-12. 12 of 12 (extras in; a 404 without, as `game:astral` is).
  *
  * None forces extras or widens, and each negation is the complement over every row of every
  * language (`-new:card lang:any` is 510,145 of 545,303).
@@ -2126,6 +2128,7 @@ const NEW_VALUE_IS_TAGS: ReadonlyMap<string, string> = new Map([
 	["modo", "newmtgo"],
 	["arena", "newarena"],
 	["mtga", "newarena"],
+	["astral", "newastral"],
 ]);
 
 /**
@@ -2135,7 +2138,7 @@ const NEW_VALUE_IS_TAGS: ReadonlyMap<string, string> = new Map([
  * never guessed:
  *
  *   language, lang, art, flavor, ft, flavortext, artist, illustration, foil, nonfoil, game,
- *   games, astral, sega
+ *   games, sega
  */
 const NEW_HONORED_UNANSWERED: ReadonlySet<string> = new Set([
 	"language",
@@ -2150,7 +2153,6 @@ const NEW_HONORED_UNANSWERED: ReadonlySet<string> = new Set([
 	"nonfoil",
 	"game",
 	"games",
-	"astral",
 	"sega",
 ]);
 

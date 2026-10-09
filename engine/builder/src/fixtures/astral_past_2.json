@@ -1,0 +1,120 @@
+{
+ "artist": "Quinton Hoover",
+ "artist_ids": [
+  "1a2db619-92a5-431a-822b-101cdcc5bd5d"
+ ],
+ "booster": false,
+ "border_color": "black",
+ "card_back_id": "0aeebaf5-8c7d-4636-9e82-8c27447861f7",
+ "cmc": 3.0,
+ "collector_number": "2",
+ "color_identity": [
+  "B"
+ ],
+ "colors": [
+  "B"
+ ],
+ "digital": true,
+ "finishes": [
+  "nonfoil"
+ ],
+ "foil": false,
+ "frame": "1997",
+ "full_art": false,
+ "game_changer": false,
+ "games": [
+  "astral"
+ ],
+ "highres_image": false,
+ "id": "141533b5-2748-437a-8882-8e1643de12ae",
+ "illustration_id": "3b1ad498-885a-4dc3-bb5b-f23ba2273452",
+ "image_status": "lowres",
+ "image_updated_at": "2026-07-13T12:47:43Z",
+ "image_uris": {
+  "art": "https://cards.scryfall.io/art/front/1/4/141533b5-2748-437a-8882-8e1643de12ae.webp?1783946863",
+  "art_crop": "https://cards.scryfall.io/art_crop/front/1/4/141533b5-2748-437a-8882-8e1643de12ae.jpg?1783946863",
+  "border_crop": "https://cards.scryfall.io/border_crop/front/1/4/141533b5-2748-437a-8882-8e1643de12ae.jpg?1783946863",
+  "crop": "https://cards.scryfall.io/crop/front/1/4/141533b5-2748-437a-8882-8e1643de12ae.webp?1783946863",
+  "display": "https://cards.scryfall.io/display/front/1/4/141533b5-2748-437a-8882-8e1643de12ae.webp?1783946863",
+  "grid": "https://cards.scryfall.io/grid/front/1/4/141533b5-2748-437a-8882-8e1643de12ae.webp?1783946863",
+  "large": "https://cards.scryfall.io/large/front/1/4/141533b5-2748-437a-8882-8e1643de12ae.jpg?1783946863",
+  "normal": "https://cards.scryfall.io/normal/front/1/4/141533b5-2748-437a-8882-8e1643de12ae.jpg?1783946863",
+  "png": "https://cards.scryfall.io/png/front/1/4/141533b5-2748-437a-8882-8e1643de12ae.png?1783946863",
+  "small": "https://cards.scryfall.io/small/front/1/4/141533b5-2748-437a-8882-8e1643de12ae.jpg?1783946863",
+  "thumb": "https://cards.scryfall.io/thumb/front/1/4/141533b5-2748-437a-8882-8e1643de12ae.webp?1783946863"
+ },
+ "keywords": [],
+ "lang": "en",
+ "layout": "normal",
+ "legalities": {
+  "alchemy": "not_legal",
+  "brawl": "not_legal",
+  "commander": "not_legal",
+  "competitivebrawl": "not_legal",
+  "duel": "not_legal",
+  "future": "not_legal",
+  "gladiator": "not_legal",
+  "historic": "not_legal",
+  "legacy": "not_legal",
+  "modern": "not_legal",
+  "oathbreaker": "not_legal",
+  "oldschool": "not_legal",
+  "pauper": "not_legal",
+  "paupercommander": "not_legal",
+  "penny": "not_legal",
+  "pioneer": "not_legal",
+  "predh": "not_legal",
+  "premodern": "not_legal",
+  "standard": "not_legal",
+  "standardbrawl": "not_legal",
+  "timeless": "not_legal",
+  "tlr": "not_legal",
+  "vintage": "not_legal"
+ },
+ "mana_cost": "{2}{B}",
+ "multiverse_ids": [],
+ "name": "Call from the Grave",
+ "nonfoil": true,
+ "object": "card",
+ "oracle_id": "252ff28e-3ea7-4e2c-a30c-3cb80aa278d0",
+ "oracle_text": "Put a random creature from a random graveyard into play under your control. Call from the Grave deals to you an amount of damage equal to that creature's casting cost.",
+ "oversized": false,
+ "prices": {
+  "eur": null,
+  "eur_foil": null,
+  "tix": null,
+  "usd": null,
+  "usd_etched": null,
+  "usd_foil": null
+ },
+ "prints_search_uri": "https://api.scryfall.com/cards/search?order=released&q=oracleid%3A252ff28e-3ea7-4e2c-a30c-3cb80aa278d0&unique=prints",
+ "promo": false,
+ "purchase_uris": {
+  "cardhoarder": "https://www.cardhoarder.com/cards?affiliate_id=scryfall&data%5Bsearch%5D=Call+from+the+Grave&ref=card-profile&utm_campaign=affiliate&utm_medium=card&utm_source=scryfall",
+  "cardmarket": "https://www.cardmarket.com/en/Magic/Products/Search?referrer=scryfall&searchString=Call+from+the+Grave&utm_campaign=card_prices&utm_medium=text&utm_source=scryfall",
+  "tcgplayer": "https://partner.tcgplayer.com/c/4931599/1830156/21018?subId1=api&u=https%3A%2F%2Fwww.tcgplayer.com%2Fsearch%2Fmagic%2Fproduct%3FproductLineName%3Dmagic%26q%3DCall%2Bfrom%2Bthe%2BGrave%26view%3Dgrid"
+ },
+ "rarity": "common",
+ "related_uris": {
+  "edhrec": "https://edhrec.com/route/?cc=Call+from+the+Grave",
+  "tcgplayer_infinite_articles": "https://partner.tcgplayer.com/c/4931599/1830156/21018?subId1=api&trafcat=tcgplayer.com%2Fsearch%2Farticles&u=https%3A%2F%2Fwww.tcgplayer.com%2Fsearch%2Farticles%3FproductLineName%3Dmagic%26q%3DCall%2Bfrom%2Bthe%2BGrave",
+  "tcgplayer_infinite_decks": "https://partner.tcgplayer.com/c/4931599/1830156/21018?subId1=api&trafcat=tcgplayer.com%2Fsearch%2Fdecks&u=https%3A%2F%2Fwww.tcgplayer.com%2Fsearch%2Fdecks%3FproductLineName%3Dmagic%26q%3DCall%2Bfrom%2Bthe%2BGrave"
+ },
+ "released_at": "1997-04-01",
+ "reprint": false,
+ "reserved": false,
+ "rulings_uri": "https://api.scryfall.com/cards/141533b5-2748-437a-8882-8e1643de12ae/rulings",
+ "scryfall_set_uri": "https://scryfall.com/sets/past?utm_source=api",
+ "scryfall_uri": "https://scryfall.com/card/past/2/call-from-the-grave?utm_source=api",
+ "set": "past",
+ "set_id": "9ca75b06-d9c5-4245-9bba-f2751f8d50a5",
+ "set_name": "Astral Cards",
+ "set_search_uri": "https://api.scryfall.com/cards/search?order=set&q=e%3Apast&unique=prints",
+ "set_type": "box",
+ "set_uri": "https://api.scryfall.com/sets/9ca75b06-d9c5-4245-9bba-f2751f8d50a5",
+ "story_spotlight": false,
+ "textless": false,
+ "type_line": "Sorcery",
+ "uri": "https://api.scryfall.com/cards/141533b5-2748-437a-8882-8e1643de12ae",
+ "variation": false
+}

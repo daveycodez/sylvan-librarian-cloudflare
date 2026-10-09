@@ -1,0 +1,125 @@
+{
+ "artist": "Greg Staples",
+ "artist_ids": [
+  "93d65564-bf00-447b-8406-e2031f03b6b1"
+ ],
+ "booster": false,
+ "border_color": "white",
+ "card_back_id": "0aeebaf5-8c7d-4636-9e82-8c27447861f7",
+ "cmc": 6.0,
+ "collector_number": "1",
+ "color_identity": [
+  "W"
+ ],
+ "colors": [
+  "W"
+ ],
+ "digital": true,
+ "edhrec_rank": 19381,
+ "finishes": [
+  "nonfoil"
+ ],
+ "foil": false,
+ "frame": "1997",
+ "full_art": false,
+ "game_changer": false,
+ "games": [
+  "sega"
+ ],
+ "highres_image": true,
+ "id": "8f36da4b-75fd-4568-b9b8-cbd76058720b",
+ "illustration_id": "8a8f09d8-e7a7-4915-af98-7dd62a0fe62b",
+ "image_status": "highres_scan",
+ "image_updated_at": "2026-07-13T12:22:07Z",
+ "image_uris": {
+  "art": "https://cards.scryfall.io/art/front/8/f/8f36da4b-75fd-4568-b9b8-cbd76058720b.webp?1783945327",
+  "art_crop": "https://cards.scryfall.io/art_crop/front/8/f/8f36da4b-75fd-4568-b9b8-cbd76058720b.jpg?1783945327",
+  "border_crop": "https://cards.scryfall.io/border_crop/front/8/f/8f36da4b-75fd-4568-b9b8-cbd76058720b.jpg?1783945327",
+  "crop": "https://cards.scryfall.io/crop/front/8/f/8f36da4b-75fd-4568-b9b8-cbd76058720b.webp?1783945327",
+  "display": "https://cards.scryfall.io/display/front/8/f/8f36da4b-75fd-4568-b9b8-cbd76058720b.webp?1783945327",
+  "grid": "https://cards.scryfall.io/grid/front/8/f/8f36da4b-75fd-4568-b9b8-cbd76058720b.webp?1783945327",
+  "large": "https://cards.scryfall.io/large/front/8/f/8f36da4b-75fd-4568-b9b8-cbd76058720b.jpg?1783945327",
+  "normal": "https://cards.scryfall.io/normal/front/8/f/8f36da4b-75fd-4568-b9b8-cbd76058720b.jpg?1783945327",
+  "png": "https://cards.scryfall.io/png/front/8/f/8f36da4b-75fd-4568-b9b8-cbd76058720b.png?1783945327",
+  "small": "https://cards.scryfall.io/small/front/8/f/8f36da4b-75fd-4568-b9b8-cbd76058720b.jpg?1783945327",
+  "thumb": "https://cards.scryfall.io/thumb/front/8/f/8f36da4b-75fd-4568-b9b8-cbd76058720b.webp?1783945327"
+ },
+ "keywords": [
+  "Flying"
+ ],
+ "lang": "ja",
+ "layout": "normal",
+ "legalities": {
+  "alchemy": "not_legal",
+  "brawl": "not_legal",
+  "commander": "legal",
+  "competitivebrawl": "not_legal",
+  "duel": "legal",
+  "future": "not_legal",
+  "gladiator": "not_legal",
+  "historic": "not_legal",
+  "legacy": "legal",
+  "modern": "not_legal",
+  "oathbreaker": "legal",
+  "oldschool": "not_legal",
+  "pauper": "not_legal",
+  "paupercommander": "not_legal",
+  "penny": "not_legal",
+  "pioneer": "not_legal",
+  "predh": "not_legal",
+  "premodern": "not_legal",
+  "standard": "not_legal",
+  "standardbrawl": "not_legal",
+  "timeless": "not_legal",
+  "tlr": "not_legal",
+  "vintage": "legal"
+ },
+ "mana_cost": "{4}{W}{W}",
+ "multiverse_ids": [],
+ "name": "Arden Angel",
+ "nonfoil": true,
+ "object": "card",
+ "oracle_id": "82d51c8a-d42b-48b3-a726-3a8d28d057e5",
+ "oracle_text": "Flying\nAt the beginning of your upkeep, if Arden Angel is in your graveyard, roll a four-sided die. If the result is 1, return Arden Angel from your graveyard to the battlefield.",
+ "oversized": false,
+ "power": "4",
+ "prices": {
+  "eur": null,
+  "eur_foil": null,
+  "tix": null,
+  "usd": null,
+  "usd_etched": null,
+  "usd_foil": null
+ },
+ "prints_search_uri": "https://api.scryfall.com/cards/search?order=released&q=oracleid%3A82d51c8a-d42b-48b3-a726-3a8d28d057e5&unique=prints",
+ "promo": false,
+ "purchase_uris": {
+  "cardhoarder": "https://www.cardhoarder.com/cards?affiliate_id=scryfall&data%5Bsearch%5D=Arden+Angel&ref=card-profile&utm_campaign=affiliate&utm_medium=card&utm_source=scryfall",
+  "cardmarket": "https://www.cardmarket.com/en/Magic/Products/Search?referrer=scryfall&searchString=Arden+Angel&utm_campaign=card_prices&utm_medium=text&utm_source=scryfall",
+  "tcgplayer": "https://partner.tcgplayer.com/c/4931599/1830156/21018?subId1=api&u=https%3A%2F%2Fwww.tcgplayer.com%2Fsearch%2Fmagic%2Fproduct%3FproductLineName%3Dmagic%26q%3DArden%2BAngel%26view%3Dgrid"
+ },
+ "rarity": "rare",
+ "related_uris": {
+  "edhrec": "https://edhrec.com/route/?cc=Arden+Angel",
+  "tcgplayer_infinite_articles": "https://partner.tcgplayer.com/c/4931599/1830156/21018?subId1=api&trafcat=tcgplayer.com%2Fsearch%2Farticles&u=https%3A%2F%2Fwww.tcgplayer.com%2Fsearch%2Farticles%3FproductLineName%3Dmagic%26q%3DArden%2BAngel",
+  "tcgplayer_infinite_decks": "https://partner.tcgplayer.com/c/4931599/1830156/21018?subId1=api&trafcat=tcgplayer.com%2Fsearch%2Fdecks&u=https%3A%2F%2Fwww.tcgplayer.com%2Fsearch%2Fdecks%3FproductLineName%3Dmagic%26q%3DArden%2BAngel"
+ },
+ "released_at": "2001-06-28",
+ "reprint": false,
+ "reserved": false,
+ "rulings_uri": "https://api.scryfall.com/cards/8f36da4b-75fd-4568-b9b8-cbd76058720b/rulings",
+ "scryfall_set_uri": "https://scryfall.com/sets/psdg?utm_source=api",
+ "scryfall_uri": "https://scryfall.com/card/psdg/1/ja/arden-angel?utm_source=api",
+ "set": "psdg",
+ "set_id": "e8099914-89d5-4b89-8930-9b68d0c31916",
+ "set_name": "Sega Dreamcast Cards",
+ "set_search_uri": "https://api.scryfall.com/cards/search?order=set&q=e%3Apsdg&unique=prints",
+ "set_type": "box",
+ "set_uri": "https://api.scryfall.com/sets/e8099914-89d5-4b89-8930-9b68d0c31916",
+ "story_spotlight": false,
+ "textless": false,
+ "toughness": "4",
+ "type_line": "Creature — Angel",
+ "uri": "https://api.scryfall.com/cards/8f36da4b-75fd-4568-b9b8-cbd76058720b",
+ "variation": false
+}

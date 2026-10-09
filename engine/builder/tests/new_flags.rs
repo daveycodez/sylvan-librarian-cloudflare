@@ -203,3 +203,17 @@ fn new_arena_is_the_first_printing_whose_games_hold_arena() {
     assert_eq!(rows(&store, &is("newarena")), ["jmp/220/en", "sis/7/en", "ybro/24/en"]);
     assert_eq!(rows(&store, &not(is("newarena"))), ["avr/90/en", "ddm/58/en", "isd/14/en", "mb2/263/en"]);
 }
+
+#[test]
+fn new_astral_is_the_first_printing_whose_games_hold_astral() {
+    // The game is not in the packed `games` byte: the importer's `game_astral` tag holds it.
+    let store = store_of(&[
+        ("astral_past_1", true),
+        ("astral_past_2", true),
+        ("sega_psdg_1_ja", true),
+        ("rusko_clockmaker_ybro_24", true),
+        ("thermokarst_ice_268", true),
+    ]);
+    assert_eq!(rows(&store, &is("newastral")), ["past/1/en", "past/2/en"]);
+    assert_eq!(rows(&store, &not(is("newastral"))), ["ice/268/en", "psdg/1/ja", "ybro/24/en"]);
+}
