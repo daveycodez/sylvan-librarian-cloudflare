@@ -30,22 +30,25 @@
 //!   * INSIDE A DATE the sets come latest release batch first (`card_engine::release_batch`, the
 //!     order `order=released&dir=desc` leads with), a batch's sets by code, a set's printings by
 //!     collector number as `order=set` reads it: Ultima is fin/38, then pfin/38s, fin/328, pss5/1 —
-//!     pfin sits in batch 1 of 2025-06-13, fin and pss5 in batch 0. Over the 97 distinct
-//!     (date, set, set) precedences the 33,640 rows show inside one tier, batch-descending then
-//!     code-ascending holds on 91; code-descending on 51, batch-ascending on 46. The six it misses
-//!     are a batch boundary the table cannot see because it falls in code order (`cei` after `ced`
-//!     on 1993-12-10: Scryfall's ascending order reads the same either way).
+//!     pfin sits in batch 1 of 2025-06-13, fin and pss5 in batch 0. Over the 101 distinct
+//!     (date, set, set) precedences these rows and the samples below show inside one tier,
+//!     batch-descending then code-ascending holds on all 101; code-descending on 52,
+//!     batch-ascending on 49. Six of them turn on a batch boundary that falls where the code order
+//!     continues (`cei` after `ced` on 1993-12-10, `peld` after `eld`, `pss1` after `exp`), which
+//!     Scryfall's ascending `order=released` reads the same either way: the table asks
+//!     `prefer:newest` and `prefer:oldest` for those (scripts/generate-release-batches.ts), and
+//!     before it did this order held on 95.
 //!
 //! Replayed over those 2,433 sequences with the label leading each, the order stored until now —
 //! English slot, collector-number prefix, date, collector number — reproduces 226 whole sequences
 //! and puts 20.5% of the rows in their place; with a card's first k printings filtered away its
-//! best remaining printing is Scryfall's next one 46.4% of the time. This order: 2,071 sequences,
-//! 96.1% of the rows, 97.4%. By the default tier of each set type alone, without the measured
+//! best remaining printing is Scryfall's next one 46.4% of the time. This order: 2,369 sequences,
+//! 98.0% of the rows, 98.6%. By the default tier of each set type alone, without the measured
 //! table: 1,080 sequences.
 //!
 //! AND ON CARDS THE TABLE WAS NOT MEASURED ON — `prints=7 -t:basic`, 5,390 rows, the 772 cards
-//! printed exactly seven times: 746 whole sequences (218 before), 98.5% of the rows in place
-//! (49.2%), the next-best printing right 99.0% of the time (65.0%). And on every printing of five
+//! printed exactly seven times: 757 whole sequences (218 before), 99.0% of the rows in place
+//! (49.2%), the next-best printing right 99.4% of the time (65.0%). And on every printing of five
 //! release groups asked whole (`g:fic`, `g:snc`, `g:war`, `g:hob`, `g:ecc`; 852 cards with two or
 //! more rows): 847 sequences, the five misses New Capenna Commander's etched display commanders
 //! (ncc/186-190 ahead of the extended-art ncc/100-107 they follow by number).
@@ -83,11 +86,8 @@
 //! Ten printed names in five languages asked of `/cards/named?fuzzy=` the same day each answered
 //! the newest printing in that language (ties by set and number as above).
 //!
-//! WHAT IT STILL GETS WRONG, measured: 362 of the 2,433 sequences.
+//! WHAT IT STILL GETS WRONG, measured: 64 of the 2,433 sequences.
 //!
-//!   * 283 are `cei` before `ced` and five more are the same shape (`pss1` before `exp`, `peld`
-//!     before `eld`, `pgpx` before `j16`, `tfrc` and `tfra` before `tfdc`): a release batch the
-//!     table cannot see. Rows of one tier and date in two sets, nothing else.
 //!   * THE TIER IS SCRYFALL'S OWN RECORD, NOT A FUNCTION OF THE CARD. Dominaria Remastered's
 //!     retro-frame `boosterfun` printings are second-tier, except the fifteen black ones
 //!     (dmr/300-314), which are default-tier; Jumpstart 2022 is second-tier except Rhystic Study

@@ -20,6 +20,11 @@
 //!   cmm/630; with `lang:ja`, mar/9, dsc/114, cmm/81, cmm/630 and `unique=cards` mar/9. The same
 //!   slot leads in English and comes second in Japanese: the default tier is English only.
 //!   `/cards/named?fuzzy=対抗呪文` answers that Japanese mar/9 too.
+//! - `!"Counterspell" (e:ced or e:cei)` — cei/55, ced/55, the last two of Counterspell's printings:
+//!   both Collectors' Editions are dated 1993-12-10 and `cei` is the later release batch of that
+//!   date, a boundary the code order hides (`ced`, `cei` ascending either way) and
+//!   release_batches.tsv finds by asking both prefers. Scryfall keeps `cei` under `prefer:newest`
+//!   and `ced` under `prefer:oldest` for all 292 cards the two share.
 
 use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -57,6 +62,8 @@ const FIXTURES: &[&str] = &[
     "counterspell_mar_9",
     "counterspell_mar_9_ja",
     "counterspell_pf26_5",
+    "counterspell_ced_55",
+    "counterspell_cei_55",
 ];
 
 fn fixture(name: &str) -> Value {
@@ -188,7 +195,7 @@ fn the_default_tier_is_english_only_so_another_language_orders_by_its_dates() {
         let store = store(reversed);
         assert_eq!(
             rows(&store, &name("counterspell"), "printing"),
-            ["dsc/114", "cmm/81", "pf26/5", "mar/9", "cmm/630"]
+            ["dsc/114", "cmm/81", "pf26/5", "mar/9", "cmm/630", "cei/55", "ced/55"]
         );
         assert_eq!(rows(&store, &name("counterspell"), "card"), ["dsc/114"]);
         // Without Duskmourn Commander's printing: Commander Masters', not the 2026 promo.
@@ -197,5 +204,15 @@ fn the_default_tier_is_english_only_so_another_language_orders_by_its_dates() {
         let japanese = and(&[name("counterspell"), lang("ja")]);
         assert_eq!(rows(&store, &japanese, "printing"), ["mar/9:ja", "dsc/114:ja", "cmm/81:ja", "cmm/630:ja"]);
         assert_eq!(rows(&store, &japanese, "card"), ["mar/9:ja"]);
+    }
+}
+
+#[test]
+fn a_batch_boundary_the_code_order_hides_still_puts_the_later_batch_first() {
+    for reversed in [false, true] {
+        let store = store(reversed);
+        let collectors = and(&[name("counterspell"), not(set("dsc")), not(set("cmm")), not(set("pf26")), not(set("mar"))]);
+        assert_eq!(rows(&store, &collectors, "printing"), ["cei/55", "ced/55"]);
+        assert_eq!(rows(&store, &collectors, "card"), ["cei/55"]);
     }
 }

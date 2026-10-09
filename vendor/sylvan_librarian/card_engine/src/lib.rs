@@ -4940,6 +4940,12 @@ pub fn release_batch(yyyymmdd: u32, set: &str) -> u16 {
 /// the set half is `(batch, code rank)`: exact on every measured date, and on a date or set the
 /// table has not seen, batch 0, i.e. the code order this column had before.
 ///
+/// A boundary that falls where the code order continues (`ced | cei` on 1993-12-10) changes nothing
+/// here — (batch, code) is the same order with it or without — but two readers of the batch do
+/// turn on it: `prefer:oldest`/`prefer:newest` (`dated_prefer_key`) and the builder's order of a
+/// card's own printings. The table carries those too since 2026-10-08, 25 of them, each found by
+/// asking a card both sets print `prefer:newest` and `prefer:oldest` and seeing the answers differ.
+///
 /// # The packing
 ///
 /// `set_rank` is the dense code rank, asserted to fit `RELEASE_KEY_CODE_BITS`; `release_set_key` is

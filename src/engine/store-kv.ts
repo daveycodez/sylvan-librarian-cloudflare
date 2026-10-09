@@ -2006,8 +2006,22 @@ export async function gzipBytes(bytes: Uint8Array): Promise<Uint8Array> {
  *      GENERATION-ONLY: `prefer_score` is a stored VALUE and the order the printings are stored
  *      in follows it. No layout, no format version, neither row touched; `prefer:borderless`
  *      reads the same score underneath its own tiers and is otherwise unchanged.
+ *
+ *   73 (2026-10-08): THE RELEASE BATCHES A DATE'S CODE ORDER HIDES. `release_batches.tsv` was read
+ *      off Scryfall's ascending `order=released`, where a boundary that falls in code order is
+ *      invisible — `ced | cei` reads as `ced cei` — and a card's own order runs the batches
+ *      DESCENDING: every Collectors' Edition card led with `ced` where Scryfall leads with `cei`
+ *      (283 of the 362 sequences generation 72 still got wrong). The table now asks each such pair
+ *      that shares a card `prefer:newest` and `prefer:oldest` and cuts where the two answers
+ *      differ: 128 pairs, 25 boundaries, 303 rows over 143 dates (285 over 136), no listed set's
+ *      ascending place moved. Replayed: 2,369 of the 2,433 sequences (2,071), 757 of the 772 held
+ *      out (746), and all 101 same-tier set precedences the samples show (95).
+ *
+ *      GENERATION-ONLY: the batch is the high bits of the stored `release_set_key` and a key of
+ *      the stored rank. `order=released` cannot change — (batch, code) is the same order with the
+ *      boundary or without — so SORT_KEY_VERSION stays; no layout, no format version.
  */
-export const STORE_CONTENT_GENERATION = 72;
+export const STORE_CONTENT_GENERATION = 73;
 
 /**
  * Chunk key for a store. Keyed by store_key, so publishes never collide.

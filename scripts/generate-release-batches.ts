@@ -23,6 +23,20 @@
 // asked once, for one printing of each set (`date=D ((e:a cn:"x") or (e:b cn:"y") …)`, extras and
 // variations included so no set hides), ascending. The set sequence is read off the answer.
 //
+// AND TWO PER PAIR THE SEQUENCE CANNOT SPLIT (2026-10-08). A batch boundary that falls where the
+// code order continues is invisible in that sequence — `ced | cei` reads the same as `ced cei` —
+// and `order=released` never needs it, because (batch, code) is the same order either way. Three
+// other orders do: `prefer:newest` and `prefer:oldest`, which pick by (date, batch, Scryfall id),
+// and the order of a card's own printings (`unique=prints order=name`), which runs the batches
+// DESCENDING and the codes inside one ASCENDING. On 1993-12-10 they answer `cei` before `ced`; the
+// two sets are two batches. So for every two sets of one alphabetical run that share a card, that
+// card is asked BOTH `prefer:newest` and `prefer:oldest` across the pair. A boundary is the two
+// answers DIFFERING — newest the later code, oldest the earlier. One answer alone says nothing:
+// inside a batch both keep the row with the lowest id, in whichever set it is (`blc`/`mb2` on
+// 2024-08-02: 14 shared cards, `mb2` kept 8 times and `blc` 6, identically under both; `eld`/`peld`
+// on 2019-10-04: 68 shared cards, `peld` every time under newest and `eld` every time under oldest).
+// 128 such pairs asked in the 2026-09-24 corpus, 25 of them a boundary.
+//
 // Run by hand after a store build and commit the diff, like `bun run set-dates`: the nightly import
 // cannot touch committed code, and the table is only a snapshot of an order Scryfall does not
 // promise to keep — `snc`/`psnc` on 2022-04-29 swapped between 2026-08-16 and 2026-09-25. A table
@@ -33,8 +47,9 @@ import { createReadStream, writeFileSync } from "node:fs";
 const OUT = "vendor/sylvan_librarian/card_engine/src/release_batches.tsv";
 const UA = "sylvan-librarian-cloudflare/generate-release-batches (set order inside a release date)";
 // api.scryfall.com asks for under 10 requests a second; /cards/search rate-limits well below that
-// in practice (a 250ms gap drew a 429 on 2026-09-25), so this stays at two a second.
-const GAP_MS = 500;
+// in practice (a 250ms gap drew a 429 on 2026-09-25), so this stays at two a second unless told
+// to go slower.
+const GAP_MS = Number(process.env.SCRYFALL_GAP_MS ?? 500);
 
 function arg(name: string, fallback: string): string {
 	const i = process.argv.indexOf(name);
@@ -46,6 +61,13 @@ const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 interface Pick {
 	rank: [number, number, number, string];
 	cn: string;
+}
+
+/** One release date in the local store: the printing to ask each set for, and each set's cards. */
+interface DateSets {
+	picks: Map<string, Pick>;
+	/** set → the oracle ids it prints in English on this date. */
+	cards: Map<string, Set<string>>;
 }
 
 function before(a: Pick["rank"], b: Pick["rank"]): boolean {
@@ -77,32 +99,63 @@ async function* jsonLines(path: string): AsyncGenerator<string> {
 }
 
 /** date → set → the printing to ask for: English first, then a bare number, then the shortest. */
-async function readDates(path: string): Promise<Map<string, Map<string, Pick>>> {
-	const dates = new Map<string, Map<string, Pick>>();
+async function readDates(path: string): Promise<Map<string, DateSets>> {
+	const dates = new Map<string, DateSets>();
 	for await (const line of jsonLines(path)) {
 		const row = JSON.parse(line) as {
 			card_set_code?: string;
 			collector_number?: string;
 			released_at?: string | null;
+			oracle_id?: string;
 			card_compat_blob?: { lang?: string };
 		};
 		const { card_set_code: set, collector_number: cn, released_at: date } = row;
 		if (!set || !cn || !date || /["\s]/.test(cn)) continue;
-		const rank: Pick["rank"] = [row.card_compat_blob?.lang === "en" ? 0 : 1, /^\d+$/.test(cn) ? 0 : 1, cn.length, cn];
+		const english = row.card_compat_blob?.lang === "en";
+		const rank: Pick["rank"] = [english ? 0 : 1, /^\d+$/.test(cn) ? 0 : 1, cn.length, cn];
 		let sets = dates.get(date);
 		if (!sets) {
-			sets = new Map();
+			sets = { picks: new Map(), cards: new Map() };
 			dates.set(date, sets);
 		}
-		const cur = sets.get(set);
-		if (!cur || before(rank, cur.rank)) sets.set(set, { rank, cn });
+		const cur = sets.picks.get(set);
+		if (!cur || before(rank, cur.rank)) sets.picks.set(set, { rank, cn });
+		if (english && row.oracle_id) {
+			let cards = sets.cards.get(set);
+			if (!cards) {
+				cards = new Set();
+				sets.cards.set(set, cards);
+			}
+			cards.add(row.oracle_id);
+		}
 	}
 	return dates;
 }
 
+/** One search, every page, with the pause and the 429 back-off every request here takes. */
+async function search<T>(label: string, params: Record<string, string>): Promise<T[]> {
+	const qs = new URLSearchParams(params);
+	let url: string | null = `https://api.scryfall.com/cards/search?${qs}`;
+	const out: T[] = [];
+	while (url) {
+		const res = await fetch(url, { headers: { "User-Agent": UA, Accept: "application/json" } });
+		const body = (await res.json()) as { data?: T[]; has_more?: boolean; next_page?: string };
+		await sleep(GAP_MS);
+		if (res.status === 429) {
+			await sleep(65_000);
+			continue;
+		}
+		if (res.status === 404) break;
+		if (!res.ok) throw new Error(`${label}: ${res.status} ${JSON.stringify(body).slice(0, 200)}`);
+		out.push(...(body.data ?? []));
+		url = body.has_more && body.next_page ? body.next_page : null;
+	}
+	return out;
+}
+
 async function ask(date: string, sets: Map<string, Pick>): Promise<string[]> {
 	const terms = [...sets].map(([set, { cn }]) => `(e:${set} cn:"${cn}")`).join(" or ");
-	const qs = new URLSearchParams({
+	const cards = await search<{ set: string }>(date, {
 		q: `date=${date} (${terms})`,
 		unique: "prints",
 		order: "released",
@@ -110,34 +163,94 @@ async function ask(date: string, sets: Map<string, Pick>): Promise<string[]> {
 		include_extras: "true",
 		include_variations: "true",
 	});
-	let url: string | null = `https://api.scryfall.com/cards/search?${qs}`;
 	const seq: string[] = [];
-	while (url) {
-		const res = await fetch(url, { headers: { "User-Agent": UA, Accept: "application/json" } });
-		const body = (await res.json()) as { data?: { set: string }[]; has_more?: boolean; next_page?: string };
-		await sleep(GAP_MS);
-		if (res.status === 429) {
-			await sleep(65_000);
-			continue;
-		}
-		if (res.status === 404) break;
-		if (!res.ok) throw new Error(`${date}: ${res.status} ${JSON.stringify(body).slice(0, 200)}`);
-		for (const card of body.data ?? []) {
-			if (seq.at(-1) === card.set) continue;
-			if (seq.includes(card.set)) throw new Error(`${date}: ${card.set} is not contiguous — the set grouping broke`);
-			seq.push(card.set);
-		}
-		url = body.has_more && body.next_page ? body.next_page : null;
+	for (const card of cards) {
+		if (seq.at(-1) === card.set) continue;
+		if (seq.includes(card.set)) throw new Error(`${date}: ${card.set} is not contiguous — the set grouping broke`);
+		seq.push(card.set);
 	}
 	return seq;
 }
 
-/** Each set's batch: the number of code-order descents before it in the date's sequence. */
-export function batchesOf(seq: readonly string[]): Map<string, number> {
+/**
+ * Is `later` in a LATER batch of `date` than `earlier`, where `earlier < later` by code and the
+ * ascending sequence therefore cannot say? Inside one batch `prefer:newest` and `prefer:oldest` keep
+ * the SAME row of a card both sets print (the lowest Scryfall id); across a boundary newest keeps
+ * the later batch's and oldest the earlier's. `null` when an answer names neither set, or the two
+ * disagree the other way round (which the ascending sequence rules out).
+ */
+async function laterBatch(date: string, oracle: string, earlier: string, later: string): Promise<boolean | null> {
+	const pick = async (prefer: string): Promise<string | undefined> => {
+		const cards = await search<{ set: string }>(`${date} ${earlier}/${later} ${prefer}`, {
+			q: `oracleid:${oracle} date=${date} (e:${earlier} or e:${later}) prefer:${prefer}`,
+			include_extras: "true",
+			include_variations: "true",
+		});
+		return cards[0]?.set;
+	};
+	const newest = await pick("newest");
+	const oldest = await pick("oldest");
+	if ((newest !== earlier && newest !== later) || (oldest !== earlier && oldest !== later)) return null;
+	if (newest === oldest) return false;
+	if (newest === later) return true;
+	console.warn(`  ${date} ${earlier}/${later}: newest answers the earlier code and oldest the later — skipped`);
+	return null;
+}
+
+/**
+ * The batch boundaries a date's ascending sequence HIDES: indexes `k` where `seq[k - 1] < seq[k]`
+ * by code and `seq[k]` is nevertheless in a later batch.
+ *
+ * Only pairs of one alphabetical run that `shares` a card can be asked, and only they matter — a
+ * boundary between two sets with no card in common changes no answer. Narrow pairs first, so a
+ * wider pair is asked only when nothing between it is already known: a boundary inside it settles
+ * it, and so does a proven same-batch pair that covers it. A boundary found across a pair that is
+ * not adjacent is placed as late as the proven same-batch pairs allow.
+ */
+export async function hiddenCuts(
+	seq: readonly string[],
+	shares: (a: string, b: string) => string | undefined,
+	later: (oracle: string, a: string, b: string) => Promise<boolean | null>,
+): Promise<Set<number>> {
+	const cuts = new Set<number>();
+	let start = 0;
+	for (let end = 1; end <= seq.length; end++) {
+		if (end < seq.length && (seq[end] as string) > (seq[end - 1] as string)) continue;
+		const same: [number, number][] = [];
+		for (let span = 1; span < end - start; span++) {
+			for (let i = start; i + span < end; i++) {
+				const j = i + span;
+				const oracle = shares(seq[i] as string, seq[j] as string);
+				if (!oracle) continue;
+				let settled = same.some(([x, y]) => x <= i && j <= y);
+				for (let k = i + 1; k <= j && !settled; k++) settled = cuts.has(k);
+				if (settled) continue;
+				const answer = await later(oracle, seq[i] as string, seq[j] as string);
+				if (answer === null) continue;
+				if (!answer) {
+					same.push([i, j]);
+					continue;
+				}
+				let k = j;
+				while (k > i && same.some(([x, y]) => x < k && k <= y)) k--;
+				if (k > i) cuts.add(k);
+				else console.warn(`  ${seq[i]}/${seq[j]}: a boundary with no place left for it — skipped`);
+			}
+		}
+		start = end;
+	}
+	return cuts;
+}
+
+/**
+ * Each set's batch: the number of boundaries before it in the date's sequence — every code-order
+ * descent, and every boundary `hiddenCuts` found where the code order continues.
+ */
+export function batchesOf(seq: readonly string[], cuts: ReadonlySet<number> = new Set()): Map<string, number> {
 	const out = new Map<string, number>();
 	let batch = 0;
 	seq.forEach((set, i) => {
-		if (i > 0 && set < (seq[i - 1] as string)) batch++;
+		if (i > 0 && (set < (seq[i - 1] as string) || cuts.has(i))) batch++;
 		out.set(set, batch);
 	});
 	return out;
@@ -146,14 +259,28 @@ export function batchesOf(seq: readonly string[]): Map<string, number> {
 async function main(): Promise<void> {
 	const rows = arg("--rows", "store-build/rows.jsonl");
 	const dates = await readDates(rows);
-	const shared = [...dates].filter(([, sets]) => sets.size >= 2).sort(([a], [b]) => (a < b ? 1 : -1));
+	const shared = [...dates].filter(([, sets]) => sets.picks.size >= 2).sort(([a], [b]) => (a < b ? 1 : -1));
 	console.log(`${shared.length} release dates hold two or more sets in ${rows}`);
 	const entries: string[] = [];
 	let reordered = 0;
 	let maxBatch = 0;
+	let asked = 0;
+	let hidden = 0;
 	for (const [date, sets] of shared) {
-		const seq = await ask(date, sets);
-		const batches = batchesOf(seq);
+		const seq = await ask(date, sets.picks);
+		const shares = (a: string, b: string): string | undefined => {
+			const other = sets.cards.get(b);
+			if (!other) return undefined;
+			for (const oracle of sets.cards.get(a) ?? []) if (other.has(oracle)) return oracle;
+			return undefined;
+		};
+		const cuts = await hiddenCuts(seq, shares, (oracle, a, b) => {
+			asked++;
+			return laterBatch(date, oracle, a, b);
+		});
+		if (cuts.size > 0) console.log(`  ${date}: ${[...cuts].map((k) => `${seq[k - 1]} | ${seq[k]}`).join(", ")}`);
+		hidden += cuts.size;
+		const batches = batchesOf(seq, cuts);
 		if ([...batches.values()].some((b) => b > 0)) reordered++;
 		for (const [set, batch] of batches) {
 			if (batch === 0) continue;
@@ -167,7 +294,8 @@ async function main(): Promise<void> {
 		"#",
 		"# yyyymmdd <TAB> set code <TAB> batch: inside one release date, `order=released` orders the sets",
 		"# by (batch, code). A (date, set) not listed is batch 0. See assign_set_ranks in lib.rs.",
-		`# ${shared.length} dates measured, ${reordered} of them not in code order.`,
+		`# ${shared.length} dates measured, ${reordered} of them in more than one batch; ${asked} same-run pairs`,
+		`# asked \`prefer:newest\` and \`prefer:oldest\`, ${hidden} of them a boundary the code order hides.`,
 	];
 	writeFileSync(OUT, `${[...header, ...entries].join("\n")}\n`);
 	console.log(`Wrote ${OUT} — ${entries.length} entries over ${reordered} dates, largest batch ${maxBatch}`);
