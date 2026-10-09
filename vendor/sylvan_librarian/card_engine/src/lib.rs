@@ -11442,6 +11442,58 @@ fn mode_from_unique(unique: &str) -> Mode {
     }
 }
 
+/// `prefer:oldest` / `prefer:newest` as one exact number: the date, then the tiebreak
+/// api.scryfall.com breaks a date with (LOCAL PATCH, Cloudflare port). Larger is NEWER; `Oldest`
+/// negates it.
+///
+/// The date alone left every printing of one release tied, and the tie fell to store order — the
+/// card's default printing. Scryfall's is not that: `e:fin t:god prefer:oldest` answers the
+/// borderless fin/324 and fin/336 where the default printings are fin/2 and fin/128. Measured
+/// 2026-10-08 over `g:hob`, `g:war`, `g:fic`, `g:snc` and `g:ecc` under both prefers, every card
+/// whose extreme date holds two or more printings (1,674 picks):
+///
+/// ```text
+/// prefer:oldest   released_at ASC,  release batch ASC,  set code ASC, scryfall id ASC   850 of 851
+/// prefer:newest   released_at DESC, release batch DESC, set code ASC, scryfall id ASC   823 of 823
+/// ```
+///
+/// — the set order `order=released` uses (`release_set_key`: the measured batch, then the code),
+/// with the batch following the direction and the code not, and the SMALLEST Scryfall id inside
+/// one set: Ultima, Origin of Oblivion's fin printings are fin/2 `d55a…`, fin/324 `2ac1…` and
+/// fin/421 `e6e2…`, and both prefers answer fin/324. With the prerelease promo in scope
+/// (`pfin`, batch 1 of that date) `oldest` still answers fin/324 and `newest` answers pfin/2s.
+/// Store order, which is what the date alone left the tie to, agreed on 644 of those 1,674; the
+/// id alone on 1,336.
+///
+/// PACKED so an f64 holds it exactly: the date as `released_sort_ord` (under 2^20), the set key
+/// (16 bits) and the printing's id RANK among its card's printings of that date and set (11 bits;
+/// a card has at most a few). The rank is a scan of `siblings` per printing, paid only under these
+/// two prefers. A missing date keeps the side it had: last for `oldest`, last for `newest`.
+fn dated_prefer_key(p: &APrinting, siblings: &[APrinting], newest: bool) -> f64 {
+    const ID_RANKS: u32 = 1 << 11;
+    let date = p.released_at_int.as_ref().map(|v| u32::from(*v));
+    // `oldest` negates the key, so its missing date must be the LARGEST; `newest`'s the smallest.
+    let ord = date.map_or(if newest { 0 } else { (1 << 21) - 1 }, released_sort_ord);
+    let set_key = u32::from(u16::from(p.release_set_key));
+    let (batch, code) = (set_key >> RELEASE_KEY_CODE_BITS, set_key & ((1 << RELEASE_KEY_CODE_BITS) - 1));
+    // Newest: the later batch first, and inside it the code still ascending.
+    let set = if newest { (batch << RELEASE_KEY_CODE_BITS) | (((1 << RELEASE_KEY_CODE_BITS) - 1) - code) } else { set_key };
+    let id = u128::from(p.scryfall_id);
+    let smaller = siblings
+        .iter()
+        .filter(|s| {
+            s.released_at_int.as_ref().map(|v| u32::from(*v)) == date
+                && u16::from(s.release_set_key) == u16::from(p.release_set_key)
+                && u128::from(s.scryfall_id) < id
+        })
+        .count() as u32;
+    let id_rank = smaller.min(ID_RANKS - 1);
+    // The smallest id wins under BOTH prefers: rank 0 is the largest key for `newest` and, once
+    // negated, must be the largest for `oldest` too.
+    let id_key = if newest { ID_RANKS - 1 - id_rank } else { id_rank };
+    (f64::from(ord) * 65536.0 + f64::from(set)) * f64::from(ID_RANKS) + f64::from(id_key)
+}
+
 /// Prefer score for one printing of a card; higher wins, and selection uses a
 /// strict > so the first-in-store-order printing wins ties (matching the tie
 /// behavior of the dedup paths this replaced).
@@ -11459,8 +11511,8 @@ fn prefer_score(card: &AOracleCard, p: &APrinting, prefer: Prefer, strings: &ASt
     let default_score = || p.prefer_score.as_ref().map(|v| f32::from(*v)).unwrap_or(0.0) as f64;
     let class_score = |member: bool| if member { CLASS_BONUS + default_score() } else { default_score() };
     match prefer {
-        Prefer::Oldest  => -(p.released_at_int.as_ref().map(|v| u32::from(*v)).unwrap_or(99_999_999) as f64),
-        Prefer::Newest  => p.released_at_int.as_ref().map(|v| u32::from(*v)).unwrap_or(0) as f64,
+        Prefer::Oldest  => -dated_prefer_key(p, siblings, false),
+        Prefer::Newest  => dated_prefer_key(p, siblings, true),
         // The `*Low` arms negate, so a MISSING price scores -inf and loses to every priced
         // printing — a group with any priced printing is represented by one, and a group with
         // none keeps its first-in-store-order (highest `prefer_score`) printing.
