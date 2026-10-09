@@ -265,8 +265,8 @@ export interface EngineHandle {
 	exact_card_by_name(folded: string, setCode: string, fieldsJson: string): string;
 	exact_name_rank(folded: string, setCode: string): string;
 	exact_name_probe(folded: string, setCode: string, fieldsJson: string): string;
-	collection_cards_by_names(identifiersJson: string, fieldsJson: string, prefer: string, scopeJson: string): string;
-	collection_name_ranks(identifiersJson: string, prefer: string, scopeJson: string): string;
+	collection_cards_by_names(identifiersJson: string, fieldsJson: string): string;
+	collection_name_ranks(identifiersJson: string): string;
 	collection_batch(requestJson: string, fieldsJson: string, baseUrl: string): Uint8Array;
 	card_by_illustration_id(illustrationId: string, fieldsJson: string): string;
 	cards_containing_all_words(wordsJson: string, setCode: string, limit: number, fieldsJson: string): string;

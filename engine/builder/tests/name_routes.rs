@@ -11,9 +11,8 @@
 //!
 //!   * every distinct name the corpus carries — whole, face and flavor, and the face-level flavor
 //!     names' join (backlog n13), every row, canonical or not — and its collated spelling, each ×
-//!     {no set, a set it is printed in, some other set}, for `exact=` and for a collection `{name}`
-//!     (with and without a `?q=` scope); every face-level join, asked whole, must be answered by
-//!     ONE partition;
+//!     {no set, a set it is printed in, some other set}, for `exact=` and for a collection `{name}`;
+//!     every face-level join, asked whole, must be answered by ONE partition;
 //!   * 5,000 misspellings, under EVERY hint the filter could read for a key it never held (none,
 //!     sole p and served s for every p and s), because a missing key reads an arbitrary byte;
 //!   * the direct invariants underneath: a partition that ranks a name emitted its key, one that
@@ -32,7 +31,7 @@
 use std::collections::{HashMap, HashSet};
 use std::io::{BufRead, Write};
 
-use card_engine::{fnv1a64_oracle_id, BufferStore, CollectionScope, QueryOptions};
+use card_engine::{fnv1a64_oracle_id, BufferStore, QueryOptions};
 use serde_json::{Map, Value};
 use sylvan_store_builder::transform::{face_flavor_name_folded, name_routing_keys_of};
 
@@ -353,13 +352,12 @@ fn name_routes_match_the_all_partition_merge() {
 
     // ── every partition's replies, one thread per partition ──────────────────
     let started = std::time::Instant::now();
-    let scope = CollectionScope { prefer: "newest".to_owned(), filter_tree: None };
-    type PartitionReplies = (Vec<Reply>, Vec<Reply>, Vec<Reply>, Vec<Reply>);
+    type PartitionReplies = (Vec<Reply>, Vec<Reply>, Vec<Reply>);
     let replies: Vec<PartitionReplies> = std::thread::scope(|s| {
         let handles: Vec<_> = stores
             .iter()
             .map(|store| {
-                let (cases, misspelled, scope) = (&cases, &misspelled, &scope);
+                let (cases, misspelled) = (&cases, &misspelled);
                 s.spawn(move || {
                     let present = |needle: &str| store.exact_name_rank(needle, None).is_some();
                     let exact = |(needle, set): &(String, Option<String>)| {
@@ -369,12 +367,11 @@ fn name_routes_match_the_all_partition_merge() {
                         let present = rank.is_some() || (set.is_some() && present(needle));
                         Reply { rank, present }
                     };
-                    let collection = |scope: Option<&CollectionScope>| {
+                    let collection = || {
                         let idents: Vec<(&str, Option<&str>)> =
                             cases.iter().map(|(n, s)| (n.as_str(), s.as_deref())).collect();
                         store
-                            .collection_name_ranks(&idents, scope)
-                            .unwrap()
+                            .collection_name_ranks(&idents)
                             .into_iter()
                             .zip(cases)
                             .map(|(rank, (needle, _))| {
@@ -385,8 +382,7 @@ fn name_routes_match_the_all_partition_merge() {
                     };
                     (
                         cases.iter().map(exact).collect(),
-                        collection(None),
-                        collection(Some(scope)),
+                        collection(),
                         misspelled.iter().map(exact).collect(),
                     )
                 })
@@ -402,13 +398,12 @@ fn name_routes_match_the_all_partition_merge() {
         replies.iter().map(|r| pick(r)[i].clone()).collect()
     };
     let mut mismatches: Vec<String> = Vec::new();
-    let mut single = [0usize; 3];
+    let mut single = [0usize; 2];
     // What the served route's rule before x26 (a served reply settles) would have settled, for the
     // price of the tier rule — and how many of those it would have answered WRONG.
-    let (mut untiered, mut untiered_wrong) = ([0usize; 3], [0usize; 3]);
+    let (mut untiered, mut untiered_wrong) = ([0usize; 2], [0usize; 2]);
     let mut face_settled = 0usize;
-    let surfaces: [(&str, Pick); 3] =
-        [("exact", |r| &r.0), ("collection", |r| &r.1), ("collection+scope", |r| &r.2)];
+    let surfaces: [(&str, Pick); 2] = [("exact", |r| &r.0), ("collection", |r| &r.1)];
     for (i, (needle, set)) in cases.iter().enumerate() {
         let hint = hint_of(needle);
         let key_needle = router_needle(needle);
@@ -464,7 +459,7 @@ fn name_routes_match_the_all_partition_merge() {
     }
     let (mut misspelled_checks, mut still_names) = (0usize, 0usize);
     for (i, (needle, set)) in misspelled.iter().enumerate() {
-        let col = column(|r| &r.3, i);
+        let col = column(|r| &r.2, i);
         let merged = merge(&col);
         // An edit that only moves a separator ("canyo ncrab") collates to a REAL key, whose value the
         // filter holds exactly — so only that value can be read for it. Every other misspelling is a
@@ -488,20 +483,18 @@ fn name_routes_match_the_all_partition_merge() {
         }
     }
     eprintln!(
-        "router vs merge: {} cases × 3 surfaces + {misspelled_checks} misspelling×hint checks \
+        "router vs merge: {} cases × 2 surfaces + {misspelled_checks} misspelling×hint checks \
          ({still_names} misspellings still collate to a real name); \
-         settled by one partition: exact {:.1}%, collection {:.1}%, scoped {:.1}%",
+         settled by one partition: exact {:.1}%, collection {:.1}%",
         cases.len(),
         100.0 * single[0] as f64 / cases.len() as f64,
         100.0 * single[1] as f64 / cases.len() as f64,
-        100.0 * single[2] as f64 / cases.len() as f64,
     );
     eprintln!(
         "settled by one partition, cases: {single:?}; the untiered served rule would settle {untiered:?}, \
-         answering {} / {} / {} of them from the wrong partition",
+         answering {} / {} of them from the wrong partition",
         untiered_wrong[0],
         untiered_wrong[1],
-        untiered_wrong[2],
     );
     // Every other one is a mismatch above.
     eprintln!("face flavor keys: {face_settled} of {} answered by one partition", face_needles.len());

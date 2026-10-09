@@ -9,6 +9,7 @@ import {
 	decodeCollectionPacket,
 } from "../../src/engine/collection-batch";
 import { RemoteEngine } from "../../src/engine/remote-engine";
+import { currentShardWidth } from "../../src/engine/shard-controller";
 import type { CollectionBatch } from "../../src/engine/types";
 import { collectionList } from "../../src/routes/scryfall-compat/objects";
 import { scryfallCollectionJson, scryfallJson, stringifyScryfall } from "../../src/routes/scryfall-compat/respond";
@@ -118,6 +119,9 @@ describe("RemoteEngine's batch keeps the RPC's argument positions across the `?q
 	// third argument as a scope and the fourth as the shard count, so a shard count sent third
 	// would never arrive there, and every collection call would report a width of 1 to the
 	// region's rendezvous for as long as the deploy rolls.
+	//
+	// It is still so one deploy later (the Rust behind the scope went then, the slot did not): the
+	// object on the build before reads the count fourth on any day, so the Worker sends it fourth.
 	test("the third argument is null and the shard count is still the fourth", async () => {
 		const sent: unknown[][] = [];
 		const stub = {
@@ -134,6 +138,19 @@ describe("RemoteEngine's batch keeps the RPC's argument positions across the `?q
 		expect(baseUrl).toBe("https://x");
 		expect(retired).toBeNull();
 		expect(typeof shards).toBe("number");
+	});
+
+	test("NEW ISOLATE, OLD OBJECT: an object reading (batch, baseUrl, retired, reportedShards) is handed the region's width", async () => {
+		// The method as the object on the build before this one declares it, read by position.
+		const read: { retired: unknown; reportedShards: unknown }[] = [];
+		const stub = {
+			scryfallCollectionBatch: async (_batch: unknown, _baseUrl: string, retired: unknown, reportedShards?: number) => {
+				read.push({ retired, reportedShards });
+				return { packet: packetOf([null], ['{"k":"a"}', null, null, null, null]) };
+			},
+		};
+		await new RemoteEngine(stub as never, "wnam").scryfallCollectionBatch(BATCH, "https://x");
+		expect(read).toEqual([{ retired: null, reportedShards: currentShardWidth("wnam") }]);
 	});
 
 	test("the engine's own method takes a batch and a base URL, and a third argument reaches nothing", async () => {

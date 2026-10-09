@@ -17,7 +17,6 @@ import {
 	type KeywordTables,
 	scryfallTermPolicy,
 	scryfallTermPolicyFor,
-	scryfallTermPolicyWithSets,
 } from "../../src/routes/scryfall-compat/query-terms";
 import { NO_SET_GROUPS, type SetGroups, setGroupsOf } from "../../src/routes/scryfall-compat/set-groups";
 import recorded from "../fixtures/set-groups-catalog.json";
@@ -51,7 +50,14 @@ const group = (code: string) => [code, ...(GROUPS.others(code) as string[])].sor
 /** `(e:a or e:b …)`, the list a group is written as. */
 const list = (codes: readonly string[]) => `(${codes.map((code) => `e:${code}`).join(" or ")})`;
 
-const policyFor = (query: string) => scryfallTermPolicyWithSets(query, async () => GROUPS);
+/** The route's policy over this catalog; no query sent through it names a keyword, so those tables are empty. */
+const tablesOver = (setGroups: KeywordTables["setGroups"]): KeywordTables => ({
+	carried: async () => ({}),
+	catalogs: async () => [],
+	setGroups,
+});
+const GROUP_TABLES = tablesOver(async () => GROUPS);
+const policyFor = (query: string) => scryfallTermPolicyFor(query, GROUP_TABLES);
 
 function wire(query: string): string {
 	return canonicalStringify(parseScryfallQueryWithDirectives(query, EMPTY_TAG_ALIASES).tree as FilterValue);
@@ -441,7 +447,7 @@ describe("e:, set:, s: and edition: are untouched", () => {
 		for (const query of QUERIES) {
 			const plain = scryfallTermPolicy(query);
 			expect(plain.asksSets).toBeUndefined();
-			expect(await scryfallTermPolicyWithSets(query, reader)).toEqual(plain);
+			expect(await scryfallTermPolicyFor(query, tablesOver(reader))).toEqual(plain);
 			expect(scryfallTermPolicy(query, { setGroups: GROUPS })).toEqual(plain);
 		}
 		expect(asked).toBe(0);
@@ -511,8 +517,9 @@ describe("the catalog is read only when a g: term needs it", () => {
 			]);
 			expect((await scryfallTermPolicyFor("-g:ecc t:goblin", source)).query).toBe("-cmc<0 t:goblin");
 		}
-		expect((await scryfallTermPolicyWithSets("g:ecc", undefined)).query).toBe("cmc<0");
-		expect((await scryfallTermPolicyWithSets("g:ecc", async () => null)).query).toBe("cmc<0");
+		const unread = tablesOver(async () => null);
+		expect((await scryfallTermPolicyFor("g:ecc", tablesOver(undefined))).query).toBe("cmc<0");
+		expect((await scryfallTermPolicyFor("g:ecc", unread)).query).toBe("cmc<0");
 	});
 });
 

@@ -30,14 +30,7 @@ const TREE_OPTS = {
 
 const decoder = new TextDecoder();
 
-/**
- * The `request_json` argument of `collection_batch`.
- *
- * The engine's entry point still reads two more keys, `prefer` and `scope` — the batch-wide
- * filter and printing preference `?q=` carried while this port had that extension (412ca17b,
- * removed 2026-10-08). Neither is written: absent, both read as "" and the engine resolves every
- * name by its default pick (engine/wasm `parse_scope`), which is the only way a name resolves now.
- */
+/** The `request_json` argument of `collection_batch`. */
 export function collectionBatchRequest(batch: CollectionBatch): string {
 	return JSON.stringify({
 		keys: batch.keys,

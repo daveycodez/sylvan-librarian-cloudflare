@@ -1330,7 +1330,8 @@ export class RemoteEngine implements Engine {
 	/** The one-round collection batch — see Engine.scryfallCollectionBatch. */
 	async scryfallCollectionBatch(batch: CollectionBatch, baseUrl: string): Promise<CollectionBatchAnswer> {
 		// The `null` holds the retired scope's position, so `shards` lands where an engine object on
-		// the build before this one reads it (search-engine-do.ts `scryfallCollectionBatch`).
+		// the build before this one reads it — fourth. It cannot be dropped in one deploy; see
+		// search-engine-do.ts `scryfallCollectionBatch` for the two it takes.
 		const { packet, located, answeredFrom } = await this.searchRpc("scryfallCollectionBatch", (stub, shards) =>
 			stub.scryfallCollectionBatch(batch, baseUrl, null, shards),
 		);

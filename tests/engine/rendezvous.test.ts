@@ -1672,6 +1672,34 @@ describe("a collection batch's route says where the names it did not settle live
 		expect(Object.keys(scoped).sort()).toEqual(Object.keys(bare).sort());
 	});
 
+	test("EITHER BUILD'S ISOLATE: (batch, baseUrl, null, shards) lands its width; a width sent third would not", async () => {
+		// The Worker on the build before this one and the Worker on this one send the same four
+		// arguments, so each object reads its caller's width whichever way the deploy has them paired.
+		collectionPacket = packetOf([null], 1);
+		const batch = { keys: [], trees: [], names: names("nope") };
+		expect((await batchDo().scryfallCollectionBatch(batch, "https://x", null, 4)).shards).toBe(4);
+
+		// Why the slot is still there: a Worker that dropped it would send (batch, baseUrl, shards),
+		// and this object — like the one on the build before — reads the fourth argument. The batch
+		// answers, and the width it reports is 1 whatever the caller holds.
+		const dropped = batchDo() as unknown as {
+			scryfallCollectionBatch(
+				batch: unknown,
+				baseUrl: string,
+				shards: number,
+			): Promise<{ packet: Uint8Array; shards?: number }>;
+		};
+		const reply = await dropped.scryfallCollectionBatch(batch, "https://x", 4);
+		expect(reply.packet).toBe(collectionPacket);
+		expect(reply.shards).toBe(1);
+		// And a `null` where the width is read is a width of 1: what an object that dropped the slot
+		// would make of the third argument this build and the one before it send.
+		const nulled = batchDo() as unknown as {
+			scryfallCollectionBatch(batch: unknown, baseUrl: string, a: null, b: null): Promise<{ shards?: number }>;
+		};
+		expect((await nulled.scryfallCollectionBatch(batch, "https://x", null, null)).shards).toBe(1);
+	});
+
 	test("an unsettled routed name comes back with its holders — none, for a name no card carries", async () => {
 		// Three names; this store is the route of the first two. It ranks `lightning bolt` (settled)
 		// and not `lightnig bolt`, which the filter never held: the index says nobody holds it.

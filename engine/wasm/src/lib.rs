@@ -1012,27 +1012,16 @@ pub fn exact_name_probe(folded: &str, set_code: &str, fields_json: &str) -> Resu
 /// `folded` is lowercased and accent-folded by the caller (foldAccents in src/parser/pystr.ts);
 /// the collating happens in the engine. `set_code` is "" for no set restriction.
 ///
-/// `prefer` and `scope_json` are the batch's `?q=` — its folded prefer (this API's spelling,
-/// "default" for none) and its filter tree as canonical JSON ("" for none); see the engine's
-/// `CollectionScope`.
-/// One call for the WHOLE batch — `identifiers_json` is `[[folded, set_code], …]` — so the scope
-/// is bound once rather than once per identifier (a regex in the scope compiled 75 times was
-/// the difference between 25ms and 165ms on a full batch). Answers a JSON array, a card object or
-/// `null` per identifier, in order.
+/// One call for the WHOLE batch — `identifiers_json` is `[[folded, set_code], …]`. Answers a JSON
+/// array, a card object or `null` per identifier, in order.
 #[wasm_bindgen]
-pub fn collection_cards_by_names(
-    identifiers_json: &str,
-    fields_json: &str,
-    prefer: &str,
-    scope_json: &str,
-) -> Result<String, JsError> {
+pub fn collection_cards_by_names(identifiers_json: &str, fields_json: &str) -> Result<String, JsError> {
     let fields = parse_fields(fields_json)?;
     let idents = parse_identifiers(identifiers_json)?;
-    let scope = parse_scope(prefer, scope_json)?;
     with_store(|store| {
         let borrowed: Vec<(&str, Option<&str>)> =
             idents.iter().map(|(f, s)| (f.as_str(), s.as_deref())).collect();
-        let found = store.collection_cards_by_names(&borrowed, fields, scope.as_ref()).map_err(js_err)?;
+        let found = store.collection_cards_by_names(&borrowed, fields).map_err(js_err)?;
         let out: Vec<serde_json::Value> = found.into_iter().map(|c| c.unwrap_or(serde_json::Value::Null)).collect();
         Ok(serde_json::Value::Array(out).to_string())
     })
@@ -1048,32 +1037,17 @@ fn parse_identifiers(identifiers_json: &str) -> Result<Vec<(String, Option<Strin
         .collect())
 }
 
-/// The wire form of a collection scope, or `None` when the batch sent no `?q=` at all.
-fn parse_scope(prefer: &str, scope_json: &str) -> Result<Option<card_engine::CollectionScope>, JsError> {
-    if scope_json.is_empty() && (prefer.is_empty() || prefer == "default") {
-        return Ok(None);
-    }
-    let filter_tree = if scope_json.is_empty() {
-        None
-    } else {
-        Some(serde_json::from_str(scope_json).map_err(|e| JsError::new(&format!("collection scope is not JSON: {e}")))?)
-    };
-    Ok(Some(card_engine::CollectionScope { prefer: prefer.to_owned(), filter_tree }))
-}
-
 /// How well this partition's best collection-identifier candidate matches, as
 /// `[tier, name, served, tie, score]` or `null` per identifier — the batched twin of `exact_name_rank`, and
-/// there for the same partitioned router. Under a scope the score is the scope's prefer score
-/// and served is always 1 (the scope's pool holds no extras).
+/// there for the same partitioned router.
 #[wasm_bindgen]
-pub fn collection_name_ranks(identifiers_json: &str, prefer: &str, scope_json: &str) -> Result<String, JsError> {
+pub fn collection_name_ranks(identifiers_json: &str) -> Result<String, JsError> {
     let idents = parse_identifiers(identifiers_json)?;
-    let scope = parse_scope(prefer, scope_json)?;
     with_store(|store| {
         let borrowed: Vec<(&str, Option<&str>)> =
             idents.iter().map(|(f, s)| (f.as_str(), s.as_deref())).collect();
-        let ranks = store.collection_name_ranks(&borrowed, scope.as_ref()).map_err(js_err)?;
-        let out: Vec<serde_json::Value> = ranks
+        let out: Vec<serde_json::Value> = store
+            .collection_name_ranks(&borrowed)
             .into_iter()
             .map(|r| match r {
                 Some((tier, name, served, tie, score)) => serde_json::json!([tier, name, served, tie, score]),
@@ -1106,13 +1080,13 @@ pub fn card_by_illustration_id(illustration_id: &str, fields_json: &str) -> Resu
 /// and `collection_cards_by_names` rank by the same `name_best`.
 ///
 /// `request_json` is `{"keys": [...], "trees": [...], "tree_opts": {...}, "names": [[folded,
-/// set], ...], "prefer": "...", "scope": "..."}`:
+/// set], ...]}`:
 ///
 /// - `keys`: `{"kind": "scryfall_id" | "oracle_id" | "illustration_id", "id": "<uuid>"}` or
 ///   `{"kind": "external", "namespace": "mtgo" | "multiverse" | ..., "id": <n>}`. An oracle id
 ///   answers its representative printing, as `/cards/collection` always has.
 /// - `trees`: filter trees as JSON strings, each answered by its first row under `tree_opts`.
-/// - `names`, `prefer`, `scope`: exactly `collection_cards_by_names`'s arguments.
+/// - `names`: exactly `collection_cards_by_names`'s identifiers.
 ///
 /// The answer is little-endian bytes:
 ///
@@ -1137,8 +1111,6 @@ pub fn collection_batch(request_json: &str, fields_json: &str, base_url: &str) -
             (at(0).to_owned(), if at(1).is_empty() { None } else { Some(at(1).to_owned()) })
         })
         .collect();
-    let text = |name: &str| req.get(name).and_then(serde_json::Value::as_str).unwrap_or_default();
-    let scope = parse_scope(text("prefer"), text("scope"))?;
     let tree_opts = match req.get("tree_opts") {
         Some(opts) if !trees.is_empty() => Some(QueryOptions::from_json_str(&opts.to_string()).map_err(js_err)?),
         _ => None,
@@ -1150,8 +1122,8 @@ pub fn collection_batch(request_json: &str, fields_json: &str, base_url: &str) -
             (Vec::new(), Vec::new())
         } else {
             (
-                store.collection_name_ranks(&names, scope.as_ref()).map_err(js_err)?,
-                store.collection_cards_by_names(&names, fields.clone(), scope.as_ref()).map_err(js_err)?,
+                store.collection_name_ranks(&names),
+                store.collection_cards_by_names(&names, fields.clone()).map_err(js_err)?,
             )
         };
         let rank_list: Vec<serde_json::Value> = ranks
@@ -1162,7 +1134,7 @@ pub fn collection_batch(request_json: &str, fields_json: &str, base_url: &str) -
             })
             .collect();
         // `"presence": true` (the name route, backlog n6) widens the header to `{"ranks": [...],
-        // "present": [...]}`: per name, whether this store holds it AT ALL — no set, no scope, and
+        // "present": [...]}`: per name, whether this store holds it AT ALL — no set, and
         // `exact=`'s wider name rule, i.e. `exact_name_rank(folded, None)` — computed only for a
         // name the restricted scan missed. See `exact_name_probe` for why a routed miss needs it.
         let header = if req.get("presence").and_then(serde_json::Value::as_bool).unwrap_or(false) {

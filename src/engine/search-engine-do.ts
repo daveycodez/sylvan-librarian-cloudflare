@@ -878,15 +878,20 @@ export class SearchEngine extends DurableObject<Env> {
 	 * `reportedShards`. Arguments cross the RPC by position, and a deploy replaces the Workers and
 	 * the engine objects separately, so for a while each build calls the other. Were the slot
 	 * dropped, the BATCH would still answer either way round, and the shard count would not arrive:
-	 * a Worker on the build before would land its scope (`null`, nearly always) in `reportedShards`
-	 * here, and a Worker on this build its shard count in the older object's scope, where nothing
-	 * reads a number — so every collection call across the deploy would report a width of 1 to the
-	 * rendezvous (`instrumented`), and a region whose wider width only those calls were holding up
-	 * would see it age out (WIDTH_TTL_MS). So the caller
-	 * still sends `null` there (RemoteEngine.scryfallCollectionBatch) and this method still takes
-	 * it, and reads nothing from it: a scope an older Worker sends is ignored, which is the route's
-	 * contract now. The slot can go once no build that reads it is running anywhere — any later
-	 * deploy.
+	 * a Worker on the build before sends `(batch, baseUrl, null, shards)` and would land its `null`
+	 * in `reportedShards` here, and a Worker on this build would send `(batch, baseUrl, shards)` and
+	 * land its shard count in the older object's third position, where nothing reads a number — so
+	 * every collection call across the deploy would report a width of 1 to the rendezvous
+	 * (`instrumented`), and a region whose wider width only those calls were holding up would see it
+	 * age out (WIDTH_TTL_MS). So the caller still sends `null` there
+	 * (RemoteEngine.scryfallCollectionBatch) and this method still takes it, and reads nothing from
+	 * it.
+	 *
+	 * NO SINGLE DEPLOY CAN DROP IT, however long this shape has been live: the build before any
+	 * deploy reads the count fourth, so the misreading above is the same on every later day. It
+	 * takes two. First an object that reads the count from whichever of the third and fourth
+	 * arguments is a number, under a Worker that still sends `null` third; then, once no object
+	 * older than that is running, a Worker that sends the count third.
 	 */
 	async scryfallCollectionBatch(
 		batch: CollectionBatch,

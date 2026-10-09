@@ -92,8 +92,8 @@ declare module "sylvan-engine-wasm" {
 		exact_card_by_name(folded: string, setCode: string, fieldsJson: string): string;
 		exact_name_rank(folded: string, setCode: string): string;
 		exact_name_probe(folded: string, setCode: string, fieldsJson: string): string;
-		collection_cards_by_names(identifiersJson: string, fieldsJson: string, prefer: string, scopeJson: string): string;
-		collection_name_ranks(identifiersJson: string, prefer: string, scopeJson: string): string;
+		collection_cards_by_names(identifiersJson: string, fieldsJson: string): string;
+		collection_name_ranks(identifiersJson: string): string;
 		collection_batch(requestJson: string, fieldsJson: string, baseUrl: string): Uint8Array;
 		card_by_illustration_id(illustrationId: string, fieldsJson: string): string;
 		cards_containing_all_words(wordsJson: string, setCode: string, limit: number, fieldsJson: string): string;
@@ -181,14 +181,9 @@ declare module "sylvan-engine-wasm" {
 	 * The best printing a COLLECTION IDENTIFIER's `name` names, or JSON `null` — a different key
 	 * rule from `exact_card_by_name`'s, not a different caller. Same needle shape.
 	 */
-	export function collection_cards_by_names(
-		identifiersJson: string,
-		fieldsJson: string,
-		prefer: string,
-		scopeJson: string,
-	): string;
+	export function collection_cards_by_names(identifiersJson: string, fieldsJson: string): string;
 	/** `[tier, score]` for this store's best collection-identifier candidate, or `null`. */
-	export function collection_name_ranks(identifiersJson: string, prefer: string, scopeJson: string): string;
+	export function collection_name_ranks(identifiersJson: string): string;
 	/**
 	 * A whole `POST /cards/collection` batch — keys, trees and names — in one call, as a packet of
 	 * finished card objects (see src/engine/collection-batch.ts for the layout).

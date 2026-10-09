@@ -4349,22 +4349,10 @@ export interface KeywordTables {
 export type SetGroupsReader = () => Promise<SetGroups | null>;
 
 /**
- * `scryfallTermPolicy`, with `g:` / `group:` read against the set catalog — see GROUP_KEYWORDS.
- *
- * A query without the term costs exactly what `scryfallTermPolicy` costs and reads nothing; one
- * with it reads the catalog (memoized per isolate by its reader) and runs the policy twice. A
- * catalog that cannot say is one that lists no set: the term matches nothing, as an unknown code
- * does, and is never left for a parser that does not know the keyword.
+ * What a reader's catalog says. One that cannot say is one that lists no set: a `g:` term then
+ * matches nothing, as an unknown code does, and is never left for a parser that does not know the
+ * keyword.
  */
-export async function scryfallTermPolicyWithSets(
-	rawQuery: string,
-	setGroups: SetGroupsReader | undefined,
-): Promise<TermPolicyResult> {
-	const policy = scryfallTermPolicy(rawQuery);
-	if (policy.asksSets === undefined) return policy;
-	return scryfallTermPolicy(rawQuery, { setGroups: await readSetGroups(setGroups) });
-}
-
 async function readSetGroups(reader: SetGroupsReader | undefined): Promise<SetGroups> {
 	return (reader === undefined ? null : await reader()) ?? NO_SET_GROUPS;
 }
@@ -4380,9 +4368,9 @@ const CARRIED_KEYWORDS = new WeakMap<Record<string, number>, ReadonlyMap<string,
  * nothing. One with a term whose value a card carries asks `carried` (cached per isolate and
  * colo) and runs the policy twice; only a value no card carries asks for the catalogs.
  *
- * `g:` / `group:` is read the same way and first, against the set catalog — see GROUP_KEYWORDS
- * and `scryfallTermPolicyWithSets`. A query with neither keyword asks nothing, and costs the one
- * extra test of the result that says so.
+ * `g:` / `group:` is read the same way and first, against the set catalog (memoized per isolate
+ * by its reader) — see GROUP_KEYWORDS. A query with neither keyword asks nothing, and costs the
+ * one extra test of the result that says so.
  */
 export async function scryfallTermPolicyFor(rawQuery: string, tables: KeywordTables): Promise<TermPolicyResult> {
 	let policy = scryfallTermPolicy(rawQuery);
