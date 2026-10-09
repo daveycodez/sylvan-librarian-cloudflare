@@ -3653,6 +3653,138 @@
 			"method": "GET",
 			"path": "/cards/search?q=in%3A%22kamigawa%3A+neon+dynasty%22",
 			"note": "2026-10-08. A 404; `in:\"kamigawa neon dynasty\"` is `in:neo`'s 5,732."
+		},
+		{
+			"name": "prints-a-promo-follows-every-set-printing",
+			"method": "GET",
+			"path": "/cards/search?q=%21%22Neheb%2C+Dreadhorde+Champion%22&unique=prints",
+			"note": "2026-10-08. dmc/125, war/140, sld/857, pwar/140★, pwar/140s: a card's printings are the default tier newest first, THEN every promo and treatment newest first. Until generation 72 the 2021 resale promo pwar/140★ sat ahead of war/140, one date-descending list."
+		},
+		{
+			"name": "cards-representative-is-the-set-printing-not-the-later-promo",
+			"method": "GET",
+			"path": "/cards/search?q=g%3Awar+t%3Alegendary+t%3Acreature",
+			"note": "2026-10-08. Each card's own best printing inside War of the Spark's release group: Neheb is war/140, not the pwar/140★ a date-first order answered. All 98 `g:war` cards with two or more rows replay exactly."
+		},
+		{
+			"name": "prints-one-date-by-release-batch-then-code-then-number",
+			"method": "GET",
+			"path": "/cards/search?q=%21%22Ultima%22&unique=prints",
+			"note": "2026-10-08. fin/38, pfin/38s, fin/328, pss5/1 — four printings of 2025-06-13. `pfin` is the later release batch of that date, so the promo's set leads fin's borderless and Standard Showdown's; the collector number alone put pss5/1 second."
+		},
+		{
+			"name": "cards-representative-among-sibling-sets-of-one-date",
+			"method": "GET",
+			"path": "/cards/search?q=%21%22Ultima%22+-e%3Afin",
+			"note": "2026-10-08. pfin/38s, where the store answered pss5/1."
+		},
+		{
+			"name": "prints-a-measured-second-tier-set",
+			"method": "GET",
+			"path": "/cards/search?q=%21%22Abrade%22+%28e%3Atdc+or+e%3Ablc+or+e%3Ainr+or+e%3Aplst+or+e%3A2xm+or+e%3Ahou+or+e%3Aphou+or+e%3Afdc%29&unique=prints",
+			"note": "2026-10-08. tdc/203, inr/139, 2xm/114, hou/83, fdc/136, inr/311, blc/191, plst/2XM-114, plst/HOU-83, phou/83. Foundations Commander's printing is the newest of the ten and the fifth returned: the tier of a set's plain printings is Scryfall's own record (blc/191 and tdc/203 are the same shape in different tiers), so it is a measured per-set table."
+		},
+		{
+			"name": "prints-in-japanese-nothing-is-default-tier",
+			"method": "GET",
+			"path": "/cards/search?q=%21%22Counterspell%22+lang%3Aja&unique=prints",
+			"note": "2026-10-08. Newest first from mar/9: the default tier is English only, so under one other language the order is the date alone."
+		},
+		{
+			"name": "cards-japanese-representative-is-the-newest-japanese",
+			"method": "GET",
+			"path": "/cards/search?q=%21%22Counterspell%22+lang%3Aja",
+			"note": "2026-10-08. mar/9 in Japanese, where the slot's shared rank answered the Japanese dsc/114 — the English default's translation."
+		},
+		{
+			"name": "named-fuzzy-printed-japanese-name",
+			"method": "GET",
+			"path": "/cards/named?fuzzy=%E5%AF%BE%E6%8A%97%E5%91%AA%E6%96%87",
+			"note": "2026-10-08. The Japanese mar/9, by the same order: ten printed names in five languages each answered the newest printing in that language."
+		},
+		{
+			"name": "prints-a-hidden-release-batch-collectors-editions",
+			"method": "GET",
+			"path": "/cards/search?q=%21%22Counterspell%22+%28e%3Aced+or+e%3Acei%29&unique=prints",
+			"note": "2026-10-08. cei/55, then ced/55. Both are 1993-12-10 and `cei` is the later batch, a boundary the ascending `order=released` cannot show because the codes are in order either way; release_batches.tsv finds it by asking both prefers (generation 73)."
+		},
+		{
+			"name": "prefer-oldest-inside-one-set-is-the-smallest-id",
+			"method": "GET",
+			"path": "/cards/search?q=e%3Afin+t%3Agod+prefer%3Aoldest",
+			"note": "2026-10-08. 3: fin/324, fin/39, fin/336. The first and last are borderless printings — the smallest Scryfall ids of their cards in fin — where the tie fell to the default printings fin/2 and fin/128."
+		},
+		{
+			"name": "prefer-newest-inside-one-set-is-the-smallest-id",
+			"method": "GET",
+			"path": "/cards/search?q=e%3Afin+t%3Agod+prefer%3Anewest",
+			"note": "2026-10-08. The same three rows: inside one batch both prefers keep the lowest id."
+		},
+		{
+			"name": "prefer-newest-across-two-batches-of-a-date",
+			"method": "GET",
+			"path": "/cards/search?q=%21%22Ultima%2C+Origin+of+Oblivion%22+prefer%3Anewest",
+			"note": "2026-10-08. pfin/2s: the prerelease promos are the later batch of 2025-06-13."
+		},
+		{
+			"name": "prefer-oldest-across-two-batches-of-a-date",
+			"method": "GET",
+			"path": "/cards/search?q=%21%22Ultima%2C+Origin+of+Oblivion%22+prefer%3Aoldest",
+			"note": "2026-10-08. fin/324: the earlier batch, and its smallest id."
+		},
+		{
+			"name": "prefer-newest-one-batch-two-sets-the-id-not-the-code",
+			"method": "GET",
+			"path": "/cards/search?q=%28e%3Ablc+or+e%3Amb2%29+in%3Ablc+in%3Amb2+date%3D2024-08-02+prefer%3Anewest",
+			"note": "2026-10-08. 14 cards both sets print on one date in one batch: mb2 for 8 and blc for 6, the lowest Scryfall id each time (Path to Exile mb2/15, Swords to Plowshares blc/109). The set code is not a key."
+		},
+		{
+			"name": "prefer-oldest-one-batch-two-sets-the-id-not-the-code",
+			"method": "GET",
+			"path": "/cards/search?q=%28e%3Ablc+or+e%3Amb2%29+in%3Ablc+in%3Amb2+date%3D2024-08-02+prefer%3Aoldest",
+			"note": "2026-10-08. The same 14 rows as under `prefer:newest`, which is what one batch looks like."
+		},
+		{
+			"name": "prefer-newest-across-a-hidden-batch",
+			"method": "GET",
+			"path": "/cards/search?q=%28e%3Aced+or+e%3Acei%29+t%3Ainstant+prefer%3Anewest",
+			"note": "2026-10-08. Every one in cei: the later batch of 1993-12-10."
+		},
+		{
+			"name": "prefer-oldest-across-a-hidden-batch",
+			"method": "GET",
+			"path": "/cards/search?q=%28e%3Aced+or+e%3Acei%29+t%3Ainstant+prefer%3Aoldest",
+			"note": "2026-10-08. Every one in ced."
+		},
+		{
+			"name": "unique-art-is-the-artworks-first-printing",
+			"method": "GET",
+			"path": "/cards/search?q=%21%22Angel+of+the+Dawn%22&unique=art",
+			"note": "2026-10-08. m19/7, the painting's first printing, where the card's default printing cmr/6 answered. Across dates the oldest printing of an artwork represents it (878 of 983 groups over six scopes, 811 before; the rest tie inside one date, where Scryfall's pick follows nothing a card object carries)."
+		},
+		{
+			"name": "unique-art-first-printing-in-another-language",
+			"method": "GET",
+			"path": "/cards/search?q=%21%22Ajani%2C+the+Greathearted%22+lang%3Aja&unique=art",
+			"note": "2026-10-08. war/184★ for the Japanese alternate art, not the prerelease promo pwar/184s★: of one date, the printing that is not a promo."
+		},
+		{
+			"name": "order-color-is-the-front-faces-combination",
+			"method": "GET",
+			"path": "/cards/search?q=g%3Aecc&order=color",
+			"note": "2026-10-08. 534 rows: coloured non-lands by the front face's colour combination in the game's printed sequence (W U B R G, WU UB BR RG GW, WB UR BG RW GU, the triples, four, five), then colourless non-lands by identity, then lands by identity, names ascending inside each. 515 of the 534 were in another position."
+		},
+		{
+			"name": "order-color-descending-keeps-names-ascending",
+			"method": "GET",
+			"path": "/cards/search?q=g%3Aecc&order=color&dir=desc",
+			"note": "2026-10-08. The blocks reversed and the names inside each still ascending."
+		},
+		{
+			"name": "order-color-transforming-card-is-its-front-face",
+			"method": "GET",
+			"path": "/cards/search?q=g%3Aecl+is%3Atransform&order=color",
+			"note": "2026-10-08. A transforming card sorts by its front face's colours, not the union of both faces."
 		}
 	]
 }
