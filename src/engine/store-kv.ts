@@ -2201,8 +2201,36 @@ export async function gzipBytes(bytes: Uint8Array): Promise<Uint8Array> {
  *      (`is-lists:state`), which starts over from it; its nightly request count does not move
  *      (three pages of `misprint` either way, and a set's cost was already reckoned from
  *      `card_count`, which counts variations).
+ *
+ *   89 (2026-10-09): A PRINTING IS RANKED IN THE TIER SCRYFALL RECORDS FOR IT. Where a variation
+ *      sits in its card's own order had never been read — a search hides it. Read with
+ *      `include_variations=true` on the 89 cards that have one, a variation sits beside its plain
+ *      twin, as it was already ranked here, in all but three: Zilortha, Strength Incarnate is
+ *      cmm/366, iko/275y, cmm/599, iko/275 (here iko/275y third), Grafted Identity mid/57, mid/57†
+ *      and then five more (here mid/57† sixth), Supportive Parents spm/119, om1/117†, om1/117 (here
+ *      the last two the other way round). No rule about variations is behind the three: each is
+ *      a printing Scryfall keeps in ANOTHER TIER than its shape and its set say — and that is what
+ *      `is:covered` records and `is_lists.tsv` holds (generation 75), which the rank did not read
+ *      ("the rank a printing is stored with still comes from `print_tier` alone").
+ *
+ *      It reads it now (`ranks::recorded_tier`): an English printing the table lists not covered
+ *      is ranked in the default tier, one it lists covered in the second. Of the 56 listed rows
+ *      whose tier a sequence proves, 33 of 33 and 13 of 13 — dmr/300-314, Jumpstart 2022's Rhystic
+ *      Study, m3c/315 and lcc/317, The Lord of the Rings' ltr/262-271 — and the 10 of an
+ *      ALCHEMY set are listed not covered and sit in the second run all the same, so those keep
+ *      the rule, as does everything the rule puts last (planes, schemes and vanguard cards are
+ *      oversized and not covered) and every row that is not English. 28,049 of the 28,086 proven
+ *      English rows are in their tier, where the rule alone has 28,003; 851 English rows of 762
+ *      cards move, 642 into the default tier and 209 out of it. On the 89 cards, 86 whole
+ *      sequences are Scryfall's (82), the other three wrong where no variation is (Island's
+ *      Japanese sld/64, Shivan Dragon's p30h/4, Storm Crow's Alchemy ysos/31).
+ *
+ *      GENERATION-ONLY: `prefer_score` is a stored value and the order the printings are stored
+ *      in follows it, as in generation 72. No layout, no format version, neither row touched,
+ *      nothing read at query time. The table read is the one in force, so a set the nightly has
+ *      read is ranked by what it read.
  */
-export const STORE_CONTENT_GENERATION = 88;
+export const STORE_CONTENT_GENERATION = 89;
 
 /**
  * Chunk key for a store. Keyed by store_key, so publishes never collide.

@@ -1753,6 +1753,12 @@ fn list_verdicts<'a>(r: &'a RowDraft, more_oracle_ids: impl Iterator<Item = &'a 
     )
 }
 
+/// Scryfall's own record of whether a printing is `is:covered`, where the measured table holds
+/// one for it: `None` is "the tier rule decides". What [`crate::ranks::recorded_tier`] ranks by.
+pub(crate) fn covered_verdict(r: &RowDraft) -> Option<bool> {
+    list_verdicts(r, std::iter::empty()).of(COVERED_IS_TAG)
+}
+
 /// The tags a printing carries from Scryfall's own record ([`crate::is_lists`]): the six plain
 /// lists, and `is:covered`, which is the print tier wherever the table does not say otherwise.
 /// Read off the finished draft, because the tier is ([`crate::ranks::print_tier`]), and off the

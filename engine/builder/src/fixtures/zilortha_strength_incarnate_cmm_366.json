@@ -1,0 +1,145 @@
+{
+ "artist": "Chase Stone",
+ "artist_ids": [
+  "2d753f61-5f5b-468e-97ea-8e0fdd347340"
+ ],
+ "booster": true,
+ "border_color": "black",
+ "card_back_id": "0aeebaf5-8c7d-4636-9e82-8c27447861f7",
+ "cardmarket_id": 722519,
+ "cmc": 5.0,
+ "collector_number": "366",
+ "color_identity": [
+  "G",
+  "R"
+ ],
+ "colors": [
+  "G",
+  "R"
+ ],
+ "digital": false,
+ "edhrec_rank": 8911,
+ "finishes": [
+  "nonfoil",
+  "foil"
+ ],
+ "flavor_text": "\"Many thought they knew its weakness. They are dead.\"\n—Kelsien, the Plague",
+ "foil": true,
+ "frame": "2015",
+ "frame_effects": [
+  "legendary"
+ ],
+ "full_art": false,
+ "game_changer": false,
+ "games": [
+  "mtgo",
+  "paper"
+ ],
+ "highres_image": true,
+ "id": "84e4e130-df21-4491-97c3-1b643d7e57ef",
+ "illustration_id": "9c23e9b6-2be4-4de8-83e4-c9280f1d4451",
+ "image_status": "highres_scan",
+ "image_updated_at": "2026-07-13T04:06:46Z",
+ "image_uris": {
+  "art": "https://cards.scryfall.io/art/front/8/4/84e4e130-df21-4491-97c3-1b643d7e57ef.webp?1783915606",
+  "art_crop": "https://cards.scryfall.io/art_crop/front/8/4/84e4e130-df21-4491-97c3-1b643d7e57ef.jpg?1783915606",
+  "border_crop": "https://cards.scryfall.io/border_crop/front/8/4/84e4e130-df21-4491-97c3-1b643d7e57ef.jpg?1783915606",
+  "crop": "https://cards.scryfall.io/crop/front/8/4/84e4e130-df21-4491-97c3-1b643d7e57ef.webp?1783915606",
+  "display": "https://cards.scryfall.io/display/front/8/4/84e4e130-df21-4491-97c3-1b643d7e57ef.webp?1783915606",
+  "grid": "https://cards.scryfall.io/grid/front/8/4/84e4e130-df21-4491-97c3-1b643d7e57ef.webp?1783915606",
+  "large": "https://cards.scryfall.io/large/front/8/4/84e4e130-df21-4491-97c3-1b643d7e57ef.jpg?1783915606",
+  "normal": "https://cards.scryfall.io/normal/front/8/4/84e4e130-df21-4491-97c3-1b643d7e57ef.jpg?1783915606",
+  "png": "https://cards.scryfall.io/png/front/8/4/84e4e130-df21-4491-97c3-1b643d7e57ef.png?1783915606",
+  "small": "https://cards.scryfall.io/small/front/8/4/84e4e130-df21-4491-97c3-1b643d7e57ef.jpg?1783915606",
+  "thumb": "https://cards.scryfall.io/thumb/front/8/4/84e4e130-df21-4491-97c3-1b643d7e57ef.webp?1783915606"
+ },
+ "keywords": [
+  "Trample"
+ ],
+ "lang": "en",
+ "layout": "normal",
+ "legalities": {
+  "alchemy": "not_legal",
+  "brawl": "legal",
+  "commander": "legal",
+  "competitivebrawl": "legal",
+  "duel": "legal",
+  "future": "not_legal",
+  "gladiator": "legal",
+  "historic": "legal",
+  "legacy": "legal",
+  "modern": "legal",
+  "oathbreaker": "legal",
+  "oldschool": "not_legal",
+  "pauper": "not_legal",
+  "paupercommander": "not_legal",
+  "penny": "not_legal",
+  "pioneer": "legal",
+  "predh": "not_legal",
+  "premodern": "not_legal",
+  "standard": "not_legal",
+  "standardbrawl": "not_legal",
+  "timeless": "legal",
+  "tlr": "not_legal",
+  "vintage": "legal"
+ },
+ "mana_cost": "{3}{R}{G}",
+ "mtgo_id": 114961,
+ "multiverse_ids": [
+  627830
+ ],
+ "name": "Zilortha, Strength Incarnate",
+ "nonfoil": true,
+ "object": "card",
+ "oracle_id": "2dba8d8d-891e-482e-8014-879f701d0619",
+ "oracle_text": "Trample\nLethal damage dealt to creatures you control is determined by their power rather than their toughness.",
+ "oversized": false,
+ "power": "7",
+ "preview": {
+  "previewed_at": "2023-07-14",
+  "source": "IGN",
+  "source_uri": "https://weibo.com/7494874950/N9PES2RVW"
+ },
+ "prices": {
+  "eur": "0.22",
+  "eur_foil": "0.75",
+  "tix": "0.13",
+  "usd": "0.45",
+  "usd_etched": null,
+  "usd_foil": "0.74"
+ },
+ "prints_search_uri": "https://api.scryfall.com/cards/search?order=released&q=oracleid%3A2dba8d8d-891e-482e-8014-879f701d0619&unique=prints",
+ "promo": false,
+ "purchase_uris": {
+  "cardhoarder": "https://www.cardhoarder.com/cards/114961?affiliate_id=scryfall&ref=card-profile&utm_campaign=affiliate&utm_medium=card&utm_source=scryfall",
+  "cardmarket": "https://www.cardmarket.com/en/Magic/Products?idProduct=722519&referrer=scryfall&utm_campaign=card_prices&utm_medium=text&utm_source=scryfall",
+  "tcgplayer": "https://partner.tcgplayer.com/c/4931599/1830156/21018?subId1=api&u=https%3A%2F%2Fwww.tcgplayer.com%2Fproduct%2F504609%3Fpage%3D1"
+ },
+ "rarity": "rare",
+ "related_uris": {
+  "edhrec": "https://edhrec.com/route/?cc=Zilortha%2C+Strength+Incarnate",
+  "gatherer": "https://gatherer.wizards.com/Pages/Card/Details.aspx?multiverseid=627830&printed=false",
+  "tcgplayer_infinite_articles": "https://partner.tcgplayer.com/c/4931599/1830156/21018?subId1=api&trafcat=tcgplayer.com%2Fsearch%2Farticles&u=https%3A%2F%2Fwww.tcgplayer.com%2Fsearch%2Farticles%3FproductLineName%3Dmagic%26q%3DZilortha%252C%2BStrength%2BIncarnate",
+  "tcgplayer_infinite_decks": "https://partner.tcgplayer.com/c/4931599/1830156/21018?subId1=api&trafcat=tcgplayer.com%2Fsearch%2Fdecks&u=https%3A%2F%2Fwww.tcgplayer.com%2Fsearch%2Fdecks%3FproductLineName%3Dmagic%26q%3DZilortha%252C%2BStrength%2BIncarnate"
+ },
+ "released_at": "2023-08-04",
+ "reprint": true,
+ "reserved": false,
+ "rulings_uri": "https://api.scryfall.com/cards/84e4e130-df21-4491-97c3-1b643d7e57ef/rulings",
+ "scryfall_set_uri": "https://scryfall.com/sets/cmm?utm_source=api",
+ "scryfall_uri": "https://scryfall.com/card/cmm/366/zilortha-strength-incarnate?utm_source=api",
+ "security_stamp": "oval",
+ "set": "cmm",
+ "set_id": "cd05036f-2698-43e6-a48e-5c8d82f0a551",
+ "set_name": "Commander Masters",
+ "set_search_uri": "https://api.scryfall.com/cards/search?order=set&q=e%3Acmm&unique=prints",
+ "set_type": "masters",
+ "set_uri": "https://api.scryfall.com/sets/cd05036f-2698-43e6-a48e-5c8d82f0a551",
+ "story_spotlight": false,
+ "tcgplayer_id": 504609,
+ "textless": false,
+ "toughness": "3",
+ "type_line": "Legendary Creature — Dinosaur",
+ "uri": "https://api.scryfall.com/cards/84e4e130-df21-4491-97c3-1b643d7e57ef",
+ "variation": false
+}

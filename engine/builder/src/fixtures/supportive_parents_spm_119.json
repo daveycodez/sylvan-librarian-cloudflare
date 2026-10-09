@@ -1,0 +1,143 @@
+{
+ "arena_id": 97937,
+ "artist": "Kim Sokol",
+ "artist_ids": [
+  "f2bd4ad3-6359-4592-9b34-90a70cfe1b61"
+ ],
+ "booster": true,
+ "border_color": "black",
+ "card_back_id": "0aeebaf5-8c7d-4636-9e82-8c27447861f7",
+ "cardmarket_id": 846661,
+ "cmc": 3.0,
+ "collector_number": "119",
+ "color_identity": [
+  "G"
+ ],
+ "colors": [
+  "G"
+ ],
+ "digital": false,
+ "edhrec_rank": 11316,
+ "finishes": [
+  "nonfoil",
+  "foil"
+ ],
+ "flavor_text": "\"Te amamos, mijo.\"\n—Rio Morales",
+ "foil": true,
+ "frame": "2015",
+ "full_art": false,
+ "game_changer": false,
+ "games": [
+  "paper",
+  "mtgo",
+  "arena"
+ ],
+ "highres_image": true,
+ "id": "d3fe8a5b-4166-46cc-b910-71cd1a19ae1b",
+ "illustration_id": "f2509a50-e1ae-4b90-b8a4-ed9ac89bbb9a",
+ "image_status": "highres_scan",
+ "image_updated_at": "2026-07-13T01:15:21Z",
+ "image_uris": {
+  "art": "https://cards.scryfall.io/art/front/d/3/d3fe8a5b-4166-46cc-b910-71cd1a19ae1b.webp?1783905321",
+  "art_crop": "https://cards.scryfall.io/art_crop/front/d/3/d3fe8a5b-4166-46cc-b910-71cd1a19ae1b.jpg?1783905321",
+  "border_crop": "https://cards.scryfall.io/border_crop/front/d/3/d3fe8a5b-4166-46cc-b910-71cd1a19ae1b.jpg?1783905321",
+  "crop": "https://cards.scryfall.io/crop/front/d/3/d3fe8a5b-4166-46cc-b910-71cd1a19ae1b.webp?1783905321",
+  "display": "https://cards.scryfall.io/display/front/d/3/d3fe8a5b-4166-46cc-b910-71cd1a19ae1b.webp?1783905321",
+  "grid": "https://cards.scryfall.io/grid/front/d/3/d3fe8a5b-4166-46cc-b910-71cd1a19ae1b.webp?1783905321",
+  "large": "https://cards.scryfall.io/large/front/d/3/d3fe8a5b-4166-46cc-b910-71cd1a19ae1b.jpg?1783905321",
+  "normal": "https://cards.scryfall.io/normal/front/d/3/d3fe8a5b-4166-46cc-b910-71cd1a19ae1b.jpg?1783905321",
+  "png": "https://cards.scryfall.io/png/front/d/3/d3fe8a5b-4166-46cc-b910-71cd1a19ae1b.png?1783905321",
+  "small": "https://cards.scryfall.io/small/front/d/3/d3fe8a5b-4166-46cc-b910-71cd1a19ae1b.jpg?1783905321",
+  "thumb": "https://cards.scryfall.io/thumb/front/d/3/d3fe8a5b-4166-46cc-b910-71cd1a19ae1b.webp?1783905321"
+ },
+ "keywords": [],
+ "lang": "en",
+ "layout": "normal",
+ "legalities": {
+  "alchemy": "legal",
+  "brawl": "legal",
+  "commander": "legal",
+  "competitivebrawl": "legal",
+  "duel": "legal",
+  "future": "legal",
+  "gladiator": "legal",
+  "historic": "legal",
+  "legacy": "legal",
+  "modern": "legal",
+  "oathbreaker": "legal",
+  "oldschool": "not_legal",
+  "pauper": "not_legal",
+  "paupercommander": "not_legal",
+  "penny": "not_legal",
+  "pioneer": "legal",
+  "predh": "not_legal",
+  "premodern": "not_legal",
+  "standard": "legal",
+  "standardbrawl": "legal",
+  "timeless": "legal",
+  "tlr": "legal",
+  "vintage": "legal"
+ },
+ "mana_cost": "{2}{G}",
+ "mtgo_id": 153481,
+ "multiverse_ids": [],
+ "name": "Supportive Parents",
+ "nonfoil": true,
+ "object": "card",
+ "oracle_id": "b1266feb-516e-4b44-b750-7988ca6e6e55",
+ "oracle_text": "Tap two untapped creatures you control: Add one mana of any color.",
+ "oversized": false,
+ "penny_rank": 10887,
+ "power": "3",
+ "prices": {
+  "eur": "0.08",
+  "eur_foil": "0.23",
+  "tix": "0.05",
+  "usd": "0.25",
+  "usd_etched": null,
+  "usd_foil": "0.30"
+ },
+ "prints_search_uri": "https://api.scryfall.com/cards/search?order=released&q=oracleid%3Ab1266feb-516e-4b44-b750-7988ca6e6e55&unique=prints",
+ "produced_mana": [
+  "B",
+  "G",
+  "R",
+  "U",
+  "W"
+ ],
+ "promo": false,
+ "promo_types": [
+  "universesbeyond"
+ ],
+ "purchase_uris": {
+  "cardhoarder": "https://www.cardhoarder.com/cards/153481?affiliate_id=scryfall&ref=card-profile&utm_campaign=affiliate&utm_medium=card&utm_source=scryfall",
+  "cardmarket": "https://www.cardmarket.com/en/Magic/Products?idProduct=846661&referrer=scryfall&utm_campaign=card_prices&utm_medium=text&utm_source=scryfall",
+  "tcgplayer": "https://partner.tcgplayer.com/c/4931599/1830156/21018?subId1=api&u=https%3A%2F%2Fwww.tcgplayer.com%2Fproduct%2F651921%3Fpage%3D1"
+ },
+ "rarity": "uncommon",
+ "related_uris": {
+  "edhrec": "https://edhrec.com/route/?cc=Supportive+Parents",
+  "tcgplayer_infinite_articles": "https://partner.tcgplayer.com/c/4931599/1830156/21018?subId1=api&trafcat=tcgplayer.com%2Fsearch%2Farticles&u=https%3A%2F%2Fwww.tcgplayer.com%2Fsearch%2Farticles%3FproductLineName%3Dmagic%26q%3DSupportive%2BParents",
+  "tcgplayer_infinite_decks": "https://partner.tcgplayer.com/c/4931599/1830156/21018?subId1=api&trafcat=tcgplayer.com%2Fsearch%2Fdecks&u=https%3A%2F%2Fwww.tcgplayer.com%2Fsearch%2Fdecks%3FproductLineName%3Dmagic%26q%3DSupportive%2BParents"
+ },
+ "released_at": "2025-09-26",
+ "reprint": false,
+ "reserved": false,
+ "resource_id": "3F0FB646E0145C8A3FC108422E71DC5294FFC0B24F21A8845BDF33AB36C1EABB",
+ "rulings_uri": "https://api.scryfall.com/cards/d3fe8a5b-4166-46cc-b910-71cd1a19ae1b/rulings",
+ "scryfall_set_uri": "https://scryfall.com/sets/spm?utm_source=api",
+ "scryfall_uri": "https://scryfall.com/card/spm/119/supportive-parents?utm_source=api",
+ "set": "spm",
+ "set_id": "a1c7b891-9e96-434c-9994-be58b62b27f1",
+ "set_name": "Marvel's Spider-Man",
+ "set_search_uri": "https://api.scryfall.com/cards/search?order=set&q=e%3Aspm&unique=prints",
+ "set_type": "expansion",
+ "set_uri": "https://api.scryfall.com/sets/a1c7b891-9e96-434c-9994-be58b62b27f1",
+ "story_spotlight": false,
+ "tcgplayer_id": 651921,
+ "textless": false,
+ "toughness": "3",
+ "type_line": "Creature — Human Citizen",
+ "uri": "https://api.scryfall.com/cards/d3fe8a5b-4166-46cc-b910-71cd1a19ae1b",
+ "variation": false
+}

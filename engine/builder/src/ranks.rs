@@ -96,8 +96,9 @@
 //!     set. No field of the card object separates them — blc/191 and tdc/203 print Abrade with the
 //!     same frame, finishes, games, stamp, promo types and set type, and are in different tiers.
 //!     So the tier is read from a card's shape where the shape decides it and from a MEASURED
-//!     per-set table where it does not (`print_tiers.tsv`), and a printing that departs from its
-//!     set stays wrong.
+//!     per-set table where it does not (`print_tiers.tsv`) — and, since 2026-10-09, from
+//!     Scryfall's record of the printing itself where `is_lists.tsv` holds it ([`recorded_tier`]):
+//!     these departures are exactly the rows `is:covered` lists against the rule.
 //!   * Digital-only Arena printings split between the second and third run with no visible rule
 //!     (`j21`, `hbg`, three Alchemy sets); they rank second here.
 //!   * `lang:any` interleaves the languages by date — mar/9, mar/9 in German, Spanish, French and
@@ -231,6 +232,56 @@ pub fn print_tier(r: &RowDraft) -> u8 {
     u8::from(variant)
 }
 
+/// The tier a row is RANKED in: [`print_tier`], corrected by Scryfall's own record of the printing
+/// where the measured table holds one.
+///
+/// `is:covered` IS THE DEFAULT TIER, ANSWERED BY NAME — a printing outside it is covered — and
+/// `is_lists.tsv` holds every English row where that record and the shape rule differ (and, for a
+/// set the nightly has read, every English row of it). Until 2026-10-09 the rank read the rule
+/// alone, so each such row was tagged right and ORDERED wrong: the module doc's "a printing that
+/// departs from its set stays wrong". Found on three variations, which a search hides unless it is
+/// asked for them, so their place had never been read (`include_variations=true`, 2026-10-09):
+///
+/// ```text
+/// Zilortha, Strength Incarnate   cmm/366, iko/275y, cmm/599, iko/275     here cmm/366, cmm/599, iko/275y, iko/275
+/// Grafted Identity               mid/57, mid/57†, prm/93940, dbl/57 …    here mid/57† sixth, after pmid/57s
+/// Supportive Parents             spm/119, om1/117†, om1/117              here om1/117 before om1/117†
+/// ```
+///
+/// iko/275y and mid/57† are Arena-only and om1/117† sits in a set whose plain printings are
+/// second-tier, so the rule says second tier for all three; `-is:covered` holds all three, and
+/// each is in its card's FIRST run. Over the harvest ([`print_tier`]'s, read again with variations:
+/// 36,821 rows), the 56 English rows the table lists whose sequence proves a tier:
+///
+/// ```text
+/// listed NOT covered, the rule says second tier   33 of 33 in the default tier
+///     (Dominaria Remastered's dmr/300-314, Jumpstart 2022's Rhystic Study, m3c/315 …)
+/// listed covered, the rule says default tier      13 of 13 in the second
+///     (lcc/317, the Lord of the Rings' ltr/262-271 and 332-339, Foundations' fdn/273 …)
+/// listed NOT covered, an ALCHEMY set              10 of 10 in the second tier all the same
+/// ```
+///
+/// — 28,049 of the 28,086 proven English rows in their tier, where the rule alone has 28,003. So
+/// the record is read for an English row outside an Alchemy set, and it moves a row between the
+/// first two tiers only: what puts a printing LAST (memorabilia, a gold border, an oversized card)
+/// is not what `is:covered` records — planes, schemes and vanguard cards are oversized, last and
+/// not covered — and a row that is not English is second-tier whatever the record says (the 3,226
+/// rows of `-is:covered -lang:en`). Where the table says nothing, the rule stands.
+///
+/// The table is the one in force — the nightly's refreshed override when it is installed — so a
+/// printing Scryfall moves between tiers is ranked where it was moved to by the next build.
+pub fn recorded_tier(r: &RowDraft) -> u8 {
+    let tier = print_tier(r);
+    if tier == 2 || !r.raw_lang_en || r.raw_set_type.as_deref() == Some("alchemy") {
+        return tier;
+    }
+    match crate::transform::covered_verdict(r) {
+        Some(false) => 0,
+        Some(true) => 1,
+        None => tier,
+    }
+}
+
 /// Promo types a default-tier printing carries. Anything else Scryfall names is a treatment.
 const PLAIN_PROMO_TYPES: [&str; 11] = [
     "beginnerbox",
@@ -336,7 +387,7 @@ impl PrintingRanks {
                 .or_default()
                 .entry((r.released_at.clone(), set.clone(), cn.clone()))
                 .or_default();
-            let tier = print_tier(r);
+            let tier = recorded_tier(r);
             let side = if r.raw_lang_en { &mut slot.english } else { &mut slot.foreign };
             *side = Some(side.map_or(tier, |seen| seen.min(tier)));
             slot.collector_number_int = r.collector_number_int;
@@ -707,6 +758,42 @@ mod tests {
             ("counterspell_mar_9_ja", 1),
         ] {
             assert_eq!(print_tier(&draft(name)), tier, "{name}");
+        }
+    }
+
+    /// The tier a row is RANKED in is Scryfall's record of it where `is_lists.tsv` holds one
+    /// (api.scryfall.com 2026-10-09: `-is:covered` holds the first five, `is:covered` the next
+    /// three), and the rule's wherever the record is not about the first two tiers.
+    #[test]
+    fn the_recorded_tier_of_real_printings() {
+        for (name, rule, recorded) in [
+            // Arena-only variations of expansion printings: second-tier by their shape, and in
+            // their cards' first run.
+            ("zilortha_strength_incarnate_iko_275y", 1, 0),
+            ("grafted_identity_mid_57_dagger", 1, 0),
+            // A variation in a set whose plain printings are second-tier (print_tiers.tsv).
+            ("supportive_parents_om1_117_dagger", 1, 0),
+            // The departures the module doc names: Jumpstart 2022's Rhystic Study, and Wayfarer's
+            // Bauble in Modern Horizons 3 Commander, a ripple foil at that.
+            ("rhystic_study_j22_114", 1, 0),
+            ("wayfarers_bauble_m3c_315", 1, 0),
+            // ...and its Lost Caverns Commander printing, the other way; Heroes of the Realm 2018
+            // whole, the variation with the rest (a `funny` set nobody measured, default by type).
+            ("wayfarers_bauble_lcc_317", 0, 1),
+            ("the_legend_of_arena_ph18_4", 0, 1),
+            ("the_legend_of_arena_ph18_4_dagger", 0, 1),
+            // Not the record's to say. An ALCHEMY printing is listed not covered and sits in its
+            // card's second run (Black Lotus: ydmu/35 after vma/4 and the Alpha printings); an
+            // oversized plane is listed not covered, and what puts a printing last is its shape.
+            ("black_lotus_ydmu_35", 1, 1),
+            ("academy_at_tolaria_west_ohop_1", 2, 2),
+            // Where the table says nothing, the rule.
+            ("zilortha_strength_incarnate_cmm_366", 0, 0),
+            ("zilortha_strength_incarnate_iko_275", 1, 1),
+            ("supportive_parents_om1_117", 1, 1),
+        ] {
+            let draft = draft(name);
+            assert_eq!((print_tier(&draft), recorded_tier(&draft)), (rule, recorded), "{name}");
         }
     }
 

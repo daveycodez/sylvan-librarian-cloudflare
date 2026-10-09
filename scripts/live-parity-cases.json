@@ -4511,6 +4511,36 @@
 			"method": "GET",
 			"path": "/cards/search?q=-is%3Acovered+is%3Avariation+lang%3Aany&unique=prints&include_extras=true",
 			"note": "2026-10-09. 76 rows, every one English: the Arena-only iko/275y and mid/57† and Through the Omenpaths' om1/117† are in their cards' first run. The port answered 74."
+		},
+		{
+			"name": "print-order-a-variation-in-the-default-tier",
+			"method": "GET",
+			"path": "/cards/search?q=%21%22Zilortha%2C+Strength+Incarnate%22&unique=prints&include_variations=true",
+			"note": "2026-10-09, generation 89. cmm/366, iko/275y, cmm/599, iko/275: the Arena-only variation iko/275y (2022) is in the card's first run — `-is:covered` holds it — ahead of Commander Masters' borderless printing of 2023. The port ranked it by the tier rule alone, which calls an Arena-only printing second-tier, and answered cmm/366, cmm/599, iko/275y, iko/275."
+		},
+		{
+			"name": "unique-cards-answers-a-default-tier-variation",
+			"method": "GET",
+			"path": "/cards/search?q=%21%22Zilortha%2C+Strength+Incarnate%22+e%3Aiko&unique=cards&include_variations=true",
+			"note": "2026-10-09. iko/275y, not the buy-a-box Godzilla printing iko/275 of two years earlier: the first of the card's own order that the filter keeps."
+		},
+		{
+			"name": "print-order-a-variation-beside-its-twin",
+			"method": "GET",
+			"path": "/cards/search?q=%21%22Grafted+Identity%22&unique=prints&include_variations=true",
+			"note": "2026-10-09. mid/57, mid/57†, prm/93940, dbl/57, pmid/57p, pmid/57s, mid/335. The port answered mid/57† sixth, after the prerelease promo."
+		},
+		{
+			"name": "print-order-a-default-tier-variation-before-its-second-tier-twin",
+			"method": "GET",
+			"path": "/cards/search?q=%21%22Supportive+Parents%22&unique=prints&include_variations=true",
+			"note": "2026-10-09. spm/119, om1/117†, om1/117: Through the Omenpaths' plain printings are second-tier and this variation of one is not. The port answered om1/117 before om1/117†."
+		},
+		{
+			"name": "print-order-a-printing-that-departs-from-its-sets-tier",
+			"method": "GET",
+			"path": "/cards/search?q=%21%22Wayfarer%27s+Bauble%22+%28e%3Am3c+or+e%3Alcc%29&unique=prints",
+			"note": "2026-10-09. m3c/315, lcc/317 — the one default-tier printing of Modern Horizons 3 Commander and the one second-tier printing of Lost Caverns Commander, which `-is:covered` and `is:covered` say by name. Not variations: the same record, read for the rank. The port answered lcc/317 first."
 		}
 	]
 }

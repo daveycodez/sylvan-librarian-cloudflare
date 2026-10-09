@@ -22,7 +22,8 @@
 //! The narrowest key wins: a row's own line, then its printing's, then its set's or its card's.
 //! Where the table says nothing about a printing the answer is the value's RULE — none for the
 //! six plain lists, `all_parts` for `related`, the print tier for `covered` — which is what a
-//! printing added after the table was measured gets.
+//! printing added after the table was measured gets. `covered` is read back by the rank
+//! ([`crate::ranks::recorded_tier`]): a printing's tier is this record of it where there is one.
 //!
 //! WHAT IT COSTS. One lookup by set, one by (set, collector number) and one per oracle id for each
 //! row imported, whatever the number of values; nothing at query time, where each is an ordinary
