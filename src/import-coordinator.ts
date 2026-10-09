@@ -16,6 +16,11 @@
 // between (src/import-phases.ts holds the dump list and the chain):
 //
 //   listing   Scryfall /bulk-data → dump URIs
+//   is_lists  api.scryfall.com's own `is:` lists (covered, intro, invitational, jumpstart,
+//             misprint, related, spellbook, spikey), refreshed where they moved and left as
+//             the table transform and finalize install over the compiled one
+//             (src/import-is-lists.ts). Unable to fail, stall or delay the run past its own
+//             deadline: whatever happens, the chain goes on with the last good table
 //   fetch     ranged, resumable download of each compressed dump → SQLite
 //   (recode   RETIRED: all_cards and default_cards are STREAMED, never staged,
 //             and resume through openDumpStream's inflater checkpoints)
@@ -2077,7 +2082,7 @@ export class ImportCoordinator extends DurableObject<Env> {
 	//     SupersededError passes, because a replaced run must retire whatever phase it is in);
 	//   - a slice the runtime ended from outside is counted by the alarm's own `phase_attempts`,
 	//     and the second such attempt moves on without asking anything (IS_LISTS_MAX_ATTEMPTS);
-	//   - every request and KV call is raced against IS_LISTS_IO_TIMEOUT_MS, a slice stops asking
+	//   - every request and KV call is raced against IS_LISTS_IO_TIMEOUT_MS (isListsIo), a slice stops asking
 	//     after IS_LISTS_SLICE_MS and the night after IS_LISTS_DEADLINE_MS, so the alarm watchdog
 	//     has nothing here to fire on;
 	//   - the FIRST thing the first slice does is put LAST NIGHT's table in `is_lists_table`
@@ -2091,17 +2096,30 @@ export class ImportCoordinator extends DurableObject<Env> {
 	// Storage: one meta row an alarm (`is_lists_work`, the night's progress) and three at the end;
 	// one KV read and one KV put a night.
 
-	/** Race `work` against the phase's I/O timeout, so nothing in it can hold an alarm open. */
-	private async isListsIo<T>(what: string, work: Promise<T>): Promise<T> {
+	/**
+	 * Race `work` against the phase's I/O timeout, so nothing in it can hold an alarm open.
+	 *
+	 * The deadline is a plain timer on a controller, CLEARED on every outcome — not
+	 * `AbortSignal.timeout`, which gives no handle to cancel: that timer stays pending in the
+	 * object's I/O context after the answer has come, and the invocation cannot close until it
+	 * fires (src/engine/placement.ts, PROBE_TIMEOUT_MS: every cold load held open five seconds).
+	 * Here it would have held every alarm of the refresh open, and billed, for twenty.
+	 */
+	private async isListsIo<T>(what: string, work: (signal: AbortSignal) => Promise<T>): Promise<T> {
+		const deadline = new AbortController();
 		let timer: ReturnType<typeof setTimeout> | undefined;
 		const late = new Promise<never>((_, reject) => {
-			timer = setTimeout(
-				() => reject(new Error(`${what} did not answer in ${IS_LISTS_IO_TIMEOUT_MS}ms`)),
-				IS_LISTS_IO_TIMEOUT_MS,
-			);
+			timer = setTimeout(() => {
+				const err = new Error(`${what} did not answer in ${IS_LISTS_IO_TIMEOUT_MS}ms`);
+				deadline.abort(err);
+				reject(err);
+			}, IS_LISTS_IO_TIMEOUT_MS);
 		});
+		const running = work(deadline.signal);
+		// Abandoned on a timeout: its own late failure is not this alarm's to report.
+		running.catch(() => {});
 		try {
-			return await Promise.race([work, late]);
+			return await Promise.race([running, late]);
 		} finally {
 			clearTimeout(timer);
 		}
@@ -2119,7 +2137,8 @@ export class ImportCoordinator extends DurableObject<Env> {
 			if (work === null) return;
 			const api = (this.env as { SCRYFALL_API_URL?: string }).SCRYFALL_API_URL ?? SCRYFALL_API_URL;
 			// Test-only, like SCRYFALL_API_URL: never set in wrangler.jsonc, so production paces at the constant.
-			const gapMs = Number((this.env as { IS_LISTS_GAP_MS?: string }).IS_LISTS_GAP_MS ?? IS_LISTS_GAP_MS);
+			const gapVar = Number((this.env as { IS_LISTS_GAP_MS?: string }).IS_LISTS_GAP_MS ?? IS_LISTS_GAP_MS);
+			const gapMs = Number.isFinite(gapVar) && gapVar >= 0 ? gapVar : IS_LISTS_GAP_MS;
 			// The gap goes before the first request too: this object cannot see how recently the
 			// previous alarm's last one went out.
 			let last = Date.now();
@@ -2127,18 +2146,15 @@ export class ImportCoordinator extends DurableObject<Env> {
 				const wait = gapMs - (Date.now() - last);
 				if (wait > 0) await scheduler.wait(wait);
 				last = Date.now();
-				return this.isListsIo(
-					`GET ${path}`,
-					(async () => {
-						const res = await fetch(`${api}${path}`, {
-							headers: { "User-Agent": userAgent(), Accept: "application/json" },
-							signal: AbortSignal.timeout(IS_LISTS_IO_TIMEOUT_MS),
-						});
-						const retryAfter = Number(res.headers.get("retry-after")) || undefined;
-						const body: unknown = await res.json().catch(() => null);
-						return { status: res.status, body, retryAfter };
-					})(),
-				);
+				return this.isListsIo(`GET ${path}`, async (signal) => {
+					const res = await fetch(`${api}${path}`, {
+						headers: { "User-Agent": userAgent(), Accept: "application/json" },
+						signal,
+					});
+					const retryAfter = Number(res.headers.get("retry-after")) || undefined;
+					const body: unknown = await res.json().catch(() => null);
+					return { status: res.status, body, retryAfter };
+				});
 			};
 			const over = await runSlice(work, {
 				get,
@@ -2171,10 +2187,12 @@ export class ImportCoordinator extends DurableObject<Env> {
 			this.leaveIsLists("this import blob cannot take an override (built before the refresh existed)");
 			return null;
 		}
+		const { base } = readCompiled(compiled);
+		// Until something better is known, the manifest says what is true: the compiled table's day.
+		this.metaSet("is_lists_note", JSON.stringify(noteOf(null, base.date)));
 		// A read that fails is NOT "no state": starting over on one would put a first night's state
 		// over every list the nights before it refreshed. It ends the refresh; the table stays compiled.
-		const stored = await this.isListsIo("the stored lists", this.env.STORE_KV.get(IS_LISTS_KV_KEY, "json"));
-		const { base } = readCompiled(compiled);
+		const stored = await this.isListsIo("the stored lists", () => this.env.STORE_KV.get(IS_LISTS_KV_KEY, "json"));
 		const held = usableState(stored, base);
 		this.ctx.storage.transactionSync(() => {
 			this.metaSet("is_lists_note", JSON.stringify(noteOf(held, base.date)));
@@ -2197,9 +2215,8 @@ export class ImportCoordinator extends DurableObject<Env> {
 			throw new Error("the import blob refused the table the night composed (see the [wasm-import] line)");
 		}
 		const json = JSON.stringify(state);
-		await this.isListsIo("the fence", this.fenceBeforeWrite());
-		await this.isListsIo(
-			"the stored lists' put",
+		await this.isListsIo("the fence", () => this.fenceBeforeWrite());
+		await this.isListsIo("the stored lists' put", () =>
 			this.env.STORE_KV.put(IS_LISTS_KV_KEY, json, { metadata: kvBytesMetadata(json.length) }),
 		);
 		const note: IsListsNote = noteOf(state, state.baseDate);

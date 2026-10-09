@@ -54,6 +54,22 @@
 //               read and one KV write a night (IS_LISTS_KV_KEY, the state every later night and
 //               every deploy reads).
 //
+// ── NO GENERATION, AND WHAT A DEPLOY USES ──────────────────────────────────────────────────────
+//
+// A refreshed list changes stored `is:` tags with no code change, and needs no
+// STORE_CONTENT_GENERATION for it: the nightly never asks whether its store is "new" — every run
+// builds and publishes a whole family under a new `built_at`, the manifest is the commit point,
+// `notify` moves every engine object onto it and `purge` drops the edge cache — so tonight's lists
+// are served by tonight's store. The generation is what makes a DEPLOY rebuild (scripts/store-age.ts),
+// and stays what it was: a bump goes with a change of code or of the committed table, as before.
+// No stored layout changes either: the tags are the `card_is_tags` members generation 75 wrote.
+//
+// A deploy rebuilds the store whenever Scryfall's dumps are newer than the live one — most pushes.
+// It asks Scryfall nothing; it reads this module's state back from KV and hands the builder the
+// same table (scripts/is-lists-override.ts, `sylvan-store-builder --is-lists`), so a deploy's
+// store and the nightly's differ by the dumps between them and not by eight values going back to
+// the committed day. The manifest of either says which lists it was tagged from (`is_lists`).
+//
 // ── WHAT CANNOT HAPPEN ─────────────────────────────────────────────────────────────────────────
 //
 // A list is applied only WHOLE: every page of it answered, the totals agreeing page to page, as

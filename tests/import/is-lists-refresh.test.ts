@@ -11,6 +11,7 @@ import { describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { type FakeCard, FakeScryfall } from "../../scripts/import-harness/fake-scryfall";
+import { FIXED_ROWS_WRITTEN_PER_ALARM, MAX_DAY_ROWS_WRITTEN } from "../../src/import-budget";
 import {
 	beginNight,
 	byNumber,
@@ -19,12 +20,18 @@ import {
 	composeOverride,
 	fnv1a64,
 	IS_LISTS_DEADLINE_MS,
+	IS_LISTS_GAP_MS,
+	IS_LISTS_NIGHT_REQUESTS,
+	IS_LISTS_SLICE_MS,
+	IS_LISTS_SLICE_REQUESTS,
+	IS_LISTS_STATE_MAX_BYTES,
 	type IsListsState,
 	ListRefused,
 	type NightWork,
 	noteOf,
 	readCompiled,
 	runSlice,
+	SCRYFALL_PAGE_ROWS,
 	type SearchAnswer,
 } from "../../src/import-is-lists";
 
@@ -209,6 +216,34 @@ describe("the answer checks, shared with `bun run is-lists`", () => {
 		for (const tag of ["intro", "invitational", "jumpstart", "misprint"] as const)
 			expect(base.totals[tag]).toBeGreaterThan(0);
 		expect(lines.covered.length + lines.related.length).toBeGreaterThan(300);
+	});
+});
+
+describe("what a night may cost on the free plan", () => {
+	test("requests an alarm, alarms a night, rows written and the state's size are all bounded by constants", () => {
+		// An invocation gets 50 subrequests; the alarm's own bookkeeping (the fence's KV reads, the
+		// state's put) needs a few of them.
+		expect(IS_LISTS_SLICE_REQUESTS).toBeLessThanOrEqual(40);
+		const alarms = Math.ceil(IS_LISTS_NIGHT_REQUESTS / IS_LISTS_SLICE_REQUESTS);
+		expect(alarms).toBe(8);
+		// Each alarm pays the chain's fixed toll and writes its progress row; the last writes three more.
+		const rowsWritten = alarms * (FIXED_ROWS_WRITTEN_PER_ALARM + 1) + 3;
+		expect(rowsWritten).toBeLessThan(MAX_DAY_ROWS_WRITTEN / 1000);
+		// The fixed part of the worst night — every small list whole (422, 92, 5,989 and 455 rows of
+		// 175 a page; 72 and 678 cards), the foreign rows whole, three sizes and /sets — leaves the
+		// sets most of the night's requests.
+		const pages = (rows: number) => Math.ceil(rows / SCRYFALL_PAGE_ROWS);
+		const fixed = pages(422) + pages(92) + pages(5989) + pages(455) + pages(72) + pages(678) + pages(3226) + 3 + 1;
+		expect(fixed).toBe(70);
+		expect(IS_LISTS_NIGHT_REQUESTS - fixed).toBeGreaterThanOrEqual(170);
+		// One request a second, and a slow answer on every one of them: still inside the deadline's
+		// order, and an alarm's share far inside the 5-minute alarm watchdog.
+		expect(IS_LISTS_GAP_MS).toBeGreaterThanOrEqual(1000);
+		expect((IS_LISTS_NIGHT_REQUESTS * (IS_LISTS_GAP_MS + 500)) / 60_000).toBeLessThanOrEqual(6);
+		expect(IS_LISTS_SLICE_MS).toBeLessThanOrEqual(120_000);
+		expect(IS_LISTS_DEADLINE_MS).toBeLessThanOrEqual(15 * 60_000);
+		// One KV value (25 MiB) and one Durable Object row (2 MB), with room.
+		expect(IS_LISTS_STATE_MAX_BYTES).toBeLessThan(2_000_000);
 	});
 });
 
