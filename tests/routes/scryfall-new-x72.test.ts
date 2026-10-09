@@ -109,6 +109,11 @@ describe("the new: values the store's new_flags answer are the engine's is:new<v
 		// `new:modo` is 12 on the anchor, as `new:mtgo`.
 		["new:mtgo", "is:newmtgo"],
 		["new:modo", "is:newmtgo"],
+		// `new:magiconline` is 12 on the anchor and 31,262 corpus-wide, as `new:mtgo`; the port
+		// dropped it with the "not supported" sentence, which Scryfall does not say for it.
+		["new:magiconline", "is:newmtgo"],
+		["new:MagicOnline", "is:newmtgo"],
+		["-new:magiconline", "-is:newmtgo"],
 		["-new:mtgo", "-is:newmtgo"],
 		// `new:mtga` is 12 on the anchor, as `new:arena`.
 		["new:arena", "is:newarena"],

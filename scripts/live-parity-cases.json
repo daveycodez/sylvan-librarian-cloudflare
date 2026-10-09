@@ -4349,6 +4349,24 @@
 			"method": "GET",
 			"path": "/cards/search?q=-new%3Alanguage+lang%3Aany+%21%22Transluminant%22&unique=prints",
 			"note": "2026-10-09. clu/177 alone: Ravnica: Clue Edition reprints the card in English only, and every Ravnica row is its language's first."
+		},
+		{
+			"name": "new-magiconline-is-new-mtgo",
+			"method": "GET",
+			"path": "/cards/search?q=new%3Amagiconline+e%3Akhm+t%3Agod&unique=prints",
+			"note": "2026-10-09. 12 of the 25, the same 12 as new:mtgo and new:modo: 31,262 corpus-wide, and `new:mtgo -new:magiconline` and its reverse are each a 404. The port ignored the value with a sentence Scryfall does not say."
+		},
+		{
+			"name": "new-magiconline-a-paper-printing-that-lists-the-game",
+			"method": "GET",
+			"path": "/cards/search?q=new%3Amagiconline+%21%22Jasmine+Boreal%22&unique=prints",
+			"note": "2026-10-09. tsb/93, as new:mtgo answers."
+		},
+		{
+			"name": "new-magiconline-negated",
+			"method": "GET",
+			"path": "/cards/search?q=-new%3Amagiconline+e%3Akhm+t%3Agod&unique=prints",
+			"note": "2026-10-09. The other 13 of the 25 (87,241 corpus-wide, as -new:mtgo)."
 		}
 	]
 }

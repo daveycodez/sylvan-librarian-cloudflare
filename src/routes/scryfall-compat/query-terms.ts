@@ -2078,13 +2078,18 @@ const CHEAPEST_CURRENCIES: ReadonlyMap<string, string> = new Map([
  *   new:/rarity/  -new:/rarity/     25 + Unknown regular expression keyword “new”. / “-new”.
  *   new>rarity 404, -new>rarity 25  (the comparison rule)
  *
- * THE VOCABULARY, measured again 2026-10-09 on the same anchor, 135 values tried: Scryfall honors
- * twenty-four — `rarity`; `language`, `lang`; `art`, `illustration`; `artist`; `flavor`, `ft`,
- * `flavortext`; `frame`; `card`; `foil`, `nonfoil`; `game`, `games`; and the games themselves under
- * every name it has for them, `paper`, `printed`, `cardboard`, `mtgo`, `modo`, `arena`, `mtga`,
- * `astral`, `sega` (the last two 404 on the anchor, with no warning: honored, and empty there).
- * Everything else takes the sentence: `artists`, `flavor_text`, `frames`, `etched`, `glossy`,
- * `digital`, `set`, `border`, `watermark`, `stamp`, `finish`, `promo`, `online`, `mtg` …
+ * THE VOCABULARY, measured again 2026-10-09 on the same anchor in two sweeps: Scryfall honors
+ * twenty-nine — `rarity`; `language`, `lang`; `art`, `illustration`; `artist`, `illustrator`;
+ * `flavor`, `ft`, `flavortext`; `frame`; `card`; `foil`, `nonfoil`; `game`, `games`; and the games
+ * themselves under every name `game:` has for them, `paper`, `printed`, `cardboard`, `mtgo`,
+ * `modo`, `magiconline`, `arena`, `mtga`, `astral`, `microprose`, `micro`, `sega`, `dreamcast`
+ * (the last five 404 on the anchor, with no warning: honored, and empty there). The first sweep of
+ * 135 values found twenty-four; `illustrator`, `magiconline`, `microprose`, `micro` and
+ * `dreamcast` are the second's, of 432 values.
+ * Everything else takes the sentence: `artists`, `painter`, `flavor_text`, `frames`, `etched`,
+ * `glossy`, `digital`, `set`, `border`, `watermark`, `stamp`, `finish`, `promo`, `online`, `mtg`,
+ * `mtgonline`, `magic-online`, `mol`, `magicarena`, `mtgarena`, `shandalar`, `dc`, `tabletop`,
+ * `physical` … and it is no prefix match: `microp`, `dream`, `magic`, `illustr` take it too.
  *
  * `new:rarity` is answered under the port's own spelling `is:newrarity` (rewrite.ts
  * NEW_RARITY_IS_VALUE), whose engine leaf reads one bit the store's build decides — card_engine
@@ -2108,9 +2113,11 @@ const NEW_KEYWORDS: ReadonlySet<string> = new Set(["new"]);
  *                    outside memorabilia. 35,158 of 35,158.
  *   frame            the card's first printing in each `frame` (1993, 1997, 2003, 2015, future),
  *                    digital printings too, outside memorabilia. 45,058 of 45,058.
- *   mtgo, modo       the card's first printing whose `games` hold `mtgo`, a paper printing or a
- *                    digital one, outside memorabilia. 31,261 of 31,262: the other is a card
- *                    object that changed between the bulk file and the list (afc/42 gained `mtgo`).
+ *   mtgo, modo, magiconline   the card's first printing whose `games` hold `mtgo`, a paper
+ *                    printing or a digital one, outside memorabilia. 31,261 of 31,262: the other
+ *                    is a card object that changed between the bulk file and the list (afc/42
+ *                    gained `mtgo`). `new:magiconline` is 31,262 too, and `new:mtgo
+ *                    -new:magiconline` and its reverse are each a 404: one list.
  *   arena, mtga      the card's first printing whose `games` hold `arena`. 16,284 of 16,284.
  *   astral           the card's first printing whose `games` hold `astral`: the twelve Astral
  *                    cards, past/1-12. 12 of 12 (extras in; a 404 without, as `game:astral` is).
@@ -2146,6 +2153,7 @@ const NEW_VALUE_IS_TAGS: ReadonlyMap<string, string> = new Map([
 	["frame", "newframe"],
 	["mtgo", "newmtgo"],
 	["modo", "newmtgo"],
+	["magiconline", "newmtgo"],
 	["arena", "newarena"],
 	["mtga", "newarena"],
 	["astral", "newastral"],
