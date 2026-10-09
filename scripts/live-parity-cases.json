@@ -3785,6 +3785,114 @@
 			"method": "GET",
 			"path": "/cards/search?q=g%3Aecl+is%3Atransform&order=color",
 			"note": "2026-10-08. A transforming card sorts by its front face's colours, not the union of both faces."
+		},
+		{
+			"name": "unique-art-art-less-printings-are-one-row",
+			"method": "GET",
+			"path": "/cards/search?q=-is%3Aillustration&unique=art&include_extras=true",
+			"note": "2026-10-09. 1 row, unk/RL01c ('______'), for the 764 printings that carry no illustration id: Scryfall answers them as ONE artwork across cards, and its row is the first of them in order=name unique=prints. This port kept one row per card (695)."
+		},
+		{
+			"name": "unique-art-art-less-set-is-one-row",
+			"method": "GET",
+			"path": "/cards/search?q=e%3Aunk&unique=art&include_extras=true",
+			"note": "2026-10-09. 1 row for the playtest set's 527 printings, none of which has an illustration id."
+		},
+		{
+			"name": "unique-art-art-less-two-faced-are-the-same-row",
+			"method": "GET",
+			"path": "/cards/search?q=st%3Aminigame&unique=art&include_extras=true",
+			"note": "2026-10-09. 1 row, mkhm/1: the 55 minigame printings, most of them two-faced with no illustration id on either face, are the same one group as the single-faced ones."
+		},
+		{
+			"name": "unique-art-art-less-one-card-answers-its-newest",
+			"method": "GET",
+			"path": "/cards/search?q=%21%22Blank+Card%22&unique=art&include_extras=true",
+			"note": "2026-10-09. wc04/00, the card's own first printing — NOT the 1996 ptc/0 an artwork with an id would answer by its first printing."
+		},
+		{
+			"name": "unique-art-art-less-without-extras",
+			"method": "GET",
+			"path": "/cards/search?q=-is%3Aillustration&unique=art",
+			"note": "2026-10-09. 1 row, tclb/0 (Baldur's Gate Wilderness): the group is cut by the extras gate like any printings, and its row is the first of what is left."
+		},
+		{
+			"name": "unique-art-art-less-row-ignores-the-order",
+			"method": "GET",
+			"path": "/cards/search?q=-is%3Aillustration&unique=art&order=released&dir=desc&include_extras=true",
+			"note": "2026-10-09. Still unk/RL01c: the row is chosen by the name order whatever order= and dir= say (measured under 25 order and direction pairs)."
+		},
+		{
+			"name": "unique-art-art-less-price-order-with-no-price-is-the-newest",
+			"method": "GET",
+			"path": "/cards/search?q=%28e%3Awc97+or+e%3Aptc+or+e%3Atsoi%29+-is%3Aillustration&unique=art&order=tix&include_extras=true",
+			"note": "2026-10-09. tsoi/CH2: a price order answers the cheapest, and with no tix price among the 13 the newest date and then the smallest Scryfall id (CH2 4825… before CH1 4d32…) — not the name order's wc97/0."
+		},
+		{
+			"name": "unique-art-art-less-one-date-is-the-smallest-id",
+			"method": "GET",
+			"path": "/cards/search?q=e%3Awc97+-is%3Aillustration&unique=art&order=tix&include_extras=true",
+			"note": "2026-10-09. wc97/sg0a (0760…), the smallest Scryfall id of ten printings released on one day."
+		},
+		{
+			"name": "unique-art-art-less-prefer-oldest",
+			"method": "GET",
+			"path": "/cards/search?q=-is%3Aillustration+prefer%3Aoldest&unique=art&include_extras=true",
+			"note": "2026-10-09. ptc/0, the 1996 Pro Tour Collector Set's Blank Card: a written prefer picks the group's row."
+		},
+		{
+			"name": "unique-art-art-less-prefer-newest",
+			"method": "GET",
+			"path": "/cards/search?q=%28e%3Awc97+or+e%3Aptc+or+e%3Atsoi%29+-is%3Aillustration+prefer%3Anewest&unique=art&include_extras=true",
+			"note": "2026-10-09. tsoi/CH2, the newest date and the smaller id of its two checklists."
+		},
+		{
+			"name": "unique-art-art-less-prefer-promo",
+			"method": "GET",
+			"path": "/cards/search?q=-is%3Aillustration+prefer%3Apromo&unique=art&include_extras=true",
+			"note": "2026-10-09. tclb/0, the group's one promo printing."
+		},
+		{
+			"name": "unique-art-art-less-prefer-default",
+			"method": "GET",
+			"path": "/cards/search?q=-is%3Aillustration+prefer%3Adefault&unique=art&include_extras=true",
+			"note": "2026-10-09. mkhm/1: the first default-frame printing in name order, past the playtest card, the gold-bordered ads, the full-art token and the promo dungeon."
+		},
+		{
+			"name": "unique-art-art-less-every-language",
+			"method": "GET",
+			"path": "/cards/search?q=-is%3Aillustration&unique=art&include_multilingual=true&include_extras=true",
+			"note": "2026-10-09. 1 row for 784 printings: the 20 art-less printings in other languages join the same group, and the row is still unk/RL01c."
+		},
+		{
+			"name": "unique-art-art-less-other-languages",
+			"method": "GET",
+			"path": "/cards/search?q=-is%3Aillustration+-lang%3Aen+lang%3Aany&unique=art&include_extras=true",
+			"note": "2026-10-09. 1 row, the German dsc/328, for 20 printings of 6 cards in six languages."
+		},
+		{
+			"name": "unique-art-art-less-row-among-artworks",
+			"method": "GET",
+			"path": "/cards/search?q=%28e%3Aunk+or+e%3Alea%29&unique=art&include_extras=true",
+			"note": "2026-10-09. 296 rows: Alpha's 295 artworks and ONE row for the playtest set, first by its name. This port answered 816."
+		},
+		{
+			"name": "unique-art-art-less-row-on-the-last-page",
+			"method": "GET",
+			"path": "/cards/search?q=%28e%3Aunk+or+e%3Alea%29&unique=art&order=name&dir=desc&page=2&include_extras=true",
+			"note": "2026-10-09. The group's row sorts by its own key like any row: the last of 296 under dir=desc, so page 2 ends with it and total_cards counts it once on both pages."
+		},
+		{
+			"name": "unique-art-art-less-row-by-its-own-date",
+			"method": "GET",
+			"path": "/cards/search?q=%28e%3Aunk+or+e%3Alea%29&unique=art&order=released&dir=desc&include_extras=true",
+			"note": "2026-10-09. unk/RL01c leads at its own 2025 date — the row the name order chose, placed by the order asked for."
+		},
+		{
+			"name": "unique-art-art-less-two-sld-lands",
+			"method": "GET",
+			"path": "/cards/search?q=e%3Asld+%28cn%3A254+or+cn%3A255+or+cn%3A100%29&unique=art",
+			"note": "2026-10-09. 2 rows: sld/100 with its artwork, and sld/255 (Island) for the two art-less basic lands — two cards, one row, with no extras involved."
 		}
 	]
 }
