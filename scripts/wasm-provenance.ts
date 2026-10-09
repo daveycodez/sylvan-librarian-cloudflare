@@ -80,6 +80,10 @@ const SOURCE_FILES = [
 	// measured release-date set order (`assign_set_ranks`). Regenerating it without rebuilding would
 	// otherwise leave the blobs building every store with the old table and this guard green.
 	"vendor/sylvan_librarian/card_engine/src/release_batches.tsv",
+	// The same shape in the builder, compiled into the import blob: the measured `is:` lists
+	// (`bun run is-lists`) and the print tiers they and the ranks read (`bun run print-tiers`).
+	"engine/builder/src/is_lists.tsv",
+	"engine/builder/src/print_tiers.tsv",
 ];
 
 /** The committed blobs this record describes. */
