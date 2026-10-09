@@ -2141,8 +2141,14 @@ export async function gzipBytes(bytes: Uint8Array): Promise<Uint8Array> {
  *   83 (2026-10-09): `new:nonfoil`. The card's first paper printing in nonfoil — the order and rows
  *      of generation 76 over the paper printings whose `finishes` hold `nonfoil`: 35,018 of 35,018,
  *      the list read whole. Bit 7 of `new_flags`; ARCHIVE_FORMAT_VERSION 2026100907 -> 2026100908.
+ *
+ *   84 (2026-10-09): `new:flavor`, and `new:ft`, `new:flavortext`. The card's first printing with
+ *      each flavor text — the order and rows of generation 76 over the printings that have one and
+ *      are not serialized, a text compared without case, accents, spacing or punctuation: 27,459 of
+ *      27,459, the list read whole. Bit 8 of `new_flags`; ARCHIVE_FORMAT_VERSION 2026100908 ->
+ *      2026100909.
  */
-export const STORE_CONTENT_GENERATION = 83;
+export const STORE_CONTENT_GENERATION = 84;
 
 /**
  * Chunk key for a store. Keyed by store_key, so publishes never collide.

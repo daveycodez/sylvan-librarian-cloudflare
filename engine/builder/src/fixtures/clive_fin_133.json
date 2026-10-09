@@ -1,0 +1,187 @@
+{
+ "arena_id": 95997,
+ "artist": "Nino Is",
+ "artist_ids": [
+  "ae717001-28ec-46e3-a07e-f16b6deaf9e2"
+ ],
+ "booster": true,
+ "border_color": "black",
+ "card_faces": [
+  {
+   "artist": "Nino Is",
+   "artist_id": "ae717001-28ec-46e3-a07e-f16b6deaf9e2",
+   "colors": [
+    "R"
+   ],
+   "illustration_id": "82c70115-a985-4279-b89f-a8bca5258893",
+   "image_uris": {
+    "art": "https://cards.scryfall.io/art/front/9/a/9a069e96-2786-493d-aca8-f70611435dbe.webp?1783906611",
+    "art_crop": "https://cards.scryfall.io/art_crop/front/9/a/9a069e96-2786-493d-aca8-f70611435dbe.jpg?1783906611",
+    "border_crop": "https://cards.scryfall.io/border_crop/front/9/a/9a069e96-2786-493d-aca8-f70611435dbe.jpg?1783906611",
+    "crop": "https://cards.scryfall.io/crop/front/9/a/9a069e96-2786-493d-aca8-f70611435dbe.webp?1783906611",
+    "display": "https://cards.scryfall.io/display/front/9/a/9a069e96-2786-493d-aca8-f70611435dbe.webp?1783906611",
+    "grid": "https://cards.scryfall.io/grid/front/9/a/9a069e96-2786-493d-aca8-f70611435dbe.webp?1783906611",
+    "large": "https://cards.scryfall.io/large/front/9/a/9a069e96-2786-493d-aca8-f70611435dbe.jpg?1783906611",
+    "normal": "https://cards.scryfall.io/normal/front/9/a/9a069e96-2786-493d-aca8-f70611435dbe.jpg?1783906611",
+    "png": "https://cards.scryfall.io/png/front/9/a/9a069e96-2786-493d-aca8-f70611435dbe.png?1783906611",
+    "small": "https://cards.scryfall.io/small/front/9/a/9a069e96-2786-493d-aca8-f70611435dbe.jpg?1783906611",
+    "thumb": "https://cards.scryfall.io/thumb/front/9/a/9a069e96-2786-493d-aca8-f70611435dbe.webp?1783906611"
+   },
+   "mana_cost": "{4}{R}{R}",
+   "name": "Clive, Ifrit's Dominant",
+   "object": "card_face",
+   "oracle_text": "When Clive enters, you may discard your hand, then draw cards equal to your devotion to red. (Each {R} in the mana costs of permanents you control counts toward your devotion to red.)\n{4}{R}{R}, {T}: Exile Clive, then return it to the battlefield transformed under its owner's control. Activate only as a sorcery.",
+   "power": "5",
+   "toughness": "5",
+   "type_line": "Legendary Creature — Human Noble Warrior"
+  },
+  {
+   "artist": "Nino Is",
+   "artist_id": "ae717001-28ec-46e3-a07e-f16b6deaf9e2",
+   "color_indicator": [
+    "R"
+   ],
+   "colors": [
+    "R"
+   ],
+   "flavor_text": "\"Let the flames burn within you! No... let them burn without!\"",
+   "illustration_id": "079f4ca9-558d-451d-83c3-7c36db497cab",
+   "image_uris": {
+    "art": "https://cards.scryfall.io/art/back/9/a/9a069e96-2786-493d-aca8-f70611435dbe.webp?1783906611",
+    "art_crop": "https://cards.scryfall.io/art_crop/back/9/a/9a069e96-2786-493d-aca8-f70611435dbe.jpg?1783906611",
+    "border_crop": "https://cards.scryfall.io/border_crop/back/9/a/9a069e96-2786-493d-aca8-f70611435dbe.jpg?1783906611",
+    "crop": "https://cards.scryfall.io/crop/back/9/a/9a069e96-2786-493d-aca8-f70611435dbe.webp?1783906611",
+    "display": "https://cards.scryfall.io/display/back/9/a/9a069e96-2786-493d-aca8-f70611435dbe.webp?1783906611",
+    "grid": "https://cards.scryfall.io/grid/back/9/a/9a069e96-2786-493d-aca8-f70611435dbe.webp?1783906611",
+    "large": "https://cards.scryfall.io/large/back/9/a/9a069e96-2786-493d-aca8-f70611435dbe.jpg?1783906611",
+    "normal": "https://cards.scryfall.io/normal/back/9/a/9a069e96-2786-493d-aca8-f70611435dbe.jpg?1783906611",
+    "png": "https://cards.scryfall.io/png/back/9/a/9a069e96-2786-493d-aca8-f70611435dbe.png?1783906611",
+    "small": "https://cards.scryfall.io/small/back/9/a/9a069e96-2786-493d-aca8-f70611435dbe.jpg?1783906611",
+    "thumb": "https://cards.scryfall.io/thumb/back/9/a/9a069e96-2786-493d-aca8-f70611435dbe.webp?1783906611"
+   },
+   "mana_cost": "",
+   "name": "Ifrit, Warden of Inferno",
+   "object": "card_face",
+   "oracle_text": "(As this Saga enters and after your draw step, add a lore counter.)\nI — Lunge — Ifrit fights up to one other target creature.\nII, III — Brimstone — Add {R}{R}{R}{R}. If Ifrit has three or more lore counters on it, exile it, then return it to the battlefield (front face up).",
+   "power": "9",
+   "toughness": "9",
+   "type_line": "Legendary Enchantment Creature — Saga Demon"
+  }
+ ],
+ "cardmarket_id": 824143,
+ "cmc": 6.0,
+ "collector_number": "133",
+ "color_identity": [
+  "R"
+ ],
+ "digital": false,
+ "edhrec_rank": 3336,
+ "finishes": [
+  "nonfoil",
+  "foil"
+ ],
+ "foil": true,
+ "frame": "2015",
+ "frame_effects": [
+  "enchantment",
+  "legendary"
+ ],
+ "full_art": false,
+ "game_changer": false,
+ "games": [
+  "paper",
+  "arena",
+  "mtgo"
+ ],
+ "highres_image": true,
+ "id": "9a069e96-2786-493d-aca8-f70611435dbe",
+ "image_status": "highres_scan",
+ "image_updated_at": "2026-07-13T01:36:51Z",
+ "keywords": [
+  "Transform",
+  "Fight"
+ ],
+ "lang": "en",
+ "layout": "transform",
+ "legalities": {
+  "alchemy": "legal",
+  "brawl": "legal",
+  "commander": "legal",
+  "competitivebrawl": "legal",
+  "duel": "legal",
+  "future": "legal",
+  "gladiator": "legal",
+  "historic": "legal",
+  "legacy": "legal",
+  "modern": "legal",
+  "oathbreaker": "legal",
+  "oldschool": "not_legal",
+  "pauper": "not_legal",
+  "paupercommander": "not_legal",
+  "penny": "legal",
+  "pioneer": "legal",
+  "predh": "not_legal",
+  "premodern": "not_legal",
+  "standard": "legal",
+  "standardbrawl": "legal",
+  "timeless": "legal",
+  "tlr": "not_legal",
+  "vintage": "legal"
+ },
+ "mtgo_id": 141201,
+ "multiverse_ids": [],
+ "name": "Clive, Ifrit's Dominant // Ifrit, Warden of Inferno",
+ "nonfoil": true,
+ "object": "card",
+ "oracle_id": "ceba3d03-be5a-4dd7-b829-7db216a0f44e",
+ "oversized": false,
+ "penny_rank": 6515,
+ "prices": {
+  "eur": "3.27",
+  "eur_foil": "5.70",
+  "tix": "0.03",
+  "usd": "3.29",
+  "usd_etched": null,
+  "usd_foil": "5.40"
+ },
+ "prints_search_uri": "https://api.scryfall.com/cards/search?order=released&q=oracleid%3Aceba3d03-be5a-4dd7-b829-7db216a0f44e&unique=prints",
+ "produced_mana": [
+  "R"
+ ],
+ "promo": false,
+ "promo_types": [
+  "ffxvi",
+  "universesbeyond"
+ ],
+ "purchase_uris": {
+  "cardhoarder": "https://www.cardhoarder.com/cards/141201?affiliate_id=scryfall&ref=card-profile&utm_campaign=affiliate&utm_medium=card&utm_source=scryfall",
+  "cardmarket": "https://www.cardmarket.com/en/Magic/Products?idProduct=824143&referrer=scryfall&utm_campaign=card_prices&utm_medium=text&utm_source=scryfall",
+  "tcgplayer": "https://partner.tcgplayer.com/c/4931599/1830156/21018?subId1=api&u=https%3A%2F%2Fwww.tcgplayer.com%2Fproduct%2F630957%3Fpage%3D1"
+ },
+ "rarity": "mythic",
+ "related_uris": {
+  "edhrec": "https://edhrec.com/route/?cc=Clive%2C+Ifrit%27s+Dominant",
+  "tcgplayer_infinite_articles": "https://partner.tcgplayer.com/c/4931599/1830156/21018?subId1=api&trafcat=tcgplayer.com%2Fsearch%2Farticles&u=https%3A%2F%2Fwww.tcgplayer.com%2Fsearch%2Farticles%3FproductLineName%3Dmagic%26q%3DClive%252C%2BIfrit%2527s%2BDominant%2B%252F%252F%2BIfrit%252C%2BWarden%2Bof%2BInferno",
+  "tcgplayer_infinite_decks": "https://partner.tcgplayer.com/c/4931599/1830156/21018?subId1=api&trafcat=tcgplayer.com%2Fsearch%2Fdecks&u=https%3A%2F%2Fwww.tcgplayer.com%2Fsearch%2Fdecks%3FproductLineName%3Dmagic%26q%3DClive%252C%2BIfrit%2527s%2BDominant%2B%252F%252F%2BIfrit%252C%2BWarden%2Bof%2BInferno"
+ },
+ "released_at": "2025-06-13",
+ "reprint": false,
+ "reserved": false,
+ "resource_id": "85A59B99F3DF5F922C6E13373E676C79287B7266CA908A73EC3CD65161CACBEE",
+ "rulings_uri": "https://api.scryfall.com/cards/9a069e96-2786-493d-aca8-f70611435dbe/rulings",
+ "scryfall_set_uri": "https://scryfall.com/sets/fin?utm_source=api",
+ "scryfall_uri": "https://scryfall.com/card/fin/133/clive-ifrits-dominant-ifrit-warden-of-inferno?utm_source=api",
+ "security_stamp": "triangle",
+ "set": "fin",
+ "set_id": "d7beb4b7-e1ff-4d35-ab07-5700f17ea1ea",
+ "set_name": "Final Fantasy",
+ "set_search_uri": "https://api.scryfall.com/cards/search?order=set&q=e%3Afin&unique=prints",
+ "set_type": "expansion",
+ "set_uri": "https://api.scryfall.com/sets/d7beb4b7-e1ff-4d35-ab07-5700f17ea1ea",
+ "story_spotlight": false,
+ "tcgplayer_id": 630957,
+ "textless": false,
+ "type_line": "Legendary Creature — Human Noble Warrior // Legendary Enchantment Creature — Saga Demon",
+ "uri": "https://api.scryfall.com/cards/9a069e96-2786-493d-aca8-f70611435dbe",
+ "variation": false
+}

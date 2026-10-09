@@ -4235,6 +4235,42 @@
 			"method": "GET",
 			"path": "/cards/search?q=-new%3Anonfoil+%21%22Soltari+Priest%22&unique=prints",
 			"note": "2026-10-09. Every printing but tmp/46."
+		},
+		{
+			"name": "new-flavor-ignores-case-and-punctuation",
+			"method": "GET",
+			"path": "/cards/search?q=new%3Aflavor+%21%22Viashino+Sandstalker%22&unique=prints",
+			"note": "2026-10-09. mgb/8 alone of eight printings: vis/100 capitalises \"Sandstalkers\" and is the same text (27,459 printings corpus-wide; case, accents, spacing and ASCII punctuation are not compared)."
+		},
+		{
+			"name": "new-flavor-aether-is-one-word",
+			"method": "GET",
+			"path": "/cards/search?q=new%3Aflavor+%21%22Essence+Scatter%22&unique=prints",
+			"note": "2026-10-09. Eight texts over fifteen printings: m13/50 prints \"Æther\" and ddt/6 \"aether\", one text; the Spanish ps11/35 is its own."
+		},
+		{
+			"name": "new-flavor-the-horizontal-bar-is-not-the-em-dash",
+			"method": "GET",
+			"path": "/cards/search?q=new%3Aflavor+%21%22Beast+Within%22&unique=prints",
+			"note": "2026-10-09. Seven, ddl/69 and cn2/174 both among them: the two attributions differ by one character, — against ―, and that one is compared."
+		},
+		{
+			"name": "new-flavor-serialized-printings-are-outside",
+			"method": "GET",
+			"path": "/cards/search?q=new%3Aflavor+%21%22Liquimetal+Coating%22&unique=prints",
+			"note": "2026-10-09. som/171 and brr/91, never the serialized brr/91z, whose id is the lower of the two (0 serialized printings among the 27,459)."
+		},
+		{
+			"name": "new-flavor-a-back-face-only-line-is-never-new",
+			"method": "GET",
+			"path": "/cards/search?q=new%3Aflavor+%21%22Clive%2C+Ifrit%27s+Dominant%22&unique=prints",
+			"note": "2026-10-09. 404: fin/133 carries the line on its back face and fin/385 the same line on its front; the first leads and is not flagged, so neither is new."
+		},
+		{
+			"name": "new-ft-and-new-flavortext-are-new-flavor",
+			"method": "GET",
+			"path": "/cards/search?q=%28new%3Aft+or+new%3Aflavortext%29+e%3Akhm+t%3Agod&unique=prints",
+			"note": "2026-10-09. 5 of the 25: the gods whose front face has a flavor text."
 		}
 	]
 }

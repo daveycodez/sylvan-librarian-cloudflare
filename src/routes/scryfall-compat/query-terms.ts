@@ -2122,6 +2122,10 @@ const NEW_KEYWORDS: ReadonlySet<string> = new Set(["new"]);
  *                    Magic Online's foils. 29,668 of 29,668.
  *   nonfoil          the card's first PAPER printing whose `finishes` hold `nonfoil`. 35,018 of
  *                    35,018.
+ *   flavor, ft, flavortext   the card's first printing with each flavor text, outside memorabilia
+ *                    and serialized printings; two texts are one when they differ only in case,
+ *                    accents, spacing or punctuation. A faced printing's text is its faces' in turn,
+ *                    and one whose front has none is never new. 27,459 of 27,459.
  *
  * None forces extras or widens, and each negation is the complement over every row of every
  * language (`-new:card lang:any` is 510,145 of 545,303).
@@ -2142,6 +2146,9 @@ const NEW_VALUE_IS_TAGS: ReadonlyMap<string, string> = new Map([
 	["games", "newgame"],
 	["foil", "newfoil"],
 	["nonfoil", "newnonfoil"],
+	["flavor", "newflavor"],
+	["ft", "newflavor"],
+	["flavortext", "newflavor"],
 ]);
 
 /**
@@ -2150,18 +2157,9 @@ const NEW_VALUE_IS_TAGS: ReadonlyMap<string, string> = new Map([
  * parse, as `new:` did before — never dropped, which would answer wider than Scryfall does, and
  * never guessed:
  *
- *   language, lang, art, flavor, ft, flavortext, artist, illustration
+ *   language, lang, art, artist, illustration
  */
-const NEW_HONORED_UNANSWERED: ReadonlySet<string> = new Set([
-	"language",
-	"lang",
-	"art",
-	"flavor",
-	"ft",
-	"flavortext",
-	"artist",
-	"illustration",
-]);
+const NEW_HONORED_UNANSWERED: ReadonlySet<string> = new Set(["language", "lang", "art", "artist", "illustration"]);
 
 const STRICT_REGEX_KEYWORDS: ReadonlySet<string> = new Set([
 	...STAMP_KEYWORDS,

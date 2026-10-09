@@ -389,6 +389,8 @@ export const NEW_RARITY_IS_VALUE = "newrarity";
  *             all 42,122 read, and one over, `new:mtgo`'s
  *   newfoil   `new:foil` — the card's first paper printing in foil; 29,668 of 29,668
  *   newnonfoil `new:nonfoil` — the card's first paper printing in nonfoil; 35,018 of 35,018
+ *   newflavor `new:flavor`, `new:ft`, `new:flavortext` — the card's first printing with each flavor
+ *             text, compared without case, accents or punctuation; 27,459 of 27,459
  */
 export const NEW_FLAG_IS_VALUES: readonly string[] = [
 	"newcard",
@@ -400,6 +402,7 @@ export const NEW_FLAG_IS_VALUES: readonly string[] = [
 	"newgame",
 	"newfoil",
 	"newnonfoil",
+	"newflavor",
 ];
 
 /**

@@ -1,0 +1,148 @@
+{
+ "all_parts": [
+  {
+   "component": "token",
+   "id": "6b28a5db-d095-4214-ba0c-14b1aeddb1eb",
+   "name": "Beast",
+   "object": "related_card",
+   "type_line": "Token Creature — Beast",
+   "uri": "https://api.scryfall.com/cards/6b28a5db-d095-4214-ba0c-14b1aeddb1eb"
+  },
+  {
+   "component": "combo_piece",
+   "id": "76f8a300-44a8-4a70-93d1-64333c13f6f2",
+   "name": "Beast Within",
+   "object": "related_card",
+   "type_line": "Instant",
+   "uri": "https://api.scryfall.com/cards/76f8a300-44a8-4a70-93d1-64333c13f6f2"
+  }
+ ],
+ "artist": "Jesper Ejsing",
+ "artist_ids": [
+  "a5f8354a-8b51-4e59-96b2-0e3aeae4fa1d"
+ ],
+ "booster": false,
+ "border_color": "black",
+ "card_back_id": "0aeebaf5-8c7d-4636-9e82-8c27447861f7",
+ "cardmarket_id": 263770,
+ "cmc": 3.0,
+ "collector_number": "69",
+ "color_identity": [
+  "G"
+ ],
+ "colors": [
+  "G"
+ ],
+ "digital": false,
+ "edhrec_rank": 25,
+ "finishes": [
+  "nonfoil"
+ ],
+ "flavor_text": "\"Monsters dwell in every heart. We only think civilization tames them.\"\n—Euphemia, Nexus watcher",
+ "foil": false,
+ "frame": "2003",
+ "full_art": false,
+ "game_changer": false,
+ "games": [
+  "paper",
+  "mtgo"
+ ],
+ "highres_image": true,
+ "id": "76f8a300-44a8-4a70-93d1-64333c13f6f2",
+ "illustration_id": "8ec245f1-fcfe-4a98-9e13-dd69e2483388",
+ "image_status": "highres_scan",
+ "image_updated_at": "2026-07-13T10:50:34Z",
+ "image_uris": {
+  "art": "https://cards.scryfall.io/art/front/7/6/76f8a300-44a8-4a70-93d1-64333c13f6f2.webp?1783939834",
+  "art_crop": "https://cards.scryfall.io/art_crop/front/7/6/76f8a300-44a8-4a70-93d1-64333c13f6f2.jpg?1783939834",
+  "border_crop": "https://cards.scryfall.io/border_crop/front/7/6/76f8a300-44a8-4a70-93d1-64333c13f6f2.jpg?1783939834",
+  "crop": "https://cards.scryfall.io/crop/front/7/6/76f8a300-44a8-4a70-93d1-64333c13f6f2.webp?1783939834",
+  "display": "https://cards.scryfall.io/display/front/7/6/76f8a300-44a8-4a70-93d1-64333c13f6f2.webp?1783939834",
+  "grid": "https://cards.scryfall.io/grid/front/7/6/76f8a300-44a8-4a70-93d1-64333c13f6f2.webp?1783939834",
+  "large": "https://cards.scryfall.io/large/front/7/6/76f8a300-44a8-4a70-93d1-64333c13f6f2.jpg?1783939834",
+  "normal": "https://cards.scryfall.io/normal/front/7/6/76f8a300-44a8-4a70-93d1-64333c13f6f2.jpg?1783939834",
+  "png": "https://cards.scryfall.io/png/front/7/6/76f8a300-44a8-4a70-93d1-64333c13f6f2.png?1783939834",
+  "small": "https://cards.scryfall.io/small/front/7/6/76f8a300-44a8-4a70-93d1-64333c13f6f2.jpg?1783939834",
+  "thumb": "https://cards.scryfall.io/thumb/front/7/6/76f8a300-44a8-4a70-93d1-64333c13f6f2.webp?1783939834"
+ },
+ "keywords": [],
+ "lang": "en",
+ "layout": "normal",
+ "legalities": {
+  "alchemy": "not_legal",
+  "brawl": "legal",
+  "commander": "legal",
+  "competitivebrawl": "legal",
+  "duel": "legal",
+  "future": "not_legal",
+  "gladiator": "legal",
+  "historic": "legal",
+  "legacy": "legal",
+  "modern": "legal",
+  "oathbreaker": "legal",
+  "oldschool": "not_legal",
+  "pauper": "not_legal",
+  "paupercommander": "not_legal",
+  "penny": "not_legal",
+  "pioneer": "not_legal",
+  "predh": "legal",
+  "premodern": "not_legal",
+  "standard": "not_legal",
+  "standardbrawl": "not_legal",
+  "timeless": "legal",
+  "tlr": "legal",
+  "vintage": "legal"
+ },
+ "mana_cost": "{2}{G}",
+ "mtgo_foil_id": 49986,
+ "mtgo_id": 49985,
+ "multiverse_ids": [
+  373352
+ ],
+ "name": "Beast Within",
+ "nonfoil": true,
+ "object": "card",
+ "oracle_id": "7735eeba-693b-47e2-bd51-414379cf1016",
+ "oracle_text": "Destroy target permanent. Its controller creates a 3/3 green Beast creature token.",
+ "oversized": false,
+ "prices": {
+  "eur": "0.77",
+  "eur_foil": null,
+  "tix": "0.24",
+  "usd": "0.69",
+  "usd_etched": null,
+  "usd_foil": null
+ },
+ "prints_search_uri": "https://api.scryfall.com/cards/search?order=released&q=oracleid%3A7735eeba-693b-47e2-bd51-414379cf1016&unique=prints",
+ "promo": false,
+ "purchase_uris": {
+  "cardhoarder": "https://www.cardhoarder.com/cards/49985?affiliate_id=scryfall&ref=card-profile&utm_campaign=affiliate&utm_medium=card&utm_source=scryfall",
+  "cardmarket": "https://www.cardmarket.com/en/Magic/Products?idProduct=263770&referrer=scryfall&utm_campaign=card_prices&utm_medium=text&utm_source=scryfall",
+  "tcgplayer": "https://partner.tcgplayer.com/c/4931599/1830156/21018?subId1=api&u=https%3A%2F%2Fwww.tcgplayer.com%2Fproduct%2F71074%3Fpage%3D1"
+ },
+ "rarity": "uncommon",
+ "related_uris": {
+  "edhrec": "https://edhrec.com/route/?cc=Beast+Within",
+  "gatherer": "https://gatherer.wizards.com/Pages/Card/Details.aspx?multiverseid=373352&printed=false",
+  "tcgplayer_infinite_articles": "https://partner.tcgplayer.com/c/4931599/1830156/21018?subId1=api&trafcat=tcgplayer.com%2Fsearch%2Farticles&u=https%3A%2F%2Fwww.tcgplayer.com%2Fsearch%2Farticles%3FproductLineName%3Dmagic%26q%3DBeast%2BWithin",
+  "tcgplayer_infinite_decks": "https://partner.tcgplayer.com/c/4931599/1830156/21018?subId1=api&trafcat=tcgplayer.com%2Fsearch%2Fdecks&u=https%3A%2F%2Fwww.tcgplayer.com%2Fsearch%2Fdecks%3FproductLineName%3Dmagic%26q%3DBeast%2BWithin"
+ },
+ "released_at": "2013-09-06",
+ "reprint": true,
+ "reserved": false,
+ "rulings_uri": "https://api.scryfall.com/cards/76f8a300-44a8-4a70-93d1-64333c13f6f2/rulings",
+ "scryfall_set_uri": "https://scryfall.com/sets/ddl?utm_source=api",
+ "scryfall_uri": "https://scryfall.com/card/ddl/69/beast-within?utm_source=api",
+ "set": "ddl",
+ "set_id": "7dfc5406-c4cf-479d-b005-11e578752dc9",
+ "set_name": "Duel Decks: Heroes vs. Monsters",
+ "set_search_uri": "https://api.scryfall.com/cards/search?order=set&q=e%3Addl&unique=prints",
+ "set_type": "duel_deck",
+ "set_uri": "https://api.scryfall.com/sets/7dfc5406-c4cf-479d-b005-11e578752dc9",
+ "story_spotlight": false,
+ "tcgplayer_id": 71074,
+ "textless": false,
+ "type_line": "Instant",
+ "uri": "https://api.scryfall.com/cards/76f8a300-44a8-4a70-93d1-64333c13f6f2",
+ "variation": false
+}

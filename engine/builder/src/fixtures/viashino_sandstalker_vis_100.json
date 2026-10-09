@@ -1,0 +1,135 @@
+{
+ "artist": "Andrew Robinson",
+ "artist_ids": [
+  "cb577db7-7f47-4f78-8682-6eaef8a77bd1"
+ ],
+ "booster": true,
+ "border_color": "black",
+ "card_back_id": "0aeebaf5-8c7d-4636-9e82-8c27447861f7",
+ "cardmarket_id": 8501,
+ "cmc": 3.0,
+ "collector_number": "100",
+ "color_identity": [
+  "R"
+ ],
+ "colors": [
+  "R"
+ ],
+ "digital": false,
+ "edhrec_rank": 26339,
+ "finishes": [
+  "nonfoil"
+ ],
+ "flavor_text": "\"Some believe Sandstalkers to be illusions; those with scars know better.\"\n—*Zhalfirin Guide to the Desert*",
+ "foil": false,
+ "frame": "1997",
+ "full_art": false,
+ "game_changer": false,
+ "games": [
+  "paper",
+  "mtgo"
+ ],
+ "highres_image": true,
+ "id": "01770e13-ebd4-4c83-9e72-99374239a63d",
+ "illustration_id": "54e90361-f5c6-42d7-a918-69eeb8d0ef7b",
+ "image_status": "highres_scan",
+ "image_updated_at": "2026-07-13T12:49:44Z",
+ "image_uris": {
+  "art": "https://cards.scryfall.io/art/front/0/1/01770e13-ebd4-4c83-9e72-99374239a63d.webp?1783946984",
+  "art_crop": "https://cards.scryfall.io/art_crop/front/0/1/01770e13-ebd4-4c83-9e72-99374239a63d.jpg?1783946984",
+  "border_crop": "https://cards.scryfall.io/border_crop/front/0/1/01770e13-ebd4-4c83-9e72-99374239a63d.jpg?1783946984",
+  "crop": "https://cards.scryfall.io/crop/front/0/1/01770e13-ebd4-4c83-9e72-99374239a63d.webp?1783946984",
+  "display": "https://cards.scryfall.io/display/front/0/1/01770e13-ebd4-4c83-9e72-99374239a63d.webp?1783946984",
+  "grid": "https://cards.scryfall.io/grid/front/0/1/01770e13-ebd4-4c83-9e72-99374239a63d.webp?1783946984",
+  "large": "https://cards.scryfall.io/large/front/0/1/01770e13-ebd4-4c83-9e72-99374239a63d.jpg?1783946984",
+  "normal": "https://cards.scryfall.io/normal/front/0/1/01770e13-ebd4-4c83-9e72-99374239a63d.jpg?1783946984",
+  "png": "https://cards.scryfall.io/png/front/0/1/01770e13-ebd4-4c83-9e72-99374239a63d.png?1783946984",
+  "small": "https://cards.scryfall.io/small/front/0/1/01770e13-ebd4-4c83-9e72-99374239a63d.jpg?1783946984",
+  "thumb": "https://cards.scryfall.io/thumb/front/0/1/01770e13-ebd4-4c83-9e72-99374239a63d.webp?1783946984"
+ },
+ "keywords": [
+  "Haste"
+ ],
+ "lang": "en",
+ "layout": "normal",
+ "legalities": {
+  "alchemy": "not_legal",
+  "brawl": "not_legal",
+  "commander": "legal",
+  "competitivebrawl": "not_legal",
+  "duel": "legal",
+  "future": "not_legal",
+  "gladiator": "not_legal",
+  "historic": "not_legal",
+  "legacy": "legal",
+  "modern": "legal",
+  "oathbreaker": "legal",
+  "oldschool": "not_legal",
+  "pauper": "not_legal",
+  "paupercommander": "not_legal",
+  "penny": "legal",
+  "pioneer": "not_legal",
+  "predh": "legal",
+  "premodern": "legal",
+  "standard": "not_legal",
+  "standardbrawl": "not_legal",
+  "timeless": "not_legal",
+  "tlr": "legal",
+  "vintage": "legal"
+ },
+ "mana_cost": "{1}{R}{R}",
+ "mtgo_foil_id": 7784,
+ "mtgo_id": 7783,
+ "multiverse_ids": [
+  3707
+ ],
+ "name": "Viashino Sandstalker",
+ "nonfoil": true,
+ "object": "card",
+ "oracle_id": "cbfccfc0-3117-4ca0-b7ce-8e2d67ec49ab",
+ "oracle_text": "Haste (This creature can attack and {T} as soon as it comes under your control.)\nAt the beginning of the end step, return this creature to its owner's hand. (Return it only if it's on the battlefield.)",
+ "oversized": false,
+ "penny_rank": 10168,
+ "power": "4",
+ "prices": {
+  "eur": "0.36",
+  "eur_foil": null,
+  "tix": "0.04",
+  "usd": "0.32",
+  "usd_etched": null,
+  "usd_foil": null
+ },
+ "prints_search_uri": "https://api.scryfall.com/cards/search?order=released&q=oracleid%3Acbfccfc0-3117-4ca0-b7ce-8e2d67ec49ab&unique=prints",
+ "promo": false,
+ "purchase_uris": {
+  "cardhoarder": "https://www.cardhoarder.com/cards/7783?affiliate_id=scryfall&ref=card-profile&utm_campaign=affiliate&utm_medium=card&utm_source=scryfall",
+  "cardmarket": "https://www.cardmarket.com/en/Magic/Products?idProduct=8501&referrer=scryfall&utm_campaign=card_prices&utm_medium=text&utm_source=scryfall",
+  "tcgplayer": "https://partner.tcgplayer.com/c/4931599/1830156/21018?subId1=api&u=https%3A%2F%2Fwww.tcgplayer.com%2Fproduct%2F5957%3Fpage%3D1"
+ },
+ "rarity": "uncommon",
+ "related_uris": {
+  "edhrec": "https://edhrec.com/route/?cc=Viashino+Sandstalker",
+  "gatherer": "https://gatherer.wizards.com/Pages/Card/Details.aspx?multiverseid=3707&printed=false",
+  "tcgplayer_infinite_articles": "https://partner.tcgplayer.com/c/4931599/1830156/21018?subId1=api&trafcat=tcgplayer.com%2Fsearch%2Farticles&u=https%3A%2F%2Fwww.tcgplayer.com%2Fsearch%2Farticles%3FproductLineName%3Dmagic%26q%3DViashino%2BSandstalker",
+  "tcgplayer_infinite_decks": "https://partner.tcgplayer.com/c/4931599/1830156/21018?subId1=api&trafcat=tcgplayer.com%2Fsearch%2Fdecks&u=https%3A%2F%2Fwww.tcgplayer.com%2Fsearch%2Fdecks%3FproductLineName%3Dmagic%26q%3DViashino%2BSandstalker"
+ },
+ "released_at": "1997-02-03",
+ "reprint": false,
+ "reserved": false,
+ "rulings_uri": "https://api.scryfall.com/cards/01770e13-ebd4-4c83-9e72-99374239a63d/rulings",
+ "scryfall_set_uri": "https://scryfall.com/sets/vis?utm_source=api",
+ "scryfall_uri": "https://scryfall.com/card/vis/100/viashino-sandstalker?utm_source=api",
+ "set": "vis",
+ "set_id": "2c32f1a9-7921-4826-bea0-80bbac70532c",
+ "set_name": "Visions",
+ "set_search_uri": "https://api.scryfall.com/cards/search?order=set&q=e%3Avis&unique=prints",
+ "set_type": "expansion",
+ "set_uri": "https://api.scryfall.com/sets/2c32f1a9-7921-4826-bea0-80bbac70532c",
+ "story_spotlight": false,
+ "tcgplayer_id": 5957,
+ "textless": false,
+ "toughness": "2",
+ "type_line": "Creature — Lizard Warrior",
+ "uri": "https://api.scryfall.com/cards/01770e13-ebd4-4c83-9e72-99374239a63d",
+ "variation": false
+}

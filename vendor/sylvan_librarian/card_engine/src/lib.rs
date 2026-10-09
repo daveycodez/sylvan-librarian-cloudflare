@@ -5443,6 +5443,10 @@ pub(crate) const NEW_FOIL: u32 = 1 << 6;
 /// `new:nonfoil`.
 pub(crate) const NEW_NONFOIL: u32 = 1 << 7;
 
+/// `Printing::new_flags`: the printing is the first of its card with its FLAVOR TEXT — `new:flavor`,
+/// and `new:ft`, `new:flavortext`.
+pub(crate) const NEW_FLAVOR: u32 = 1 << 8;
+
 /// The engine's `is:` spelling of each `new:` value `Printing::new_flags` answers, and the bits
 /// it reads. None of these is a Scryfall `is:` value: the compat surface writes `new:<value>` as
 /// one (query-terms.ts NEW_VALUE_IS_TAGS) and drops the spelling when it is typed.
@@ -5456,6 +5460,7 @@ pub(crate) const NEW_FLAG_IS_VALUES: &[(&str, u32)] = &[
     ("newgame", NEW_GAME),
     ("newfoil", NEW_FOIL),
     ("newnonfoil", NEW_NONFOIL),
+    ("newflavor", NEW_FLAVOR),
 ];
 
 /// The printings Scryfall's own order puts FIRST among the rows of their card that share their
@@ -5511,6 +5516,14 @@ const NEW_ORDER_LEADS: &[u128] = &[0xbc9c_39d1_1e10_4cd3_a4b1_b6eb_7c1a_0b65];
 ///   `NEW_NONFOIL` new:nonfoil — 35,018 printings. Eligible: a PAPER printing whose `finishes`
 ///               hold `nonfoil` (with every game eligible 228 are missing). One group a card.
 ///               35,018 of 35,018.
+///   `NEW_FLAVOR` new:flavor, new:ft, new:flavortext — 27,459 printings. Eligible: a printing with a
+///               flavor text that is not SERIALIZED (0 of the list are; with them 19 Brothers'
+///               War schematics go wrong — `brr/91z` carries a lower id than `brr/91`). The
+///               group is the text as `push_flavor_key` reads it, a faced printing's faces in
+///               turn (Jace Beleren's reversible `sld/1454` adds a back to `sld/746`'s front and
+///               both are new). And a printing whose FRONT has no flavor leads without being
+///               flagged, as a variation does: Clive's `fin/133` carries its line on the back,
+///               `fin/385` the same line on the front, and neither is new. 27,459 of 27,459.
 ///
 /// What the values share, each clause measured rather than read off the name:
 ///
@@ -5529,7 +5542,13 @@ const NEW_ORDER_LEADS: &[u128] = &[0xbc9c_39d1_1e10_4cd3_a4b1_b6eb_7c1a_0b65];
 ///     are first wherever the order puts them (713 of the 35,158 are promos).
 ///   - NEGATION is the plain complement, over every row of every language. No value forces
 ///     extras or widens.
-fn assign_new_flags(printings: &mut [Printing], offsets: &[u32], foreign: &mut [Printing], coll_vocab: &[String]) {
+fn assign_new_flags(
+    printings: &mut [Printing],
+    offsets: &[u32],
+    foreign: &mut [Printing],
+    coll_vocab: &[String],
+    strings: &[String],
+) {
     let vid = |word: &str| coll_vocab.iter().position(|s| s == word).and_then(|i| u16::try_from(i).ok());
     let memorabilia = vid("memorabilia");
     // The frame words as `card_frame_data` holds them (the builder title-cases the frame, so
@@ -5539,6 +5558,24 @@ fn assign_new_flags(printings: &mut [Printing], offsets: &[u32], foreign: &mut [
     // `astral` and `sega` are not in the packed `games` byte; the importer's `game_*` tags hold them.
     let game_astral = vid("game_astral");
     let game_sega = vid("game_sega");
+    let serialized = vid("serialized");
+    // A printing's flavor as `new:flavor` compares it, and whether its FRONT carries any: every
+    // face's text in turn for a faced printing, the printing's own otherwise.
+    let text = |id: u32| strings.get(id as usize).map_or("", String::as_str);
+    let flavor_of = |p: &Printing| {
+        let mut flavor_key = String::new();
+        if p.faces.iter().any(|face| !text(face.flavor_text_id).is_empty()) {
+            for face in &p.faces {
+                push_flavor_key(&mut flavor_key, text(face.flavor_text_id));
+            }
+            let front = p.faces.first().is_some_and(|face| !text(face.flavor_text_id).is_empty());
+            (flavor_key, front)
+        } else {
+            push_flavor_key(&mut flavor_key, text(p.flavor_text_id));
+            let front = !flavor_key.is_empty();
+            (flavor_key, front)
+        }
+    };
     let key = |p: &Printing| {
         (
             p.released_at_int.unwrap_or(u32::MAX),
@@ -5556,6 +5593,9 @@ fn assign_new_flags(printings: &mut [Printing], offsets: &[u32], foreign: &mut [
         let rows = &mut printings[offsets[cid] as usize..offsets[cid + 1] as usize];
         // One slot a group: the row leading it so far, and the bit it earns.
         let mut firsts: Vec<(u32, u64, usize)> = Vec::new();
+        // The card's distinct flavor keys, a group each, and the rows whose front has no flavor.
+        let mut flavors: Vec<String> = Vec::new();
+        let mut backs_only: Vec<usize> = Vec::new();
         for (i, p) in rows.iter().enumerate() {
             if Some(p.compat.set_type_id) == memorabilia {
                 continue;
@@ -5590,11 +5630,73 @@ fn assign_new_flags(printings: &mut [Printing], offsets: &[u32], foreign: &mut [
             if p.compat.games & GAME_PAPER != 0 && p.compat.finishes & FINISH_NONFOIL != 0 {
                 lead(NEW_NONFOIL, 0);
             }
+            if !serialized.is_some_and(|tag| p.compat.promo_types.contains(&tag)) {
+                let (flavor_key, front) = flavor_of(p);
+                if !flavor_key.is_empty() {
+                    let group = flavors.iter().position(|seen| *seen == flavor_key).unwrap_or_else(|| {
+                        flavors.push(flavor_key);
+                        flavors.len() - 1
+                    });
+                    lead(NEW_FLAVOR, group as u64);
+                    if !front {
+                        backs_only.push(i);
+                    }
+                }
+            }
         }
         for (bit, _, i) in firsts {
-            if rows[i].compat.flags & COMPAT_VARIATION == 0 {
+            // A variation leads without being flagged, and so does a flavor only a back face has.
+            let unflagged = rows[i].compat.flags & COMPAT_VARIATION != 0 || (bit == NEW_FLAVOR && backs_only.contains(&i));
+            if !unflagged {
                 rows[i].new_flags |= bit;
             }
+        }
+    }
+}
+
+/// A flavor text as `new:flavor` compares two of them, appended to `out`: lower-cased, its
+/// accents folded, and every ASCII punctuation mark, every space, the em dash and the ellipsis
+/// dropped. Each is measured (`assign_new_flags`): the comma of "into myself, I felt", the
+/// asterisks of "*Tales of Life*", the capital of "Sandstalkers", the line break before an
+/// attribution, "Æther" beside "aether" and "Éowyn" beside "Eowyn" make no new flavor; the
+/// horizontal bar `―` of cn2/174's attribution against the em dash `—` of ddl/69's does, so
+/// what is dropped beyond ASCII is the em dash and not punctuation at large.
+///
+/// The fold is a table and not NFKD because this crate carries no normalisation data: the 24
+/// accented Latin letters the canonical flavor texts hold (2026-10-08) and their neighbours, the
+/// three ligatures, and the combining marks themselves. Any other character stands as written.
+fn push_flavor_key(out: &mut String, text: &str) {
+    for c in text.chars().flat_map(char::to_lowercase) {
+        match c {
+            'a'..='z' | '0'..='9' => out.push(c),
+            c if c.is_ascii() => {}
+            '—' | '…' | '\u{300}'..='\u{36f}' => {}
+            c if c.is_whitespace() => {}
+            'æ' => out.push_str("ae"),
+            'œ' => out.push_str("oe"),
+            'ß' => out.push_str("ss"),
+            c => out.push(match c {
+                'à'..='å' | 'ā' | 'ă' | 'ą' => 'a',
+                'ç' | 'ć' | 'ĉ' | 'ċ' | 'č' => 'c',
+                'ď' => 'd',
+                'è'..='ë' | 'ē' | 'ĕ' | 'ė' | 'ę' | 'ě' => 'e',
+                'ĝ' | 'ğ' | 'ġ' | 'ģ' => 'g',
+                'ĥ' => 'h',
+                'ì'..='ï' | 'ĩ' | 'ī' | 'ĭ' | 'į' => 'i',
+                'ĵ' => 'j',
+                'ķ' => 'k',
+                'ĺ' | 'ļ' | 'ľ' => 'l',
+                'ñ' | 'ń' | 'ņ' | 'ň' => 'n',
+                'ò'..='ö' | 'ō' | 'ŏ' | 'ő' => 'o',
+                'ŕ' | 'ŗ' | 'ř' => 'r',
+                'ś' | 'ŝ' | 'ş' | 'š' => 's',
+                'ţ' | 'ť' => 't',
+                'ù'..='ü' | 'ũ' | 'ū' | 'ŭ' | 'ů' | 'ű' | 'ų' => 'u',
+                'ŵ' => 'w',
+                'ý' | 'ÿ' | 'ŷ' => 'y',
+                'ź' | 'ż' | 'ž' => 'z',
+                other => other,
+            }),
         }
     }
 }
@@ -21658,7 +21760,9 @@ const ARCHIVE_MAGIC: [u8; 8] = *b"ATCARDS\0";
 //                store. No layout moves. Paired with STORE_CONTENT_GENERATION 82.
 //   2026100908 — NEW:NONFOIL (LOCAL PATCH). Bit 7 of `Printing::new_flags`, clear in every older
 //                store. No layout moves. Paired with STORE_CONTENT_GENERATION 83.
-const ARCHIVE_FORMAT_VERSION: u32 = 2026100908;
+//   2026100909 — NEW:FLAVOR (LOCAL PATCH). Bit 8 of `Printing::new_flags`, clear in every older
+//                store. No layout moves. Paired with STORE_CONTENT_GENERATION 84.
+const ARCHIVE_FORMAT_VERSION: u32 = 2026100909;
 const ARCHIVE_HEADER_LEN: usize = 16;
 
 fn archive_header() -> [u8; ARCHIVE_HEADER_LEN] {
@@ -22586,7 +22690,7 @@ fn build_card_data_sorted(
     // ...and `new:rarity`, over the canonical rows: needs the release batch `assign_set_ranks` set.
     assign_new_rarity_flags(&mut printings, &offsets, &mut foreign, &coll_vocab, &strings);
     // ...and the other `new:` values, in the same order: `new_flags`.
-    assign_new_flags(&mut printings, &offsets, &mut foreign, &coll_vocab);
+    assign_new_flags(&mut printings, &offsets, &mut foreign, &coll_vocab, &strings);
     // Same walk as the line above — canonical rows AND the annex — because `in:ja` is exactly the
     // question the annex exists to answer. Interns the words it needs, so it runs before
     // `coll_vocab_sorted` below is cut.

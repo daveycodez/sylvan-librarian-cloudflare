@@ -315,3 +315,53 @@ fn new_nonfoil_is_the_first_paper_printing_in_nonfoil() {
         ["40k/153★/en", "f02/1/en", "mb2/263/en", "pbng/31★/en", "ybro/24/en"]
     );
 }
+
+#[test]
+fn new_flavor_is_the_first_printing_with_each_flavor_text_as_scryfall_compares_them() {
+    let store = store_of(&[
+        // CASE: Visions capitalises "Sandstalkers" where the 1996 Multiverse Gift Box does not.
+        ("viashino_sandstalker_mgb_8", true),
+        ("viashino_sandstalker_vis_100", true),
+        // ASCII PUNCTUATION, and the release batch: the prerelease promo adds a comma to "into
+        // myself, I felt" and is the date's later batch.
+        ("one_with_the_machine_m19_66", true),
+        ("one_with_the_machine_pm19_66s", true),
+        // ACCENTS AND LIGATURES: "Æther" in Magic 2013 and "aether" in the 2017 duel deck are one
+        // text; Amonkhet's between them is another.
+        ("essence_scatter_m13_50", true),
+        ("essence_scatter_akh_52", true),
+        ("essence_scatter_ddt_6", true),
+        // NOT EVERY DASH: ddl/69 and c16/141 attribute with an em dash, cn2/174 with a horizontal
+        // bar, and the bar makes a new text.
+        ("beast_within_ddl_69", true),
+        ("beast_within_cn2_174", true),
+        ("beast_within_c16_141", true),
+        // SERIALIZED printings are outside: `brr/91z` carries the lower id and `brr/91` is new.
+        // `brr/28` reprints Scars of Mirrodin's text.
+        ("liquimetal_coating_som_171", true),
+        ("liquimetal_coating_brr_28", true),
+        ("liquimetal_coating_brr_91", true),
+        ("liquimetal_coating_brr_91z", true),
+        // A FLAVOR ONLY THE BACK FACE HAS leads without being flagged: `fin/133` prints Clive's
+        // line on the back, `fin/385` the same line on the front, and neither is new.
+        ("clive_fin_133", true),
+        ("clive_fin_385", true),
+    ]);
+    assert_eq!(
+        rows(&store, &is("newflavor")),
+        ["akh/52/en", "brr/91/en", "cn2/174/en", "ddl/69/en", "m13/50/en", "m19/66/en", "mgb/8/en", "som/171/en"]
+    );
+    assert_eq!(
+        rows(&store, &not(is("newflavor"))),
+        [
+            "brr/28/en",
+            "brr/91z/en",
+            "c16/141/en",
+            "ddt/6/en",
+            "fin/133/en",
+            "fin/385/en",
+            "pm19/66s/en",
+            "vis/100/en"
+        ]
+    );
+}
