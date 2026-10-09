@@ -217,3 +217,17 @@ fn new_astral_is_the_first_printing_whose_games_hold_astral() {
     assert_eq!(rows(&store, &is("newastral")), ["past/1/en", "past/2/en"]);
     assert_eq!(rows(&store, &not(is("newastral"))), ["ice/268/en", "psdg/1/ja", "ybro/24/en"]);
 }
+
+#[test]
+fn new_sega_is_the_first_printing_whose_games_hold_sega() {
+    // As `astral`: the importer's `game_sega` tag. The ten cards are Japanese, canonical rows.
+    let store = store_of(&[
+        ("sega_psdg_1_ja", true),
+        ("sega_psdg_2_ja", true),
+        ("astral_past_1", true),
+        ("rusko_clockmaker_ybro_24", true),
+        ("thermokarst_ice_268", true),
+    ]);
+    assert_eq!(rows(&store, &is("newsega")), ["psdg/1/ja", "psdg/2/ja"]);
+    assert_eq!(rows(&store, &not(is("newsega"))), ["ice/268/en", "past/1/en", "ybro/24/en"]);
+}

@@ -2114,6 +2114,8 @@ const NEW_KEYWORDS: ReadonlySet<string> = new Set(["new"]);
  *   arena, mtga      the card's first printing whose `games` hold `arena`. 16,284 of 16,284.
  *   astral           the card's first printing whose `games` hold `astral`: the twelve Astral
  *                    cards, past/1-12. 12 of 12 (extras in; a 404 without, as `game:astral` is).
+ *   sega             the card's first printing whose `games` hold `sega`: the ten Dreamcast
+ *                    cards, psdg/1-10, Japanese. 10 of 10 (extras in; a 404 without).
  *
  * None forces extras or widens, and each negation is the complement over every row of every
  * language (`-new:card lang:any` is 510,145 of 545,303).
@@ -2129,6 +2131,7 @@ const NEW_VALUE_IS_TAGS: ReadonlyMap<string, string> = new Map([
 	["arena", "newarena"],
 	["mtga", "newarena"],
 	["astral", "newastral"],
+	["sega", "newsega"],
 ]);
 
 /**
@@ -2138,7 +2141,7 @@ const NEW_VALUE_IS_TAGS: ReadonlyMap<string, string> = new Map([
  * never guessed:
  *
  *   language, lang, art, flavor, ft, flavortext, artist, illustration, foil, nonfoil, game,
- *   games, sega
+ *   games
  */
 const NEW_HONORED_UNANSWERED: ReadonlySet<string> = new Set([
 	"language",
@@ -2153,7 +2156,6 @@ const NEW_HONORED_UNANSWERED: ReadonlySet<string> = new Set([
 	"nonfoil",
 	"game",
 	"games",
-	"sega",
 ]);
 
 const STRICT_REGEX_KEYWORDS: ReadonlySet<string> = new Set([

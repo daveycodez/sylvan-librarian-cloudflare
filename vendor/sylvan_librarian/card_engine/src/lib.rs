@@ -5427,6 +5427,10 @@ pub(crate) const NEW_ARENA: u32 = 1 << 3;
 /// game — `new:astral`.
 pub(crate) const NEW_ASTRAL: u32 = 1 << 4;
 
+/// `Printing::new_flags`: the printing is the first of its card in the SEGA Dreamcast game —
+/// `new:sega`.
+pub(crate) const NEW_SEGA: u32 = 1 << 5;
+
 /// The engine's `is:` spelling of each `new:` value `Printing::new_flags` answers, and the bits
 /// it reads. None of these is a Scryfall `is:` value: the compat surface writes `new:<value>` as
 /// one (query-terms.ts NEW_VALUE_IS_TAGS) and drops the spelling when it is typed.
@@ -5436,6 +5440,7 @@ pub(crate) const NEW_FLAG_IS_VALUES: &[(&str, u32)] = &[
     ("newmtgo", NEW_MTGO),
     ("newarena", NEW_ARENA),
     ("newastral", NEW_ASTRAL),
+    ("newsega", NEW_SEGA),
 ];
 
 /// The printings Scryfall's own order puts FIRST among the rows of their card that share their
@@ -5478,6 +5483,8 @@ const NEW_ORDER_LEADS: &[u128] = &[0xbc9c_39d1_1e10_4cd3_a4b1_b6eb_7c1a_0b65];
 ///   `NEW_ASTRAL` new:astral — 12 printings, the twelve Astral cards (`past/1`-`12`). Eligible: a
 ///               printing whose `games` hold `astral`, which the store keeps as the `game_astral`
 ///               tag (the packed `games` byte has three members). 12 of 12.
+///   `NEW_SEGA`  new:sega — 10 printings, the ten Dreamcast cards (`psdg/1`-`10`, Japanese).
+///               Eligible: a printing tagged `game_sega`. 10 of 10.
 ///
 /// What the values share, each clause measured rather than read off the name:
 ///
@@ -5505,6 +5512,7 @@ fn assign_new_flags(printings: &mut [Printing], offsets: &[u32], foreign: &mut [
     let frame_of = |p: &Printing| p.card_frame_data.iter().find(|id| frames.contains(id)).map_or(0, |id| u64::from(*id) + 1);
     // `astral` and `sega` are not in the packed `games` byte; the importer's `game_*` tags hold them.
     let game_astral = vid("game_astral");
+    let game_sega = vid("game_sega");
     let key = |p: &Printing| {
         (
             p.released_at_int.unwrap_or(u32::MAX),
@@ -5546,6 +5554,9 @@ fn assign_new_flags(printings: &mut [Printing], offsets: &[u32], foreign: &mut [
             }
             if game_astral.is_some_and(|tag| p.card_is_tags.contains(&tag)) {
                 lead(NEW_ASTRAL, 0);
+            }
+            if game_sega.is_some_and(|tag| p.card_is_tags.contains(&tag)) {
+                lead(NEW_SEGA, 0);
             }
         }
         for (bit, _, i) in firsts {
@@ -21609,7 +21620,9 @@ const ARCHIVE_MAGIC: [u8; 8] = *b"ATCARDS\0";
 //                store. No layout moves. Paired with STORE_CONTENT_GENERATION 79.
 //   2026100905 — NEW:ASTRAL (LOCAL PATCH). Bit 4 of `Printing::new_flags`, clear in every older
 //                store. No layout moves. Paired with STORE_CONTENT_GENERATION 80.
-const ARCHIVE_FORMAT_VERSION: u32 = 2026100905;
+//   2026100906 — NEW:SEGA (LOCAL PATCH). Bit 5 of `Printing::new_flags`, clear in every older
+//                store. No layout moves. Paired with STORE_CONTENT_GENERATION 81.
+const ARCHIVE_FORMAT_VERSION: u32 = 2026100906;
 const ARCHIVE_HEADER_LEN: usize = 16;
 
 fn archive_header() -> [u8; ARCHIVE_HEADER_LEN] {

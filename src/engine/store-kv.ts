@@ -2129,8 +2129,12 @@ export async function gzipBytes(bytes: Uint8Array): Promise<Uint8Array> {
  *   80 (2026-10-09): `new:astral`. The card's first printing in Astral — the order and rows of
  *      generation 76 over the printings tagged `game_astral`: 12 of 12, the list read whole. Bit 4
  *      of `new_flags`; ARCHIVE_FORMAT_VERSION 2026100904 -> 2026100905.
+ *
+ *   81 (2026-10-09): `new:sega`. The card's first printing in the Sega Dreamcast game — the order
+ *      and rows of generation 76 over the printings tagged `game_sega`: 10 of 10, the list read
+ *      whole. Bit 5 of `new_flags`; ARCHIVE_FORMAT_VERSION 2026100905 -> 2026100906.
  */
-export const STORE_CONTENT_GENERATION = 80;
+export const STORE_CONTENT_GENERATION = 81;
 
 /**
  * Chunk key for a store. Keyed by store_key, so publishes never collide.

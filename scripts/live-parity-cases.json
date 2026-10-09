@@ -4157,6 +4157,18 @@
 			"method": "GET",
 			"path": "/cards/search?q=new%3Aastral+e%3Akhm+t%3Agod&unique=prints",
 			"note": "2026-10-09. 404 with no warning: the value is honored, and nothing on the anchor is new there."
+		},
+		{
+			"name": "new-sega-is-the-ten-dreamcast-cards",
+			"method": "GET",
+			"path": "/cards/search?q=new%3Asega&unique=prints&include_extras=true",
+			"note": "2026-10-09. psdg/1-10, Japanese: each card's first (and only) printing whose games hold sega."
+		},
+		{
+			"name": "new-sega-is-honored-and-empty-without-extras",
+			"method": "GET",
+			"path": "/cards/search?q=new%3Asega+e%3Akhm+t%3Agod&unique=prints",
+			"note": "2026-10-09. 404 with no warning."
 		}
 	]
 }
