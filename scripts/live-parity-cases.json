@@ -4217,6 +4217,24 @@
 			"method": "GET",
 			"path": "/cards/search?q=-new%3Afoil+e%3Akhm+t%3Agod&unique=prints",
 			"note": "2026-10-09. 13 of the 25."
+		},
+		{
+			"name": "new-nonfoil-is-the-first-paper-nonfoil",
+			"method": "GET",
+			"path": "/cards/search?q=new%3Anonfoil+%21%22Canoptek+Wraith%22&unique=prints",
+			"note": "2026-10-09. 40k/153, not the surge foil 40k/153★ of the same date: the card's first paper printing whose finishes hold nonfoil (35,018 printings corpus-wide)."
+		},
+		{
+			"name": "new-nonfoil-a-card-first-printed-in-foil",
+			"method": "GET",
+			"path": "/cards/search?q=new%3Anonfoil+%21%22Arbiter+of+the+Ideal%22&unique=prints",
+			"note": "2026-10-09. bng/31: the prerelease promo pbng/31★ came out six days earlier and is foil only."
+		},
+		{
+			"name": "new-nonfoil-negated",
+			"method": "GET",
+			"path": "/cards/search?q=-new%3Anonfoil+%21%22Soltari+Priest%22&unique=prints",
+			"note": "2026-10-09. Every printing but tmp/46."
 		}
 	]
 }

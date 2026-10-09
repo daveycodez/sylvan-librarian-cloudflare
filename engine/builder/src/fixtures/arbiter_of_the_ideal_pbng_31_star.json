@@ -1,0 +1,135 @@
+{
+ "artist": "Johann Bodin",
+ "artist_ids": [
+  "d92e2dd9-9ef6-43f6-81f8-df87f9066983"
+ ],
+ "booster": false,
+ "border_color": "black",
+ "card_back_id": "0aeebaf5-8c7d-4636-9e82-8c27447861f7",
+ "cardmarket_id": 266068,
+ "cmc": 6.0,
+ "collector_number": "31★",
+ "color_identity": [
+  "U"
+ ],
+ "colors": [
+  "U"
+ ],
+ "digital": false,
+ "edhrec_rank": 13309,
+ "finishes": [
+  "foil"
+ ],
+ "foil": true,
+ "frame": "2003",
+ "full_art": false,
+ "game_changer": false,
+ "games": [
+  "paper"
+ ],
+ "highres_image": true,
+ "id": "340a0f1b-d555-4c6c-8efe-b95996902d0a",
+ "illustration_id": "4096b048-7294-4218-9a0a-0781fe62baa5",
+ "image_status": "highres_scan",
+ "image_updated_at": "2026-07-13T10:46:26Z",
+ "image_uris": {
+  "art": "https://cards.scryfall.io/art/front/3/4/340a0f1b-d555-4c6c-8efe-b95996902d0a.webp?1783939586",
+  "art_crop": "https://cards.scryfall.io/art_crop/front/3/4/340a0f1b-d555-4c6c-8efe-b95996902d0a.jpg?1783939586",
+  "border_crop": "https://cards.scryfall.io/border_crop/front/3/4/340a0f1b-d555-4c6c-8efe-b95996902d0a.jpg?1783939586",
+  "crop": "https://cards.scryfall.io/crop/front/3/4/340a0f1b-d555-4c6c-8efe-b95996902d0a.webp?1783939586",
+  "display": "https://cards.scryfall.io/display/front/3/4/340a0f1b-d555-4c6c-8efe-b95996902d0a.webp?1783939586",
+  "grid": "https://cards.scryfall.io/grid/front/3/4/340a0f1b-d555-4c6c-8efe-b95996902d0a.webp?1783939586",
+  "large": "https://cards.scryfall.io/large/front/3/4/340a0f1b-d555-4c6c-8efe-b95996902d0a.jpg?1783939586",
+  "normal": "https://cards.scryfall.io/normal/front/3/4/340a0f1b-d555-4c6c-8efe-b95996902d0a.jpg?1783939586",
+  "png": "https://cards.scryfall.io/png/front/3/4/340a0f1b-d555-4c6c-8efe-b95996902d0a.png?1783939586",
+  "small": "https://cards.scryfall.io/small/front/3/4/340a0f1b-d555-4c6c-8efe-b95996902d0a.jpg?1783939586",
+  "thumb": "https://cards.scryfall.io/thumb/front/3/4/340a0f1b-d555-4c6c-8efe-b95996902d0a.webp?1783939586"
+ },
+ "keywords": [
+  "Flying",
+  "Inspired"
+ ],
+ "lang": "en",
+ "layout": "normal",
+ "legalities": {
+  "alchemy": "not_legal",
+  "brawl": "not_legal",
+  "commander": "legal",
+  "competitivebrawl": "not_legal",
+  "duel": "legal",
+  "future": "not_legal",
+  "gladiator": "not_legal",
+  "historic": "not_legal",
+  "legacy": "legal",
+  "modern": "legal",
+  "oathbreaker": "legal",
+  "oldschool": "not_legal",
+  "pauper": "not_legal",
+  "paupercommander": "not_legal",
+  "penny": "legal",
+  "pioneer": "legal",
+  "predh": "not_legal",
+  "premodern": "not_legal",
+  "standard": "not_legal",
+  "standardbrawl": "not_legal",
+  "timeless": "not_legal",
+  "tlr": "not_legal",
+  "vintage": "legal"
+ },
+ "mana_cost": "{4}{U}{U}",
+ "multiverse_ids": [],
+ "name": "Arbiter of the Ideal",
+ "nonfoil": false,
+ "object": "card",
+ "oracle_id": "a6cefecd-459e-439a-a62c-689c2919b689",
+ "oracle_text": "Flying\nInspired — Whenever this creature becomes untapped, reveal the top card of your library. If it's an artifact, creature, or land card, you may put it onto the battlefield with a manifestation counter on it. That permanent is an enchantment in addition to its other types.",
+ "oversized": false,
+ "penny_rank": 12554,
+ "power": "4",
+ "prices": {
+  "eur": null,
+  "eur_foil": "0.47",
+  "tix": null,
+  "usd": null,
+  "usd_etched": null,
+  "usd_foil": "0.41"
+ },
+ "prints_search_uri": "https://api.scryfall.com/cards/search?order=released&q=oracleid%3Aa6cefecd-459e-439a-a62c-689c2919b689&unique=prints",
+ "promo": true,
+ "promo_types": [
+  "setpromo",
+  "datestamped",
+  "prerelease"
+ ],
+ "purchase_uris": {
+  "cardhoarder": "https://www.cardhoarder.com/cards?affiliate_id=scryfall&data%5Bsearch%5D=Arbiter+of+the+Ideal&ref=card-profile&utm_campaign=affiliate&utm_medium=card&utm_source=scryfall",
+  "cardmarket": "https://www.cardmarket.com/en/Magic/Products?idProduct=266068&referrer=scryfall&utm_campaign=card_prices&utm_medium=text&utm_source=scryfall",
+  "tcgplayer": "https://partner.tcgplayer.com/c/4931599/1830156/21018?subId1=api&u=https%3A%2F%2Fwww.tcgplayer.com%2Fproduct%2F79213%3Fpage%3D1"
+ },
+ "rarity": "rare",
+ "related_uris": {
+  "edhrec": "https://edhrec.com/route/?cc=Arbiter+of+the+Ideal",
+  "tcgplayer_infinite_articles": "https://partner.tcgplayer.com/c/4931599/1830156/21018?subId1=api&trafcat=tcgplayer.com%2Fsearch%2Farticles&u=https%3A%2F%2Fwww.tcgplayer.com%2Fsearch%2Farticles%3FproductLineName%3Dmagic%26q%3DArbiter%2Bof%2Bthe%2BIdeal",
+  "tcgplayer_infinite_decks": "https://partner.tcgplayer.com/c/4931599/1830156/21018?subId1=api&trafcat=tcgplayer.com%2Fsearch%2Fdecks&u=https%3A%2F%2Fwww.tcgplayer.com%2Fsearch%2Fdecks%3FproductLineName%3Dmagic%26q%3DArbiter%2Bof%2Bthe%2BIdeal"
+ },
+ "released_at": "2014-02-01",
+ "reprint": true,
+ "reserved": false,
+ "rulings_uri": "https://api.scryfall.com/cards/340a0f1b-d555-4c6c-8efe-b95996902d0a/rulings",
+ "scryfall_set_uri": "https://scryfall.com/sets/pbng?utm_source=api",
+ "scryfall_uri": "https://scryfall.com/card/pbng/31%E2%98%85/arbiter-of-the-ideal?utm_source=api",
+ "set": "pbng",
+ "set_id": "6733ed2b-f650-4db7-8d7d-d1fba3f60928",
+ "set_name": "Born of the Gods Promos",
+ "set_search_uri": "https://api.scryfall.com/cards/search?order=set&q=e%3Apbng&unique=prints",
+ "set_type": "promo",
+ "set_uri": "https://api.scryfall.com/sets/6733ed2b-f650-4db7-8d7d-d1fba3f60928",
+ "story_spotlight": false,
+ "tcgplayer_id": 79213,
+ "textless": false,
+ "toughness": "5",
+ "type_line": "Creature — Sphinx",
+ "uri": "https://api.scryfall.com/cards/340a0f1b-d555-4c6c-8efe-b95996902d0a",
+ "variation": false,
+ "watermark": "set"
+}

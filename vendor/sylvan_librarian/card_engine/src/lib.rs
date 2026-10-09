@@ -5439,6 +5439,10 @@ pub(crate) const NEW_GAME: u32 = NEW_CARD | NEW_MTGO | NEW_ARENA | NEW_ASTRAL | 
 /// `new:foil`.
 pub(crate) const NEW_FOIL: u32 = 1 << 6;
 
+/// `Printing::new_flags`: the printing is the first PAPER printing of its card in NONFOIL —
+/// `new:nonfoil`.
+pub(crate) const NEW_NONFOIL: u32 = 1 << 7;
+
 /// The engine's `is:` spelling of each `new:` value `Printing::new_flags` answers, and the bits
 /// it reads. None of these is a Scryfall `is:` value: the compat surface writes `new:<value>` as
 /// one (query-terms.ts NEW_VALUE_IS_TAGS) and drops the spelling when it is typed.
@@ -5451,6 +5455,7 @@ pub(crate) const NEW_FLAG_IS_VALUES: &[(&str, u32)] = &[
     ("newsega", NEW_SEGA),
     ("newgame", NEW_GAME),
     ("newfoil", NEW_FOIL),
+    ("newnonfoil", NEW_NONFOIL),
 ];
 
 /// The printings Scryfall's own order puts FIRST among the rows of their card that share their
@@ -5503,6 +5508,9 @@ const NEW_ORDER_LEADS: &[u128] = &[0xbc9c_39d1_1e10_4cd3_a4b1_b6eb_7c1a_0b65];
 ///               wrong), and not Magic Online's (`me2/183` is foil there, and Thermokarst has
 ///               no `new:foil` at all; with every game eligible 283 are missing). One group a
 ///               card. 29,668 of 29,668.
+///   `NEW_NONFOIL` new:nonfoil — 35,018 printings. Eligible: a PAPER printing whose `finishes`
+///               hold `nonfoil` (with every game eligible 228 are missing). One group a card.
+///               35,018 of 35,018.
 ///
 /// What the values share, each clause measured rather than read off the name:
 ///
@@ -5578,6 +5586,9 @@ fn assign_new_flags(printings: &mut [Printing], offsets: &[u32], foreign: &mut [
             }
             if p.compat.games & GAME_PAPER != 0 && p.compat.finishes & FINISH_FOIL != 0 {
                 lead(NEW_FOIL, 0);
+            }
+            if p.compat.games & GAME_PAPER != 0 && p.compat.finishes & FINISH_NONFOIL != 0 {
+                lead(NEW_NONFOIL, 0);
             }
         }
         for (bit, _, i) in firsts {
@@ -21645,7 +21656,9 @@ const ARCHIVE_MAGIC: [u8; 8] = *b"ATCARDS\0";
 //                store. No layout moves. Paired with STORE_CONTENT_GENERATION 81.
 //   2026100907 — NEW:FOIL (LOCAL PATCH). Bit 6 of `Printing::new_flags`, clear in every older
 //                store. No layout moves. Paired with STORE_CONTENT_GENERATION 82.
-const ARCHIVE_FORMAT_VERSION: u32 = 2026100907;
+//   2026100908 — NEW:NONFOIL (LOCAL PATCH). Bit 7 of `Printing::new_flags`, clear in every older
+//                store. No layout moves. Paired with STORE_CONTENT_GENERATION 83.
+const ARCHIVE_FORMAT_VERSION: u32 = 2026100908;
 const ARCHIVE_HEADER_LEN: usize = 16;
 
 fn archive_header() -> [u8; ARCHIVE_HEADER_LEN] {

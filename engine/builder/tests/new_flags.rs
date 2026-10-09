@@ -291,3 +291,27 @@ fn new_foil_is_the_first_paper_printing_in_foil() {
         ["40k/153/en", "ice/268/en", "leg/233/en", "me2/183/en", "tmp/46/en", "tsb/14/en"]
     );
 }
+
+#[test]
+fn new_nonfoil_is_the_first_paper_printing_in_nonfoil() {
+    let store = store_of(&[
+        // A card first printed in foil: the prerelease promo `pbng/31★` is foil only, and the
+        // set's `bng/31` six days later is the first nonfoil.
+        ("arbiter_of_the_ideal_pbng_31_star", true),
+        ("arbiter_of_the_ideal_bng_31", true),
+        // Of one date, the printing that has the finish: `40k/153`, not the surge foil.
+        ("canoptek_wraith_40k_153", true),
+        ("canoptek_wraith_40k_153_star", true),
+        // PAPER ONLY: Rusko's Arena printing lists `nonfoil` and is not eligible, and its one
+        // paper printing is foil — the card has no `new:nonfoil`.
+        ("rusko_clockmaker_ybro_24", true),
+        ("rusko_clockmaker_mb2_263", true),
+        ("soltari_priest_tmp_46", true),
+        ("soltari_priest_f02_1", true),
+    ]);
+    assert_eq!(rows(&store, &is("newnonfoil")), ["40k/153/en", "bng/31/en", "tmp/46/en"]);
+    assert_eq!(
+        rows(&store, &not(is("newnonfoil"))),
+        ["40k/153★/en", "f02/1/en", "mb2/263/en", "pbng/31★/en", "ybro/24/en"]
+    );
+}
