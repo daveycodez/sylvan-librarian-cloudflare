@@ -2179,22 +2179,31 @@ const NEW_VALUE_IS_TAGS: ReadonlyMap<string, string> = new Map([
 ]);
 
 /**
- * The `new:` value Scryfall HONORS that this port does not answer. The term is left as written and
- * fails to parse, as `new:` did before — never dropped, which would answer wider than Scryfall
- * does, and never guessed:
+ * The `new:` values Scryfall HONORS that this port does not answer — one list under two names.
+ * The term is left as written and fails to parse, as `new:` did before — never dropped, which
+ * would answer wider than Scryfall does, and never guessed:
  *
- *   artist   NOT EXACT, measured 2026-10-09. It is nearly every row: `new:artist lang:any` is
- *            542,546 of 545,303, so the list read is its complement, 2,757 rows. "A printing that is
- *            `new:art` by an artist an earlier printing of the card already credits" picks 2,644
- *            of the 2,756 canonical ones and 6 others. 92 of the 112 it misses are not new art at
- *            all — who/504, an extended-art printing of the painting who/288 already carries —
- *            109 of the 112 were released since 2022, and no combination of up to three of eleven
- *            other card fields beside the illustration tells them from the printings around them;
- *            and one annex row is in the list (tdm/400 in Japanese). What would make it exact is
- *            whatever Scryfall held for those printings' artwork when it flagged them, which no
+ *   artist, illustrator   NOT EXACT, measured 2026-10-09. `new:illustrator` is `new:artist`:
+ *            115,747 and 115,747, 542,546 and 542,546 with every language, and each without the
+ *            other a 404. It is nearly every row — 542,546 of 545,303 — so the list read is its
+ *            complement, 2,757 rows. The nearest rule: a printing is NOT new when it is `new:art`
+ *            (the stored bit: the artwork's first printing anywhere, read off the front face) and
+ *            shares an ARTIST ID with an earlier non-memorabilia printing of its card, a variation
+ *            never. That picks 2,663 of the 2,756 canonical rows and 2 others (the artist's name
+ *            as one string: 2,644 and 1 — "Mark Poole & Post Malone" is Mark Poole again).
+ *            92 of the 93 it misses are not new art at all — who/504, an extended-art printing of
+ *            the painting who/288 carries, where who/1095, the same treatment in surge foil, is
+ *            new; 77 of the 93 were released since 2024; under the name-string rule no
+ *            combination of up to three of eleven other card fields told its 112 from the
+ *            printings around them, and one annex row is in the list (tdm/400 in Japanese). The flag is a record of what Scryfall held when it
+ *            last decided the printing, and it moves: Ponder's sld/7185 was in the list and
+ *            sld/7186 out of it while the rule said the reverse, and hours later
+ *            `-new:artist !"Ponder"` answered sld/7186, as the rule does (sld/7185's artwork was
+ *            identified on 2026-10-08). The 92 are printings whose artwork was told apart from
+ *            its first printing's when they were flagged and has been merged since, which no
  *            bulk file carries.
  */
-const NEW_HONORED_UNANSWERED: ReadonlySet<string> = new Set(["artist"]);
+const NEW_HONORED_UNANSWERED: ReadonlySet<string> = new Set(["artist", "illustrator"]);
 
 const STRICT_REGEX_KEYWORDS: ReadonlySet<string> = new Set([
 	...STAMP_KEYWORDS,

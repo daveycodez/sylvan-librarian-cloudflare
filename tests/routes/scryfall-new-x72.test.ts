@@ -182,16 +182,22 @@ describe("the new: values the store's new_flags answer are the engine's is:new<v
 	});
 });
 
-describe("the one value Scryfall honors and this port does not answer fails to parse", () => {
+describe("the one list Scryfall honors and this port does not answer fails to parse, under both its names", () => {
 	// `new:artist` is nearly every row there (542,546 of 545,303 with every language) and follows
 	// no rule the bulk files hold — NEW_HONORED_UNANSWERED has the measurement. Refused, never
 	// dropped: dropping it would answer every printing where Scryfall leaves 2,757 out.
-	test.each(["new:artist", "new:ARTIST", "-new:artist"])("%s is kept, unwarned, and refused", (term) => {
-		const policy = scryfallTermPolicy(`${term} e:khm t:god`);
-		expect(policy.warnings).toEqual([]);
-		expect(policy.query).toBe(`${term} e:khm t:god`);
-		expect(() => parseScryfallQuery(policy.query)).toThrow();
-	});
+	// `new:illustrator` is the same list (115,747 each, and each without the other a 404); the
+	// port dropped it with the "not supported" sentence, which answered all 25 with a warning
+	// Scryfall does not give and `-new:illustrator e:khm t:god` with 25 where Scryfall has a 404.
+	test.each(["new:artist", "new:ARTIST", "-new:artist", "new:illustrator", "new:Illustrator", "-new:illustrator"])(
+		"%s is kept, unwarned, and refused",
+		(term) => {
+			const policy = scryfallTermPolicy(`${term} e:khm t:god`);
+			expect(policy.warnings).toEqual([]);
+			expect(policy.query).toBe(`${term} e:khm t:god`);
+			expect(() => parseScryfallQuery(policy.query)).toThrow();
+		},
+	);
 });
 
 describe("a value Scryfall does not know is ignored with its sentence", () => {
@@ -213,6 +219,8 @@ describe("a value Scryfall does not know is ignored with its sentence", () => {
 		["new:reprint", "new:reprint", "reprint"],
 		["new:microp", "new:microp", "microp"],
 		["new:dream", "new:dream", "dream"],
+		["new:artists", "new:artists", "artists"],
+		["new:painter", "new:painter", "painter"],
 		["new:dc", "new:dc", "dc"],
 	])("%s", (term, echo, value) => {
 		const policy = scryfallTermPolicy(`${term} e:khm t:god`);
