@@ -231,3 +231,40 @@ fn new_sega_is_the_first_printing_whose_games_hold_sega() {
     assert_eq!(rows(&store, &is("newsega")), ["psdg/1/ja", "psdg/2/ja"]);
     assert_eq!(rows(&store, &not(is("newsega"))), ["ice/268/en", "past/1/en", "ybro/24/en"]);
 }
+
+#[test]
+fn new_game_is_the_first_printing_in_any_game() {
+    let store = store_of(&[
+        // First in paper and on Magic Online, first on Arena, and first nowhere.
+        ("corpse_traders_avr_90", true),
+        ("corpse_traders_ddm_58", true),
+        ("corpse_traders_jmp_220", true),
+        // A card that began on Arena: both its printings lead a game.
+        ("rusko_clockmaker_ybro_24", true),
+        ("rusko_clockmaker_mb2_263", true),
+        // Paper in Ice Age, Magic Online in Masters Edition II.
+        ("thermokarst_ice_268", true),
+        ("thermokarst_me2_183", true),
+        // The two games the packed byte does not hold.
+        ("astral_past_1", true),
+        ("sega_psdg_1_ja", true),
+        // MEMORABILIA is outside in every game.
+        ("mirror_mirror_olep_48", true),
+        ("mirror_mirror_ugl_77", true),
+    ]);
+    assert_eq!(
+        rows(&store, &is("newgame")),
+        [
+            "avr/90/en",
+            "ice/268/en",
+            "jmp/220/en",
+            "mb2/263/en",
+            "me2/183/en",
+            "past/1/en",
+            "psdg/1/ja",
+            "ugl/77/en",
+            "ybro/24/en"
+        ]
+    );
+    assert_eq!(rows(&store, &not(is("newgame"))), ["ddm/58/en", "olep/48/en"]);
+}

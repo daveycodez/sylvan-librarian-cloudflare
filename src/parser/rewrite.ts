@@ -385,6 +385,8 @@ export const NEW_RARITY_IS_VALUE = "newrarity";
  *   newarena  `new:arena`, `new:mtga` — the card's first printing on Arena; 16,284 of 16,284
  *   newastral `new:astral` — the card's first printing in Astral; 12 of 12
  *   newsega   `new:sega` — the card's first printing in the Sega Dreamcast game; 10 of 10
+ *   newgame   `new:game`, `new:games` — first in any game: the union of the five game values;
+ *             all 42,122 read, and one over, `new:mtgo`'s
  */
 export const NEW_FLAG_IS_VALUES: readonly string[] = [
 	"newcard",
@@ -393,6 +395,7 @@ export const NEW_FLAG_IS_VALUES: readonly string[] = [
 	"newarena",
 	"newastral",
 	"newsega",
+	"newgame",
 ];
 
 /**

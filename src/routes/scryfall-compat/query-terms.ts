@@ -2116,6 +2116,8 @@ const NEW_KEYWORDS: ReadonlySet<string> = new Set(["new"]);
  *                    cards, past/1-12. 12 of 12 (extras in; a 404 without, as `game:astral` is).
  *   sega             the card's first printing whose `games` hold `sega`: the ten Dreamcast
  *                    cards, psdg/1-10, Japanese. 10 of 10 (extras in; a 404 without).
+ *   game, games      the card's first printing in ANY game it lists: the union of the five lists
+ *                    above, read from their bits. All 42,122 read, and one over: `new:mtgo`'s afc/311.
  *
  * None forces extras or widens, and each negation is the complement over every row of every
  * language (`-new:card lang:any` is 510,145 of 545,303).
@@ -2132,6 +2134,8 @@ const NEW_VALUE_IS_TAGS: ReadonlyMap<string, string> = new Map([
 	["mtga", "newarena"],
 	["astral", "newastral"],
 	["sega", "newsega"],
+	["game", "newgame"],
+	["games", "newgame"],
 ]);
 
 /**
@@ -2140,8 +2144,7 @@ const NEW_VALUE_IS_TAGS: ReadonlyMap<string, string> = new Map([
  * parse, as `new:` did before — never dropped, which would answer wider than Scryfall does, and
  * never guessed:
  *
- *   language, lang, art, flavor, ft, flavortext, artist, illustration, foil, nonfoil, game,
- *   games
+ *   language, lang, art, flavor, ft, flavortext, artist, illustration, foil, nonfoil
  */
 const NEW_HONORED_UNANSWERED: ReadonlySet<string> = new Set([
 	"language",
@@ -2154,8 +2157,6 @@ const NEW_HONORED_UNANSWERED: ReadonlySet<string> = new Set([
 	"illustration",
 	"foil",
 	"nonfoil",
-	"game",
-	"games",
 ]);
 
 const STRICT_REGEX_KEYWORDS: ReadonlySet<string> = new Set([

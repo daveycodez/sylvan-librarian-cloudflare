@@ -5431,6 +5431,10 @@ pub(crate) const NEW_ASTRAL: u32 = 1 << 4;
 /// `new:sega`.
 pub(crate) const NEW_SEGA: u32 = 1 << 5;
 
+/// `new:game`, and `new:games`: the printing is its card's first in ANY game — the union of the
+/// five game bits, and no bit of its own.
+pub(crate) const NEW_GAME: u32 = NEW_CARD | NEW_MTGO | NEW_ARENA | NEW_ASTRAL | NEW_SEGA;
+
 /// The engine's `is:` spelling of each `new:` value `Printing::new_flags` answers, and the bits
 /// it reads. None of these is a Scryfall `is:` value: the compat surface writes `new:<value>` as
 /// one (query-terms.ts NEW_VALUE_IS_TAGS) and drops the spelling when it is typed.
@@ -5441,6 +5445,7 @@ pub(crate) const NEW_FLAG_IS_VALUES: &[(&str, u32)] = &[
     ("newarena", NEW_ARENA),
     ("newastral", NEW_ASTRAL),
     ("newsega", NEW_SEGA),
+    ("newgame", NEW_GAME),
 ];
 
 /// The printings Scryfall's own order puts FIRST among the rows of their card that share their
@@ -5485,6 +5490,9 @@ const NEW_ORDER_LEADS: &[u128] = &[0xbc9c_39d1_1e10_4cd3_a4b1_b6eb_7c1a_0b65];
 ///               tag (the packed `games` byte has three members). 12 of 12.
 ///   `NEW_SEGA`  new:sega — 10 printings, the ten Dreamcast cards (`psdg/1`-`10`, Japanese).
 ///               Eligible: a printing tagged `game_sega`. 10 of 10.
+///   `NEW_GAME`  new:game, new:games — 42,122 printings: the union of the five games' lists, a
+///               printing that is its card's first in any game it lists. No bit of its own.
+///               All 42,122, and one over: `new:mtgo`'s `afc/311`, the bulk file's age.
 ///
 /// What the values share, each clause measured rather than read off the name:
 ///
