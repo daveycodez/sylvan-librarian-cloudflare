@@ -3947,6 +3947,102 @@
 			"method": "GET",
 			"path": "/cards/search?q=in%3Asega&include_extras=true&order=set",
 			"note": "2026-10-09. The 10 Sega Dreamcast cards (a 404 here until generation 74)."
+		},
+		{
+			"name": "is-covered-negated-is-the-default-tier",
+			"method": "GET",
+			"path": "/cards/search?q=%21%22Counterspell%22+-is%3Acovered&unique=prints",
+			"note": "2026-10-09. 27 of Counterspell's 88 printings, dsc/114 down to lea/54: the first run of a card's own order. `is:covered` is every printing outside that tier — 56,079 by default, 479,653 rows with `lang:any` — and this port answered a warned no-match for it. Generation 74; NEEDS THE REBUILT IMPORT BLOB and a store it built."
+		},
+		{
+			"name": "is-covered-a-plain-printing-scryfall-records-covered",
+			"method": "GET",
+			"path": "/cards/search?q=e%3Abot+is%3Acovered&unique=prints",
+			"note": "2026-10-09. All 29 printings of the Transformers cards: bot/1-15 are plain English printings the tier rule calls default, and Scryfall's record says covered. One of the 4,956 rows listed in is_lists.tsv."
+		},
+		{
+			"name": "is-covered-another-language-in-the-default-tier",
+			"method": "GET",
+			"path": "/cards/search?q=e%3Altr+lang%3Afr+cn%3C10+-is%3Acovered&unique=prints",
+			"note": "2026-10-09. 9: The Lord of the Rings' French rows are default-tier beside their English ones, where a translated row is covered everywhere else but in eight other sets (3,226 rows of 427,000)."
+		},
+		{
+			"name": "is-jumpstart-booster-cards-of-an-expansion",
+			"method": "GET",
+			"path": "/cards/search?q=is%3Ajumpstart+e%3Amom&unique=prints",
+			"note": "2026-10-09. 15: mom/323-337, which nothing on a card object marks. `is:jumpstart` is 1,760 printings — jmp, j21, j25, ajmp, six expansions' booster cards and 26 List reprints — and none of Jumpstart 2022."
+		},
+		{
+			"name": "is-jumpstart-two-printings-of-a-listed-set-are-out",
+			"method": "GET",
+			"path": "/cards/search?q=e%3Aj21+-is%3Ajumpstart&unique=prints",
+			"note": "2026-10-09. 2: j21/25 Static Discharge and j21/763 Ichor Wellspring, of 389."
+		},
+		{
+			"name": "is-intro-is-not-the-beginnerbox-promo-type",
+			"method": "GET",
+			"path": "/cards/search?q=is%3Aintro+e%3Afdn&unique=prints",
+			"note": "2026-10-09. 14 of Foundations' 142 `beginnerbox` printings. `is:intro` is 224: all of dpa and rqs, acr/274-305 and these."
+		},
+		{
+			"name": "is-beginner-is-is-intro",
+			"method": "GET",
+			"path": "/cards/search?q=is%3Abeginner+e%3Aacr&unique=prints",
+			"note": "2026-10-09. 32, the same printings as `is:intro e:acr`: `is:beginner -is:intro` and `is:intro -is:beginner` are both empty."
+		},
+		{
+			"name": "is-invitational",
+			"method": "GET",
+			"path": "/cards/search?q=is%3Ainvitational&unique=prints",
+			"note": "2026-10-09. 18 printings of 16 cards: each card's first printing and two List reprints."
+		},
+		{
+			"name": "is-invitational-is-a-list-of-rows",
+			"method": "GET",
+			"path": "/cards/search?q=is%3Ainvitational+lang%3Afr&unique=prints",
+			"note": "2026-10-09. 9 French rows — not Avalanche Riders' ulg/74, whose English, German, Spanish, Italian, Japanese and Portuguese rows are in it. 92 rows with `lang:any`, of the 145 those printings have."
+		},
+		{
+			"name": "is-misprint-is-a-list-of-rows",
+			"method": "GET",
+			"path": "/cards/search?q=is%3Amisprint+e%3A4bb+lang%3Aany&unique=prints",
+			"note": "2026-10-09. 2: the Spanish 4bb/50 Serra Angel and 4bb/180 Burrowing, and no other language's row of either. `is:misprint` is 155 printings by default and 455 rows in every language."
+		},
+		{
+			"name": "is-spellbook-is-not-the-keyword",
+			"method": "GET",
+			"path": "/cards/search?q=is%3Aspellbook+e%3Aymid&unique=prints",
+			"note": "2026-10-09. 12. 75 printings of 72 Alchemy cards; `Draft from a spellbook` is a keyword of 43 of them and \"spellbook\" is in the text of 64."
+		},
+		{
+			"name": "is-spikey-is-a-history",
+			"method": "GET",
+			"path": "/cards/search?q=is%3Aspikey+e%3Alea&unique=prints",
+			"note": "2026-10-09. 43 Alpha printings: the Power Nine, and Counterspell, Juggernaut and Icy Manipulator, which are banned or restricted nowhere today. 678 cards, every printing in every language."
+		},
+		{
+			"name": "is-related-is-the-card-not-the-row",
+			"method": "GET",
+			"path": "/cards/search?q=is%3Arelated+e%3Am21+lang%3Apt+cn%3C50&unique=prints",
+			"note": "2026-10-09. 10 Portuguese rows, one of which carries `all_parts` itself: the class is the card's, read off any of its printings."
+		},
+		{
+			"name": "is-related-a-card-with-no-related-part-anywhere",
+			"method": "GET",
+			"path": "/cards/search?q=is%3Arelated+e%3Astx+cn%3A41",
+			"note": "2026-10-09. Divide by Zero, one of 176 cards in Scryfall's list that carry `all_parts` on no printing in any language (they had an Alchemy-rebalanced twin). `is:related` is 22,339 printings and opens extras in both polarities."
+		},
+		{
+			"name": "is-gateway-is-an-empty-class",
+			"method": "GET",
+			"path": "/cards/search?q=is%3Agateway",
+			"note": "2026-10-09. 404 with no warnings key: a value Scryfall accepts and answers nothing for (`is:lair` the same). This port answered the same status under its own \"no data for that predicate\" warning."
+		},
+		{
+			"name": "is-lair-negated-is-everything",
+			"method": "GET",
+			"path": "/cards/search?q=-is%3Alair+e%3Akhm+t%3Agod",
+			"note": "2026-10-09. Kaldheim's 12 gods, no warning: the negation of the empty class."
 		}
 	]
 }
