@@ -340,7 +340,7 @@ const DELVER: &str = include_str!("../src/fixtures/delver_of_secrets.json");
 /// fit measurement in the run is read off it. The `-ml` suffix was added by hand for exactly this
 /// reason once already (a pre-multilingual corpus serving a multilingual gate); a constant the
 /// generator itself publishes is the version of that fix that cannot be forgotten.
-const CORPUS_SHAPE: &str = "ml-v3-spread";
+const CORPUS_SHAPE: &str = "ml-v4-artless";
 
 /// The oracle-level VALUE SPREAD, and why it exists.
 ///
@@ -856,6 +856,23 @@ fn printing(
     // Last, so it owns every field it writes outright: the oracle-level spread (cost, colours,
     // stats, ranks, keywords, legality perturbations), identical on every printing of this card.
     apply_spread(obj, &oracle.spread);
+
+    // NO ILLUSTRATION ID AT ALL, on ~0.6% of printings — the real corpus's rate (748 of 118,389:
+    // playtest cards, deck fillers, checklists, minigames). `unique=art` answers every one of them
+    // as ONE row across cards, and the store is cut by oracle id, so that row is chosen, placed
+    // and counted by the gather: each partition sends a candidate beside its keys (see
+    // card_engine::ArtlessKey). Every printing here used to carry an id, which left the envelope
+    // grid's `unique=artwork` third — and with it the N=2 vs N=10 differential — unable to see
+    // that merge at all. ~72 printings of ~70 cards over ten partitions puts several in each.
+    // The foreign twins are copies of this object and go art-less with it.
+    if rng.below(1000) < 6 {
+        obj.remove("illustration_id");
+        if let Some(faces) = obj.get_mut("card_faces").and_then(Value::as_array_mut) {
+            for face in faces.iter_mut().filter_map(Value::as_object_mut) {
+                face.remove("illustration_id");
+            }
+        }
+    }
 
     card
 }
@@ -1925,6 +1942,29 @@ fn cmd_compare_parts(rows_path: &Path, work_dir: &Path, n_a: u32, n_b: u32) {
          made archive-local (orderings: {})",
         differing_orderings.join(", ")
     );
+
+    // THE ART-LESS GROUP'S OWN PREMISE AND CONTROL. `unique=art` answers every printing without an
+    // illustration id as ONE row across cards, and it is the gather that makes it one: each
+    // partition holding such a printing sends a candidate (card_engine::ArtlessKey) and the merge
+    // keeps one. The grid above agrees across the two cuts only if that merge is right — provided
+    // the group really is spread over both cuts, which is asserted here rather than assumed. And
+    // the count IS the control: a gather that kept every partition's candidate as a row would
+    // answer `holding` art-less rows, a different number in each cut.
+    let art = card_engine::QueryOptions { unique: "artwork".to_owned(), orderby: "name".to_owned(), limit: 1, ..Default::default() };
+    let holding = |parts: &[card_engine::BufferStore]| {
+        parts.iter().filter(|p| p.query_keys(&true_node, &art, 0).expect("keys").artless.is_some()).count()
+    };
+    let (held_a, held_b) = (holding(&a), holding(&b));
+    assert!(
+        held_a >= 2 && held_b >= 2 && held_a != held_b,
+        "the art-less group lies in {held_a} of {n_a} partitions and {held_b} of {n_b}: it has to span \
+         several in both cuts, and a different number in each, for the `unique=artwork` cases above \
+         to have compared its merge at all"
+    );
+    println!(
+        "ART-LESS GROUP: one row from {held_a} candidates at N={n_a} and from {held_b} at N={n_b} \
+         (a per-partition row would have answered {held_a} and {held_b})"
+    );
 }
 
 /// THE SAME DIFFERENTIAL OVER TWO BUILDS ALREADY ON DISK: `<dir>/p0.store`, `p1.store`, ... as the
@@ -2035,9 +2075,11 @@ fn gather(
 
     let mut total = 0usize;
     let mut merged: Vec<(Vec<u8>, usize, u32)> = Vec::new();
+    let mut artless: Vec<Option<card_engine::ArtlessKey>> = Vec::with_capacity(parts.len());
     for (part, store) in parts.iter().enumerate() {
         let out = store.query_keys(tree, &phase1, 0).expect("phase 1 keys");
         total += out.total;
+        artless.push(out.artless);
         let mut keys = out.keys;
         // ONLY the three string-primary orderings. The numeric columns encode a VALUE
         // (`perm_primary_key` over the f32), not a rank, so there is no archive-local variant of
@@ -2050,6 +2092,13 @@ fn gather(
             assert_eq!(key[0], card_engine::SORT_KEY_VERSION, "a merge must never mix key versions");
             merged.push((key, part, vpid));
         }
+    }
+    // `unique=art`'s art-less group: ONE row for every partition's candidate, merged by its own
+    // key and counted once (see card_engine::ArtlessKey).
+    if let Some(part) = card_engine::merge_artless(&artless) {
+        let rep = artless[part].take().expect("merge_artless names a partition with a candidate");
+        total += 1;
+        merged.push((rep.key, part, rep.vpid));
     }
     merged.sort_unstable_by(|x, y| x.0.cmp(&y.0));
 

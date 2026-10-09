@@ -1,0 +1,198 @@
+{
+ "all_parts": [
+  {
+   "component": "combo_piece",
+   "id": "b245e80e-a113-4f34-a089-e3e514eaddc0",
+   "name": "Westvale Abbey // Ormendahl, Profane Prince",
+   "object": "related_card",
+   "type_line": "Land // Legendary Creature — Demon",
+   "uri": "https://api.scryfall.com/cards/b245e80e-a113-4f34-a089-e3e514eaddc0"
+  },
+  {
+   "component": "combo_piece",
+   "id": "f3beec7a-070e-4b9f-b3b2-b3eeb80670c8",
+   "name": "Hanweir Militia Captain // Westvale Cult Leader",
+   "object": "related_card",
+   "type_line": "Creature — Human Soldier // Creature — Human Cleric",
+   "uri": "https://api.scryfall.com/cards/f3beec7a-070e-4b9f-b3b2-b3eeb80670c8"
+  },
+  {
+   "component": "combo_piece",
+   "id": "7dfc573c-79b9-4fd9-b721-725323a320a8",
+   "name": "Archangel Avacyn // Avacyn, the Purifier",
+   "object": "related_card",
+   "type_line": "Legendary Creature — Angel // Legendary Creature — Angel",
+   "uri": "https://api.scryfall.com/cards/7dfc573c-79b9-4fd9-b721-725323a320a8"
+  },
+  {
+   "component": "combo_piece",
+   "id": "d728141b-2bb8-4e18-bb28-971b6641cc05",
+   "name": "Geier Reach Bandit // Vildin-Pack Alpha",
+   "object": "related_card",
+   "type_line": "Creature — Human Rogue Werewolf // Creature — Werewolf",
+   "uri": "https://api.scryfall.com/cards/d728141b-2bb8-4e18-bb28-971b6641cc05"
+  },
+  {
+   "component": "combo_piece",
+   "id": "6b6231e8-8eed-4bf8-acbe-9c006b119346",
+   "name": "Arlinn Kord // Arlinn, Embraced by the Moon",
+   "object": "related_card",
+   "type_line": "Legendary Planeswalker — Arlinn // Legendary Planeswalker — Arlinn",
+   "uri": "https://api.scryfall.com/cards/6b6231e8-8eed-4bf8-acbe-9c006b119346"
+  },
+  {
+   "component": "combo_piece",
+   "id": "25f7030d-a6a1-4a51-b3c9-a48071adb7e0",
+   "name": "Elusive Tormentor // Insidious Mist",
+   "object": "related_card",
+   "type_line": "Creature — Vampire Wizard // Creature — Elemental",
+   "uri": "https://api.scryfall.com/cards/25f7030d-a6a1-4a51-b3c9-a48071adb7e0"
+  },
+  {
+   "component": "combo_piece",
+   "id": "2385cf77-9791-4453-831f-eaf9af62270c",
+   "name": "Startled Awake // Persistent Nightmare",
+   "object": "related_card",
+   "type_line": "Sorcery // Creature — Nightmare",
+   "uri": "https://api.scryfall.com/cards/2385cf77-9791-4453-831f-eaf9af62270c"
+  },
+  {
+   "component": "combo_piece",
+   "id": "029a7c2b-3cda-4a23-af77-62948593e433",
+   "name": "Sage of Ancient Lore // Werewolf of Ancient Hunger",
+   "object": "related_card",
+   "type_line": "Creature — Human Shaman Werewolf // Creature — Werewolf",
+   "uri": "https://api.scryfall.com/cards/029a7c2b-3cda-4a23-af77-62948593e433"
+  },
+  {
+   "component": "combo_piece",
+   "id": "4825c59d-9e27-4a12-ba84-642b8540e573",
+   "name": "Shadows Over Innistrad Checklist 2",
+   "object": "related_card",
+   "type_line": "Card",
+   "uri": "https://api.scryfall.com/cards/4825c59d-9e27-4a12-ba84-642b8540e573"
+  },
+  {
+   "component": "combo_piece",
+   "id": "ffc5eb51-14ba-4f31-b47c-3c9b7aee96e0",
+   "name": "Thing in the Ice // Awoken Horror",
+   "object": "related_card",
+   "type_line": "Creature — Horror // Creature — Kraken Horror",
+   "uri": "https://api.scryfall.com/cards/ffc5eb51-14ba-4f31-b47c-3c9b7aee96e0"
+  }
+ ],
+ "artist": "",
+ "booster": true,
+ "border_color": "black",
+ "card_back_id": "0aeebaf5-8c7d-4636-9e82-8c27447861f7",
+ "cmc": 0.0,
+ "collector_number": "CH2",
+ "color_identity": [],
+ "colors": [],
+ "digital": false,
+ "finishes": [
+  "nonfoil"
+ ],
+ "foil": false,
+ "frame": "2015",
+ "full_art": false,
+ "game_changer": false,
+ "games": [
+  "paper"
+ ],
+ "highres_image": true,
+ "id": "4825c59d-9e27-4a12-ba84-642b8540e573",
+ "image_status": "highres_scan",
+ "image_updated_at": "2026-07-13T10:14:43Z",
+ "image_uris": {
+  "art": "https://cards.scryfall.io/art/front/4/8/4825c59d-9e27-4a12-ba84-642b8540e573.webp?1783937683",
+  "art_crop": "https://cards.scryfall.io/art_crop/front/4/8/4825c59d-9e27-4a12-ba84-642b8540e573.jpg?1783937683",
+  "border_crop": "https://cards.scryfall.io/border_crop/front/4/8/4825c59d-9e27-4a12-ba84-642b8540e573.jpg?1783937683",
+  "crop": "https://cards.scryfall.io/crop/front/4/8/4825c59d-9e27-4a12-ba84-642b8540e573.webp?1783937683",
+  "display": "https://cards.scryfall.io/display/front/4/8/4825c59d-9e27-4a12-ba84-642b8540e573.webp?1783937683",
+  "grid": "https://cards.scryfall.io/grid/front/4/8/4825c59d-9e27-4a12-ba84-642b8540e573.webp?1783937683",
+  "large": "https://cards.scryfall.io/large/front/4/8/4825c59d-9e27-4a12-ba84-642b8540e573.jpg?1783937683",
+  "normal": "https://cards.scryfall.io/normal/front/4/8/4825c59d-9e27-4a12-ba84-642b8540e573.jpg?1783937683",
+  "png": "https://cards.scryfall.io/png/front/4/8/4825c59d-9e27-4a12-ba84-642b8540e573.png?1783937683",
+  "small": "https://cards.scryfall.io/small/front/4/8/4825c59d-9e27-4a12-ba84-642b8540e573.jpg?1783937683",
+  "thumb": "https://cards.scryfall.io/thumb/front/4/8/4825c59d-9e27-4a12-ba84-642b8540e573.webp?1783937683"
+ },
+ "keywords": [],
+ "lang": "en",
+ "layout": "token",
+ "legalities": {
+  "alchemy": "not_legal",
+  "brawl": "not_legal",
+  "commander": "not_legal",
+  "competitivebrawl": "not_legal",
+  "duel": "not_legal",
+  "future": "not_legal",
+  "gladiator": "not_legal",
+  "historic": "not_legal",
+  "legacy": "not_legal",
+  "modern": "not_legal",
+  "oathbreaker": "not_legal",
+  "oldschool": "not_legal",
+  "pauper": "not_legal",
+  "paupercommander": "not_legal",
+  "penny": "not_legal",
+  "pioneer": "not_legal",
+  "predh": "not_legal",
+  "premodern": "not_legal",
+  "standard": "not_legal",
+  "standardbrawl": "not_legal",
+  "timeless": "not_legal",
+  "tlr": "not_legal",
+  "vintage": "not_legal"
+ },
+ "mana_cost": "",
+ "multiverse_ids": [],
+ "name": "Shadows Over Innistrad Checklist 2",
+ "nonfoil": true,
+ "object": "card",
+ "oracle_id": "c082295c-c319-41ae-8c2c-29f55672cd9c",
+ "oracle_text": "(You can mark this card to represent a double-faced card in your library or hand.)\n☐ Archangel Avacyn {3}{W}{W}\n☐ Hanweir Militia Captain {1}{W}\n☐ Startled Awake {2}{U}{U}\n☐ Thing in the Ice {1}{U}\n☐ Elusive Tormentor {2}{B}{B}\n☐ Geier Reach Bandit {2}{R}\n☐ Sage of Ancient Lore {4}{G}\n☐ Arlinn Kord {2}{R}{G}\n☐ Westvale Abbey",
+ "oversized": false,
+ "prices": {
+  "eur": null,
+  "eur_foil": null,
+  "tix": null,
+  "usd": "0.24",
+  "usd_etched": null,
+  "usd_foil": null
+ },
+ "prints_search_uri": "https://api.scryfall.com/cards/search?order=released&q=oracleid%3Ac082295c-c319-41ae-8c2c-29f55672cd9c&unique=prints",
+ "promo": false,
+ "promo_types": [
+  "setpromo"
+ ],
+ "purchase_uris": {
+  "cardhoarder": "https://www.cardhoarder.com/cards?affiliate_id=scryfall&data%5Bsearch%5D=Shadows+Over+Innistrad+Checklist+2&ref=card-profile&utm_campaign=affiliate&utm_medium=card&utm_source=scryfall",
+  "cardmarket": "https://www.cardmarket.com/en/Magic/Products/Search?referrer=scryfall&searchString=Shadows+Over+Innistrad+Checklist+2&utm_campaign=card_prices&utm_medium=text&utm_source=scryfall",
+  "tcgplayer": "https://partner.tcgplayer.com/c/4931599/1830156/21018?subId1=api&u=https%3A%2F%2Fwww.tcgplayer.com%2Fproduct%2F116998%3Fpage%3D1"
+ },
+ "rarity": "common",
+ "related_uris": {
+  "edhrec": "https://edhrec.com/route/?cc=Shadows+Over+Innistrad+Checklist+2",
+  "tcgplayer_infinite_articles": "https://partner.tcgplayer.com/c/4931599/1830156/21018?subId1=api&trafcat=tcgplayer.com%2Fsearch%2Farticles&u=https%3A%2F%2Fwww.tcgplayer.com%2Fsearch%2Farticles%3FproductLineName%3Dmagic%26q%3DShadows%2BOver%2BInnistrad%2BChecklist%2B2",
+  "tcgplayer_infinite_decks": "https://partner.tcgplayer.com/c/4931599/1830156/21018?subId1=api&trafcat=tcgplayer.com%2Fsearch%2Fdecks&u=https%3A%2F%2Fwww.tcgplayer.com%2Fsearch%2Fdecks%3FproductLineName%3Dmagic%26q%3DShadows%2BOver%2BInnistrad%2BChecklist%2B2"
+ },
+ "released_at": "2016-04-08",
+ "reprint": false,
+ "reserved": false,
+ "rulings_uri": "https://api.scryfall.com/cards/4825c59d-9e27-4a12-ba84-642b8540e573/rulings",
+ "scryfall_set_uri": "https://scryfall.com/sets/tsoi?utm_source=api",
+ "scryfall_uri": "https://scryfall.com/card/tsoi/CH2/shadows-over-innistrad-checklist-2?utm_source=api",
+ "set": "tsoi",
+ "set_id": "114885aa-26f2-45a5-822f-376ae5374d63",
+ "set_name": "Shadows over Innistrad Tokens",
+ "set_search_uri": "https://api.scryfall.com/cards/search?order=set&q=e%3Atsoi&unique=prints",
+ "set_type": "token",
+ "set_uri": "https://api.scryfall.com/sets/114885aa-26f2-45a5-822f-376ae5374d63",
+ "story_spotlight": false,
+ "tcgplayer_id": 116998,
+ "textless": false,
+ "type_line": "Card",
+ "uri": "https://api.scryfall.com/cards/4825c59d-9e27-4a12-ba84-642b8540e573",
+ "variation": false
+}

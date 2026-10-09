@@ -111,8 +111,8 @@ mod clock;
 mod core_api;
 mod partition;
 pub use core_api::{
-    BufferStore, EngineError, EngineErrorKind, FuzzyCandidate, QueryKeysOutput, QueryOptions, QueryOutput, RowMeta,
-    SpillingStoreBuilder, StoreBuilder, StoreStats, build_partition_from_standalone, store_format_version,
+    ArtlessKey, BufferStore, EngineError, EngineErrorKind, FuzzyCandidate, QueryKeysOutput, QueryOptions, QueryOutput, RowMeta,
+    SpillingStoreBuilder, StoreBuilder, StoreStats, build_partition_from_standalone, merge_artless, store_format_version,
 };
 // LOCAL PATCH (sylvan-librarian-cloudflare, backlog n15): the corpus-wide names index.
 pub use core_api::{
@@ -7297,7 +7297,9 @@ fn push_artwork_key(p: &Printing, out: &mut Vec<u128>) {
 /// A tuple that is absent THROUGHOUT is the exception, and it has to be: 798 rows carry no
 /// illustration id at all, and letting their all-zero key unify as a wildcard would fold every one
 /// of them into whatever artwork its card happened to list first. They match only each other, at
-/// the same arity — exactly what the front-only key did with `illustration_id == 0`.
+/// the same arity — exactly what the front-only key did with `illustration_id == 0`. (What a
+/// `unique=art` ANSWER does with those rows is no longer this function's to say: since 2026-10-09
+/// they are one artwork across cards — see `assign_artwork_groups`.)
 fn artwork_key_matches(keys: &[u128], off: usize, len: usize, key: &[u128]) -> bool {
     if len != key.len() {
         return false;
@@ -7339,6 +7341,17 @@ fn artwork_key_matches(keys: &[u128], off: usize, len: usize, key: &[u128]) -> b
 /// present one, but corpus-wide the all-absent tuples unify with EACH OTHER — 726 art-less
 /// printings across 689 unrelated cards become one artwork, and 67 more across 35 at arity two.
 /// Absent means unknown, not same-artwork.
+///
+/// THAT CHOICE IS REVERSED FOR THE ANSWER (2026-10-09), AND KEPT FOR THIS TABLE. "Absent means
+/// unknown" was this port's reading; api.scryfall.com's is that absent is ONE artwork, across
+/// cards and face counts alike — `-is:illustration unique=art` is 1 row of 764 printings, where the
+/// 726-across-689 collapse called nonsense above is exactly what it answers. Both measurements
+/// stand: the earlier one is what the grouping would do to the corpus, the later one is what
+/// Scryfall does with it, and the owner's decision is to match. The groups assigned HERE are
+/// unchanged — per card, an all-absent tuple still its own group — because every artwork count the
+/// plans short-circuit on is a per-card sum; the query takes the art-less printings out before it
+/// reaches any of them and answers their one row separately (`artless_representative`, beside
+/// `encode_sort_key`). So this guard still holds inside a card, and no longer decides an answer.
 ///
 /// AND ONE MORE THE 2026-08-17 REPLAY FOUND, which "no new key, no new guard" above misses: the
 /// PARTIAL wildcard is unambiguous per-card and ambiguous corpus-wide. Replayed at this scope, 0
@@ -12234,6 +12247,347 @@ pub(crate) fn encode_sort_key(
     key.extend_from_slice(&u128::from(p.illustration_id).to_be_bytes());
     key.extend_from_slice(&u128::from(p.scryfall_id).to_be_bytes());
     key
+}
+
+// ─── The art-less group of `unique=art` (LOCAL PATCH, Cloudflare port) ───────
+//
+// EVERY PRINTING WITH NO ILLUSTRATION ID IS ONE ARTWORK, ACROSS CARDS. api.scryfall.com collapses
+// them into a single row of a `unique=art` answer — measured 2026-10-09:
+//
+// ```text
+// -is:illustration  include_extras  unique=prints 764   unique=art 1   (unk/RL01c)
+// e:unk                             527                  1   (unk/RL01c)
+// st:minigame (48 two-faced rows)    55                  1   (mkhm/1)
+// e:wc97                            131                 90   (89 artworks + wc97/0 for its 10)
+// -is:illustration include_multilingual  784             1   (unk/RL01c)
+// ```
+//
+// one group per QUERY — not per name, set, face count or language — holding the printings whose
+// top-level `illustration_id` and every face's are absent (`-is:illustration`, `FieldPresent`).
+// This engine kept them one group per CARD ("absent means unknown, not same-artwork", the guard
+// `assign_artwork_groups` still carries inside a card); the owner's decision of 2026-10-09 is to
+// answer as Scryfall does. Before: a 193-artwork oracle-text query with extras answered 195 and
+// `g:snc unique=art` 856 against 853.
+//
+// WHICH PRINTING IS THE ROW (`artless_rank_key`), each measured over 8 scopes of 6 to 764 art-less
+// printings; `order=` and `dir=` never move it except through a price:
+//
+// ```text
+// no prefer, any order but a price    the first in `order=name unique=prints`: '______' unk/RL01c of
+//                                     all 764, Blank Card's wc04/00 of its ten — NOT the oldest
+//                                     (ptc/0), which is what an artwork WITH an id answers
+// order=usd|eur|tix, prefer:*-low     the cheapest; missing prices last; a tie (or no price at all)
+//                                     to the newest date, release batch, then the smallest id
+//                                     (e:unk order=tix: unk/MG05; usd=3.00 seven ways: unk/RA03d)
+// prefer:usd-high (eur, tix)          the dearest, the same tie
+// prefer:oldest / prefer:newest       ptc/0 (1996) / tnau/10 (2027) — `dated_prefer_key`'s order
+// prefer:promo                        a promo first (tclb/0), then the name order
+// prefer:default                      a default frame first (mkhm/1), then the name order
+// ```
+//
+// WHERE THE ROW SORTS: by its own keys, like any row — under 25 order/direction pairs the
+// `unique=art` sequence is a subsequence of the same query's `unique=prints`. `total_cards` counts
+// it once.
+//
+// HOW IT IS ANSWERED WITHOUT COSTING ANYONE ELSE. Nothing is stored and no artwork table changes
+// meaning: the art-less printings are the zero-id prefix of `printing_by_illustration_id` (~75 of a
+// partition's ~12,000 — `ArtlessIndex`), so a `unique=art` query tests its bound filter against
+// those rows alone — `artless_representative`. With no match, which is nearly every query, the
+// query then runs exactly as it always did. With one, the query is run over `filter AND
+// is:illustration` (`without_artless`), and the group's one row is ranked here and merged back in
+// by its sort key: by `insert_artless_rep` inside one archive, by the gather across partitions (the
+// store is cut by oracle id, so the group's printings are in every partition — `ArtlessKey` in
+// core_api.rs). The other two modes never reach any of it.
+
+/// The art-less group's representative in THIS archive: the row, and its rank among every
+/// archive's candidates (smaller wins; byte-comparable across partitions).
+pub(crate) struct ArtlessRep<'a> {
+    pub(crate) card: &'a AOracleCard,
+    pub(crate) printing: &'a APrinting,
+    pub(crate) cid: u32,
+    pub(crate) vpid: u32,
+    pub(crate) rank: Vec<u8>,
+}
+
+/// No illustration id on the printing or on any face — the exact complement of `is:illustration`
+/// (`PresentField::Illustration`), which is what `without_artless` removes from the query.
+pub(crate) fn printing_is_artless(p: &APrinting) -> bool {
+    u128::from(p.illustration_id) == 0 && p.faces.iter().all(|f| u128::from(f.illustration_id) == 0)
+}
+
+/// A store's CANONICAL art-less printings, found once (`BufferStore::artless`), and what the
+/// routes' gates make of them.
+///
+/// `rows` is `(printing, card)` for the zero-id prefix of `printing_by_illustration_id` — a walk
+/// of ~75 entries, no scan.
+///
+/// `gates` REMEMBERS, PER TAG, WHICH OF THOSE ROWS LACK IT. Every default search arrives as `<the
+/// query> AND -is:extra AND -is:variation`, and all but one or two of a partition's art-less
+/// printings are extras (playtest cards, tokens, deck fillers). Asked row by row, that one tag
+/// lookup is ~75 cold printing rows and their tag lists per query. Asked once per (store, tag), it
+/// is a list of the one or two rows left, and the query's own leaves run on those alone. Measured
+/// on the ten real partitions (2026-09-24 corpus), the whole of `artless_representative` on a cold
+/// cache, per partition:
+///
+/// ```text
+/// t:creature, e:war, c:r t:instant, !"Lightning Bolt", o:flying    0.25 - 0.5 us   (default gates)
+/// e:unk, cmc>=0 with include_extras (no gate; every row matches)   7 - 9 us
+/// a three-regex oracle query with include_extras (no gate)         68 us of the query's 4,000
+/// ```
+///
+/// The lists are filled by `tri` itself, on first use, so this holds no second opinion about what
+/// a tag means; a conjunct of any other shape is simply evaluated.
+pub(crate) struct ArtlessIndex {
+    rows: Vec<(u32, u32)>,
+    gates: std::sync::Mutex<Vec<(ArtlessGate, std::sync::Arc<[u32]>)>>,
+}
+
+/// `-is:<tag>` as a top-level conjunct: the comparison and the tag's vocabulary id (None: no
+/// printing of this store carries the tag).
+type ArtlessGate = (CmpOp, Option<u16>);
+
+/// More gates than any request shape has; past it a gate is evaluated, not remembered.
+const ARTLESS_GATES_KEPT: usize = 16;
+
+impl ArtlessIndex {
+    pub(crate) fn build(data: &Archived<CardData>) -> Self {
+        let rows = data
+            .indexes
+            .printing_by_illustration_id
+            .iter()
+            .map(|pid| u32::from(*pid))
+            .take_while(|&pid| u128::from(data.printings[pid as usize].illustration_id) == 0)
+            .filter(|&pid| printing_is_artless(&data.printings[pid as usize]))
+            .map(|pid| (pid, u32::from(data.indexes.printing_to_card[pid as usize])))
+            .collect();
+        ArtlessIndex { rows, gates: std::sync::Mutex::new(Vec::new()) }
+    }
+
+    /// The gate a conjunct is, if it is one.
+    fn gate_of(conjunct: &FilterExpr) -> Option<ArtlessGate> {
+        let FilterExpr::Not(inner) = conjunct else { return None };
+        match &**inner {
+            FilterExpr::CollectionCmp { field: CollField::IsTags, op, value_id, .. } => Some((*op, *value_id)),
+            _ => None,
+        }
+    }
+
+    /// The rows (as indices into `rows`, ascending) that pass `conjunct`, which is the gate `gate`.
+    fn passing(&self, data: &Archived<CardData>, gate: ArtlessGate, conjunct: &FilterExpr) -> std::sync::Arc<[u32]> {
+        let mut gates = self.gates.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some((_, pass)) = gates.iter().find(|(g, _)| *g == gate) {
+            return pass.clone();
+        }
+        let pass: std::sync::Arc<[u32]> = self
+            .rows
+            .iter()
+            .enumerate()
+            .filter(|(_, (pid, cid))| {
+                let (card, p) = (&data.cards[*cid as usize], &data.printings[*pid as usize]);
+                FilterExpr::residual_matches(card, p, &data.strings, std::slice::from_ref(&conjunct), false)
+            })
+            .map(|(i, _)| i as u32)
+            .collect();
+        // `residual_matches` answers false for everything once a regex has blown its budget; a
+        // list computed then is not this gate's.
+        if gates.len() < ARTLESS_GATES_KEPT && !regex_compat::regex_match_failed() {
+            gates.push((gate, pass.clone()));
+        }
+        pass
+    }
+}
+
+/// The annex's art-less printings as virtual pids — a scan of the annex, so the store keeps the
+/// answer (`BufferStore::foreign_artless`). Only the widened driver, which verifies every row of
+/// both spaces anyway, ever asks.
+pub(crate) fn foreign_artless(data: &Archived<CardData>) -> Vec<u32> {
+    let n = data.printings.len() as u32;
+    data.foreign.iter().enumerate().filter(|(_, p)| printing_is_artless(p)).map(|(i, _)| n + i as u32).collect()
+}
+
+/// `prefer:newest`'s order as bytes, smaller first: date descending (missing last), release batch
+/// descending, Scryfall id ascending — `dated_prefer_key` without the per-card id rank, which a
+/// group spanning cards cannot use. `oldest` flips the date and the batch and keeps the id.
+fn push_dated_rank(key: &mut Vec<u8>, p: &APrinting, newest: bool) {
+    let ord = p.released_at_int.as_ref().map(|v| released_sort_ord(u32::from(*v)));
+    let batch = u16::from(p.release_set_key) >> RELEASE_KEY_CODE_BITS;
+    let (date, batch) = match (ord, newest) {
+        (None, _) => (u32::MAX, u16::MAX),
+        (Some(o), true) => (u32::MAX - 1 - o, !batch),
+        (Some(o), false) => (o, batch),
+    };
+    key.extend_from_slice(&date.to_be_bytes());
+    key.extend_from_slice(&batch.to_be_bytes());
+    key.extend_from_slice(&u128::from(p.scryfall_id).to_be_bytes());
+}
+
+/// Where one art-less printing ranks as its group's representative under this request — see the
+/// section header for the measurements. The leading byte names the rule, so two partitions that
+/// disagreed about the request could not compare as if they agreed.
+pub(crate) fn artless_rank_key(
+    data: &Archived<CardData>,
+    card: &AOracleCard,
+    p: &APrinting,
+    cid: u32,
+    vpid: u32,
+    params: &QueryParams,
+) -> Vec<u8> {
+    let mut key = Vec::with_capacity(96);
+    // `order=name unique=prints`, ascending whatever the request's direction.
+    let name_order = |key: &mut Vec<u8>| key.extend_from_slice(&encode_sort_key(data, card, p, vpid, SortCol::Name, false));
+    let class = |key: &mut Vec<u8>, rule: u8, member: bool| {
+        key.push(rule);
+        key.push(u8::from(!member));
+        name_order(key);
+    };
+    let price = |key: &mut Vec<u8>, cents: Option<u32>, low: bool| {
+        key.push(if low { 3 } else { 4 });
+        let v = match (cents, low) {
+            (None, _) => u32::MAX,
+            (Some(c), true) => c.min(u32::MAX - 1),
+            (Some(c), false) => u32::MAX - 1 - c.min(u32::MAX - 1),
+        };
+        key.extend_from_slice(&v.to_be_bytes());
+        push_dated_rank(key, p, true);
+    };
+    let tix = || p.price_tix.as_ref().map(|v| u32::from(*v));
+    match params.prefer {
+        Prefer::Default | Prefer::ArtworkDefault => {
+            key.push(0);
+            name_order(&mut key);
+        }
+        Prefer::Oldest => {
+            key.push(1);
+            push_dated_rank(&mut key, p, false);
+        }
+        Prefer::Newest => {
+            key.push(2);
+            push_dated_rank(&mut key, p, true);
+        }
+        Prefer::UsdLow => price(&mut key, search_price_usd_cents(p), true),
+        Prefer::UsdHigh => price(&mut key, search_price_usd_cents(p), false),
+        Prefer::EurLow => price(&mut key, search_price_eur_cents(p), true),
+        Prefer::EurHigh => price(&mut key, search_price_eur_cents(p), false),
+        Prefer::TixLow => price(&mut key, tix(), true),
+        Prefer::TixHigh => price(&mut key, tix(), false),
+        Prefer::Promo => class(&mut key, 5, compat_flag(&p.compat, COMPAT_PROMO)),
+        Prefer::DefaultFrame(ids) => class(&mut key, 6, !printing_is_atypical(p, &ids, &data.strings)),
+        Prefer::Atypical(ids) => class(&mut key, 6, printing_is_atypical(p, &ids, &data.strings)),
+        Prefer::UniversesBeyond(ids) => class(&mut key, 6, printing_is_universes_beyond(p, &ids)),
+        Prefer::NotUniversesBeyond(ids) => class(&mut key, 6, !printing_is_universes_beyond(p, &ids)),
+        // This API's own prefer: its score, which is absolute down to the tier, then the name order.
+        Prefer::Borderless(_) => {
+            key.push(7);
+            let score = prefer_score(card, p, params.prefer, &data.strings, canonical_printings(data, cid as usize));
+            key.extend_from_slice(&(!(score.to_bits() ^ if score.is_sign_negative() { u64::MAX } else { 1 << 63 })).to_be_bytes());
+            name_order(&mut key);
+        }
+    }
+    key
+}
+
+/// The art-less printings `full` matches, reduced to the one that represents them — or None, the
+/// answer for nearly every query.
+///
+/// `foreign` is the annex's art-less list when the query runs the widened driver, and None when it
+/// runs the routed one, which never reads the annex.
+pub(crate) fn artless_representative<'a>(
+    data: &'a Archived<CardData>,
+    params: &QueryParams,
+    full: &FilterExpr,
+    index: &ArtlessIndex,
+    foreign: Option<&[u32]>,
+) -> Option<ArtlessRep<'a>> {
+    // The filter's conjuncts in the order that makes a failing row cheap. Order cannot change the
+    // answer (a top-level `And` matches iff every child is True), only what a row that fails costs —
+    // and nearly every row fails. The LAST written first, because the routes append their gates
+    // there; a text scan or a regex after everything that is not one; and then WHICHEVER REJECTED
+    // THE LAST ROW first.
+    let single = [full];
+    let mut conjuncts: Vec<&FilterExpr> = match full {
+        FilterExpr::And(children) => children.iter().rev().collect(),
+        _ => single.to_vec(),
+    };
+    conjuncts.sort_by_key(|c| verify_cost_tier(c) >= TEXT_SCAN_NS100);
+
+    // The canonical rows the gates leave (see `ArtlessIndex`), and the conjuncts still to ask them.
+    let mut live: Option<Vec<u32>> = None;
+    let mut asked: Vec<&FilterExpr> = Vec::with_capacity(conjuncts.len());
+    for &conjunct in &conjuncts {
+        let Some(gate) = ArtlessIndex::gate_of(conjunct) else {
+            asked.push(conjunct);
+            continue;
+        };
+        let pass = index.passing(data, gate, conjunct);
+        live = Some(match live {
+            None => pass.to_vec(),
+            Some(rows) => rows.into_iter().filter(|i| pass.binary_search(i).is_ok()).collect(),
+        });
+    }
+    let canonical: Vec<(u32, u32)> = match live {
+        Some(rows) => rows.into_iter().map(|i| index.rows[i as usize]).collect(),
+        None => index.rows.clone(),
+    };
+
+    let mut best: Option<ArtlessRep<'a>> = None;
+    let mut consider = |vpid: u32, cid: u32, conjuncts: &mut Vec<&FilterExpr>| {
+        let p = printing_at(data, vpid);
+        let card = &data.cards[cid as usize];
+        let rejected = conjuncts
+            .iter()
+            .position(|c| !FilterExpr::residual_matches(card, p, &data.strings, std::slice::from_ref(c), false));
+        if let Some(by) = rejected {
+            conjuncts[..=by].rotate_right(1);
+            return;
+        }
+        let rank = artless_rank_key(data, card, p, cid, vpid, params);
+        if best.as_ref().is_none_or(|b| rank < b.rank) {
+            best = Some(ArtlessRep { card, printing: p, cid, vpid, rank });
+        }
+    };
+    for (vpid, cid) in canonical {
+        consider(vpid, cid, &mut asked);
+    }
+    // The annex rows answer every conjunct themselves: the gates' lists are the canonical rows'.
+    for &vpid in foreign.unwrap_or(&[]) {
+        consider(vpid, card_of_vpid(data, vpid), &mut conjuncts);
+    }
+    best
+}
+
+/// `full AND is:illustration`: the query with the art-less printings taken out, for the run whose
+/// page `insert_artless_rep` (or the gather) puts their one row back into. Flattened into an
+/// existing top-level `And`, because `required_lang_value` and the sort bound read conjuncts there.
+pub(crate) fn without_artless(full: &FilterExpr) -> FilterExpr {
+    let present = FilterExpr::FieldPresent { field: filter::PresentField::Illustration };
+    match full {
+        FilterExpr::And(children) => {
+            let mut all = children.clone();
+            all.push(present);
+            FilterExpr::And(all)
+        }
+        other => FilterExpr::And(vec![other.clone(), present]),
+    }
+}
+
+/// Put the art-less group's row into `page` — the query's best rows FROM ZERO, without the group —
+/// at the place its own sort key gives it. A row landing past the end of a page that was cut short
+/// is past every row the caller can ask for, so the caller's window never sees the difference.
+pub(crate) fn insert_artless_rep<'a>(
+    data: &'a Archived<CardData>,
+    params: &QueryParams,
+    page: &mut Vec<(&'a AOracleCard, &'a APrinting)>,
+    rep: &ArtlessRep<'a>,
+) {
+    let key_of = |card: &AOracleCard, p: &APrinting, cid: u32, vpid: u32| -> Match {
+        (sort_key_bits(card, p, params.sort_col, params.descending), cid, vpid)
+    };
+    let mine = key_of(rep.card, rep.printing, rep.cid, rep.vpid);
+    let at = page.partition_point(|&(card, p)| {
+        let vpid = vpid_of_ref(data, p);
+        page_cmp(&key_of(card, p, card_of_vpid(data, vpid), vpid), &mine) == std::cmp::Ordering::Less
+    });
+    page.insert(at, (rep.card, rep.printing));
 }
 
 /// Number of matches the gather buffer may grow *past* the page (`offset+limit`)
@@ -21304,12 +21658,19 @@ fn bind_and_split_filter_value(
     // offered. Retaining the unsplit form lets each plan be costed on the representation it can consume,
     // which is what #702 says the routing layer is for. One clone of a small tree, once per query.
     let unsplit = filter_expr.clone();
-    let (plane, residual) = if u32::from(data.indexes.planes.n_cards) as usize == data.cards.len() && !data.cards.is_empty() {
+    let (plane, residual) = split_bound_filter(filter_expr, unique, data);
+    Ok((plane, residual, sort_bound, unsplit))
+}
+
+/// The plane split of an already BOUND filter — the last step of `bind_and_split_filter_value`, on
+/// its own so a filter derived from a bound one (`without_artless`) is split without being built
+/// and bound a second time.
+fn split_bound_filter(filter_expr: FilterExpr, unique: &str, data: &Archived<CardData>) -> (Option<PlaneExpr>, FilterExpr) {
+    if u32::from(data.indexes.planes.n_cards) as usize == data.cards.len() && !data.cards.is_empty() {
         split_planes(filter_expr, &data.indexes.planes, &data.indexes.oracle_trigram.words, !matches!(unique, "artwork" | "printing"))
     } else {
         (None, filter_expr)
-    };
-    Ok((plane, residual, sort_bound, unsplit))
+    }
 }
 
 #[cfg(feature = "python")]

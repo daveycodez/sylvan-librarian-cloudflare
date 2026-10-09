@@ -1677,6 +1677,12 @@ pub struct BufferStore {
     /// The face-level flavor-name keys, derived from the archive on first use — see
     /// `crate::FaceFlavorKey`. LOCAL PATCH (Cloudflare port).
     face_flavors: crate::FaceFlavorCache,
+    /// The annex's art-less printings (virtual pids), scanned on the first widened `unique=art`
+    /// query — see `crate::foreign_artless`. LOCAL PATCH (Cloudflare port).
+    foreign_artless: std::sync::OnceLock<Vec<u32>>,
+    /// The canonical art-less printings and the gates' answers about them, built on the first
+    /// `unique=art` query — see `crate::ArtlessIndex`. LOCAL PATCH (Cloudflare port).
+    artless: std::sync::OnceLock<crate::ArtlessIndex>,
 }
 
 impl BufferStore {
@@ -1703,7 +1709,12 @@ impl BufferStore {
                 bytes,
             ));
         }
-        let store = BufferStore { bytes, face_flavors: crate::FaceFlavorCache::default() };
+        let store = BufferStore {
+            bytes,
+            face_flavors: crate::FaceFlavorCache::default(),
+            foreign_artless: std::sync::OnceLock::new(),
+            artless: std::sync::OnceLock::new(),
+        };
         // Adopt the archive's legality shifts HERE, at load, rather than leaving it to the first
         // filter query. `legality_bits_to_json` decodes against the process-global FORMAT_SHIFTS
         // registry and reports an EMPTY object when it is unpopulated -- not an error -- and the
@@ -1832,6 +1843,32 @@ impl BufferStore {
         filter_tree: &Value,
         opts: &QueryOptions,
     ) -> Result<(QueryParams, usize, Vec<(&'a AOracleCard, &'a APrinting)>, bool), EngineError> {
+        let (params, total, mut page, widened, artless) = self.run_page_parts(filter_tree, opts, true)?;
+        // The art-less group's one row, put where its sort key says — `page` is then the query's
+        // best `offset + limit` rows from zero, and the caller's window is cut from the result.
+        let Some(rep) = artless else { return Ok((params, total, page, widened)) };
+        super::insert_artless_rep(self.data(), &params, &mut page, &rep);
+        page.truncate(opts.offset.saturating_add(opts.limit));
+        page.drain(..opts.offset.min(page.len()));
+        Ok((params, total + 1, page, widened))
+    }
+
+    /// The query, run — and, under `unique=art`, the art-less group's representative kept APART
+    /// from it (LOCAL PATCH, Cloudflare port; see the art-less section beside `encode_sort_key`).
+    ///
+    /// With no representative (every other mode, and every `unique=art` query no art-less printing
+    /// matches) this is the run as it always was, bit for bit. With one, `total` and the page are
+    /// those of the query WITHOUT the art-less printings: `from_zero` asks for its best
+    /// `offset + limit` rows from zero, which is what `run_page` needs to place the row inside one
+    /// archive, and without it the page is the caller's own window, which is what `query_keys`
+    /// hands a gather that places the row across archives.
+    #[allow(clippy::type_complexity)]
+    fn run_page_parts<'a>(
+        &'a self,
+        filter_tree: &Value,
+        opts: &QueryOptions,
+        from_zero: bool,
+    ) -> Result<(QueryParams, usize, Vec<(&'a AOracleCard, &'a APrinting)>, bool, Option<super::ArtlessRep<'a>>), EngineError> {
         let data = self.data();
         let params = QueryParams::from_strs(
             &opts.unique,
@@ -1856,7 +1893,35 @@ impl BufferStore {
         // plane machinery to hand a split half to). With neither trigger, the routed driver runs
         // bit-for-bit as before and never reads the annex.
         let widened = opts.include_multilingual || unsplit.widens_to_annex();
-        let (total, page) = if widened {
+
+        // `unique=art` only: does the filter match a printing with no illustration id? Those are
+        // ONE artwork across cards, so they leave the query and come back as one row.
+        let artless = if matches!(params.mode, super::Mode::Artwork) {
+            let foreign = widened.then(|| self.foreign_artless.get_or_init(|| super::foreign_artless(data)).as_slice());
+            let index = self.artless.get_or_init(|| super::ArtlessIndex::build(data));
+            super::artless_representative(data, &params, &unsplit, index, foreign)
+        } else {
+            None
+        };
+        let (total, mut page) = if artless.is_some() {
+            let full = super::without_artless(&unsplit);
+            let mut run = params.with_sort_bound(super::sort_col_bound(&full, params.sort_col));
+            if from_zero {
+                run.limit = opts.offset.saturating_add(opts.limit);
+                run.page_offset = 0;
+            }
+            let (total, mut page) = if widened {
+                run_query_widened(data, &run, &full)
+            } else {
+                let (plane, mut residual) = super::split_bound_filter(full.clone(), &opts.unique, data);
+                let ctx = QueryCtx::from(data);
+                run_query_routed(&ctx, &run, &mut residual, Some(&full), plane.as_ref())
+            };
+            if !widened {
+                super::prefer_plain_sibling_rep(data, &full, &params, &mut page);
+            }
+            (total, page)
+        } else if widened {
             run_query_widened(data, &params.with_sort_bound(sort_bound), &unsplit)
         } else {
             let ctx = QueryCtx::from(data);
@@ -1870,12 +1935,11 @@ impl BufferStore {
         };
         // A plain printing over a bonus (`unique=art`) or a reversible (`unique=cards`) one — see the
         // function.
-        let mut page = page;
-        if !widened {
+        if !widened && artless.is_none() {
             super::prefer_plain_sibling_rep(data, &unsplit, &params, &mut page);
         }
         regex_budget_held()?;
-        Ok((params, total, page, widened))
+        Ok((params, total, page, widened, artless))
     }
 
     /// [`Self::query`] over an already parsed filter tree.
@@ -1942,7 +2006,12 @@ impl BufferStore {
     ) -> Result<QueryKeysOutput, EngineError> {
         let resolved_fields = resolve_fields_json(opts.fields.clone())?;
         let data = self.data();
-        let (params, total, page, widened) = self.run_page(filter_tree, opts)?;
+        let (params, total, page, widened, artless) = self.run_page_parts(filter_tree, opts, false)?;
+        let artless = artless.map(|rep| ArtlessKey {
+            key: super::encode_sort_key(data, rep.card, rep.printing, rep.vpid, params.sort_col, params.descending),
+            rank: rep.rank,
+            vpid: rep.vpid,
+        });
         let inline = inline_rows.min(page.len());
         let rows = page[..inline]
             .iter()
@@ -1955,7 +2024,7 @@ impl BufferStore {
                 (super::encode_sort_key(data, c, p, vpid, params.sort_col, params.descending), vpid)
             })
             .collect();
-        Ok(QueryKeysOutput { total, keys, rows, widened })
+        Ok(QueryKeysOutput { total, keys, rows, widened, artless })
     }
 
     /// LOCAL PATCH (Cloudflare port): phase 2 of the partitioned two-phase gather — the rows for
@@ -3446,6 +3515,41 @@ pub struct QueryKeysOutput {
     /// gather reads it off any phase-1 packet instead of binding the filter a second time
     /// through [`BufferStore::query_widens`] to learn it.
     pub widened: bool,
+    /// LOCAL PATCH (Cloudflare port): this partition's candidate for the ONE row every art-less
+    /// printing of a `unique=art` answer collapses into, or None when the query matches none here
+    /// (and always under the other modes). It is NOT in `keys` and NOT counted in `total` — see
+    /// [`ArtlessKey`] for what a gather does with it.
+    pub artless: Option<ArtlessKey>,
+}
+
+/// LOCAL PATCH (Cloudflare port): one partition's representative of the art-less group — every
+/// printing with no illustration id, which `unique=art` answers as a single artwork ACROSS cards
+/// (the section beside `encode_sort_key` carries the measurements). The store is cut by oracle id,
+/// so the group's printings lie in every partition and no partition can pick its row alone.
+///
+/// A gather takes the candidate with the SMALLEST `rank` (bytewise; a tie cannot happen, the rank
+/// ends in a Scryfall id), merges that one `key` into the partitions' key streams like any other
+/// key, adds one to the summed total, and fetches the row by `vpid` from the partition that sent
+/// it. [`merge_artless`] is that choice. A partition's own stream and total are the query's
+/// WITHOUT its art-less printings, so nothing has to be taken back out.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ArtlessKey {
+    /// The representative's place among the group's candidates under this request; smaller wins.
+    pub rank: Vec<u8>,
+    /// Its sort key, in the same encoding and order as [`QueryKeysOutput::keys`].
+    pub key: Vec<u8>,
+    pub vpid: u32,
+}
+
+/// The art-less group's row for a gather: which of the partitions' candidates represents it, as
+/// the index into `candidates` (in partition order), or None when no partition has one.
+pub fn merge_artless(candidates: &[Option<ArtlessKey>]) -> Option<usize> {
+    candidates
+        .iter()
+        .enumerate()
+        .filter_map(|(part, c)| c.as_ref().map(|c| (part, c)))
+        .min_by(|a, b| a.1.rank.cmp(&b.1.rank).then(a.0.cmp(&b.0)))
+        .map(|(part, _)| part)
 }
 
 impl QueryOutput {
@@ -7881,6 +7985,7 @@ mod tests {
         // (key, partition, vpid, LOCAL INDEX in that partition's stream)
         let mut merged: Vec<(Vec<u8>, usize, u32, usize)> = Vec::new();
         let mut carried: Vec<Vec<Value>> = Vec::with_capacity(partitions.len());
+        let mut artless: Vec<Option<ArtlessKey>> = Vec::with_capacity(partitions.len());
         for (part, store) in partitions.iter().enumerate() {
             let out = store.query_keys(tree, &phase1, inline).expect("phase 1 keys");
             total += out.total;
@@ -7889,6 +7994,15 @@ mod tests {
                 merged.push((key, part, vpid, local));
             }
             carried.push(out.rows);
+            artless.push(out.artless);
+        }
+        // `unique=art`'s art-less group: ONE row for every partition's candidate, merged by its
+        // own key and counted once (see ArtlessKey). Never carried inline, hence the local index
+        // no prefix reaches.
+        if let Some(part) = merge_artless(&artless) {
+            let rep = artless[part].take().expect("merge_artless names a partition with a candidate");
+            total += 1;
+            merged.push((rep.key, part, rep.vpid, usize::MAX));
         }
         // Streams arrive sorted, so sorting the concatenation IS the k-way merge; keys are
         // globally unique (the scryfall tail), so the order is total and needs no tiebreak.

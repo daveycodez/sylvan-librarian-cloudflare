@@ -17,6 +17,7 @@ const fixture = JSON.parse(readFileSync(`${import.meta.dir}/gather-wire-fixture.
 	widened: boolean;
 	packed_hex: string;
 	rows_packed_hex: string;
+	artless_packed_hex: string;
 };
 
 function hexBytes(hex: string): Uint8Array {
@@ -84,5 +85,29 @@ describe("query_keys wire fixture (Rust packer ↔ gather.ts codec)", () => {
 		expect(rows[0]).toEqual(inline);
 		const bytes = hexBytes(fixture.rows_packed_hex);
 		expect(() => decodeRowPacket(bytes.subarray(0, bytes.length - 1))).toThrow();
+	});
+
+	test("the art-less trailer the Rust packer writes is the one this codec reads", () => {
+		// `unique=artwork` over three cards, one with an illustration id: that one is the packet's
+		// only entry and its whole total, and the two art-less cards' one row rides after the
+		// inline rows as a candidate — rank, sort key, vpid (KEY_PACKET_FLAG_ARTLESS).
+		const packet = decodeKeyPacket(hexBytes(fixture.artless_packed_hex));
+		expect(packet.total).toBe(1);
+		expect(packet.entries.length).toBe(1);
+		expect(packet.inlineRows.map((r) => JSON.parse(new TextDecoder().decode(r)))).toEqual([{ name: "Wire Alpha" }]);
+		const artless = packet.artless;
+		if (artless === undefined) throw new Error("the fixture's second packet must carry an art-less candidate");
+		// The candidate's key is a sort key like any entry's: same version byte, and "wirebeta"
+		// sorts after the entry's "wirealpha" under the one comparator the merge has.
+		expect(artless.key[0]).toBe(fixture.sort_key_version);
+		expect(compareKeys((packet.entries[0] as { key: Uint8Array }).key, artless.key)).toBeLessThan(0);
+		// With no prefer and a name order, the rank is rule 0 and then that same name-order key.
+		expect(artless.rank[0]).toBe(0);
+		expect([...artless.rank.subarray(1)]).toEqual([...artless.key]);
+		// Wire Beta is the second card of three; its printing is not the entry's.
+		expect(artless.vpid).not.toBe((packet.entries[0] as { vpid: number }).vpid);
+		// Cut anywhere inside the trailer, the packet is refused.
+		const bytes = hexBytes(fixture.artless_packed_hex);
+		expect(() => decodeKeyPacket(bytes.subarray(0, bytes.length - 3))).toThrow();
 	});
 });

@@ -1404,6 +1404,19 @@ pub const KEY_PACKET_VERSION: u32 = 3;
 /// `flags` bit 0: the query ran the multilingual (widened) driver.
 pub const KEY_PACKET_FLAG_WIDENED: u32 = 1;
 
+/// `flags` bit 1: an ART-LESS TRAILER follows the inline rows — this partition's candidate for the
+/// one row every printing without an illustration id collapses into under `unique=art`
+/// (`card_engine::ArtlessKey`): `ranklen: u16, rank, keylen: u16, key, vpid: u32`. The candidate is
+/// not among the packet's entries and not in its `total`.
+///
+/// A FLAG, NOT PACKET VERSION 4, and the difference is who pays during a rolling deploy. A packet
+/// without a candidate — every query but a `unique=art` one that matches an art-less printing — is
+/// byte for byte the packet version 3 always was, so a build that predates this reads it and the
+/// two builds serve side by side. A packet WITH one is refused by that older build, loudly (the
+/// trailer is trailing bytes to its decoder), which is the refusal a version bump exists to
+/// produce, confined to the queries whose answer actually changed.
+pub const KEY_PACKET_FLAG_ARTLESS: u32 = 2;
+
 /// The shape every framed row takes on the wire, named by the caller of [`query_keys`] and
 /// [`fetch_rows`]: the engine row's own JSON, or the Scryfall card object built from it.
 ///
@@ -1473,9 +1486,10 @@ fn write_framed_row(
 ///
 /// ```text
 /// version: u32 (= KEY_PACKET_VERSION)
-/// total: u32, n: u32, inline: u32, flags: u32 (KEY_PACKET_FLAG_WIDENED)
+/// total: u32, n: u32, inline: u32, flags: u32 (KEY_PACKET_FLAG_WIDENED | KEY_PACKET_FLAG_ARTLESS)
 /// n      of: keylen: u16, key: keylen bytes, vpid: u32
 /// inline of: rowlen: u32, row bytes in `shape`
+/// with KEY_PACKET_FLAG_ARTLESS: ranklen: u16, rank bytes, keylen: u16, key bytes, vpid: u32
 /// ```
 ///
 /// `total` is the partition's exact match count; the keys are its top `offset + limit` in page
@@ -1512,16 +1526,24 @@ pub fn query_keys(
         buf.extend_from_slice(&u32::try_from(out.total).unwrap_or(u32::MAX).to_le_bytes());
         buf.extend_from_slice(&(out.keys.len() as u32).to_le_bytes());
         buf.extend_from_slice(&(out.rows.len() as u32).to_le_bytes());
-        buf.extend_from_slice(&(if out.widened { KEY_PACKET_FLAG_WIDENED } else { 0 }).to_le_bytes());
+        let flags = (if out.widened { KEY_PACKET_FLAG_WIDENED } else { 0 })
+            | (if out.artless.is_some() { KEY_PACKET_FLAG_ARTLESS } else { 0 });
+        buf.extend_from_slice(&flags.to_le_bytes());
+        let short = |bytes: &[u8]| u16::try_from(bytes.len()).map_err(|_| JsError::new("sort key exceeds u16 length"));
         for (key, vpid) in &out.keys {
-            let len = u16::try_from(key.len())
-                .map_err(|_| JsError::new("sort key exceeds u16 length"))?;
-            buf.extend_from_slice(&len.to_le_bytes());
+            buf.extend_from_slice(&short(key)?.to_le_bytes());
             buf.extend_from_slice(key);
             buf.extend_from_slice(&vpid.to_le_bytes());
         }
         for row in &out.rows {
             write_framed_row(&mut buf, row, shape, base_url)?;
+        }
+        if let Some(artless) = &out.artless {
+            buf.extend_from_slice(&short(&artless.rank)?.to_le_bytes());
+            buf.extend_from_slice(&artless.rank);
+            buf.extend_from_slice(&short(&artless.key)?.to_le_bytes());
+            buf.extend_from_slice(&artless.key);
+            buf.extend_from_slice(&artless.vpid.to_le_bytes());
         }
         Ok(buf)
     })
@@ -2823,6 +2845,11 @@ mod tests {
     /// The deterministic two-row store the wire tests below share: loaded into the thread-local
     /// slot, so every test that calls this must `unload_store()` before it returns.
     fn load_wire_store() {
+        load_wire_store_with(false);
+    }
+
+    /// `artless`: the three-card variant whose `unique=artwork` packet carries an art-less trailer.
+    fn load_wire_store_with(artless: bool) {
         let mk = |name: &str, oracle: &str, scry: &str, edhrec: u32| {
             serde_json::json!({
                 "card_name": name,
@@ -2845,6 +2872,17 @@ mod tests {
         let mut builder = card_engine::StoreBuilder::new();
         builder.add_card(&mk("Wire Alpha", "77777777-7777-4777-8777-777777777771", "88888888-8888-4888-8888-888888888881", 10)).expect("add");
         builder.add_card(&mk("Wire Beta", "77777777-7777-4777-8777-777777777772", "88888888-8888-4888-8888-888888888882", 20)).expect("add");
+        if artless {
+            // A third card, and an illustration id on the first: under `unique=artwork` Wire Alpha
+            // is then the one artwork with an id, and Wire Beta and Wire Gamma — two cards, no
+            // illustration id on either — are the art-less group.
+            let mut alpha = mk("Wire Alpha", "77777777-7777-4777-8777-777777777771", "88888888-8888-4888-8888-888888888881", 10);
+            alpha["illustration_id"] = serde_json::json!("99999999-9999-4999-8999-999999999991");
+            builder = card_engine::StoreBuilder::new();
+            builder.add_card(&alpha).expect("add");
+            builder.add_card(&mk("Wire Beta", "77777777-7777-4777-8777-777777777772", "88888888-8888-4888-8888-888888888882", 20)).expect("add");
+            builder.add_card(&mk("Wire Gamma", "77777777-7777-4777-8777-777777777773", "88888888-8888-4888-8888-888888888883", 30)).expect("add");
+        }
         let mut bytes = Vec::new();
         builder.finish_to_writer(&mut bytes).expect("finish");
         init_store(&bytes).expect("load");
@@ -2921,6 +2959,22 @@ mod tests {
         let rows_packed = fetch_rows(&vpids, r#"["name"]"#, "rows", "").expect("fetch_rows");
         unload_store().expect("unload");
 
+        // And the ART-LESS TRAILER (KEY_PACKET_FLAG_ARTLESS): one artwork with an id in the entries
+        // and the total, and the candidate for the two art-less cards' one row after the inline rows.
+        load_wire_store_with(true);
+        let artless_packed = query_keys(
+            r#"{"node_type": "TrueNode"}"#,
+            r#"{"orderby": "name", "unique": "artwork", "limit": 10, "fields": ["name"]}"#,
+            1,
+            "rows",
+            "",
+        )
+        .expect("query_keys");
+        unload_store().expect("unload");
+        assert_eq!(u32_at(&artless_packed, 4), 1, "the total leaves the art-less group out");
+        assert_eq!(u32_at(&artless_packed, 16), KEY_PACKET_FLAG_ARTLESS);
+        let artless_hex: String = artless_packed.iter().map(|b| format!("{b:02x}")).collect();
+
         // Base16, dependency-free both sides.
         let hex: String = packed.iter().map(|b| format!("{b:02x}")).collect();
         let rows_hex: String = rows_packed.iter().map(|b| format!("{b:02x}")).collect();
@@ -2941,6 +2995,11 @@ mod tests {
             "widened": false,
             "packed_hex": hex,
             "rows_packed_hex": rows_hex,
+            "artless_note": "query_keys with unique=artwork off the same store plus a third card, \
+                             Wire Alpha now carrying an illustration id: ONE entry (total 1, one \
+                             inline row) and the art-less trailer — rank, sort key and vpid of Wire \
+                             Beta, which represents the two cards without an illustration id.",
+            "artless_packed_hex": artless_hex,
         });
         if std::env::var("SYLVAN_WRITE_WIRE_FIXTURE").is_ok() {
             // Tab-indented, matching the repo's biome formatting, so a regenerated fixture is
@@ -2971,6 +3030,12 @@ mod tests {
             rows_hex,
             "the fetch_rows row packet moved — if deliberate, regenerate the fixture AND update \
              gather.ts's decodeRowPacket + its bun test together"
+        );
+        assert_eq!(
+            committed["artless_packed_hex"].as_str().expect("art-less hex"),
+            artless_hex,
+            "the art-less trailer moved — if deliberate, regenerate the fixture AND update gather.ts's \
+             decodeKeyPacket + its bun test together"
         );
         assert_eq!(committed["sort_key_version"], serde_json::json!(card_engine::SORT_KEY_VERSION));
         assert_eq!(committed["packet_version"], serde_json::json!(KEY_PACKET_VERSION));

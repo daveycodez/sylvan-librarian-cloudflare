@@ -1,0 +1,318 @@
+{
+ "all_parts": [
+  {
+   "component": "combo_piece",
+   "id": "5cc2ac21-d31f-4a0d-956a-dabb6e1f3b5a",
+   "name": "Neglected Heirloom // Ashmouth Blade",
+   "object": "related_card",
+   "type_line": "Artifact — Equipment // Artifact — Equipment",
+   "uri": "https://api.scryfall.com/cards/5cc2ac21-d31f-4a0d-956a-dabb6e1f3b5a"
+  },
+  {
+   "component": "combo_piece",
+   "id": "d41b07c8-f0c8-4654-bcc2-00c785c8c628",
+   "name": "Autumnal Gloom // Ancient of the Equinox",
+   "object": "related_card",
+   "type_line": "Enchantment // Creature — Treefolk",
+   "uri": "https://api.scryfall.com/cards/d41b07c8-f0c8-4654-bcc2-00c785c8c628"
+  },
+  {
+   "component": "combo_piece",
+   "id": "14529bed-9632-4d58-8edc-c5a1359f6604",
+   "name": "Hinterland Logger // Timber Shredder",
+   "object": "related_card",
+   "type_line": "Creature — Human Werewolf // Creature — Werewolf",
+   "uri": "https://api.scryfall.com/cards/14529bed-9632-4d58-8edc-c5a1359f6604"
+  },
+  {
+   "component": "combo_piece",
+   "id": "fe9f85e8-1e4c-4478-8344-71fae357b694",
+   "name": "Breakneck Rider // Neck Breaker",
+   "object": "related_card",
+   "type_line": "Creature — Human Scout Werewolf // Creature — Werewolf",
+   "uri": "https://api.scryfall.com/cards/fe9f85e8-1e4c-4478-8344-71fae357b694"
+  },
+  {
+   "component": "combo_piece",
+   "id": "1001e708-e4f9-456a-8b9d-3421a2a3833d",
+   "name": "Avacynian Missionaries // Lunarch Inquisitors",
+   "object": "related_card",
+   "type_line": "Creature — Human Cleric // Creature — Human Cleric",
+   "uri": "https://api.scryfall.com/cards/1001e708-e4f9-456a-8b9d-3421a2a3833d"
+  },
+  {
+   "component": "combo_piece",
+   "id": "4dea7c9f-ce66-447b-9f1b-d9bca5806153",
+   "name": "Uninvited Geist // Unimpeded Trespasser",
+   "object": "related_card",
+   "type_line": "Creature — Spirit // Creature — Spirit",
+   "uri": "https://api.scryfall.com/cards/4dea7c9f-ce66-447b-9f1b-d9bca5806153"
+  },
+  {
+   "component": "combo_piece",
+   "id": "440f9f10-6999-4cff-ab98-8aed77813b07",
+   "name": "Daring Sleuth // Bearer of Overwhelming Truths",
+   "object": "related_card",
+   "type_line": "Creature — Human Rogue // Creature — Human Wizard",
+   "uri": "https://api.scryfall.com/cards/440f9f10-6999-4cff-ab98-8aed77813b07"
+  },
+  {
+   "component": "combo_piece",
+   "id": "d5e84d80-b5a6-4cd1-9f31-f6ca46bf2c0c",
+   "name": "Hermit of the Natterknolls // Lone Wolf of the Natterknolls",
+   "object": "related_card",
+   "type_line": "Creature — Human Werewolf // Creature — Werewolf",
+   "uri": "https://api.scryfall.com/cards/d5e84d80-b5a6-4cd1-9f31-f6ca46bf2c0c"
+  },
+  {
+   "component": "combo_piece",
+   "id": "b5c9649e-9ae5-4926-bf08-71ba23aa37f1",
+   "name": "Aberrant Researcher // Perfected Form",
+   "object": "related_card",
+   "type_line": "Creature — Human Insect // Creature — Insect Horror",
+   "uri": "https://api.scryfall.com/cards/b5c9649e-9ae5-4926-bf08-71ba23aa37f1"
+  },
+  {
+   "component": "combo_piece",
+   "id": "e326d5f4-63e1-45fa-8c48-6fdc05709c52",
+   "name": "Kindly Stranger // Demon-Possessed Witch",
+   "object": "related_card",
+   "type_line": "Creature — Human // Creature — Human Shaman",
+   "uri": "https://api.scryfall.com/cards/e326d5f4-63e1-45fa-8c48-6fdc05709c52"
+  },
+  {
+   "component": "combo_piece",
+   "id": "8093f8b0-5d50-48ca-b616-e92535a47138",
+   "name": "Accursed Witch // Infectious Curse",
+   "object": "related_card",
+   "type_line": "Creature — Human Shaman // Enchantment — Aura Curse",
+   "uri": "https://api.scryfall.com/cards/8093f8b0-5d50-48ca-b616-e92535a47138"
+  },
+  {
+   "component": "combo_piece",
+   "id": "e1915d93-c7dd-4bb7-bd5c-63a359a02b97",
+   "name": "Duskwatch Recruiter // Krallenhorde Howler",
+   "object": "related_card",
+   "type_line": "Creature — Human Warrior Werewolf // Creature — Werewolf",
+   "uri": "https://api.scryfall.com/cards/e1915d93-c7dd-4bb7-bd5c-63a359a02b97"
+  },
+  {
+   "component": "combo_piece",
+   "id": "d238d324-8c88-43ca-b203-133830d29447",
+   "name": "Town Gossipmonger // Incited Rabble",
+   "object": "related_card",
+   "type_line": "Creature — Human // Creature — Human",
+   "uri": "https://api.scryfall.com/cards/d238d324-8c88-43ca-b203-133830d29447"
+  },
+  {
+   "component": "combo_piece",
+   "id": "f2687683-2986-4e22-97d9-7820c870475b",
+   "name": "Thraben Gargoyle // Stonewing Antagonizer",
+   "object": "related_card",
+   "type_line": "Artifact Creature — Gargoyle // Artifact Creature — Gargoyle Horror",
+   "uri": "https://api.scryfall.com/cards/f2687683-2986-4e22-97d9-7820c870475b"
+  },
+  {
+   "component": "combo_piece",
+   "id": "33e542ce-1106-489d-9563-bd62886b8ed3",
+   "name": "Kessig Forgemaster // Flameheart Werewolf",
+   "object": "related_card",
+   "type_line": "Creature — Human Shaman Werewolf // Creature — Werewolf",
+   "uri": "https://api.scryfall.com/cards/33e542ce-1106-489d-9563-bd62886b8ed3"
+  },
+  {
+   "component": "combo_piece",
+   "id": "c0243401-e3ae-41c6-a3a0-9cd4b330c200",
+   "name": "Skin Invasion // Skin Shedder",
+   "object": "related_card",
+   "type_line": "Enchantment — Aura // Creature — Insect Horror",
+   "uri": "https://api.scryfall.com/cards/c0243401-e3ae-41c6-a3a0-9cd4b330c200"
+  },
+  {
+   "component": "combo_piece",
+   "id": "f43f5f02-1b29-4e75-a6af-378dcc88c3df",
+   "name": "Convicted Killer // Branded Howler",
+   "object": "related_card",
+   "type_line": "Creature — Human Werewolf // Creature — Werewolf",
+   "uri": "https://api.scryfall.com/cards/f43f5f02-1b29-4e75-a6af-378dcc88c3df"
+  },
+  {
+   "component": "combo_piece",
+   "id": "6c200ef1-ea08-48d4-ab50-77940a0e08c3",
+   "name": "Solitary Hunter // One of the Pack",
+   "object": "related_card",
+   "type_line": "Creature — Human Warrior Werewolf // Creature — Werewolf",
+   "uri": "https://api.scryfall.com/cards/6c200ef1-ea08-48d4-ab50-77940a0e08c3"
+  },
+  {
+   "component": "combo_piece",
+   "id": "4d323ead-24f5-42e4-9e23-aa14eb66264d",
+   "name": "Shadows Over Innistrad Checklist 1",
+   "object": "related_card",
+   "type_line": "Card",
+   "uri": "https://api.scryfall.com/cards/4d323ead-24f5-42e4-9e23-aa14eb66264d"
+  },
+  {
+   "component": "combo_piece",
+   "id": "6ab67098-d3d5-4799-ae03-c734244f370e",
+   "name": "Gatstaf Arsonists // Gatstaf Ravagers",
+   "object": "related_card",
+   "type_line": "Creature — Human Werewolf // Creature — Werewolf",
+   "uri": "https://api.scryfall.com/cards/6ab67098-d3d5-4799-ae03-c734244f370e"
+  },
+  {
+   "component": "combo_piece",
+   "id": "cf2ad186-4d85-4628-ae84-3c58c88d34cb",
+   "name": "Heir of Falkenrath // Heir to the Night",
+   "object": "related_card",
+   "type_line": "Creature — Vampire // Creature — Vampire Berserker",
+   "uri": "https://api.scryfall.com/cards/cf2ad186-4d85-4628-ae84-3c58c88d34cb"
+  },
+  {
+   "component": "combo_piece",
+   "id": "7ac2a5aa-71c3-482b-9431-5f0b228cf64d",
+   "name": "Pious Evangel // Wayward Disciple",
+   "object": "related_card",
+   "type_line": "Creature — Human Cleric // Creature — Human Cleric",
+   "uri": "https://api.scryfall.com/cards/7ac2a5aa-71c3-482b-9431-5f0b228cf64d"
+  },
+  {
+   "component": "combo_piece",
+   "id": "23f3fa96-6276-463e-8033-a64c8f06c933",
+   "name": "Lambholt Pacifist // Lambholt Butcher",
+   "object": "related_card",
+   "type_line": "Creature — Human Shaman Werewolf // Creature — Werewolf",
+   "uri": "https://api.scryfall.com/cards/23f3fa96-6276-463e-8033-a64c8f06c933"
+  },
+  {
+   "component": "combo_piece",
+   "id": "44deb8cf-b9d1-4a14-aeaf-e62cf3dc9ef2",
+   "name": "Village Messenger // Moonrise Intruder",
+   "object": "related_card",
+   "type_line": "Creature — Human Werewolf // Creature — Werewolf",
+   "uri": "https://api.scryfall.com/cards/44deb8cf-b9d1-4a14-aeaf-e62cf3dc9ef2"
+  },
+  {
+   "component": "combo_piece",
+   "id": "0d200f98-3377-46a3-9197-3cbd95d03dbf",
+   "name": "Harvest Hand // Scrounged Scythe",
+   "object": "related_card",
+   "type_line": "Artifact Creature — Scarecrow // Artifact — Equipment",
+   "uri": "https://api.scryfall.com/cards/0d200f98-3377-46a3-9197-3cbd95d03dbf"
+  }
+ ],
+ "artist": "",
+ "booster": true,
+ "border_color": "black",
+ "card_back_id": "0aeebaf5-8c7d-4636-9e82-8c27447861f7",
+ "cmc": 0.0,
+ "collector_number": "CH1",
+ "color_identity": [],
+ "colors": [],
+ "digital": false,
+ "finishes": [
+  "nonfoil"
+ ],
+ "foil": false,
+ "frame": "2015",
+ "full_art": false,
+ "game_changer": false,
+ "games": [
+  "paper"
+ ],
+ "highres_image": true,
+ "id": "4d323ead-24f5-42e4-9e23-aa14eb66264d",
+ "image_status": "highres_scan",
+ "image_updated_at": "2026-07-13T10:14:44Z",
+ "image_uris": {
+  "art": "https://cards.scryfall.io/art/front/4/d/4d323ead-24f5-42e4-9e23-aa14eb66264d.webp?1783937684",
+  "art_crop": "https://cards.scryfall.io/art_crop/front/4/d/4d323ead-24f5-42e4-9e23-aa14eb66264d.jpg?1783937684",
+  "border_crop": "https://cards.scryfall.io/border_crop/front/4/d/4d323ead-24f5-42e4-9e23-aa14eb66264d.jpg?1783937684",
+  "crop": "https://cards.scryfall.io/crop/front/4/d/4d323ead-24f5-42e4-9e23-aa14eb66264d.webp?1783937684",
+  "display": "https://cards.scryfall.io/display/front/4/d/4d323ead-24f5-42e4-9e23-aa14eb66264d.webp?1783937684",
+  "grid": "https://cards.scryfall.io/grid/front/4/d/4d323ead-24f5-42e4-9e23-aa14eb66264d.webp?1783937684",
+  "large": "https://cards.scryfall.io/large/front/4/d/4d323ead-24f5-42e4-9e23-aa14eb66264d.jpg?1783937684",
+  "normal": "https://cards.scryfall.io/normal/front/4/d/4d323ead-24f5-42e4-9e23-aa14eb66264d.jpg?1783937684",
+  "png": "https://cards.scryfall.io/png/front/4/d/4d323ead-24f5-42e4-9e23-aa14eb66264d.png?1783937684",
+  "small": "https://cards.scryfall.io/small/front/4/d/4d323ead-24f5-42e4-9e23-aa14eb66264d.jpg?1783937684",
+  "thumb": "https://cards.scryfall.io/thumb/front/4/d/4d323ead-24f5-42e4-9e23-aa14eb66264d.webp?1783937684"
+ },
+ "keywords": [],
+ "lang": "en",
+ "layout": "token",
+ "legalities": {
+  "alchemy": "not_legal",
+  "brawl": "not_legal",
+  "commander": "not_legal",
+  "competitivebrawl": "not_legal",
+  "duel": "not_legal",
+  "future": "not_legal",
+  "gladiator": "not_legal",
+  "historic": "not_legal",
+  "legacy": "not_legal",
+  "modern": "not_legal",
+  "oathbreaker": "not_legal",
+  "oldschool": "not_legal",
+  "pauper": "not_legal",
+  "paupercommander": "not_legal",
+  "penny": "not_legal",
+  "pioneer": "not_legal",
+  "predh": "not_legal",
+  "premodern": "not_legal",
+  "standard": "not_legal",
+  "standardbrawl": "not_legal",
+  "timeless": "not_legal",
+  "tlr": "not_legal",
+  "vintage": "not_legal"
+ },
+ "mana_cost": "",
+ "multiverse_ids": [],
+ "name": "Shadows Over Innistrad Checklist 1",
+ "nonfoil": true,
+ "object": "card",
+ "oracle_id": "cbf56928-ec9b-4727-adbe-dc41f27cc0f6",
+ "oracle_text": "(You can mark this card to represent a double-faced card in your library or hand.)\n☐ Avacynian Missionaries {3}{W}\n☐ Pious Evangel {2}{W}\n☐ Town Gossipmonger {W}\n☐ Aberrant Researcher {3}{U}\n☐ Daring Sleuth {1}{U}\n☐ Uninvited Geist {2}{U}\n☐ Accursed Witch {3}{B}\n☐ Heir of Falkenrath {1}{B}\n☐ Kindly Stranger {2}{B}\n☐ Breakneck Rider {1}{R}{R}\n☐ Convicted Killer {2}{R}\n☐ Gatstaf Arsonists {4}{R}\n☐ Kessig Forgemaster {1}{R}\n☐ Skin Invasion {1}{R}\n☐ Village Messenger {R}\n☐ Autumnal Gloom {2}{G}\n☐ Duskwatch Recruiter {1}{G}\n☐ Hermit of the Natterknolls {2}{G}\n☐ Hinterland Logger {1}{G}\n☐ Lambholt Pacifist {1}{G}\n☐ Solitary Hunter {3}{G}\n☐ Harvest Hand {3}\n☐ Neglected Heirloom {1}\n☐ Thraben Gargoyle {1}",
+ "oversized": false,
+ "prices": {
+  "eur": null,
+  "eur_foil": null,
+  "tix": null,
+  "usd": "0.05",
+  "usd_etched": null,
+  "usd_foil": null
+ },
+ "prints_search_uri": "https://api.scryfall.com/cards/search?order=released&q=oracleid%3Acbf56928-ec9b-4727-adbe-dc41f27cc0f6&unique=prints",
+ "promo": false,
+ "promo_types": [
+  "setpromo"
+ ],
+ "purchase_uris": {
+  "cardhoarder": "https://www.cardhoarder.com/cards?affiliate_id=scryfall&data%5Bsearch%5D=Shadows+Over+Innistrad+Checklist+1&ref=card-profile&utm_campaign=affiliate&utm_medium=card&utm_source=scryfall",
+  "cardmarket": "https://www.cardmarket.com/en/Magic/Products/Search?referrer=scryfall&searchString=Shadows+Over+Innistrad+Checklist+1&utm_campaign=card_prices&utm_medium=text&utm_source=scryfall",
+  "tcgplayer": "https://partner.tcgplayer.com/c/4931599/1830156/21018?subId1=api&u=https%3A%2F%2Fwww.tcgplayer.com%2Fproduct%2F116997%3Fpage%3D1"
+ },
+ "rarity": "common",
+ "related_uris": {
+  "edhrec": "https://edhrec.com/route/?cc=Shadows+Over+Innistrad+Checklist+1",
+  "tcgplayer_infinite_articles": "https://partner.tcgplayer.com/c/4931599/1830156/21018?subId1=api&trafcat=tcgplayer.com%2Fsearch%2Farticles&u=https%3A%2F%2Fwww.tcgplayer.com%2Fsearch%2Farticles%3FproductLineName%3Dmagic%26q%3DShadows%2BOver%2BInnistrad%2BChecklist%2B1",
+  "tcgplayer_infinite_decks": "https://partner.tcgplayer.com/c/4931599/1830156/21018?subId1=api&trafcat=tcgplayer.com%2Fsearch%2Fdecks&u=https%3A%2F%2Fwww.tcgplayer.com%2Fsearch%2Fdecks%3FproductLineName%3Dmagic%26q%3DShadows%2BOver%2BInnistrad%2BChecklist%2B1"
+ },
+ "released_at": "2016-04-08",
+ "reprint": false,
+ "reserved": false,
+ "rulings_uri": "https://api.scryfall.com/cards/4d323ead-24f5-42e4-9e23-aa14eb66264d/rulings",
+ "scryfall_set_uri": "https://scryfall.com/sets/tsoi?utm_source=api",
+ "scryfall_uri": "https://scryfall.com/card/tsoi/CH1/shadows-over-innistrad-checklist-1?utm_source=api",
+ "set": "tsoi",
+ "set_id": "114885aa-26f2-45a5-822f-376ae5374d63",
+ "set_name": "Shadows over Innistrad Tokens",
+ "set_search_uri": "https://api.scryfall.com/cards/search?order=set&q=e%3Atsoi&unique=prints",
+ "set_type": "token",
+ "set_uri": "https://api.scryfall.com/sets/114885aa-26f2-45a5-822f-376ae5374d63",
+ "story_spotlight": false,
+ "tcgplayer_id": 116997,
+ "textless": false,
+ "type_line": "Card",
+ "uri": "https://api.scryfall.com/cards/4d323ead-24f5-42e4-9e23-aa14eb66264d",
+ "variation": false
+}

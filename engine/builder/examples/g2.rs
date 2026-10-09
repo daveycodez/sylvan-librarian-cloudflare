@@ -298,6 +298,7 @@ fn gather_reference(
     let mut total = 0usize;
     let mut merged: Vec<(Vec<u8>, usize, u32, usize)> = Vec::new();
     let mut carried: Vec<Vec<Value>> = Vec::with_capacity(partitions.len());
+    let mut artless: Vec<Option<card_engine::ArtlessKey>> = Vec::with_capacity(partitions.len());
     for (part, store) in partitions.iter().enumerate() {
         let out = store.query_keys(tree, &phase1, inline).map_err(|e| format!("{e:?}"))?;
         total += out.total;
@@ -306,6 +307,15 @@ fn gather_reference(
             merged.push((key, part, vpid, local));
         }
         carried.push(out.rows);
+        artless.push(out.artless);
+    }
+    // `unique=art`'s art-less group: ONE row for every partition's candidate, merged by its own
+    // key and counted once (see card_engine::ArtlessKey). Never carried inline, hence the local
+    // index no prefix reaches.
+    if let Some(part) = card_engine::merge_artless(&artless) {
+        let rep = artless[part].take().expect("merge_artless names a partition with a candidate");
+        total += 1;
+        merged.push((rep.key, part, rep.vpid, usize::MAX));
     }
     merged.sort_unstable_by(|a, b| a.0.cmp(&b.0));
     let end = (opts.offset + opts.limit).min(merged.len());

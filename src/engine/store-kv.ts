@@ -1311,6 +1311,32 @@ export async function gzipBytes(bytes: Uint8Array): Promise<Uint8Array> {
  *       store-shape-changing, re-import-requiring change whose representative choices would be
  *       guesses on the one axis just proved unguessable. It should be built when something other
  *       than these two differentials asks for it.
+ *
+ *       THE ALL-ABSENT GUARD IS REVERSED FOR THE ANSWER (2026-10-09) — NO GENERATION, NOTHING
+ *       STORED. "Absent means unknown, not same-artwork" above was this port's reading; Scryfall's
+ *       is that absent is ONE artwork across cards: `-is:illustration unique=art` is 1 row of 764
+ *       printings on api.scryfall.com, `e:unk` 1 of 527, the 55 two-faced minigames 1. The 726
+ *       printings across 689 cards this note called nonsense to collapse are exactly what it
+ *       collapses. Both measurements stand — that one of what the grouping does to the corpus,
+ *       this one of what Scryfall answers — and the owner's decision is to match: a 193-artwork
+ *       query with extras answered 195 here and `g:snc unique=art` 856 against 853.
+ *
+ *       It closes NONE of the three blockers and needs none of them closed, because the art-less
+ *       group is the one cross-card artwork whose members are known without a corpus-wide id: they
+ *       are the zero-id prefix of `printing_by_illustration_id`. A `unique=art` query tests its
+ *       filter against those ~75 rows of a partition; matching none, it runs as it always did;
+ *       matching some, it runs over `filter AND is:illustration` and each partition sends its best
+ *       art-less printing as a CANDIDATE beside its keys (card_engine `ArtlessKey`, the flagged
+ *       trailer of the key packet). The gather keeps the candidate with the smallest rank, merges
+ *       its key like any other and counts it once (gather.ts `mergeWithArtless`). `assign_artwork_groups`
+ *       and every artwork count derived from it are untouched, which is why no archive moves.
+ *
+ *       The survivor of THIS group is measurable where the others' was not — a fixed order, see
+ *       card_engine's `artless_rank_key`: the first printing in `order=name unique=prints`
+ *       ('______' unk/RL01c of all 764; Blank Card's newest wc04/00, not its oldest), the cheapest
+ *       under a price order with ties to the newest date and smallest id, and a written prefer
+ *       ahead of both. Artworks WITH an id that span cards (khm/40 against khm/A-40) stay deferred
+ *       exactly as above.
  */
 /**
  * 34 — Vanguard's `life_modifier`/`hand_modifier` reach the card object, and one printing joins

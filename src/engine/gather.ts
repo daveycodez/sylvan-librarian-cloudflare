@@ -41,6 +41,41 @@ export interface KeyEntry {
 export const KEY_PACKET_VERSION = 3;
 /** `flags` bit 0: the query ran the multilingual (widened) driver. */
 export const KEY_PACKET_FLAG_WIDENED = 1;
+/**
+ * `flags` bit 1: an art-less trailer follows the inline rows (see {@link ArtlessCandidate}).
+ *
+ * A flag on version 3, not a version 4: a packet without a candidate — every query but a
+ * `unique=art` one that matches a printing with no illustration id — is byte for byte what
+ * version 3 always was, so two builds either side of this change serve side by side during a
+ * rolling deploy. A packet WITH one is refused by a build that predates the flag (the trailer is
+ * trailing bytes to its decoder), which is the loud failure a version bump exists to produce,
+ * confined to the queries whose answer changed.
+ */
+export const KEY_PACKET_FLAG_ARTLESS = 2;
+
+/**
+ * One partition's candidate for the ONE row every art-less printing collapses into under
+ * `unique=art`.
+ *
+ * Scryfall answers every printing with no illustration id as a single artwork ACROSS cards
+ * (`-is:illustration unique=art` is 1 row of 764 printings, measured 2026-10-09), and the store
+ * is cut by oracle id, so those printings lie in every partition and no partition can choose the
+ * row alone. Each partition therefore answers the query WITHOUT its art-less printings — its
+ * `total` and its entries leave them out — and sends its best one beside them: the sort key it
+ * would have had as a row, and a `rank` saying how good a representative it is.
+ *
+ * The coordinator still never interprets a key: it takes the candidate whose `rank` is bytewise
+ * smallest ({@link pickArtless}), merges that one key into the streams by memcmp like any other,
+ * and adds one to the total. Which printing wins, and why, is the engine's (card_engine's
+ * `artless_rank_key`).
+ */
+export interface ArtlessCandidate {
+	/** Bytewise-comparable across partitions; the smallest represents the group. */
+	rank: Uint8Array;
+	/** The candidate's sort key, in the same encoding as every entry's. */
+	key: Uint8Array;
+	vpid: number;
+}
 
 /** A partition's phase-1 reply, decoded. */
 export interface KeyPacket {
@@ -56,6 +91,8 @@ export interface KeyPacket {
 	inlineRows: Uint8Array[];
 	/** Whether the query ran the widened (multilingual) driver; identical in every partition. */
 	widened: boolean;
+	/** This partition's candidate for the art-less group's row — in neither `total` nor `entries`. */
+	artless?: ArtlessCandidate;
 }
 
 /**
@@ -65,6 +102,7 @@ export interface KeyPacket {
  * version: u32, total: u32, n: u32, inline: u32, flags: u32
  * n      of: keylen: u16, key bytes, vpid: u32
  * inline of: rowlen: u32, row bytes (row JSON or a card object — the reply says which)
+ * with KEY_PACKET_FLAG_ARTLESS: ranklen: u16, rank bytes, keylen: u16, key bytes, vpid: u32
  * ```
  *
  * The layout mirrors the `query_keys` export in engine/wasm (plan A4), and
@@ -81,7 +119,8 @@ export function decodeKeyPacket(packed: Uint8Array): KeyPacket {
 	const total = view.getUint32(4, true);
 	const n = view.getUint32(8, true);
 	const inlineCount = view.getUint32(12, true);
-	const widened = (view.getUint32(16, true) & KEY_PACKET_FLAG_WIDENED) !== 0;
+	const flags = view.getUint32(16, true);
+	const widened = (flags & KEY_PACKET_FLAG_WIDENED) !== 0;
 	const entries: KeyEntry[] = [];
 	let at = 20;
 	for (let i = 0; i < n; i++) {
@@ -102,8 +141,24 @@ export function decodeKeyPacket(packed: Uint8Array): KeyPacket {
 		inlineRows.push(packed.subarray(at, at + rowlen));
 		at += rowlen;
 	}
+	let artless: ArtlessCandidate | undefined;
+	if ((flags & KEY_PACKET_FLAG_ARTLESS) !== 0) {
+		const bytes = (what: string): Uint8Array => {
+			if (at + 2 > packed.byteLength) throw new Error(`key packet truncated in the art-less ${what} length`);
+			const len = view.getUint16(at, true);
+			at += 2;
+			if (at + len > packed.byteLength) throw new Error(`key packet truncated in the art-less ${what}`);
+			at += len;
+			return packed.subarray(at - len, at);
+		};
+		const rank = bytes("rank");
+		const key = bytes("key");
+		if (at + 4 > packed.byteLength) throw new Error("key packet truncated in the art-less vpid");
+		artless = { rank, key, vpid: view.getUint32(at, true) };
+		at += 4;
+	}
 	if (at !== packed.byteLength) throw new Error(`key packet has ${packed.byteLength - at} trailing bytes`);
-	return { total, entries, inlineRows, widened };
+	return artless ? { total, entries, inlineRows, widened, artless } : { total, entries, inlineRows, widened };
 }
 
 /** Encode a packet in the same layout — the test fixtures' generator, and the
@@ -113,19 +168,22 @@ export function encodeKeyPacket(packet: {
 	entries: KeyEntry[];
 	inlineRows?: Uint8Array[];
 	widened?: boolean;
+	artless?: ArtlessCandidate;
 }): Uint8Array {
 	const inlineRows = packet.inlineRows ?? [];
+	const artless = packet.artless;
 	const size =
 		20 +
 		packet.entries.reduce((s, e) => s + 2 + e.key.byteLength + 4, 0) +
-		inlineRows.reduce((s, r) => s + 4 + r.byteLength, 0);
+		inlineRows.reduce((s, r) => s + 4 + r.byteLength, 0) +
+		(artless ? 2 + artless.rank.byteLength + 2 + artless.key.byteLength + 4 : 0);
 	const out = new Uint8Array(size);
 	const view = new DataView(out.buffer);
 	view.setUint32(0, KEY_PACKET_VERSION, true);
 	view.setUint32(4, packet.total, true);
 	view.setUint32(8, packet.entries.length, true);
 	view.setUint32(12, inlineRows.length, true);
-	view.setUint32(16, packet.widened ? KEY_PACKET_FLAG_WIDENED : 0, true);
+	view.setUint32(16, (packet.widened ? KEY_PACKET_FLAG_WIDENED : 0) | (artless ? KEY_PACKET_FLAG_ARTLESS : 0), true);
 	let at = 20;
 	for (const e of packet.entries) {
 		view.setUint16(at, e.key.byteLength, true);
@@ -137,6 +195,14 @@ export function encodeKeyPacket(packet: {
 		view.setUint32(at, row.byteLength, true);
 		out.set(row, at + 4);
 		at += 4 + row.byteLength;
+	}
+	if (artless) {
+		for (const bytes of [artless.rank, artless.key]) {
+			view.setUint16(at, bytes.byteLength, true);
+			out.set(bytes, at + 2);
+			at += 2 + bytes.byteLength;
+		}
+		view.setUint32(at, artless.vpid, true);
 	}
 	return out;
 }
@@ -281,6 +347,58 @@ export function mergeKeyStreams(streams: KeyEntry[][]): MergedRef[] {
 		out.push({ partition: best, vpid: (entries[index] as KeyEntry).vpid, index });
 		heads[best] = index + 1;
 	}
+}
+
+/**
+ * A `MergedRef.index` no inline prefix reaches: the row was not in its partition's key stream, so
+ * phase 1 cannot have carried it and phase 2 fetches it. The art-less group's row is the one such.
+ */
+export const NOT_INLINE = 0xffff_ffff;
+
+/**
+ * Which partition's candidate represents the art-less group: the bytewise smallest `rank`, the
+ * lower partition on a tie (unreachable for real ranks, which end in a Scryfall id). `undefined`
+ * when no partition sent one — every query but a `unique=art` one matching an art-less printing.
+ */
+export function pickArtless(candidates: readonly (ArtlessCandidate | undefined)[]): number | undefined {
+	let best: number | undefined;
+	for (let p = 0; p < candidates.length; p++) {
+		const candidate = candidates[p];
+		if (candidate === undefined) continue;
+		if (best === undefined || compareKeys(candidate.rank, (candidates[best] as ArtlessCandidate).rank) < 0) best = p;
+	}
+	return best;
+}
+
+/**
+ * {@link mergeKeyStreams}, with the art-less group's one row merged in by its own key.
+ *
+ * The streams already leave every art-less printing out, so nothing is removed: the chosen
+ * candidate joins the merge as a one-entry stream of its own and comes out owned by the partition
+ * that sent it, at {@link NOT_INLINE}. `artless` is 1 when there is such a row and 0 when there is
+ * not, which is what the gather adds to the summed total.
+ *
+ * WHY THE PAGE IS STILL EXACT. Each partition sent its best `offset + limit` keys from zero, so
+ * the first `offset + limit` of the merge are the query's best without the group. A candidate
+ * that merges in among them is in its true place, since a row a partition did NOT send sorts
+ * after everything that partition did send; one that merges in later is past the window, where
+ * the order was never claimed.
+ */
+export function mergeWithArtless(
+	streams: KeyEntry[][],
+	candidates: readonly (ArtlessCandidate | undefined)[],
+): { merged: MergedRef[]; artless: 0 | 1 } {
+	const owner = pickArtless(candidates);
+	if (owner === undefined) return { merged: mergeKeyStreams(streams), artless: 0 };
+	const { key, vpid } = candidates[owner] as ArtlessCandidate;
+	const merged = mergeKeyStreams([...streams, [{ key, vpid }]]);
+	for (let i = 0; i < merged.length; i++) {
+		if ((merged[i] as MergedRef).partition === streams.length) {
+			merged[i] = { partition: owner, vpid, index: NOT_INLINE };
+			break;
+		}
+	}
+	return { merged, artless: 1 };
 }
 
 /**
@@ -694,7 +812,9 @@ export async function runTwoPhase(
 		const probe = await askKeys(clients, { ...opts, offset: 0, limit: 1 }, 0, shaping, sleep);
 		acquireMs = probe.reduce((max, r) => Math.max(max, r.acquireMs ?? 0), 0);
 		const probed = probe.map((r) => decodeKeyPacket(r.packed));
-		const total = probed.reduce((sum, p) => sum + p.total, 0);
+		// The art-less group's row is in no partition's total — see ArtlessCandidate.
+		const total =
+			probed.reduce((sum, p) => sum + p.total, 0) + (pickArtless(probed.map((p) => p.artless)) === undefined ? 0 : 1);
 		if (opts.offset >= total) {
 			return { total, slots: [], acquireMs, widened: probed[0]?.widened ?? false, builtAt: pinnedBuild(probe) };
 		}
@@ -748,11 +868,16 @@ export async function runTwoPhase(
 	}
 
 	const packets = replies.map((r) => decodeKeyPacket(r.packed));
-	const total = packets.reduce((s, p) => s + p.total, 0);
 	// The widening decision is a pure function of the options and the bound filter, so every
 	// partition answers the same; the first packet speaks for the fleet.
 	const widened = packets[0]?.widened ?? false;
-	const merged = mergeKeyStreams(packets.map((p) => p.entries));
+	// `unique=art` only, and only when the query matches a printing with no illustration id: one
+	// row for all of them, chosen among the partitions' candidates, merged in and counted once.
+	const { merged, artless } = mergeWithArtless(
+		packets.map((p) => p.entries),
+		packets.map((p) => p.artless),
+	);
+	const total = packets.reduce((s, p) => s + p.total, 0) + artless;
 	const carried = packets.map((p) => p.inlineRows.length);
 	const { page, byPartition } = selectPage(merged, opts.offset, opts.limit, carried);
 	const builtAt = pinnedBuild(replies);
