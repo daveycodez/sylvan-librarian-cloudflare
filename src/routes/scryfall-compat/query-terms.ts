@@ -2108,6 +2108,9 @@ const NEW_KEYWORDS: ReadonlySet<string> = new Set(["new"]);
  *                    outside memorabilia. 35,158 of 35,158.
  *   frame            the card's first printing in each `frame` (1993, 1997, 2003, 2015, future),
  *                    digital printings too, outside memorabilia. 45,058 of 45,058.
+ *   mtgo, modo       the card's first printing whose `games` hold `mtgo`, a paper printing or a
+ *                    digital one, outside memorabilia. 31,261 of 31,262: the other is a card
+ *                    object that changed between the bulk file and the list (afc/42 gained `mtgo`).
  *
  * None forces extras or widens, and each negation is the complement over every row of every
  * language (`-new:card lang:any` is 510,145 of 545,303).
@@ -2118,6 +2121,8 @@ const NEW_VALUE_IS_TAGS: ReadonlyMap<string, string> = new Map([
 	["printed", "newcard"],
 	["cardboard", "newcard"],
 	["frame", "newframe"],
+	["mtgo", "newmtgo"],
+	["modo", "newmtgo"],
 ]);
 
 /**
@@ -2126,8 +2131,8 @@ const NEW_VALUE_IS_TAGS: ReadonlyMap<string, string> = new Map([
  * parse, as `new:` did before — never dropped, which would answer wider than Scryfall does, and
  * never guessed:
  *
- *   language, lang, art, illustration, artist, flavor, ft, flavortext, foil, nonfoil,
- *   game, games, mtgo, modo, arena, mtga, astral, sega
+ *   language, lang, art, flavor, ft, flavortext, artist, illustration, foil, nonfoil, game,
+ *   games, arena, mtga, astral, sega
  */
 const NEW_HONORED_UNANSWERED: ReadonlySet<string> = new Set([
 	"language",
@@ -2142,8 +2147,6 @@ const NEW_HONORED_UNANSWERED: ReadonlySet<string> = new Set([
 	"nonfoil",
 	"game",
 	"games",
-	"mtgo",
-	"modo",
 	"arena",
 	"mtga",
 	"astral",

@@ -4097,6 +4097,30 @@
 			"method": "GET",
 			"path": "/cards/search?q=-new%3Aframe+e%3Akhm+t%3Agod&unique=prints",
 			"note": "2026-10-09. 13 of the 25: the showcase printings share the 2015 frame with the plain ones before them — the frame effects are no part of the group."
+		},
+		{
+			"name": "new-mtgo-is-the-first-printing-on-magic-online",
+			"method": "GET",
+			"path": "/cards/search?q=new%3Amtgo+%21%22Thermokarst%22&unique=prints",
+			"note": "2026-10-09. me2/183, the Masters Edition II printing, thirteen years after ice/268: the card's first printing whose games hold mtgo (31,262 printings corpus-wide)."
+		},
+		{
+			"name": "new-mtgo-a-paper-printing-that-lists-the-game",
+			"method": "GET",
+			"path": "/cards/search?q=new%3Amtgo+%21%22Jasmine+Boreal%22&unique=prints",
+			"note": "2026-10-09. tsb/93, a paper printing: eligibility is the printing's games, not whether it is digital."
+		},
+		{
+			"name": "new-modo-is-new-mtgo",
+			"method": "GET",
+			"path": "/cards/search?q=new%3Amodo+e%3Akhm+t%3Agod&unique=prints",
+			"note": "2026-10-09. 12 of the 25, the same 12 as new:mtgo (both 31,262 corpus-wide)."
+		},
+		{
+			"name": "new-mtgo-negated",
+			"method": "GET",
+			"path": "/cards/search?q=-new%3Amtgo+%21%22Corpse+Traders%22&unique=prints",
+			"note": "2026-10-09. ddm/58 and jmp/220: every printing but the first on Magic Online, avr/90 — the ones not on it at all too."
 		}
 	]
 }

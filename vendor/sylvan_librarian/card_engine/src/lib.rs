@@ -5415,10 +5415,18 @@ pub(crate) const NEW_CARD: u32 = 1 << 0;
 /// `Printing::new_flags`: the printing is the first of its card in its FRAME — `new:frame`.
 pub(crate) const NEW_FRAME: u32 = 1 << 1;
 
+/// `Printing::new_flags`: the printing is the first of its card on MAGIC ONLINE — `new:mtgo`, and
+/// `new:modo`.
+pub(crate) const NEW_MTGO: u32 = 1 << 2;
+
 /// The engine's `is:` spelling of each `new:` value `Printing::new_flags` answers, and the bits
 /// it reads. None of these is a Scryfall `is:` value: the compat surface writes `new:<value>` as
 /// one (query-terms.ts NEW_VALUE_IS_TAGS) and drops the spelling when it is typed.
-pub(crate) const NEW_FLAG_IS_VALUES: &[(&str, u32)] = &[("newcard", NEW_CARD), ("newframe", NEW_FRAME)];
+pub(crate) const NEW_FLAG_IS_VALUES: &[(&str, u32)] = &[
+    ("newcard", NEW_CARD),
+    ("newframe", NEW_FRAME),
+    ("newmtgo", NEW_MTGO),
+];
 
 /// The printings Scryfall's own order puts FIRST among the rows of their card that share their
 /// release date and batch, where the keys `assign_new_flags` orders by say otherwise. MEASURED,
@@ -5451,6 +5459,10 @@ const NEW_ORDER_LEADS: &[u128] = &[0xbc9c_39d1_1e10_4cd3_a4b1_b6eb_7c1a_0b65];
 ///               group is the card's `frame` (1993, 1997, 2003, 2015, future) and nothing else —
 ///               not the frame effects, not the border. 45,058 of 45,058 (45,057 without the
 ///               lead).
+///   `NEW_MTGO`  new:mtgo, new:modo — 31,262 printings. Eligible: a printing whose `games` hold
+///               `mtgo`, paper printings among them (`tsb/93` is Jasmine Boreal's). One group a
+///               card. 31,261 of 31,262, the other the bulk file's age: Song of Inspiration's
+///               `afc/42` gained `mtgo` between the file and the list.
 ///
 /// What the values share, each clause measured rather than read off the name:
 ///
@@ -5509,6 +5521,9 @@ fn assign_new_flags(printings: &mut [Printing], offsets: &[u32], foreign: &mut [
                 lead(NEW_CARD, 0);
             }
             lead(NEW_FRAME, frame_of(p));
+            if p.compat.games & GAME_MTGO != 0 {
+                lead(NEW_MTGO, 0);
+            }
         }
         for (bit, _, i) in firsts {
             if rows[i].compat.flags & COMPAT_VARIATION == 0 {
@@ -21565,7 +21580,9 @@ const ARCHIVE_MAGIC: [u8; 8] = *b"ATCARDS\0";
 //   2026100902 — NEW:FRAME (LOCAL PATCH). Bit 1 of `Printing::new_flags`, clear in every
 //                2026100901 store: a reader pairing this code with one would answer `new:frame`
 //                with nothing. No layout moves. Paired with STORE_CONTENT_GENERATION 77.
-const ARCHIVE_FORMAT_VERSION: u32 = 2026100902;
+//   2026100903 — NEW:MTGO (LOCAL PATCH). Bit 2 of `Printing::new_flags`, clear in every older
+//                store. No layout moves. Paired with STORE_CONTENT_GENERATION 78.
+const ARCHIVE_FORMAT_VERSION: u32 = 2026100903;
 const ARCHIVE_HEADER_LEN: usize = 16;
 
 fn archive_header() -> [u8; ARCHIVE_HEADER_LEN] {

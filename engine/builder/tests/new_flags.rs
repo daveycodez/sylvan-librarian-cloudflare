@@ -162,3 +162,26 @@ fn new_frame_is_the_first_printing_in_each_frame_digital_printings_too() {
         ["a25/116/en", "mb2/263/en", "ody/171†/zhs", "olep/48/en", "pjjt/1N07/ja", "tsb/14/en"]
     );
 }
+
+#[test]
+fn new_mtgo_is_the_first_printing_whose_games_hold_mtgo() {
+    let store = store_of(&[
+        // A DIGITAL printing: Thermokarst reached Magic Online in Masters Edition II.
+        ("thermokarst_ice_268", true),
+        ("thermokarst_me2_183", true),
+        // ...OR A PAPER ONE that lists the game: Jasmine Boreal's Time Spiral timeshifted printing.
+        ("jasmine_boreal_leg_233", true),
+        ("jasmine_boreal_tsb_93", true),
+        // One a card: Corpse Traders' first is `avr/90`, and `ddm/58` lists the game too.
+        ("corpse_traders_avr_90", true),
+        ("corpse_traders_ddm_58", true),
+        ("corpse_traders_jmp_220", true),
+        // An Arena-only card has none.
+        ("rusko_clockmaker_ybro_24", true),
+    ]);
+    assert_eq!(rows(&store, &is("newmtgo")), ["avr/90/en", "me2/183/en", "tsb/93/en"]);
+    assert_eq!(
+        rows(&store, &not(is("newmtgo"))),
+        ["ddm/58/en", "ice/268/en", "jmp/220/en", "leg/233/en", "ybro/24/en"]
+    );
+}

@@ -2116,8 +2116,13 @@ export async function gzipBytes(bytes: Uint8Array): Promise<Uint8Array> {
  *      the same canonical, non-memorabilia rows as generation 76, digital printings included, one
  *      group a `frame` value: 45,058 of 45,058 printings, the list read whole. Bit 1 of
  *      `new_flags`; paired with ARCHIVE_FORMAT_VERSION 2026100901 -> 2026100902, no layout moved.
+ *
+ *   78 (2026-10-09): `new:mtgo`, and `new:modo`. The card's first printing on Magic Online — the
+ *      order and rows of generation 76 over the printings whose `games` hold `mtgo`: 31,261 of
+ *      31,262, the list read whole, the other a card object that changed after the bulk file
+ *      (afc/42 gained `mtgo`). Bit 2 of `new_flags`; ARCHIVE_FORMAT_VERSION 2026100902 -> 2026100903.
  */
-export const STORE_CONTENT_GENERATION = 77;
+export const STORE_CONTENT_GENERATION = 78;
 
 /**
  * Chunk key for a store. Keyed by store_key, so publishes never collide.
