@@ -7047,8 +7047,22 @@ fn run_query_artwork_groups_shared_illustrations() {
     let mut all = FilterExpr::True;
     let (total, page) = run_query(&QueryCtx::from(archived), &mut all, None, "artwork", "default", "edhrec", "asc", 100, 0);
     assert_eq!(total, 3); // illustrations {1, 2, 4}
-    // Group {printings 0, 2}: printing 0 has the higher prefer score (desc order)
-    // and must be the group's representative.
+    // Group {printings 0, 2}: an artwork is represented by its FIRST printing, and store_of dates
+    // its printings newest first, so that is printing 2 (LOCAL PATCH, Cloudflare port). This
+    // asserted printing 0, the higher prefer score — the card's own order, which is what
+    // `unique=art` took its representative from until api.scryfall.com was measured across dates
+    // (see `artwork_prefer_key`).
+    let chosen: Vec<u128> = page.iter().map(|(_, p)| u128::from(p.scryfall_id)).collect();
+    assert!(chosen.contains(&3) && !chosen.contains(&1));
+
+    // On ONE date the store's order still decides: printing 0, the higher prefer score.
+    let mut data = rkyv::deserialize::<CardData, Error>(archived).expect("deserialize");
+    data.printings[2].released_at_int = data.printings[0].released_at_int;
+    let bytes = rkyv::to_bytes::<Error>(&data).expect("serialize");
+    let archived = rkyv::access::<Archived<CardData>, Error>(&bytes).expect("access");
+    let mut all = FilterExpr::True;
+    let (total, page) = run_query(&QueryCtx::from(archived), &mut all, None, "artwork", "default", "edhrec", "asc", 100, 0);
+    assert_eq!(total, 3);
     let chosen: Vec<u128> = page.iter().map(|(_, p)| u128::from(p.scryfall_id)).collect();
     assert!(chosen.contains(&1) && !chosen.contains(&3));
 }

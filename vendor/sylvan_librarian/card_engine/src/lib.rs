@@ -7353,6 +7353,11 @@ fn artwork_key_matches(keys: &[u128], off: usize, len: usize, key: &[u128]) -> b
 /// 35. `prefer_score` DESC, what `group_representative` already uses, matches 58 of 65 live
 /// decisions and nothing available does better. Do not replace it with a fitted comparator.
 ///
+/// THAT IS INSIDE ONE RELEASE DATE, which is all those 65 decisions were. ACROSS dates the survivor
+/// is the artwork's oldest printing, measured 2026-10-08 on 983 artworks — `artwork_prefer_key`,
+/// which `unique=art` chooses by since then, with `prefer_score`'s order (the store's) still
+/// deciding every tie on the date (LOCAL PATCH, Cloudflare port).
+///
 /// The groups are held as concatenated key tuples (`keys`) plus one `(offset, len)` span each
 /// (`spans`), both reused across cards, so a corpus of ~100k cards costs no per-card allocation.
 fn assign_artwork_groups(printings: &mut [Printing], offsets: &[u32]) -> Vec<u16> {
@@ -11369,6 +11374,10 @@ enum Prefer {
     TixHigh,
     Promo,
     Default,
+    /// What `unique=art` chooses its representative by when no prefer is written — never named by
+    /// a request; `QueryParams::from_strs` puts it in `Default`'s place under `Mode::Artwork`. See
+    /// `artwork_prefer_key`.
+    ArtworkDefault,
     DefaultFrame(PreferClassIds),
     Atypical(PreferClassIds),
     UniversesBeyond(PreferClassIds),
@@ -11494,6 +11503,42 @@ fn dated_prefer_key(p: &APrinting, siblings: &[APrinting], newest: bool) -> f64 
     (f64::from(ord) * 65536.0 + f64::from(set)) * f64::from(ID_RANKS) + f64::from(id_key)
 }
 
+/// `unique=art` with no prefer written: THE ARTWORK'S FIRST PRINTING represents it, not the card's
+/// default one (LOCAL PATCH, Cloudflare port). Larger is better.
+///
+/// The store's order — the card's own order, which leads with its newest default printing — is
+/// what this mode took its representative from, on the 2026-08-17 reading that the survivor of an
+/// artwork was "not derivable" (39 znr base-against-extended-art merges of one date split 35/4).
+/// Inside one date that still stands. ACROSS dates it is plain, and that reading had no group
+/// spanning two: measured on api.scryfall.com 2026-10-08, the `unique=art` answer of six scopes
+/// (a 193-artwork oracle-text query over 30 years of printings, and every printing of `g:hob`,
+/// `g:war`, `g:fic`, `g:snc`, `g:ecc`) against the same scope's `unique=prints`, 983 artworks with
+/// two or more printings in scope:
+///
+/// ```text
+/// the store's order (the card's own)                              811 of 983
+/// oldest released_at, then the store's order                      842
+/// oldest released_at, a promo after a non-promo, the store's order  878
+/// ```
+///
+/// On the one scope whose artworks span dates the store's order was right on 61 of 102 and the
+/// date on 92: Celestial Colonnade's first artwork answers wwk/133 (2010), not uma/238 (2018);
+/// Odric, Lunarch Marshal soi/31, not inr/36. The promo key is War of the Spark's Japanese
+/// planeswalkers — war/184★ and its prerelease twin pwar/184s★ share a date, the card's own order
+/// leads with the promo set (the later release batch) and `unique=art` answers the set's — 36
+/// artworks, and no artwork in the six scopes that it costs.
+///
+/// WHAT IS LEFT IS INSIDE ONE DATE AND SET, and nothing the card object carries decides it: New
+/// Capenna Commander keeps the extended-art printing of an artwork on 43 cards and the plain one on
+/// 49, The Hobbit keeps the surge-foil or extended-art one on 6 of 67. Two artworks also keep a
+/// NEWER printing (Counterspell's sld/SCTLR over sld/175, Angelic Skirmisher's pgtc/A11 over gtc/3).
+///
+/// Ties fall to the first printing in store order, as under every prefer. A missing date is last.
+fn artwork_prefer_key(p: &APrinting) -> f64 {
+    let ord = p.released_at_int.as_ref().map_or((1 << 21) - 1, |v| released_sort_ord(u32::from(*v)));
+    -(f64::from(ord) * 2.0 + f64::from(u8::from(compat_flag(&p.compat, COMPAT_PROMO))))
+}
+
 /// Prefer score for one printing of a card; higher wins, and selection uses a
 /// strict > so the first-in-store-order printing wins ties (matching the tie
 /// behavior of the dedup paths this replaced).
@@ -11529,6 +11574,7 @@ fn prefer_score(card: &AOracleCard, p: &APrinting, prefer: Prefer, strings: &ASt
         // first printing in store order is chosen — same as before the split.
         Prefer::Promo   => -(card.edhrec_rank.as_ref().map(|r| u32::from(*r) as f64).unwrap_or(f64::INFINITY)),
         Prefer::Default => default_score(),
+        Prefer::ArtworkDefault => artwork_prefer_key(p),
         Prefer::Atypical(ids) => class_score(printing_is_atypical(p, &ids, strings)),
         Prefer::DefaultFrame(ids) => class_score(!printing_is_atypical(p, &ids, strings)),
         Prefer::UniversesBeyond(ids) => class_score(printing_is_universes_beyond(p, &ids)),
@@ -12345,9 +12391,16 @@ impl QueryParams {
         // This is the only `QueryParams` constructor, which is what makes one call here enough
         // to cover `run_query`, `run_query_with_plan`, `explain_analyze` and `explain`.
         let sort_col = orderby_to_col(orderby);
+        let mode = mode_from_unique(unique);
+        // An artwork's representative under no prefer is not the card's — see `artwork_prefer_key`.
+        // After `prefer_for_sort`, so a price ordering still picks the printing it orders by.
+        let prefer = match (mode, prefer_for_sort(prefer_from_str(prefer), sort_col)) {
+            (Mode::Artwork, Prefer::Default) => Prefer::ArtworkDefault,
+            (_, prefer) => prefer,
+        };
         QueryParams {
-            mode: mode_from_unique(unique),
-            prefer: prefer_for_sort(prefer_from_str(prefer), sort_col),
+            mode,
+            prefer,
             sort_col,
             descending: direction == "desc",
             limit,
