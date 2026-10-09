@@ -1,0 +1,157 @@
+{
+ "all_parts": [
+  {
+   "component": "combo_piece",
+   "id": "abb424b6-741e-40ef-937f-e01536cf7479",
+   "name": "Midnight Clock",
+   "object": "related_card",
+   "type_line": "Artifact",
+   "uri": "https://api.scryfall.com/cards/abb424b6-741e-40ef-937f-e01536cf7479"
+  },
+  {
+   "component": "combo_piece",
+   "id": "c153d43d-fb7c-47cd-8796-4a0f6ff53579",
+   "name": "Rusko, Clockmaker",
+   "object": "related_card",
+   "type_line": "Legendary Creature — Human Artificer",
+   "uri": "https://api.scryfall.com/cards/c153d43d-fb7c-47cd-8796-4a0f6ff53579"
+  }
+ ],
+ "artist": "Samuel Perin",
+ "artist_ids": [
+  "1037066e-f63a-42dc-9850-9d14b6cfe436"
+ ],
+ "booster": false,
+ "border_color": "black",
+ "card_back_id": "0aeebaf5-8c7d-4636-9e82-8c27447861f7",
+ "cardmarket_id": 789156,
+ "cmc": 4.0,
+ "collector_number": "263",
+ "color_identity": [
+  "B",
+  "U"
+ ],
+ "colors": [
+  "B",
+  "U"
+ ],
+ "digital": false,
+ "edhrec_rank": 27467,
+ "finishes": [
+  "foil"
+ ],
+ "foil": true,
+ "frame": "2015",
+ "frame_effects": [
+  "legendary"
+ ],
+ "full_art": false,
+ "game_changer": false,
+ "games": [
+  "paper"
+ ],
+ "highres_image": true,
+ "id": "c153d43d-fb7c-47cd-8796-4a0f6ff53579",
+ "illustration_id": "2017dcd1-9148-411b-81bc-44c32ab87e0a",
+ "image_status": "highres_scan",
+ "image_updated_at": "2026-07-13T02:42:20Z",
+ "image_uris": {
+  "art": "https://cards.scryfall.io/art/front/c/1/c153d43d-fb7c-47cd-8796-4a0f6ff53579.webp?1783910540",
+  "art_crop": "https://cards.scryfall.io/art_crop/front/c/1/c153d43d-fb7c-47cd-8796-4a0f6ff53579.jpg?1783910540",
+  "border_crop": "https://cards.scryfall.io/border_crop/front/c/1/c153d43d-fb7c-47cd-8796-4a0f6ff53579.jpg?1783910540",
+  "crop": "https://cards.scryfall.io/crop/front/c/1/c153d43d-fb7c-47cd-8796-4a0f6ff53579.webp?1783910540",
+  "display": "https://cards.scryfall.io/display/front/c/1/c153d43d-fb7c-47cd-8796-4a0f6ff53579.webp?1783910540",
+  "grid": "https://cards.scryfall.io/grid/front/c/1/c153d43d-fb7c-47cd-8796-4a0f6ff53579.webp?1783910540",
+  "large": "https://cards.scryfall.io/large/front/c/1/c153d43d-fb7c-47cd-8796-4a0f6ff53579.jpg?1783910540",
+  "normal": "https://cards.scryfall.io/normal/front/c/1/c153d43d-fb7c-47cd-8796-4a0f6ff53579.jpg?1783910540",
+  "png": "https://cards.scryfall.io/png/front/c/1/c153d43d-fb7c-47cd-8796-4a0f6ff53579.png?1783910540",
+  "small": "https://cards.scryfall.io/small/front/c/1/c153d43d-fb7c-47cd-8796-4a0f6ff53579.jpg?1783910540",
+  "thumb": "https://cards.scryfall.io/thumb/front/c/1/c153d43d-fb7c-47cd-8796-4a0f6ff53579.webp?1783910540"
+ },
+ "keywords": [
+  "Conjure"
+ ],
+ "lang": "en",
+ "layout": "normal",
+ "legalities": {
+  "alchemy": "not_legal",
+  "brawl": "legal",
+  "commander": "not_legal",
+  "competitivebrawl": "banned",
+  "duel": "not_legal",
+  "future": "not_legal",
+  "gladiator": "legal",
+  "historic": "legal",
+  "legacy": "not_legal",
+  "modern": "not_legal",
+  "oathbreaker": "not_legal",
+  "oldschool": "not_legal",
+  "pauper": "not_legal",
+  "paupercommander": "not_legal",
+  "penny": "not_legal",
+  "pioneer": "not_legal",
+  "predh": "not_legal",
+  "premodern": "not_legal",
+  "standard": "not_legal",
+  "standardbrawl": "not_legal",
+  "timeless": "legal",
+  "tlr": "not_legal",
+  "vintage": "not_legal"
+ },
+ "mana_cost": "{2}{U}{B}",
+ "multiverse_ids": [
+  677421
+ ],
+ "name": "Rusko, Clockmaker",
+ "nonfoil": false,
+ "object": "card",
+ "oracle_id": "ccb456a0-3abd-4bde-a453-20d2da210e05",
+ "oracle_text": "When Rusko, Clockmaker enters the battlefield, conjure a card named Midnight Clock onto the battlefield.\nWhenever you cast a noncreature spell, put an hour counter on each permanent you control named Midnight Clock. Each opponent loses 1 life and you gain 1 life.",
+ "oversized": false,
+ "power": "3",
+ "prices": {
+  "eur": null,
+  "eur_foil": "55.67",
+  "tix": null,
+  "usd": null,
+  "usd_etched": null,
+  "usd_foil": "68.18"
+ },
+ "prints_search_uri": "https://api.scryfall.com/cards/search?order=released&q=oracleid%3Accb456a0-3abd-4bde-a453-20d2da210e05&unique=prints",
+ "promo": false,
+ "promo_types": [
+  "alchemy"
+ ],
+ "purchase_uris": {
+  "cardhoarder": "https://www.cardhoarder.com/cards?affiliate_id=scryfall&data%5Bsearch%5D=Rusko%2C+Clockmaker&ref=card-profile&utm_campaign=affiliate&utm_medium=card&utm_source=scryfall",
+  "cardmarket": "https://www.cardmarket.com/en/Magic/Products?idProduct=789156&referrer=scryfall&utm_campaign=card_prices&utm_medium=text&utm_source=scryfall",
+  "tcgplayer": "https://partner.tcgplayer.com/c/4931599/1830156/21018?subId1=api&u=https%3A%2F%2Fwww.tcgplayer.com%2Fproduct%2F563295%3Fpage%3D1"
+ },
+ "rarity": "uncommon",
+ "related_uris": {
+  "edhrec": "https://edhrec.com/route/?cc=Rusko%2C+Clockmaker",
+  "gatherer": "https://gatherer.wizards.com/Pages/Card/Details.aspx?multiverseid=677421&printed=false",
+  "tcgplayer_infinite_articles": "https://partner.tcgplayer.com/c/4931599/1830156/21018?subId1=api&trafcat=tcgplayer.com%2Fsearch%2Farticles&u=https%3A%2F%2Fwww.tcgplayer.com%2Fsearch%2Farticles%3FproductLineName%3Dmagic%26q%3DRusko%252C%2BClockmaker",
+  "tcgplayer_infinite_decks": "https://partner.tcgplayer.com/c/4931599/1830156/21018?subId1=api&trafcat=tcgplayer.com%2Fsearch%2Fdecks&u=https%3A%2F%2Fwww.tcgplayer.com%2Fsearch%2Fdecks%3FproductLineName%3Dmagic%26q%3DRusko%252C%2BClockmaker"
+ },
+ "released_at": "2024-08-02",
+ "reprint": true,
+ "reserved": false,
+ "rulings_uri": "https://api.scryfall.com/cards/c153d43d-fb7c-47cd-8796-4a0f6ff53579/rulings",
+ "scryfall_set_uri": "https://scryfall.com/sets/mb2?utm_source=api",
+ "scryfall_uri": "https://scryfall.com/card/mb2/263/rusko-clockmaker?utm_source=api",
+ "security_stamp": "acorn",
+ "set": "mb2",
+ "set_id": "1e6879fe-2f29-4ad7-8d42-7f5bfb469f4a",
+ "set_name": "Mystery Booster 2",
+ "set_search_uri": "https://api.scryfall.com/cards/search?order=set&q=e%3Amb2&unique=prints",
+ "set_type": "masters",
+ "set_uri": "https://api.scryfall.com/sets/1e6879fe-2f29-4ad7-8d42-7f5bfb469f4a",
+ "story_spotlight": false,
+ "tcgplayer_id": 563295,
+ "textless": false,
+ "toughness": "3",
+ "type_line": "Legendary Creature — Human Artificer",
+ "uri": "https://api.scryfall.com/cards/c153d43d-fb7c-47cd-8796-4a0f6ff53579",
+ "variation": false
+}

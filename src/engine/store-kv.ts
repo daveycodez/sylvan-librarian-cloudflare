@@ -2098,8 +2098,21 @@ export async function gzipBytes(bytes: Uint8Array): Promise<Uint8Array> {
  *      the largest partition 42,960,784 against 42,842,080. No layout, no format version,
  *      neither row touched; the rank a printing is stored with still comes from `print_tier`
  *      alone and does not move.
+ *
+ *   76 (2026-10-09): `new:card` — AND `new:paper`, `new:printed`, `new:cardboard`, ONE LIST. The
+ *      card's first PAPER printing: per card, over its canonical rows that list `paper` and are
+ *      not memorabilia, the first by release date, release batch, the collector number's digits as
+ *      one integer, variation last and Scryfall id, flagged unless it is a variation — 35,158 of
+ *      35,158 printings, both lists read whole on api.scryfall.com (card_engine
+ *      `assign_new_flags` carries the evidence, and the one measured lead the order needs:
+ *      plg21/J2 ahead of J1). The term failed to parse here.
+ *
+ *      Paired with ARCHIVE_FORMAT_VERSION 2026100801 -> 2026100901, and NEITHER ROW GROWS: the
+ *      printing's release date is archived as one u32 (0 for none) where rkyv's option took
+ *      eight bytes, and the four it gives back are `new_flags`, one bit a `new:` value; this is
+ *      bit 0.
  */
-export const STORE_CONTENT_GENERATION = 75;
+export const STORE_CONTENT_GENERATION = 76;
 
 /**
  * Chunk key for a store. Keyed by store_key, so publishes never collide.

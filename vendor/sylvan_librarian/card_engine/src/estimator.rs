@@ -130,7 +130,7 @@ pub(crate) fn has_printing_varying_leaf(f: &FilterExpr) -> bool {
         // ...and `lore:`'s printing half: the flavor text, the flavor name, the faces of its own.
         FilterExpr::LorePrinting { .. } | FilterExpr::PrintsOwnFaces | FilterExpr::PrintsOwnIn { .. } | FilterExpr::FaceStatCmpFalse { .. } => true,
         // ...and the cheapest codes, and the `new:rarity` bit.
-        FilterExpr::Cheapest { .. } | FilterExpr::NewRarity => true,
+        FilterExpr::Cheapest { .. } | FilterExpr::NewRarity | FilterExpr::NewFlag { .. } => true,
         // ...and so is the frame class (`is:atypical` / `is:default`): flags, border and promo
         // types are all the printing's.
         FilterExpr::Atypical(_) => true,
@@ -541,7 +541,8 @@ fn estimate_leaf(f: &FilterExpr, indexes: &Archived<CardIndexes>, n_cards: u32, 
         // No index answers `cheapest:`; it is two bits read off each candidate printing. The same
         // for `new:rarity`'s one.
         | FilterExpr::Cheapest { .. }
-        | FilterExpr::NewRarity => unknown(n),
+        | FilterExpr::NewRarity
+        | FilterExpr::NewFlag { .. } => unknown(n),
 
         // Printing-space CSR width sums → project (varying).
         FilterExpr::ArtistMatch { ids } => {

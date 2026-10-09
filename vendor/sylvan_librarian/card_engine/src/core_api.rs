@@ -3749,11 +3749,7 @@ const JSON_FIELD_TABLE: &[(&str, JsonFieldExtractor)] = &[
         c.edhrec_rank.as_ref().copied().map(|v| Value::from(u32::from(v))).unwrap_or(Value::Null)
     }),
     ("released_at", |_c, p, _s, _v| {
-        p.released_at_int
-            .as_ref()
-            .copied()
-            .map(|v| Value::String(released_int_to_iso(u32::from(v))))
-            .unwrap_or(Value::Null)
+        p.released_int().map(|v| Value::String(released_int_to_iso(v))).unwrap_or(Value::Null)
     }),
     // ── The compat residue (upstream #912), read off `Printing.compat` / `OracleCard.all_parts`
     // exactly as upstream's FIELD_TABLE reads them. `null` is how "Scryfall omitted this key"

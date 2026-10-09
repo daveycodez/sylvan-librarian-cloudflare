@@ -1241,7 +1241,19 @@ struct Printing {
     card_watermark_id: u32,
     collector_number_id: u32,
     set_name_id: u32,
-    released_at_int: Option<u32>,      // yyyymmdd, parsed once at load; date/year filters and prefer use this
+    // yyyymmdd, parsed once at load; date/year filters and prefer use this.
+    //
+    // ONE u32 SINCE 2026100901 (LOCAL PATCH, Cloudflare port): rkyv's own `Option<u32>` is eight
+    // archived bytes (tag, padding, value) and a date is never 0, so `DateInt` stores the value
+    // itself with 0 for None — which hands the row the four bytes `new_flags` below sits in
+    // without it growing. Read it through `APrinting::released_int`.
+    #[rkyv(with = DateInt)]
+    released_at_int: Option<u32>,
+    /// LOCAL PATCH (Cloudflare port): the printing's answers to Scryfall's `new:` values — "the
+    /// first printing of its card with this" — one bit a value (`NEW_*`), decided at build by
+    /// `assign_new_flags`, which carries the measured rule. Zero on every row until that pass has
+    /// run, and on every annex row. `new:rarity` is older and lives in `CompatFields::games`.
+    new_flags: u32,
 
     card_rarity_int: Option<u8>,       // 0-5
     // Dense rank of (collector_number_int, collector_number) in that order, assigned post-load by
@@ -1619,11 +1631,43 @@ impl<D: rkyv::rancor::Fallible + ?Sized> rkyv::with::DeserializeWith<Archived<u3
     }
 }
 
+/// How `Printing::released_at_int` is archived: the `yyyymmdd` integer itself, 0 for None. Four
+/// bytes where rkyv's own `Option<u32>` is eight — the other four are `Printing::new_flags`. No
+/// date is 0, so nothing is lost, and absent still orders below every present date.
+struct DateInt;
+
+impl rkyv::with::ArchiveWith<Option<u32>> for DateInt {
+    type Archived = Archived<u32>;
+    type Resolver = ();
+
+    fn resolve_with(field: &Option<u32>, (): (), out: rkyv::Place<Self::Archived>) {
+        field.unwrap_or(0).resolve((), out);
+    }
+}
+
+impl<S: rkyv::rancor::Fallible + ?Sized> rkyv::with::SerializeWith<Option<u32>, S> for DateInt {
+    fn serialize_with(_: &Option<u32>, _: &mut S) -> Result<(), S::Error> {
+        Ok(())
+    }
+}
+
+impl<D: rkyv::rancor::Fallible + ?Sized> rkyv::with::DeserializeWith<Archived<u32>, Option<u32>, D> for DateInt {
+    fn deserialize_with(field: &Archived<u32>, _: &mut D) -> Result<Option<u32>, D::Error> {
+        Ok(Some(u32::from(*field)).filter(|date| *date != 0))
+    }
+}
+
 impl ArchivedPrinting {
     /// `collector_number_int` as stored by `CollectorInt`.
     #[inline]
     pub(crate) fn collector_int(&self) -> Option<u32> {
         u32::from(self.collector_number_int).checked_sub(1)
+    }
+
+    /// `released_at_int` as stored by `DateInt`.
+    #[inline]
+    pub(crate) fn released_int(&self) -> Option<u32> {
+        Some(u32::from(self.released_at_int)).filter(|date| *date != 0)
     }
 }
 
@@ -5364,6 +5408,108 @@ pub(crate) fn printing_is_new_rarity(p: &APrinting) -> bool {
     p.compat.games & GAMES_NEW_RARITY != 0
 }
 
+/// `Printing::new_flags`: the printing is the first PAPER printing of its card — Scryfall's
+/// `new:card`, and `new:paper`, `new:printed` and `new:cardboard`, which are the same list.
+pub(crate) const NEW_CARD: u32 = 1 << 0;
+
+/// The engine's `is:` spelling of each `new:` value `Printing::new_flags` answers, and the bits
+/// it reads. None of these is a Scryfall `is:` value: the compat surface writes `new:<value>` as
+/// one (query-terms.ts NEW_VALUE_IS_TAGS) and drops the spelling when it is typed.
+pub(crate) const NEW_FLAG_IS_VALUES: &[(&str, u32)] = &[("newcard", NEW_CARD)];
+
+/// The printings Scryfall's own order puts FIRST among the rows of their card that share their
+/// release date and batch, where the keys `assign_new_flags` orders by say otherwise. MEASURED,
+/// and one printing long: Orb of Dragonkind's three Japanese Love Your LGS promos, plg21/J1, J2
+/// and J3, share a date, a batch and every field a card object carries but the number, the id
+/// and the artwork — and api.scryfall.com answers J2 to `new:card`, `new:frame`, `new:game` and
+/// `new:language`, lists the three as J2, J3, J1 under `order=released&dir=asc` and answers J2
+/// to `prefer:oldest` (2026-10-09), where the number and the id both say J1.
+const NEW_ORDER_LEADS: &[u128] = &[0xbc9c_39d1_1e10_4cd3_a4b1_b6eb_7c1a_0b65];
+
+/// LOCAL PATCH (Cloudflare port): decide every printing's `new_flags` — Scryfall's `new:<value>`,
+/// "the first printing of this card with this", for each value this store answers.
+///
+/// THE RULE, measured on api.scryfall.com 2026-10-09 by reading each whole list
+/// (`new:<value>`, `unique=prints`, extras in) against the 2026-10-08 `all_cards` and
+/// `default_cards` bulk files. Every value is one shape:
+///
+///   per card (oracle id) and GROUP, over the card's CANONICAL rows that are ELIGIBLE, the one
+///   row that is least by
+///     (release date, release batch, the collector number's digits as one integer,
+///      variation last, Scryfall id)
+///   — and that row is flagged unless it is a `variation`
+///
+/// with eligibility and the group the only things a value chooses:
+///
+///   `NEW_CARD`  new:card, new:paper, new:printed, new:cardboard — one list, 35,158 printings,
+///               id for id. Eligible: a printing whose `games` hold `paper`. One group a card.
+///               35,158 of 35,158 (with `NEW_ORDER_LEADS`; 35,157 without).
+///
+/// What the values share, each clause measured rather than read off the name:
+///
+///   - MEMORABILIA is never eligible. With it `new:card` is 37,854 printings here against
+///     35,158, and 2,695 cards printed in nothing else have no `new:card` printing at all.
+///   - CANONICAL rows only: `lang:any` beside any of these values changes no count, none of the
+///     rows returned is an annex row, and `-new:card lang:any` is 510,145 — every row of every
+///     language but the 35,158.
+///   - the COLLECTOR NUMBER is `collector_number_int`, every digit of it as one integer:
+///     `psus/14` is before `pjjt/1N07` and `psus/15` before `pjas/2U07` (the same date and
+///     batch; `new:frame`), where the number's FIRST integer says the reverse.
+///   - a VARIATION sorts after its plain twin and is NEVER flagged, though it still stands in
+///     the order: Zombify's `ody/171†` (Simplified Chinese, a variation, the only row its card
+///     has in that frame before 2018) is not `new:frame`, and neither is `a25/116` after it.
+///   - the SET CODE is no key and neither is the set type: promos, masterpieces and box sets
+///     are first wherever the order puts them (713 of the 35,158 are promos).
+///   - NEGATION is the plain complement, over every row of every language. No value forces
+///     extras or widens.
+fn assign_new_flags(printings: &mut [Printing], offsets: &[u32], foreign: &mut [Printing], coll_vocab: &[String]) {
+    let memorabilia = coll_vocab.iter().position(|s| s == "memorabilia").and_then(|i| u16::try_from(i).ok());
+    let key = |p: &Printing| {
+        (
+            p.released_at_int.unwrap_or(u32::MAX),
+            p.release_set_key >> RELEASE_KEY_CODE_BITS,
+            !NEW_ORDER_LEADS.contains(&p.scryfall_id),
+            p.collector_number_int.unwrap_or(0),
+            p.compat.flags & COMPAT_VARIATION != 0,
+            p.scryfall_id,
+        )
+    };
+    for p in printings.iter_mut().chain(foreign.iter_mut()) {
+        p.new_flags = 0;
+    }
+    for cid in 0..offsets.len().saturating_sub(1) {
+        let rows = &mut printings[offsets[cid] as usize..offsets[cid + 1] as usize];
+        // One slot a group: the row leading it so far, and the bit it earns.
+        let mut firsts: Vec<(u32, u64, usize)> = Vec::new();
+        for (i, p) in rows.iter().enumerate() {
+            if Some(p.compat.set_type_id) == memorabilia {
+                continue;
+            }
+            let mut lead = |bit: u32, group: u64| match firsts.iter_mut().find(|(b, g, _)| *b == bit && *g == group) {
+                Some(slot) => {
+                    if key(p) < key(&rows[slot.2]) {
+                        slot.2 = i;
+                    }
+                }
+                None => firsts.push((bit, group, i)),
+            };
+            if p.compat.games & GAME_PAPER != 0 {
+                lead(NEW_CARD, 0);
+            }
+        }
+        for (bit, _, i) in firsts {
+            if rows[i].compat.flags & COMPAT_VARIATION == 0 {
+                rows[i].new_flags |= bit;
+            }
+        }
+    }
+}
+
+/// A printing's `new_flags` — see `assign_new_flags`.
+pub(crate) fn printing_new_flags(p: &APrinting) -> u32 {
+    u32::from(p.new_flags)
+}
+
 /// The set types whose RARITY Scryfall does not count toward `in:<rarity>`.
 ///
 /// Measured 2026-09-04 with `r:rare st:<type> -in:rare` over every set type, `include_extras=true`
@@ -6629,7 +6775,7 @@ pub(crate) fn card_first_released(data: &Archived<CardData>, cid: usize) -> u32 
     let (start, end) = (u32::from(data.offsets[cid]) as usize, u32::from(data.offsets[cid + 1]) as usize);
     data.printings[start..end]
         .iter()
-        .filter_map(|p| p.released_at_int.as_ref().map(|v| u32::from(*v)))
+        .filter_map(|p| p.released_int())
         .min()
         .unwrap_or(0)
 }
@@ -11188,7 +11334,7 @@ fn same_set_group_base(p: &APrinting, siblings: &[APrinting], tier: f64, ids: &P
             && u16::from(q.compat.lang_id) == u16::from(p.compat.lang_id)
             && borderless_frame_tier(q, siblings, ids, strings) == tier
     };
-    let date = |q: &APrinting| q.released_at_int.as_ref().map_or(0u32, |v| u32::from(*v));
+    let date = |q: &APrinting| q.released_int().unwrap_or(0);
     let mine = (date(p), number(p));
     let mut group_max = default_of(p);
     let mut members = 1usize;
@@ -11564,7 +11710,7 @@ fn mode_from_unique(unique: &str) -> Mode {
 fn dated_prefer_key(p: &APrinting, siblings: &[APrinting], newest: bool) -> f64 {
     const ID_RANKS: u32 = 1 << 11;
     let batch_of = |q: &APrinting| u32::from(u16::from(q.release_set_key)) >> RELEASE_KEY_CODE_BITS;
-    let date = p.released_at_int.as_ref().map(|v| u32::from(*v));
+    let date = p.released_int();
     // `oldest` negates the key, so its missing date must be the LARGEST; `newest`'s the smallest.
     let ord = date.map_or(if newest { 0 } else { (1 << 21) - 1 }, released_sort_ord);
     let batch = batch_of(p);
@@ -11572,7 +11718,7 @@ fn dated_prefer_key(p: &APrinting, siblings: &[APrinting], newest: bool) -> f64 
     let smaller = siblings
         .iter()
         .filter(|s| {
-            s.released_at_int.as_ref().map(|v| u32::from(*v)) == date
+            s.released_int() == date
                 && batch_of(s) == batch
                 && u128::from(s.scryfall_id) < id
         })
@@ -11616,7 +11762,7 @@ fn dated_prefer_key(p: &APrinting, siblings: &[APrinting], newest: bool) -> f64 
 ///
 /// Ties fall to the first printing in store order, as under every prefer. A missing date is last.
 fn artwork_prefer_key(p: &APrinting) -> f64 {
-    let ord = p.released_at_int.as_ref().map_or((1 << 21) - 1, |v| released_sort_ord(u32::from(*v)));
+    let ord = p.released_int().map_or((1 << 21) - 1, released_sort_ord);
     -(f64::from(ord) * 2.0 + f64::from(u8::from(compat_flag(&p.compat, COMPAT_PROMO))))
 }
 
@@ -11938,7 +12084,7 @@ fn sort_primary_f32(card: &AOracleCard, p: &APrinting, sort_col: SortCol) -> Opt
         // off the one number line `assign_name_ranks` builds, so this is a plain substitution.
         SortCol::Name       => Some(printing_name_rank(card, p) as f32),
         // Packed rather than raw: yyyymmdd exceeds the exact-f32 range (see released_sort_ord).
-        SortCol::Released   => p.released_at_int.as_ref().map(|v| released_sort_ord(u32::from(*v)) as f32),
+        SortCol::Released   => p.released_int().map(|v| released_sort_ord(v) as f32),
         SortCol::Color      => Some(color_sort_rank(card) as f32),
         // Dense ranks assigned post-load; the stored code and artist id do not sort alphabetically
         // on their own (see assign_set_ranks / assign_artist_ranks).
@@ -12460,7 +12606,7 @@ pub(crate) fn foreign_artless(data: &Archived<CardData>) -> Vec<u32> {
 /// descending, Scryfall id ascending — `dated_prefer_key` without the per-card id rank, which a
 /// group spanning cards cannot use. `oldest` flips the date and the batch and keeps the id.
 fn push_dated_rank(key: &mut Vec<u8>, p: &APrinting, newest: bool) {
-    let ord = p.released_at_int.as_ref().map(|v| released_sort_ord(u32::from(*v)));
+    let ord = p.released_int().map(released_sort_ord);
     let batch = u16::from(p.release_set_key) >> RELEASE_KEY_CODE_BITS;
     let (date, batch) = match (ord, newest) {
         (None, _) => (u32::MAX, u16::MAX),
@@ -20513,7 +20659,7 @@ const FIELD_TABLE: &[(&str, FieldKey, FieldExtractor)] = &[
     ("price_tix", |py| intern!(py, "price_tix"), |py, _c, p, _s, _v| Ok(p.price_tix.as_ref().map(|v| f64::from(u32::from(*v)) / 100.0).into_pyobject(py)?.into_any())),
     // ISO date, the shape Scryfall sends and JSON can carry. The store holds it as an int.
     ("released_at", |py| intern!(py, "released_at"), |py, _c, p, _s, _v| {
-        Ok(p.released_at_int.as_ref().copied().map(u32::from).map(released_int_to_iso).into_pyobject(py)?.into_any())
+        Ok(p.released_int().map(released_int_to_iso).into_pyobject(py)?.into_any())
     }),
 ];
 
@@ -21395,7 +21541,15 @@ const ARCHIVE_MAGIC: [u8; 8] = *b"ATCARDS\0";
 //                pairing this code with a 2026100403 store would read (tag, pad, u16) as one
 //                integer and the old number as the rank. Paired with STORE_CONTENT_GENERATION 71
 //                and SORT_KEY_VERSION 4 (the collector segment's integer widens with the field).
-const ARCHIVE_FORMAT_VERSION: u32 = 2026100801;
+//   2026100901 — THE NEW: FLAGS (LOCAL PATCH). `Printing::released_at_int` is archived as one
+//                u32 (`DateInt`: the date, 0 for None) where rkyv's `Option<u32>` took eight
+//                bytes, and the four it gives back are `Printing::new_flags`, the printing's
+//                answers to Scryfall's `new:` values (see `assign_new_flags`); bit 0 is
+//                `new:card`. `size_of::<APrinting>` is still 304, so the header cannot see the
+//                change: a reader pairing this code with a 2026100801 store would read the
+//                option's tag as the date — 1, or 0 — and the date as the flags. Paired with
+//                STORE_CONTENT_GENERATION 76; SORT_KEY_VERSION does not move.
+const ARCHIVE_FORMAT_VERSION: u32 = 2026100901;
 const ARCHIVE_HEADER_LEN: usize = 16;
 
 fn archive_header() -> [u8; ARCHIVE_HEADER_LEN] {
@@ -22230,6 +22384,7 @@ fn build_card_data_sorted(
             collector_number_id: row.collector_number_id,
             set_name_id: row.set_name_id,
             released_at_int: row.released_at_int,
+            new_flags: 0, // placeholder; assign_new_flags fills it below
             card_rarity_int: row.card_rarity_int,
             collector_rank: 0, // placeholder; assign_collector_ranks fills it below
             collector_number_int: row.collector_number_int,
@@ -22321,6 +22476,8 @@ fn build_card_data_sorted(
     assign_cheapest_codes(&mut printings, &offsets, &mut foreign, &foreign_offsets, &coll_vocab);
     // ...and `new:rarity`, over the canonical rows: needs the release batch `assign_set_ranks` set.
     assign_new_rarity_flags(&mut printings, &offsets, &mut foreign, &coll_vocab, &strings);
+    // ...and the other `new:` values, in the same order: `new_flags`.
+    assign_new_flags(&mut printings, &offsets, &mut foreign, &coll_vocab);
     // Same walk as the line above — canonical rows AND the annex — because `in:ja` is exactly the
     // question the annex exists to answer. Interns the words it needs, so it runs before
     // `coll_vocab_sorted` below is cut.

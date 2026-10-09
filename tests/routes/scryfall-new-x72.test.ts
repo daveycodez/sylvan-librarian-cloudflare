@@ -1,5 +1,6 @@
-// Scryfall's `new:` at the term-policy and parser level: `new:rarity` answered, the other values
-// Scryfall honors still refused, and a value it does not know ignored with its sentence.
+// Scryfall's `new:` at the term-policy and parser level: `new:rarity` and the `new_flags` values
+// answered, the other values Scryfall honors still refused, and a value it does not know ignored
+// with its sentence.
 //
 // Every expectation is a measurement on api.scryfall.com, 2026-10-04; the requests are recorded at
 // NEW_KEYWORDS in src/routes/scryfall-compat/query-terms.ts, and the rule `new:rarity` follows at
@@ -10,6 +11,9 @@ import { describe, expect, test } from "bun:test";
 import { EMPTY_TAG_ALIASES, parseScryfallQuery, parseScryfallQueryWithDirectives } from "../../src/parser";
 import { applyExtrasGate } from "../../src/routes/extras-gate";
 import { scryfallTermPolicy } from "../../src/routes/scryfall-compat/query-terms";
+
+/** One spelling of each `new:` value the store's `new_flags` answer. */
+const NEW_FLAG_VALUES = ["card", "paper"];
 
 const ignored = (echo: string, reason: string) => `Invalid expression “${echo}” was ignored. ${reason}`;
 
@@ -69,6 +73,47 @@ describe("new:rarity is the engine's is:newrarity", () => {
 	});
 });
 
+// The values answered from the printing's `new_flags`: NEW_VALUE_IS_TAGS in query-terms.ts, the
+// rule and its measurements at card_engine's `assign_new_flags`, the answers themselves pinned on
+// real card objects in engine/builder/tests/new_flags.rs. Measured on api.scryfall.com 2026-10-09.
+describe("the new: values the store's new_flags answer are the engine's is:new<value>", () => {
+	test.each([
+		// One list under four names: `new:card` and `new:paper` are the same 35,158 printings, and
+		// `new:printed` and `new:cardboard` 12 on the anchor as they are.
+		["new:card", "is:newcard"],
+		["new:paper", "is:newcard"],
+		["new:printed", "is:newcard"],
+		["new:cardboard", "is:newcard"],
+		["new:CARD", "is:newcard"],
+		['new:"card"', "is:newcard"],
+		["new=card", "is:newcard"],
+		["-new:card", "-is:newcard"],
+		["-new:paper", "-is:newcard"],
+	])("%s", (q, rewritten) => {
+		const policy = scryfallTermPolicy(`${q} e:khm t:god`);
+		expect(policy.warnings).toEqual([]);
+		expect(policy.query).toBe(`${rewritten} e:khm t:god`);
+		expect(() => parseScryfallQuery(policy.query)).not.toThrow();
+	});
+
+	test("none forces extras, in either polarity", async () => {
+		for (const value of NEW_FLAG_VALUES) {
+			expect(await gated(`new:${value} or cmc=3`)).toEqual([false, false]);
+			expect(await gated(`-new:${value} or cmc=3`)).toEqual([false, false]);
+		}
+	});
+
+	test("the port's own spellings are not Scryfall values, under any separator", () => {
+		// `is:newcard` and `is:new_card` are each 25 of 25 carrying the sentence there.
+		for (const term of ["is:newcard", "is:new_card", "is:new-card", "not:newcard"]) {
+			const value = term.slice(term.indexOf(":") + 1);
+			const policy = scryfallTermPolicy(`${term} e:khm t:god`);
+			expect(policy.query).toBe("e:khm t:god");
+			expect(policy.warnings).toEqual([ignored(term, `Checking if cards are “${value}” is not supported`)]);
+		}
+	});
+});
+
 describe("the values Scryfall honors and this port does not answer fail to parse", () => {
 	test.each([
 		"new:language",
@@ -81,14 +126,19 @@ describe("the values Scryfall honors and this port does not answer fail to parse
 		"new:ft",
 		"new:flavortext",
 		"new:frame",
-		"new:card",
 		"new:illustration",
 		"new:foil",
 		"new:nonfoil",
-		"new:paper",
 		"new:game",
 		"new:mtgo",
 		"new:arena",
+		// Honored there too, measured 2026-10-09 (each moves the anchor's count, or answers a 404
+		// with no warning): the plural, and the games under their other names.
+		"new:games",
+		"new:modo",
+		"new:mtga",
+		"new:astral",
+		"new:sega",
 	])("%s is kept, unwarned, and refused", (term) => {
 		const policy = scryfallTermPolicy(`${term} e:khm t:god`);
 		expect(policy.warnings).toEqual([]);

@@ -281,6 +281,7 @@ fn stub_printing(scryfall_id: u128, illustration_id: u128, prefer_score: Option<
         collector_number_id: NONE_STR,
         set_name_id: NONE_STR,
         released_at_int: None,
+        new_flags: 0,
         card_rarity_int: None,
         collector_number_int: None,
         collector_rank: 0,

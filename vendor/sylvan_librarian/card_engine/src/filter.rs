@@ -1930,6 +1930,16 @@ pub(crate) enum FilterExpr {
     /// the compat surface rewrites `new:rarity` to.
     NewRarity,
 
+    /// LOCAL PATCH (Cloudflare port): Scryfall's other `new:` values — the printing is the first
+    /// of its card with this — read off `Printing::new_flags`, which the build decides
+    /// (`assign_new_flags` carries the measured rule for each bit). True when ANY bit of `mask` is
+    /// set. Two-valued, and false on every annex row, so the negation is every other row of
+    /// every language. Reached as `is:new<value>` (`NEW_FLAG_IS_VALUES`), the spelling the compat
+    /// surface rewrites `new:<value>` to.
+    NewFlag {
+        mask: u32,
+    },
+
     /// `is:unique` — the owning CARD has been printed in exactly one SET. Card-level and total, off
     /// `OracleCard.single_set`, which the build computes over the canonical printings AND the annex
     /// (`assign_single_set_flags`); nothing here to bind and nothing per printing to consult.
@@ -2267,6 +2277,8 @@ pub(crate) fn verify_cost_tier(f: &FilterExpr) -> u32 {
         FilterExpr::Cheapest { .. } => MASK_COMPARE_NS100,
         // One bit of a byte already on the printing.
         FilterExpr::NewRarity => MASK_COMPARE_NS100,
+        // One word already on the printing.
+        FilterExpr::NewFlag { .. } => MASK_COMPARE_NS100,
         // A substring scan of the printing's flavor text, plus a field compare for its flavor name.
         FilterExpr::LorePrinting { .. } => TEXT_SCAN_NS100,
         // One length read on the card, and a layout compare on the 71 cards that pass it.
@@ -2564,7 +2576,7 @@ fn leaf_compares_printing_field(f: &FilterExpr) -> bool {
         // A reversible printing has two faces where its siblings have one.
         FilterExpr::FaceStatCmpFalse { .. } => true,
         // The cheapest codes are the printing's (CompatFields), and so is the `new:rarity` bit.
-        FilterExpr::Cheapest { .. } | FilterExpr::NewRarity => true,
+        FilterExpr::Cheapest { .. } | FilterExpr::NewRarity | FilterExpr::NewFlag { .. } => true,
         // The frame class is read entirely off the PRINTING (its compat flags, border, frame
         // effects, promo types, finishes) — a card's plain printing and its borderless one differ.
         FilterExpr::Atypical(_) => true,
@@ -4005,6 +4017,12 @@ impl FilterExpr {
                 tri_bool(super::printing_is_new_rarity(p))
             }
 
+            // Two-valued as well, and clear on every annex row.
+            FilterExpr::NewFlag { mask } => {
+                let Some(p) = printing else { return Tri::PrintingDep };
+                tri_bool(super::printing_new_flags(p) & mask != 0)
+            }
+
             FilterExpr::LorePrinting { word } => {
                 let Some(p) = printing else { return Tri::PrintingDep };
                 let text = u32::from(p.flavor_text_lower_id);
@@ -4584,7 +4602,7 @@ impl FilterExpr {
                 // partial date reproduces the old lexicographic-prefix semantics exactly,
                 // since any real day/month (>= 01) compares greater than 00.
                 let Some(p) = printing else { return Tri::PrintingDep };
-                let Some(date) = p.released_at_int.as_ref().map(|v| u32::from(*v)) else {
+                let Some(date) = p.released_int() else {
                     return Tri::Null; // missing date: SQL NULL
                 };
                 tri_bool(match op {
@@ -4599,7 +4617,7 @@ impl FilterExpr {
 
             FilterExpr::YearCmp { op, year } => {
                 let Some(p) = printing else { return Tri::PrintingDep };
-                let Some(date) = p.released_at_int.as_ref().map(|v| u32::from(*v)) else {
+                let Some(date) = p.released_int() else {
                     return Tri::Null; // missing date: SQL NULL
                 };
                 let card_year = (date / 10_000) as i32;
@@ -5255,7 +5273,12 @@ fn build_binary(kw: &Value) -> Result<FilterExpr, String> {
                 // LOCAL PATCH (Cloudflare port): `new:rarity`, which the compat surface writes as
                 // this tag — see `FilterExpr::NewRarity`.
                 "newrarity" => return Ok(FilterExpr::NewRarity),
-                _ => {}
+                // ...and the other `new:` values, each bits of `Printing::new_flags`.
+                value => {
+                    if let Some((_, mask)) = super::NEW_FLAG_IS_VALUES.iter().find(|(name, _)| *name == value) {
+                        return Ok(FilterExpr::NewFlag { mask: *mask });
+                    }
+                }
             }
         }
         let cmp_op = op_to_collection_cmp(op);
