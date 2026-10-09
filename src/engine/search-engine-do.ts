@@ -113,7 +113,6 @@ import { isPartitionedManifest, manifestServableBy, readManifest } from "./store
 import type {
 	CollectionBatch,
 	CollectionLocated,
-	CollectionScope,
 	CollectionSource,
 	Engine,
 	EngineSearchOptions,
@@ -873,15 +872,30 @@ export class SearchEngine extends DurableObject<Env> {
 	 * batch's names, `holders` their partitions in the same order. A batch whose routed names all
 	 * settle — every deck list of real names — reads the packet's header and nothing else: the index
 	 * is not loaded for it. No index, no `located`; the router then asks every partition, as before.
+	 *
+	 * THE THIRD ARGUMENT IS A RETIRED SLOT, and it stays on the wire. It carried the batch's `?q=`
+	 * scope while the collection route had that extension (412ca17b, removed 2026-10-08), ahead of
+	 * `reportedShards`. Arguments cross the RPC by position, and a deploy replaces the Workers and
+	 * the engine objects separately, so for a while each build calls the other. Were the slot
+	 * dropped, the BATCH would still answer either way round, and the shard count would not arrive:
+	 * a Worker on the build before would land its scope (`null`, nearly always) in `reportedShards`
+	 * here, and a Worker on this build its shard count in the older object's scope, where nothing
+	 * reads a number — so every collection call across the deploy would report a width of 1 to the
+	 * rendezvous (`instrumented`), and a region whose wider width only those calls were holding up
+	 * would see it age out (WIDTH_TTL_MS). So the caller
+	 * still sends `null` there (RemoteEngine.scryfallCollectionBatch) and this method still takes
+	 * it, and reads nothing from it: a scope an older Worker sends is ignored, which is the route's
+	 * contract now. The slot can go once no build that reads it is running anywhere — any later
+	 * deploy.
 	 */
 	async scryfallCollectionBatch(
 		batch: CollectionBatch,
 		baseUrl: string,
-		scope: CollectionScope | null,
+		_retiredScope: unknown,
 		reportedShards?: number,
 	): Promise<{ packet: Uint8Array; located?: CollectionLocated; answeredFrom: CollectionSource } & SearchTelemetry> {
 		return this.instrumented(reportedShards, async (engine) => {
-			const packet = collectionPacketOf(engine, batch, baseUrl, scope);
+			const packet = collectionPacketOf(engine, batch, baseUrl);
 			// x58: which store and code wrote the packet, read in the packet's own turn — nothing is
 			// awaited between the two, so a swap cannot name a build the packet was not read from.
 			// The route keeps the answer in the colo's cache only if this is the build it is pinned to.

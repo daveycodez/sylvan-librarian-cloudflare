@@ -82,6 +82,8 @@ let namesIndexAnswer: number[] | null = null;
 const namesIndexAsked: string[] = [];
 /** x47: the packet the fake store answers a collection batch with, and the names index's holders. */
 let collectionPacket = new Uint8Array();
+/** What the object handed store.ts `collectionPacketOf`, per call: (engine, batch, baseUrl). */
+const collectionPacketArgs: unknown[][] = [];
 let holdersAnswer: Record<string, number[]> | null = null;
 const holdersAsked: string[][] = [];
 
@@ -102,7 +104,10 @@ mock.module("../../src/engine/store", () => ({
 		if (fuzzyPlanAnswer === null) throw new Error("no names index");
 		return fuzzyPlanAnswer;
 	},
-	collectionPacketOf: () => collectionPacket,
+	collectionPacketOf: (...args: unknown[]) => {
+		collectionPacketArgs.push(args);
+		return collectionPacket;
+	},
 	// x47: who holds each name, by the names index; the suite sets what it answers.
 	namesExactHolders: async (_env: unknown, _ctx: unknown, foldeds: string[]) => {
 		holdersAsked.push(foldeds);
@@ -1592,12 +1597,13 @@ describe("a collection batch's route says where the names it did not settle live
 		scryfallCollectionBatch(
 			batch: unknown,
 			baseUrl: string,
-			scope: null,
+			retiredScope: unknown,
 			reportedShards?: number,
 		): Promise<{
 			packet: Uint8Array;
 			located?: { builtAt: string; names: number[]; holders: number[][] };
 			answeredFrom?: { build: string; commit: string };
+			shards?: number;
 		}>;
 	};
 	const batchDo = () => makeDo() as unknown as BatchDo;
@@ -1613,6 +1619,7 @@ describe("a collection batch's route says where the names it did not settle live
 
 	afterEach(() => {
 		collectionPacket = new Uint8Array();
+		collectionPacketArgs.length = 0;
 		holdersAnswer = null;
 		holdersAsked.length = 0;
 		gatherStore = null;
@@ -1642,6 +1649,27 @@ describe("a collection batch's route says where the names it did not settle live
 		gatherStore = null;
 		const unnamed = await batchDo().scryfallCollectionBatch(batch, "https://x", null, 1);
 		expect(unnamed.answeredFrom).toEqual({ build: "", commit: BUILD_COMMIT });
+	});
+
+	test("OLD ISOLATE, NEW OBJECT: a `?q=` scope in the third argument is taken and not read", async () => {
+		// The Worker on the build before 2026-10-08 sends (batch, baseUrl, scope | null, shards). This
+		// object keeps the third position so the fourth is still the shard count, and hands the
+		// store the batch and the base URL alone: the scope an older Worker sends filters nothing,
+		// which is what the route answers now on every build.
+		collectionPacket = packetOf([null], 1);
+		const batch = { keys: [], trees: [], names: names("nope") };
+		const scope = { prefer: "atypical", filterTreeJson: '{"node_type":"TrueNode"}' };
+		const scoped = await batchDo().scryfallCollectionBatch(batch, "https://x", scope, 3);
+		const bare = await batchDo().scryfallCollectionBatch(batch, "https://x", null, 3);
+		expect(scoped.packet).toBe(collectionPacket);
+		expect(collectionPacketArgs).toHaveLength(2);
+		for (const args of collectionPacketArgs) {
+			expect(args).toHaveLength(3);
+			expect(args.slice(1)).toEqual([batch, "https://x"]);
+		}
+		// The shard count was read from the fourth position both times, not from the scope's.
+		expect(scoped.shards).toBe(bare.shards);
+		expect(Object.keys(scoped).sort()).toEqual(Object.keys(bare).sort());
 	});
 
 	test("an unsettled routed name comes back with its holders — none, for a name no card carries", async () => {

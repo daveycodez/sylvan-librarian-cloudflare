@@ -38,7 +38,7 @@ import {
 	rulingsOracleIdOf,
 	setCollectionCodeVersionForTests,
 } from "../../src/routes/scryfall-compat/routes";
-import { FakeEngine, FakeKV, FIXTURE_CARDS, fakeParse, json, makeCtx, testDispatch } from "./harness";
+import { FakeEngine, FakeKV, FIXTURE_CARDS, json, makeCtx, testDispatch } from "./harness";
 
 const ctx = makeCtx();
 
@@ -1262,7 +1262,7 @@ describe("cache headers", () => {
 });
 
 describe("POST /cards/collection", () => {
-	test("logs one line per batch: its kinds, its scope, and the partition calls and rounds it took", async () => {
+	test("logs one line per batch: its kinds, whether it carried a `?q=`, and the partition calls and rounds it took", async () => {
 		const engine = Object.assign(new FakeEngine(), { partitionCalls: 10, collectionRounds: 1 });
 		const lines = await loggedLines("collection batch: ", () =>
 			testDispatch(
@@ -1290,18 +1290,23 @@ describe("POST /cards/collection", () => {
 			/ q=0 calls=-1 rounds=-1 found=\d+ repair=- located=- cache=skip:nocache body=[0-9a-f]{16}$/,
 		);
 		// `body=` (Y2): the same request reads the same, and anything that changes the response's
-		// bytes changes it — the identifiers, their order, the scope, pretty.
+		// bytes changes it — the identifiers, their order, pretty. A `?q=` changes none of the bytes
+		// and none of the fingerprint: the line above, sent with one, reads the bare batch's value.
 		const sent = [{ name: "Llanowar Elves" }, { name: "Nope" }];
-		const key = collectionBodyKey(sent, undefined, false);
-		expect(collectionBodyKey([{ name: "Llanowar Elves" }, { name: "Nope" }], undefined, false)).toBe(key);
-		expect(lines[0]).toEndWith(` body=${collectionBodyKey(sent, "is:commander", false)}`);
+		const key = collectionBodyKey(sent, false);
+		expect(collectionBodyKey([{ name: "Llanowar Elves" }, { name: "Nope" }], false)).toBe(key);
+		expect(lines[0]).toEndWith(` body=${key}`);
 		const others = [
-			collectionBodyKey([...sent].reverse(), undefined, false),
-			collectionBodyKey(sent, "is:commander", false),
-			collectionBodyKey(sent, undefined, true),
-			collectionBodyKey([{ name: "Llanowar Elves" }], undefined, false),
+			collectionBodyKey([...sent].reverse(), false),
+			collectionBodyKey(sent, true),
+			collectionBodyKey([{ name: "Llanowar Elves" }], false),
 		];
-		expect(new Set([key, ...others]).size).toBe(5);
+		expect(new Set([key, ...others]).size).toBe(4);
+		// The values a batch without a `q` logged while the route still hashed one (to 2026-10-08,
+		// computed on the code before) are the values it logs now, so a day of `body=` reads across
+		// the deploy that removed it. The same batch under `?q=is:commander` logged 6a8638dc73750681.
+		expect(key).toBe("9f64de805dc77573");
+		expect(collectionBodyKey(sent, true)).toBe("a064e013d7db3fe4");
 	});
 
 	test("resolves identifiers and reports the ones that matched nothing", async () => {
@@ -1443,104 +1448,123 @@ describe("POST /cards/collection", () => {
 		expect(engine.collectionNameBatches[0]).toEqual([{ folded: "llanowar elves", setCode: "m19" }]);
 	});
 
-	// ── `?q=`: the batch's scope, this port's extension ──────────────────────────────────────
+	// ── `?q=` is not this route's: Scryfall ignores it, and so does this ─────────────────────
+	//
+	// Measured on api.scryfall.com 2026-10-08. One body — `{name: Lightning Bolt}`, `{name: Clive,
+	// Ifrit's Dominant}`, `{set: khm, collector_number: 114}` — sent bare and with each query string
+	// below: every compact answer was the same 21,301 bytes (one SHA-256), `not_found` empty, no
+	// `warnings` key; `?pretty=true` and `?pretty=true&q=e:lea` the same 26,656. This port read
+	// `?q=` as a batch-wide scope from 412ca17b until then (a filter over each name's printings
+	// and the `prefer:` picking among them); these pin that it reads nothing from it now.
 
-	test("`?q=` reaches the `{name}` batch as a scope, once, and nothing else about the batch changes", async () => {
-		// The filter half: `-is:datestamped` is parsed by the same parser search uses and travels as
-		// canonical JSON, once per batch.
-		const engine = new FakeEngine();
-		const body = await json(
-			await testDispatch(
-				postCtx({ identifiers: [{ name: "Llanowar Elves" }, { name: "Elvish Mystic" }] }, engine),
-				"/cards/collection?q=-is%3Adatestamped",
-				"POST",
-			),
-		);
-		expect((body.data as unknown[]).length).toBe(2);
-		expect(engine.collectionNameBatches.length).toBe(1);
-		expect(engine.collectionScopes).toEqual([
-			{
-				prefer: "default",
-				filterTreeJson: canonicalStringify(parseScryfallQueryWithDirectives("-is:datestamped").tree as never),
-			},
-		]);
-		expect(body.warnings).toBeUndefined();
-	});
-
-	test("without `?q=` the batch carries no scope", async () => {
-		const engine = new FakeEngine();
-		await testDispatch(postCtx({ identifiers: [{ name: "Llanowar Elves" }] }, engine), "/cards/collection", "POST");
-		expect(engine.collectionScopes).toEqual([null]);
-	});
-
-	test("a `prefer:` directive folds out of the scope; a page-shaping directive is warned about", async () => {
-		// `prefer:atypical` is what the scope exists for and becomes the batch's prefer. `unique:`,
-		// `sort:` and `dir:` shape a search PAGE and mean nothing to a lookup that answers one
-		// printing per identifier, so they fold (the shared fold does that) and then warn rather
-		// than reject — the way search treats a directive value it does not know. A query that was
-		// only directives leaves a TrueNode, which is no filter at all.
+	/** The query strings measured, the parameters Scryfall reads elsewhere among them. */
+	const IGNORED_QUERIES = [
+		"?q=e%3Alea",
+		"?q=-is%3Adatestamped+prefer%3Aatypical",
+		"?q=zzzz%3Abad",
+		"?q=",
+		"?q=%28t%3Agoblin",
+		"?q=prefer%3Aoldest+unique%3Aprints+order%3Aset",
+		"?foo=bar&include_extras=true&unique=prints&order=released",
+		"?format=text",
+		"?format=csv&q=e%3Alea",
+	];
+	const MIXED = {
+		identifiers: [
+			{ name: "Llanowar Elves" },
+			{ name: "Elvish Mystic", set: "m19" },
+			{ id: "aaaaaaaa-0000-4000-8000-000000000001" },
+			{ name: "No Such Card" },
+		],
+	};
+	/** A parser every entry point of which throws: a route that reaches it fails the test. */
+	const noParser = () => {
+		const reached = () => {
+			throw new Error("/cards/collection parsed a query");
+		};
 		setParserForTests({
-			parseScryfallQuery: fakeParse,
-			parseWithDirectives: () => ({
-				tree: { node_type: "TrueNode" },
-				// The term policy lifts display options out of the query text before the parser
-				// reads it (x66), so the parser has none left to report.
-				directives: [],
-				warnings: [],
-				loweredRegexTerms: [],
-				expandedDerivedTerms: [],
-			}),
+			parseScryfallQuery: reached,
+			parseWithDirectives: reached,
 			isParseError: () => false,
 			queryBudgetMessage: () => null,
 		});
+	};
+
+	test("a `?q=` changes nothing: the same bytes, status and headers as the batch without it", async () => {
+		noParser();
 		try {
-			const engine = new FakeEngine();
-			const body = await json(
-				await testDispatch(
-					postCtx({ identifiers: [{ name: "Llanowar Elves" }] }, engine),
-					"/cards/collection?q=prefer%3Aatypical+unique%3Aprints",
-					"POST",
-				),
-			);
-			expect(engine.collectionScopes).toEqual([{ prefer: "atypical", filterTreeJson: null }]);
-			expect(body.warnings).toEqual([
-				"unique:prints has no effect on /cards/collection, which answers one printing per identifier in the order they were sent.",
-			]);
-			expect((body.data as unknown[]).length).toBe(1);
+			const bare = await testDispatch(postCtx(MIXED), "/cards/collection", "POST");
+			const bareText = await bare.text();
+			expect(bare.status).toBe(200);
+			expect(Object.keys(JSON.parse(bareText))).toEqual(["object", "not_found", "data"]);
+			expect((JSON.parse(bareText) as { not_found: unknown[] }).not_found).toEqual([{ name: "No Such Card" }]);
+			for (const query of IGNORED_QUERIES) {
+				const res = await testDispatch(postCtx(MIXED), `/cards/collection${query}`, "POST");
+				expect({ query, status: res.status, body: await res.text() }).toEqual({
+					query,
+					status: 200,
+					body: bareText,
+				});
+				expect(res.headers.get("Cache-Control")).toBe(bare.headers.get("Cache-Control"));
+				expect(res.headers.get("content-type")).toBe(bare.headers.get("content-type"));
+			}
+			// `pretty` is the one parameter read, and a `q` beside it changes nothing either.
+			const pretty = await (await testDispatch(postCtx(MIXED), "/cards/collection?pretty=true", "POST")).text();
+			expect(pretty).not.toBe(bareText);
+			expect(JSON.parse(pretty)).toEqual(JSON.parse(bareText));
+			const both = await testDispatch(postCtx(MIXED), "/cards/collection?pretty=true&q=e%3Alea", "POST");
+			expect(await both.text()).toBe(pretty);
 		} finally {
 			setParserForTests(null);
 		}
 	});
 
-	test("a `?q=` that does not parse is a 400 that says so, before any identifier is resolved", async () => {
-		// The same refusal search gives, with Scryfall's own sentence for it.
-		const engine = new FakeEngine();
-		const res = await testDispatch(
-			postCtx({ identifiers: [{ name: "Llanowar Elves" }] }, engine),
-			"/cards/collection?q=%28t%3Agoblin",
-			"POST",
-		);
-		expect(res.status).toBe(400);
-		const body = await json(res);
-		expect(body.code).toBe("bad_request");
-		expect(body.details).toBe("Your search contains unclosed parentheses.");
-		expect(engine.collectionNameBatches.length).toBe(0);
+	test("a `?q=` reaches the engine as nothing: the same batch, and no argument beside it", async () => {
+		const sent = async (query: string) => {
+			const engine = new FakeEngine();
+			await testDispatch(postCtx(MIXED, engine), `/cards/collection${query}`, "POST");
+			return { names: engine.collectionNameBatches, extra: engine.collectionExtraArgs, search: engine.lastSearch };
+		};
+		const bare = await sent("");
+		expect(bare.names).toEqual([
+			[
+				{ folded: "llanowar elves", setCode: "" },
+				{ folded: "elvish mystic", setCode: "m19" },
+				{ folded: "no such card", setCode: "" },
+			],
+		]);
+		// One call, handed the batch and the base URL and nothing else.
+		expect(bare.extra).toEqual([[]]);
+		for (const query of IGNORED_QUERIES) expect({ query, ...(await sent(query)) }).toEqual({ query, ...bare });
 	});
 
-	test("the scope is not consulted for identifiers that already name one printing", async () => {
-		// An `{id}` names a printing outright; there is nothing to prefer among. The batch still
-		// answers, and no name call — hence no scope — is made.
-		const known = "aaaaaaaa-0000-4000-8000-000000000001";
-		const engine = new FakeEngine();
-		const body = await json(
-			await testDispatch(
-				postCtx({ identifiers: [{ id: known }] }, engine),
-				"/cards/collection?q=prefer%3Aatypical",
+	test("a `?q=` is no refusal and no warning — not unparseable, not all-ignored, not page-shaping", async () => {
+		// Each of these was this port's own answer under the scope: a 400 "unclosed parentheses", a
+		// 400 "all of your terms were ignored", and a 200 carrying `warnings`. Scryfall's is the
+		// plain 200 for all three.
+		for (const query of ["?q=%28t%3Agoblin", "?q=zzzz%3Abad", "?q=prefer%3Aatypical+unique%3Aprints"]) {
+			const res = await testDispatch(
+				postCtx({ identifiers: [{ name: "Llanowar Elves" }] }),
+				`/cards/collection${query}`,
 				"POST",
-			),
-		);
-		expect((body.data as unknown[]).length).toBe(1);
-		expect(engine.collectionScopes).toEqual([]);
+			);
+			const body = await json(res);
+			expect({ query, status: res.status, object: body.object }).toEqual({ query, status: 200, object: "list" });
+			expect("warnings" in body).toBe(false);
+			expect((body.data as unknown[]).length).toBe(1);
+		}
+	});
+
+	test("Scryfall's own 400s are unmoved by a `?q=`", async () => {
+		for (const identifiers of [[], {}, ["Lightning Bolt"], [{ id: "not-a-uuid" }]]) {
+			const bare = await testDispatch(postCtx({ identifiers }), "/cards/collection", "POST");
+			const withQuery = await testDispatch(postCtx({ identifiers }), "/cards/collection?q=%28t%3Agoblin", "POST");
+			expect(bare.status).toBe(400);
+			expect({ status: withQuery.status, body: await withQuery.text() }).toEqual({
+				status: 400,
+				body: await bare.text(),
+			});
+		}
 	});
 
 	test("two identifiers naming one card answer TWICE — `data` is one entry per identifier", async () => {
@@ -1894,42 +1918,37 @@ describe("POST /cards/collection: a repeated batch is answered from the colo's c
 		}
 	});
 
-	test("warnings and `pretty` come back from the cache as they were written", async () => {
+	test("`pretty` comes back from the cache as it was written, and a `?q=` is the same entry as none", async () => {
 		setCollectionCodeVersionForTests("commit-a");
-		installColoCache();
-		setParserForTests({
-			parseScryfallQuery: fakeParse,
-			parseWithDirectives: () => ({
-				tree: { node_type: "TrueNode" },
-				directives: [],
-				warnings: [],
-				loweredRegexTerms: [],
-				expandedDerivedTerms: [],
-			}),
-			isParseError: () => false,
-			queryBudgetMessage: () => null,
-		});
-		try {
-			const engine = countingEngine();
-			const url = "/cards/collection?q=unique%3Aprints&pretty=true";
-			const first = await post(engine, DECK, { url });
-			const second = await post(engine, DECK, { url });
-			expect(first.line).toContain(" q=1 ");
-			expect(first.line).toContain(" cache=miss ");
-			expect(second.line).toContain(" cache=hit ");
-			expect(engine.asked).toBe(1);
-			expect(second.bytes).toEqual(first.bytes);
-			const text = new TextDecoder().decode(second.bytes);
-			expect(text).toContain("\n  ");
-			expect((JSON.parse(text) as { warnings: string[] }).warnings).toEqual([
-				"unique:prints has no effect on /cards/collection, which answers one printing per identifier in the order they were sent.",
-			]);
-		} finally {
-			setParserForTests(null);
-		}
+		const cache = installColoCache();
+		const engine = countingEngine();
+		const first = await post(engine, DECK, { url: "/cards/collection?pretty=true" });
+		const second = await post(engine, DECK, { url: "/cards/collection?q=unique%3Aprints&pretty=true" });
+		expect(first.line).toContain(" q=0 ");
+		expect(first.line).toContain(" cache=miss ");
+		// The ignored `q` is counted on the line and decides nothing: the pretty entry answers it.
+		expect(second.line).toContain(" q=1 ");
+		expect(second.line).toContain(" cache=hit ");
+		expect(engine.asked).toBe(1);
+		expect(cache.entries.size).toBe(1);
+		expect(second.bytes).toEqual(first.bytes);
+		const text = new TextDecoder().decode(second.bytes);
+		expect(text).toContain("\n  ");
+		expect("warnings" in (JSON.parse(text) as object)).toBe(false);
+		// The same line otherwise: one fingerprint for both.
+		expect(/ body=([0-9a-f]{16})$/.exec(second.line)?.[1]).toBe(/ body=([0-9a-f]{16})$/.exec(first.line)?.[1]);
+
+		// Compact, both ways round: sent with a `q` first, the bare batch is the hit.
+		const scoped = await post(engine, DECK, { url: "/cards/collection?q=is%3Acommander+prefer%3Aoldest" });
+		const bare = await post(engine, DECK);
+		expect(scoped.line).toContain(" cache=miss ");
+		expect(bare.line).toContain(" cache=hit ");
+		expect(bare.bytes).toEqual(scoped.bytes);
+		expect(engine.asked).toBe(2);
+		expect(cache.entries.size).toBe(2);
 	});
 
-	test("order, scope, pretty, host, store build and code version each read their own entry", async () => {
+	test("order, pretty, host, store build and code version each read their own entry", async () => {
 		setCollectionCodeVersionForTests("commit-a");
 		const cache = installColoCache();
 		const engine = countingEngine();
@@ -1937,7 +1956,6 @@ describe("POST /cards/collection: a repeated batch is answered from the colo's c
 
 		const others: [string, () => ReturnType<typeof post>][] = [
 			["order", () => post(engine, [...DECK].reverse())],
-			["scope", () => post(engine, DECK, { url: "/cards/collection?q=is%3Acommander" })],
 			["pretty", () => post(engine, DECK, { url: "/cards/collection?pretty=true" })],
 			["host", () => post(engine, DECK, { host: "sylvan.mtgseeker.com" })],
 			["store build", () => post(countingEngine(String(Number(BUILD) + 60)), DECK)],
@@ -1974,14 +1992,11 @@ describe("POST /cards/collection: a repeated batch is answered from the colo's c
 		installColoCache();
 		const base = "https://sylvan-librarian.com";
 		const text = JSON.stringify(DECK);
-		const url = async (
-			over: Partial<{ ids: unknown[]; q: string; pretty: boolean; base: string; build: string }> = {},
-		) =>
+		const url = async (over: Partial<{ ids: unknown[]; pretty: boolean; base: string; build: string }> = {}) =>
 			(
 				await collectionCacheUrl(
 					over.ids ?? DECK,
 					over.ids ? JSON.stringify(over.ids) : text,
-					over.q,
 					over.pretty ?? false,
 					over.base ?? base,
 					over.build ?? BUILD,
@@ -1990,18 +2005,15 @@ describe("POST /cards/collection: a repeated batch is answered from the colo's c
 		const key = await url();
 		expect(key).toMatch(/^https:\/\/edge-cache\.sylvan-librarian\.internal\/collection%3A[0-9a-f]{64}$/);
 		expect(await url()).toBe(key);
-		// An absent scope and an empty one are the same request: neither parses a query.
-		expect(await url({ q: "" })).toBe(key);
 		const others = await Promise.all([
 			url({ ids: [...DECK].reverse() }),
 			url({ ids: DECK.slice(0, 4) }),
-			url({ q: "is:commander" }),
 			url({ pretty: true }),
 			url({ base: "http://sylvan-librarian.com" }),
 			url({ base: "https://sylvan.mtgseeker.com" }),
 			url({ build: String(Number(BUILD) + 1) }),
-			// A field's text cannot be moved into its neighbour: the scope is not the base URL's tail.
-			url({ base: `${base}","x`, q: "" }),
+			// A field's text cannot be moved into its neighbour: the build is not the base URL's head.
+			url({ base: `x","${base}`, build: `${BUILD}","x` }),
 		]);
 		setCollectionCodeVersionForTests("commit-b");
 		others.push(await url());
@@ -2067,8 +2079,10 @@ describe("POST /cards/collection: a repeated batch is answered from the colo's c
 		expect(malformed.res.headers.get("Cache-Control")).toBe("no-cache");
 		const empty = await post(engine, []);
 		expect(empty.res.status).toBe(400);
-		const unparsed = await post(engine, DECK, { url: "/cards/collection?q=%28t%3Agoblin" });
-		expect(unparsed.res.status).toBe(400);
+		// A `?q=` beside a malformed batch changes nothing about the refusal (it is not read at all).
+		const queried = await post(engine, [...DECK, { id: "not-a-uuid" }], { url: "/cards/collection?q=%28t%3Agoblin" });
+		expect(queried.res.status).toBe(400);
+		expect(queried.bytes).toEqual(malformed.bytes);
 		expect(cache.state.reads).toBe(reads);
 		expect(cache.entries.size).toBe(1);
 		expect(engine.asked).toBe(1);
@@ -2114,7 +2128,7 @@ describe("POST /cards/collection: a repeated batch is answered from the colo's c
 		// A literal `null` is not a non-finite number: that request is cached like any other.
 		installColoCache();
 		const nulls = [{ name: "Llanowar Elves", set: null }];
-		const keyed = await collectionCacheUrl(nulls, JSON.stringify(nulls), undefined, false, "https://h", BUILD);
+		const keyed = await collectionCacheUrl(nulls, JSON.stringify(nulls), false, "https://h", BUILD);
 		expect(keyed.skip).toBeNull();
 		expect(keyed.url).not.toBeNull();
 	});

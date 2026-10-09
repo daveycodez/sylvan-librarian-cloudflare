@@ -14,8 +14,8 @@ import type { NameRank } from "./types";
  * byte. So the reply has to PROVE the key was real before the word is trusted:
  *
  *   sole p     p answered (it holds the name, so it emitted the key, so the value is exact and no
- *              other partition holds it) — or it missed, but holds the name without the set or
- *              scope (`present`): the same proof, and every other partition misses too.
+ *              other partition holds it) — or it missed, but holds the name without the set
+ *              (`present`): the same proof, and every other partition misses too.
  *   served s   s answered (it holds the name, so the value is exact: s is its one served holder,
  *   rival t    and every other partition holds it only as an extra — on tier t at most, 0 when
  *              only as an art series, which ranks below everything), and s's `[tier, name, served,

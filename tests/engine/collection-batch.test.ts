@@ -62,7 +62,7 @@ describe("the collection packet", () => {
 		const plain = decodeCollectionPacket(packetOf([null], slots), BATCH);
 		expect(plain.nameRanks).toEqual([null]);
 		expect(plain.namePresent).toBeUndefined();
-		const req = (b: CollectionBatch) => JSON.parse(collectionBatchRequest(b, null)) as Record<string, unknown>;
+		const req = (b: CollectionBatch) => JSON.parse(collectionBatchRequest(b)) as Record<string, unknown>;
 		expect(req({ ...BATCH, presence: true }).presence).toBe(true);
 		expect("presence" in req(BATCH)).toBe(false);
 	});
@@ -74,17 +74,21 @@ describe("the collection packet", () => {
 		expect(() => decodeCollectionPacket(wrongRanks, BATCH)).toThrow(/ranks/);
 	});
 
-	test("the request carries the batch, the tree options and the scope", () => {
-		const req = JSON.parse(
-			collectionBatchRequest(BATCH, { prefer: "oldest", filterTreeJson: '{"x":1}' } as never),
-		) as Record<string, unknown>;
+	test("the request carries the batch and the tree options, and no batch-wide filter or preference", () => {
+		const req = JSON.parse(collectionBatchRequest(BATCH)) as Record<string, unknown>;
 		expect(req.keys).toEqual(BATCH.keys);
 		expect(req.trees).toEqual(BATCH.trees);
 		expect(req.names).toEqual([["lightning bolt", ""]]);
-		expect(req.prefer).toBe("oldest");
-		expect(req.scope).toBe('{"x":1}');
 		expect((req.tree_opts as { orderby: string; limit: number }).orderby).toBe("edhrec");
-		expect(JSON.parse(collectionBatchRequest(BATCH, null)).scope).toBe("");
+		// The engine still reads `prefer` and `scope` off this object — the `?q=` extension's two
+		// keys (removed 2026-10-08). Absent is its "none"; written, they would filter every name.
+		expect(Object.keys(req).sort()).toEqual(["keys", "names", "tree_opts", "trees"]);
+		// A caller cannot hand one in either: a second argument is not read.
+		const stray = (collectionBatchRequest as (...args: unknown[]) => string)(BATCH, {
+			prefer: "oldest",
+			filterTreeJson: '{"x":1}',
+		});
+		expect(stray).toBe(collectionBatchRequest(BATCH));
 	});
 });
 
@@ -105,6 +109,45 @@ describe("RemoteEngine's batch has no per-kind fallback", () => {
 				message,
 			);
 		}
+	});
+});
+
+describe("RemoteEngine's batch keeps the RPC's argument positions across the `?q=` scope's removal", () => {
+	// The engine object's method is (batch, baseUrl, <scope>, reportedShards), by position. The
+	// scope is gone (2026-10-08) and its place is not: an object on the build before reads the
+	// third argument as a scope and the fourth as the shard count, so a shard count sent third
+	// would never arrive there, and every collection call would report a width of 1 to the
+	// region's rendezvous for as long as the deploy rolls.
+	test("the third argument is null and the shard count is still the fourth", async () => {
+		const sent: unknown[][] = [];
+		const stub = {
+			scryfallCollectionBatch: async (...args: unknown[]) => {
+				sent.push(args);
+				return { packet: packetOf([null], ['{"k":"a"}', null, null, null, null]) };
+			},
+		};
+		await new RemoteEngine(stub as never, "wnam").scryfallCollectionBatch(BATCH, "https://x");
+		expect(sent).toHaveLength(1);
+		const [batch, baseUrl, retired, shards] = sent[0] as unknown[];
+		expect(sent[0]).toHaveLength(4);
+		expect(batch).toBe(BATCH);
+		expect(baseUrl).toBe("https://x");
+		expect(retired).toBeNull();
+		expect(typeof shards).toBe("number");
+	});
+
+	test("the engine's own method takes a batch and a base URL, and a third argument reaches nothing", async () => {
+		const sent: unknown[][] = [];
+		const stub = {
+			scryfallCollectionBatch: async (...args: unknown[]) => {
+				sent.push(args);
+				return { packet: packetOf([null], ['{"k":"a"}', null, null, null, null]) };
+			},
+		};
+		const engine = new RemoteEngine(stub as never, "wnam");
+		const loose = engine.scryfallCollectionBatch.bind(engine) as (...args: unknown[]) => Promise<unknown>;
+		await loose(BATCH, "https://x", { prefer: "oldest", filterTreeJson: '{"x":1}' });
+		expect((sent[0] as unknown[])[2]).toBeNull();
 	});
 });
 
@@ -193,27 +236,28 @@ describe("the collection response, spliced from card bytes", () => {
 	const bytes = cards.map((c) => utf8.encode(stringifyScryfall(c)));
 	const CACHE = { "Cache-Control": "private" };
 
-	for (const warnings of [undefined, ["a warning"]]) {
-		test(`compact, ${warnings ? "with" : "without"} warnings, is the stringified List byte for byte`, async () => {
-			const spliced = await scryfallCollectionJson(bytes, notFound, warnings, false, CACHE).text();
-			const old = await scryfallJson(collectionList(cards, notFound, warnings), false, CACHE).text();
-			expect(spliced).toBe(old);
-		});
-	}
+	test("compact is the stringified List byte for byte, and its keys are Scryfall's three", async () => {
+		const spliced = await scryfallCollectionJson(bytes, notFound, false, CACHE).text();
+		const old = await scryfallJson(collectionList(cards, notFound), false, CACHE).text();
+		expect(spliced).toBe(old);
+		// No `warnings`: api.scryfall.com's collection List never carries the key (2026-10-08), and
+		// the one thing that wrote it here — the `?q=` scope — is gone.
+		expect(Object.keys(JSON.parse(spliced))).toEqual(["object", "not_found", "data"]);
+	});
 
 	test("pretty indents the cards too, as the old path did", async () => {
-		const spliced = await scryfallCollectionJson(bytes, notFound, undefined, true, CACHE).text();
+		const spliced = await scryfallCollectionJson(bytes, notFound, true, CACHE).text();
 		const old = await scryfallJson(collectionList(cards, notFound), true, CACHE).text();
 		expect(spliced).toBe(old);
 	});
 
 	test("nothing found is still a List with an empty data array", async () => {
-		const spliced = await scryfallCollectionJson([], notFound, undefined, false, CACHE).text();
+		const spliced = await scryfallCollectionJson([], notFound, false, CACHE).text();
 		expect(spliced).toBe(await scryfallJson(collectionList([], notFound), false, CACHE).text());
 	});
 
 	test("the headers are the route's", () => {
-		const res = scryfallCollectionJson(bytes, [], undefined, false, CACHE);
+		const res = scryfallCollectionJson(bytes, [], false, CACHE);
 		expect(res.headers.get("cache-control")).toBe("private");
 		expect(res.headers.get("content-type")).toContain("application/json");
 	});

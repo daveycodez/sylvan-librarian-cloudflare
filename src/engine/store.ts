@@ -88,7 +88,6 @@ import type {
 	CacheCodec,
 	CollectionBatch,
 	CollectionBatchAnswer,
-	CollectionScope,
 	Engine,
 	EngineSearchOptions,
 	EngineSearchResult,
@@ -761,16 +760,12 @@ class WasmEngine implements Engine {
 	}
 
 	/** `collection_batch`'s packet as written — what the Durable Object hands over, one buffer. */
-	scryfallCollectionPacket(batch: CollectionBatch, baseUrl: string, scope?: CollectionScope | null): Uint8Array {
-		return this.w.collection_batch(collectionBatchRequest(batch, scope), JSON.stringify(CARD_OBJECT_FIELDS), baseUrl);
+	scryfallCollectionPacket(batch: CollectionBatch, baseUrl: string): Uint8Array {
+		return this.w.collection_batch(collectionBatchRequest(batch), JSON.stringify(CARD_OBJECT_FIELDS), baseUrl);
 	}
 
-	async scryfallCollectionBatch(
-		batch: CollectionBatch,
-		baseUrl: string,
-		scope?: CollectionScope | null,
-	): Promise<CollectionBatchAnswer> {
-		return decodeCollectionPacket(this.scryfallCollectionPacket(batch, baseUrl, scope), batch);
+	async scryfallCollectionBatch(batch: CollectionBatch, baseUrl: string): Promise<CollectionBatchAnswer> {
+		return decodeCollectionPacket(this.scryfallCollectionPacket(batch, baseUrl), batch);
 	}
 }
 
@@ -779,14 +774,9 @@ class WasmEngine implements Engine {
  * rather than as the decoded answer's per-card views, which the RPC would have to serialize as
  * separate values. Only a local store has a packet; anything else is a wiring bug.
  */
-export function collectionPacketOf(
-	engine: Engine,
-	batch: CollectionBatch,
-	baseUrl: string,
-	scope: CollectionScope | null,
-): Uint8Array {
+export function collectionPacketOf(engine: Engine, batch: CollectionBatch, baseUrl: string): Uint8Array {
 	if (!(engine instanceof WasmEngine)) throw new Error("collection packets come from a loaded store only");
-	return engine.scryfallCollectionPacket(batch, baseUrl, scope);
+	return engine.scryfallCollectionPacket(batch, baseUrl);
 }
 
 export { readManifest } from "./store-kv";
@@ -1904,7 +1894,7 @@ export async function namesFuzzyPlan(
  *
  * A collection `{name}` identifier reads a subset of those keys (card_engine `NameScope::Collection`)
  * through the same `name_key_tier`, over the same stored names the index's records are written from,
- * so a partition outside the list ranks the name nowhere — with or without a set or a scope, which
+ * so a partition outside the list ranks the name nowhere — with or without a set, which
  * only ever remove printings. Null when the index cannot say (no names blob for this build, a
  * format-1 blob, a blob KV or wasm refused); the router then asks every partition, as before.
  * Never throws.

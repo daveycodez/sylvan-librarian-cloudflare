@@ -1,4 +1,3 @@
-import type { PreferOrder } from "../routes/enums";
 import type { PlacementBlock } from "./placement-policy";
 import type { NameHint } from "./routing-filter";
 // Seam between the HTTP routes (src/routes/) and the wasm engine (src/engine/).
@@ -339,11 +338,7 @@ export interface Engine {
 	 * per-kind methods it replaced (b9bc501) spent up to 2N + N + N on. The bytes are spliced into
 	 * the response, never parsed.
 	 */
-	scryfallCollectionBatch(
-		batch: CollectionBatch,
-		baseUrl: string,
-		scope?: CollectionScope | null,
-	): Promise<CollectionBatchAnswer>;
+	scryfallCollectionBatch(batch: CollectionBatch, baseUrl: string): Promise<CollectionBatchAnswer>;
 }
 
 /** A collection identifier that is a KEY into the store rather than a query, Scryfall ids aside. */
@@ -368,7 +363,7 @@ export interface CollectionBatch {
 	 * Absent means no tree is routable: every partition is asked.
 	 */
 	treeAddresses?: (string | null)[];
-	/** `{name}` and `{name, set}`, under the batch's scope. */
+	/** `{name}` and `{name, set}`. */
 	names: NameIdentifier[];
 	/**
 	 * Ask each store whether it holds each name AT ALL (`CollectionBatchAnswer.namePresent`) — what
@@ -399,7 +394,7 @@ export interface CollectionLocate {
  * `holders[i]` is, for name i of the batch, the partitions holding a card the name could resolve to
  * (ascending; EMPTY for a name no card carries), or null where the store did not look (the name
  * settled, or was not this store's to locate). A superset: it reads `exact=`'s keys, which a
- * collection identifier's are among, with no set and no scope. `builtAt` is the build the index
+ * collection identifier's are among, with no set. `builtAt` is the build the index
  * was made from — partition numbers mean nothing across builds, so the router reads it only when
  * it is its own.
  */
@@ -424,7 +419,7 @@ export interface CollectionBatchAnswer {
 	/** `[tier, name, served, tie, score]` per name, or null — what the partitioned router merges names by. */
 	nameRanks: (NameRank | null)[];
 	/**
-	 * Per name, whether this store holds it at all — no set, no scope, and `exact=`'s wider name
+	 * Per name, whether this store holds it at all — no set, and `exact=`'s wider name
 	 * rule — when the batch asked for `presence` and the store understood; absent otherwise.
 	 */
 	namePresent?: boolean[];
@@ -473,18 +468,6 @@ export interface ExactNameProbe {
 export interface NameIdentifier {
 	folded: string;
 	setCode: string;
-}
-
-/**
- * The `?q=` of a `POST /cards/collection`, once per batch: the prefer folded out of it (this
- * API's spelling; "default" is no preference) and the rest of it as a canonical filter tree, or
- * null when nothing but directives was written. Applied to every `{name}` identifier — the
- * printing answered is the best of those passing the filter under the prefer. See the engine's
- * `CollectionScope`.
- */
-export interface CollectionScope {
-	prefer: PreferOrder;
-	filterTreeJson: string | null;
 }
 
 /**

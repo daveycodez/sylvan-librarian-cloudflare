@@ -8,7 +8,7 @@
 //      half of a two-part one, a misspelling, a name several cards share — every partition whose
 //      `collection_batch` ranks it is among the partitions the names index lists (card-names.ts
 //      `nameHoldersFromIndex`). So asking only those reads every reply the fan-out's merge reads; and
-//      a set or a scope only removes printings, so the list stays a superset under either.
+//      a set only removes printings, so the list stays a superset under one.
 //   2. THE RESPONSE DOES NOT MOVE. Deck lists shaped like production's (DeckGen 2026-09-30: 1–75
 //      names, 0–10 of them misspelt, some naming cards several partitions hold), behind a routing
 //      filter built from the corpus's own names: the bytes are the every-partition fan-out's and the
@@ -277,9 +277,8 @@ describe.skipIf(!realStoreReadable)(`a collection name its route does not settle
 			for (const [at, list] of lists.entries()) {
 				const variants: [string, unknown[], string][] = [
 					["plain", list.names.map((name) => ({ name })), ""],
-					// A set on every third identifier, and a batch scope: both only remove printings.
+					// A set on every third identifier: it only removes printings.
 					["set", list.names.map((name, i) => (i % 3 === 0 ? { name, set: "m11" } : { name })), ""],
-					["q", list.names.map((name) => ({ name })), "?q=t%3Acreature"],
 				];
 				for (const [variant, identifiers, query] of variants) {
 					const fanOut = await post(identifiers, query, null, false);

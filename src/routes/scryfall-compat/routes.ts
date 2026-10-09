@@ -41,15 +41,9 @@ import {
 	rulingsBucketOf,
 	rulingsSlice,
 } from "../../engine/rulings-kv";
-import type {
-	CollectionBatch,
-	CollectionBatchKey,
-	CollectionScope,
-	Engine,
-	NamedFuzzyAnswer,
-} from "../../engine/types";
+import type { CollectionBatch, CollectionBatchKey, Engine, NamedFuzzyAnswer } from "../../engine/types";
 import { EngineQueryError, EngineUnavailableError } from "../../engine/types";
-import type { DirectiveFound, ExpandedDerivedTerm, FilterValue, LoweredRegexTerm, TagAliasTables } from "../../parser";
+import type { DirectiveFound, ExpandedDerivedTerm, FilterValue, LoweredRegexTerm } from "../../parser";
 import { canonicalStringify } from "../../parser";
 import { foldAccents } from "../../parser/pystr";
 import type { CardOrdering, SortDirection, UniqueOn } from "../enums";
@@ -86,9 +80,7 @@ import {
 	type KeywordTables,
 	NESTED_DISPLAY_OPTIONS_DETAILS,
 	SCRYFALL_ONLY_ORDERS,
-	type SetGroupsReader,
 	scryfallTermPolicyFor,
-	scryfallTermPolicyWithSets,
 	TOO_MANY_REGEX_DETAILS,
 } from "./query-terms";
 import { keywordCatalogWords, setGroupsFor } from "./reference-routes";
@@ -1299,17 +1291,23 @@ export async function cardsRandomHandler(
 
 /**
  * A fingerprint of everything that decides a collection response's bytes: the identifiers IN THE
- * ORDER SENT (`data` follows it), the `?q=` scope and `pretty`. 64 bits as two 32-bit hashes, so a
- * day's ~16k batches do not collide. Logged, not used: it is how Y2 learns whether identical
- * batches repeat often enough to cache.
+ * ORDER SENT (`data` follows it) and `pretty`. 64 bits as two 32-bit hashes, so a day's ~16k
+ * batches do not collide. Logged, not used: it is how Y2 learns whether identical batches repeat
+ * often enough to cache.
+ *
+ * NOT the query string: a `?q=` on a collection decides nothing (see `cardsCollectionHandler`),
+ * so two batches that differ only in one share a fingerprint, as they share an answer. The empty
+ * line between the two fields is where the `?q=` scope was hashed while this port had one
+ * (removed 2026-10-08); it stays so a batch sent without a `q` — every batch but the scoped ones —
+ * logs the value it logged before, and a day of `body=` values reads across the change.
  */
-export function collectionBodyKey(identifiers: unknown[], q: string | undefined, pretty: boolean): string {
-	return collectionBodyKeyOf(JSON.stringify(identifiers), q, pretty);
+export function collectionBodyKey(identifiers: unknown[], pretty: boolean): string {
+	return collectionBodyKeyOf(JSON.stringify(identifiers), pretty);
 }
 
 /** `collectionBodyKey` over identifiers already serialised — the route serialises them once. */
-function collectionBodyKeyOf(identifiersJson: string, q: string | undefined, pretty: boolean): string {
-	const text = `${identifiersJson}\n${q ?? ""}\n${pretty ? 1 : 0}`;
+function collectionBodyKeyOf(identifiersJson: string, pretty: boolean): string {
+	const text = `${identifiersJson}\n\n${pretty ? 1 : 0}`;
 	let a = 0x811c9dc5;
 	let b = 0x01000193;
 	for (let i = 0; i < text.length; i++) {
@@ -1342,10 +1340,12 @@ function collectionBodyKeyOf(identifiersJson: string, q: string | undefined, pre
 // keeps an entry that long.
 //
 // THE KEY is SHA-256 over everything that decides the response's bytes: the code version, the
-// store build, the base URL every `*_uri` hangs off (scheme and host), `pretty`, the `?q=` scope
-// and the identifiers as sent, in order. A deploy or a publish therefore reads none of the entries
-// before it; nothing has to purge them (`ctx.cache.purge` does not reach the Cache API), they age
-// out. The 64-bit `body=` fingerprint stays a log field: it is too short to share an answer on.
+// store build, the base URL every `*_uri` hangs off (scheme and host), `pretty` and the
+// identifiers as sent, in order — and nothing else of the query string, which decides none of
+// them (a `?q=` least of all: see `cardsCollectionHandler`). A deploy or a publish therefore reads
+// none of the entries before it; nothing has to purge them (`ctx.cache.purge` does not reach the
+// Cache API), they age out. The 64-bit `body=` fingerprint stays a log field: it is too short to
+// share an answer on.
 //
 // WHAT IS NOT KEPT, and the `cache=skip:<reason>` the log line gives each. Anything but the 200
 // (no line at all: a 400 returns before the log, a 500 after it failed).
@@ -1418,7 +1418,6 @@ function holdsNonFiniteNumber(root: unknown): boolean {
 export async function collectionCacheUrl(
 	identifiers: unknown[],
 	identifiersJson: string,
-	q: string | undefined,
 	pretty: boolean,
 	baseUrl: string,
 	storeBuild: string | undefined,
@@ -1430,7 +1429,7 @@ export async function collectionCacheUrl(
 	if (identifiersJson.includes("null") && holdsNonFiniteNumber(identifiers)) return { url: null, skip: "number" };
 	// One JSON line of the fixed fields, then the identifiers: JSON writes no raw newline, so the
 	// first one is the separator and no two requests share a text.
-	const head = JSON.stringify([COLLECTION_EDGE_SCHEMA, collectionCodeVersion, storeBuild, baseUrl, pretty, q ?? ""]);
+	const head = JSON.stringify([COLLECTION_EDGE_SCHEMA, collectionCodeVersion, storeBuild, baseUrl, pretty]);
 	const digest = new Uint8Array(await crypto.subtle.digest("SHA-256", encodeUtf8(`${head}\n${identifiersJson}`)));
 	let hex = "";
 	for (const byte of digest) hex += byte.toString(16).padStart(2, "0");
@@ -1506,11 +1505,21 @@ export async function cardsCollectionHandler(
 	const malformed = collectionIdentifierError(identifiers);
 	if (malformed) return scryfallJson(malformed, pretty, COLLECTION_REFUSED_CACHE);
 
-	// THE BATCH'S `?q=` — this port's extension, see `collectionScope`. Parsed after the body is
-	// validated so a malformed identifier still answers Scryfall's own 400 first.
-	const scoped = await collectionScope(params.q, pretty, await ctx.tagAliases(), () => setGroupsFor(ctx));
-	if (scoped.refused) return scoped.refused;
-	const { scope, warnings } = scoped;
+	// `pretty` IS THE ONLY QUERY PARAMETER THIS ROUTE READS, because it is the only one Scryfall's
+	// does. Measured on api.scryfall.com 2026-10-08, one three-identifier body (a name, a
+	// double-faced name, a set and number) sent ten ways: bare, `?q=e:lea`, `?q=-is:datestamped
+	// prefer:atypical`, `?q=zzzz:bad`, `?q=`, `?foo=bar&include_extras=true&unique=prints&
+	// order=released`, `?format=text` and `?format=csv&q=e:lea` all answered the same 21,301 bytes
+	// (one SHA-256), and `?pretty=true` with and without `&q=e:lea` the same 26,656. One identifier
+	// at a time agrees: `{name: Lightning Bolt}` is msc/806 bare, under `?q=e:lea` and under the
+	// unparseable `?q=(t:goblin`, and `{id: not-a-uuid}` the same 400 with a `q` as without. A `q`
+	// there is not a filter, not a preference, not a warning and not an error, and the List never
+	// carries a `warnings` key.
+	//
+	// This port read `?q=` from 2026-09-02 (412ca17b) to 2026-10-08 as "the batch's scope": a
+	// search query applied to every `{name}` identifier, its `prefer:` picking among the
+	// printings. Its one client stopped sending it and the route went back to Scryfall's contract;
+	// what a name resolves to is the engine's default pick again, whatever the URL says.
 
 	const engine = await ctx.getEngine();
 	const baseUrl = apiBaseUrl(ctx);
@@ -1534,14 +1543,18 @@ export async function cardsCollectionHandler(
 		// answer was kept; `skip:<reason>` the engine answered and it was not (the reasons are listed
 		// above `collectionCacheUrl`), so a day of lines says how often each one fires. Last,
 		// `body=` is Y2's 64-bit fingerprint of the request (collectionBodyKey): distinct values
-		// against lines over a day is how often the SAME batch repeats, in any colo.
+		// against lines over a day is how often the SAME batch repeats, in any colo. `q=` keeps its
+		// place in the line, for whatever reads the line by position, and what it counts — 1 when
+		// the request carried a non-blank `?q=` — but the parameter is IGNORED now, so a 1 is a
+		// client still sending the scope this route no longer has, answered as if it had not.
+		const ignoredQuery = params.q?.trim() ? 1 : 0;
 		const line = (calls: number, rounds: number, found: number, repair: string, located: string, cache: string) =>
 			console.log(
-				`collection batch: n=${identifiers.length} id=${kinds.id} key=${kinds.key} pair=${kinds.pair} name=${kinds.name} name+set=${kinds.nameSet} q=${scope ? 1 : 0} calls=${calls} rounds=${rounds} found=${found} repair=${repair} located=${located} cache=${cache} body=${collectionBodyKeyOf(identifiersJson, params.q, pretty)}`,
+				`collection batch: n=${identifiers.length} id=${kinds.id} key=${kinds.key} pair=${kinds.pair} name=${kinds.name} name+set=${kinds.nameSet} q=${ignoredQuery} calls=${calls} rounds=${rounds} found=${found} repair=${repair} located=${located} cache=${cache} body=${collectionBodyKeyOf(identifiersJson, pretty)}`,
 			);
 
 		const storeBuild = (engine as { storeBuild?: string }).storeBuild;
-		const cache = await collectionCacheUrl(identifiers, identifiersJson, params.q, pretty, baseUrl, storeBuild);
+		const cache = await collectionCacheUrl(identifiers, identifiersJson, pretty, baseUrl, storeBuild);
 		if (cache.url !== null) {
 			// The kept bytes are one byte of `found` (at most 75) and then the body.
 			const kept = await matchEdgeCache(cache.url);
@@ -1551,7 +1564,7 @@ export async function cardsCollectionHandler(
 			}
 		}
 
-		const resolved = await resolveIdentifiers(engine, plan, baseUrl, scope);
+		const resolved = await resolveIdentifiers(engine, plan, baseUrl);
 		const found: Uint8Array[] = [];
 		const notFound: unknown[] = [];
 		for (let at = 0; at < identifiers.length; at++) {
@@ -1580,7 +1593,7 @@ export async function cardsCollectionHandler(
 		// and code. The response is the same either way.
 		const skip = cache.url === null ? cache.skip : collectionUnpinned(engine, storeBuild as string);
 		line(calls, rounds, found.length, repair ?? "-", String(located ?? "-"), skip === null ? "miss" : `skip:${skip}`);
-		const body = scryfallCollectionBytes(found, notFound, warnings, pretty);
+		const body = scryfallCollectionBytes(found, notFound, pretty);
 		if (cache.url !== null && skip === null) {
 			// Off the request's path: the client's answer does not wait for the colo to store it.
 			await putEdgeCache(cache.url, concatBytes([Uint8Array.of(found.length), body]), COLLECTION_EDGE_TTL_S, (p) =>
@@ -1591,87 +1604,6 @@ export async function cardsCollectionHandler(
 	} catch (err) {
 		return engineFailure(err, pretty);
 	}
-}
-
-/**
- * The batch's `?q=` on `POST /cards/collection`, this port's extension to Scryfall's endpoint:
- * a search query applied to every `{name}` and `{name, set}` identifier, whose FILTER terms
- * restrict the printings a name may resolve to and whose `prefer:` directive picks among them.
- * `?q=-is:datestamped prefer:atypical` answers Clive, Ifrit's Dominant with the borderless
- * fin/318 where `prefer:atypical` alone answers the date-stamped prerelease promo — on
- * api.scryfall.com's search and here alike, because the date stamp is an atypical treatment and
- * that printing ranks first among the atypical ones. Identifiers that already name one printing
- * (id, oracle id, illustration id, external id, set+number) never consult it, and a name none of
- * whose printings pass is `not_found`, exactly as a name that does not exist.
- *
- * ONE PARSER, ONE FOLD. The query goes through the same term policy, parser and directive fold
- * `/cards/search` uses, so every spelling that works there works here, including the hyphenated
- * `prefer:usd-low` and the `ub`/`notub` short forms. The directives that shape a PAGE — `unique:`,
- * `sort:`/`order:`, `direction:`/`dir:` — mean nothing on a lookup that answers one printing per
- * identifier in the order they were sent; they are folded and then warned about rather than
- * rejected, the way search treats an unknown directive value. Scryfall's `include_extras`
- * defaults are NOT applied: a collection resolves tokens and extras by id today, and a scope is
- * the caller's own filter, not the search page's.
- *
- * In the URL rather than the body: the body is Scryfall's `{identifiers}` schema, validated
- * against Scryfall's own messages, and a client built on a Scryfall SDK can append a query
- * parameter where it could not add a body key. `q` is where the search surface already puts it.
- */
-async function collectionScope(
-	q: string | undefined,
-	pretty: boolean,
-	tagAliases: TagAliasTables,
-	setGroups: SetGroupsReader,
-): Promise<{ scope: CollectionScope | null; warnings: string[]; refused: Response | null }> {
-	if (!q?.trim()) return { scope: null, warnings: [], refused: null };
-	const refuse = (details: string, warnings: string[] | null) => ({
-		scope: null,
-		warnings: [],
-		refused: scryfallJson(badRequestError(details, warnings), pretty, COLLECTION_REFUSED_CACHE),
-	});
-	// `g:` is the one term read against a catalog here, as on `/cards/search` — without it the
-	// term would reach a parser that does not know the keyword. `keyword:` stays unread, as it was.
-	const policy = await scryfallTermPolicyWithSets(q, setGroups);
-	if (policy.unclosedParens) return refuse(UNCLOSED_PARENS_DETAILS, null);
-	// A scope of nothing but display options is a scope with no filter — `q=prefer:oldest` is the
-	// whole point of this parameter — so only a query whose TERMS were all ignored is refused.
-	const optionsOnly = policy.allIgnored && policy.directives.length > 0;
-	if (policy.allIgnored && !optionsOnly) return refuse(ALL_IGNORED_DETAILS, policy.warnings);
-	const warnings: string[] = [...policy.warnings];
-
-	const parser = await loadParser();
-	let tree: unknown;
-	let directives: readonly DirectiveFound[] = [];
-	try {
-		const parsed = parser.parseWithDirectives(optionsOnly ? "" : policy.query, tagAliases);
-		tree = parsed.tree;
-		directives = [...policy.directives, ...parsed.directives];
-		warnings.push(...parsed.warnings);
-	} catch (err) {
-		const budgetMessage = parser.queryBudgetMessage(err);
-		if (budgetMessage !== null) return refuse(budgetMessage, warnings);
-		if (parser.isParseError(err)) return refuse(`Failed to parse query: "${q}"`, warnings);
-		throw err;
-	}
-	if (usesValueAsPredicate(tree)) return refuse(arithmeticNotComparedMessage(q), warnings);
-
-	const folded = applyDirectives(directives, { unique: "card", prefer: "default", orderby: "name", direction: "auto" });
-	warnings.push(...folded.warnings);
-	for (const { name, value } of directives) {
-		if (name !== "prefer") {
-			warnings.push(
-				`${name}:${value} has no effect on /cards/collection, which answers one printing per identifier in the order they were sent.`,
-			);
-		}
-	}
-	// A query that was ONLY directives leaves a TrueNode behind, which is no filter at all.
-	const isTrue =
-		typeof tree === "object" && tree !== null && (tree as { node_type?: unknown }).node_type === "TrueNode";
-	return {
-		scope: { prefer: folded.prefer, filterTreeJson: isTrue ? null : canonicalStringify(tree as FilterValue) },
-		warnings,
-		refused: null,
-	};
 }
 
 /** How many identifiers of a batch took each entry point — the collection log line's breakdown. */
@@ -1704,9 +1636,8 @@ async function resolveIdentifiers(
 	engine: Engine,
 	{ batch, slots }: IdentifierPlan,
 	baseUrl: string,
-	scope: CollectionScope | null,
 ): Promise<(Uint8Array | null)[]> {
-	const answer = await engine.scryfallCollectionBatch(batch, baseUrl, scope);
+	const answer = await engine.scryfallCollectionBatch(batch, baseUrl);
 	return slots.map((slot) => {
 		if (slot === null) return null;
 		if (slot.list === "trees") return answer.trees[slot.at] ?? answer.trees[slot.at + 1] ?? null;

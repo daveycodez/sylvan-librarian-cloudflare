@@ -37,9 +37,9 @@
 //                                      partition does not settle costs a
 //                                      second round to the rest — except a
 //                                      name routed to its SERVED partition
-//                                      under a scope filter or a set, which
-//                                      rides every round-1 call instead (its
-//                                      route can miss), so a scoped batch of
+//                                      beside a set, which rides every
+//                                      round-1 call instead (its route can
+//                                      miss), so a batch of `{name, set}`
 //                                      misses is one round. An oracle id
 //                                      goes by partitionOfOracleId; its miss
 //                                      re-reads the manifest (cacheTtl 60) and
@@ -135,7 +135,6 @@ import {
 	type CollectionBatch,
 	type CollectionBatchAnswer,
 	type CollectionBatchKey,
-	type CollectionScope,
 	type Engine,
 	type EngineSearchOptions,
 	type EngineSearchResult,
@@ -1485,9 +1484,9 @@ export class PartitionedEngine implements Engine {
 	 * not — a hint from a key the filter never held, a served partition answering only an extra —
 	 * is asked of every other partition in the repair round, and then ALL its replies are merged
 	 * in partition order, exactly as if it had been asked everywhere at once. The one exception is
-	 * a SERVED-routed name under a scope filter or a set, whose route can miss for want of a
-	 * passing printing: it rides every round-1 call instead, so a scoped deck list that misses most
-	 * of its names is still one round (see `riding` below).
+	 * a SERVED-routed name beside a SET, whose route can miss for want of a printing in it: it rides
+	 * every round-1 call instead, so a `{name, set}` list that misses most of its names is still one
+	 * round (see `riding` below).
 	 *
 	 * The merge keeps the rules the per-kind methods had:
 	 *   - keys and trees: the first card in PARTITION ORDER — a hint names the lowest owning
@@ -1515,11 +1514,7 @@ export class PartitionedEngine implements Engine {
 	 * reads the same replies it would have read from every partition. No index, another build's, an
 	 * object on the build before x47: no list, and every other partition is asked, as before.
 	 */
-	async scryfallCollectionBatch(
-		batch: CollectionBatch,
-		baseUrl: string,
-		scope?: CollectionScope | null,
-	): Promise<CollectionBatchAnswer> {
+	async scryfallCollectionBatch(batch: CollectionBatch, baseUrl: string): Promise<CollectionBatchAnswer> {
 		const out = emptyCollectionAnswer(batch);
 		await this.routed();
 		const hintOf = (routingKey: string, n: number): number | null => {
@@ -1554,16 +1549,17 @@ export class PartitionedEngine implements Engine {
 		this.collectionLocated = 0;
 		this.collectionBuilds.clear();
 		this.collectionCommits.clear();
-		// A SERVED-routed name rides every round-1 call when its route can MISS: under a scope FILTER
-		// or a set, the served partition may hold no printing that passes, and its miss proves nothing
-		// about the extras-only cards of the name the other partitions hold (`nameReplySettles`) — so
-		// the repair round would ask them anyway. Measured on DeckGen 09-26: `?q=(is:commander)` and
-		// `?q=t:"creature" ...` batches of 60–75 names missed 46–70 of them, one served name among the
-		// misses sent the whole batch to a second round, and 515 of 841 such batches cost 19–20
-		// calls on ten partitions where the same batches unscoped cost 10. Riding round 1 costs a name
-		// lookup per partition already being called and no call; a served name WITHOUT a filter or
-		// set always settles on its route (the served card is there to answer), so it stays routed.
-		const nameCanMiss = (i: number) => (scope?.filterTreeJson ?? null) !== null || batch.names[i]?.setCode !== "";
+		// A SERVED-routed name rides every round-1 call when its route can MISS: beside a SET, the
+		// served partition may hold no printing in it, and its miss proves nothing about the
+		// extras-only cards of the name the other partitions hold (`nameReplySettles`) — so the
+		// repair round would ask them anyway. Measured on DeckGen 09-26, on the batch-wide `?q=` filter
+		// the route then had (removed 2026-10-08), which missed the same way: batches of 60–75 names
+		// missed 46–70 of them, one served name among the misses sent the whole batch to a second
+		// round, and 515 of 841 such batches cost 19–20 calls on ten partitions where the same batches
+		// unfiltered cost 10. Riding round 1 costs a name lookup per partition already being called
+		// and no call; a served name WITHOUT a set always settles on its route (the served card is
+		// there to answer), so it stays routed.
+		const nameCanMiss = (i: number) => batch.names[i]?.setCode !== "";
 		const riding = batch.names.map((_, i) => {
 			const hint = nameHints[i] ?? null;
 			return hint !== null && !("sole" in hint) && nameCanMiss(i);
@@ -1592,7 +1588,7 @@ export class PartitionedEngine implements Engine {
 						if (locate.length > 0) sub.locate = locate;
 					}
 					for (const i of nameAt) nameAsked[i]?.add(p);
-					const answer = await this.at(p).scryfallCollectionBatch(sub, baseUrl, scope);
+					const answer = await this.at(p).scryfallCollectionBatch(sub, baseUrl);
 					this.collectionBuilds.add(answer.answeredFrom?.build ?? "");
 					this.collectionCommits.add(answer.answeredFrom?.commit ?? "");
 					return { p, keyAt, treeAt, nameAt, answer };

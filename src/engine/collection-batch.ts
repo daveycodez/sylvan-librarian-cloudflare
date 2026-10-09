@@ -11,7 +11,7 @@
 // into the response — however many layers carry them there.
 
 import { CARD_OBJECT_FIELDS } from "../routes/scryfall-compat/objects";
-import type { CollectionBatch, CollectionBatchAnswer, CollectionScope, NameRank } from "./types";
+import type { CollectionBatch, CollectionBatchAnswer, NameRank } from "./types";
 
 /**
  * How a `{set, collector_number}` tree is answered: its first printing under these options, the
@@ -30,15 +30,20 @@ const TREE_OPTS = {
 
 const decoder = new TextDecoder();
 
-/** The `request_json` argument of `collection_batch`. */
-export function collectionBatchRequest(batch: CollectionBatch, scope: CollectionScope | null | undefined): string {
+/**
+ * The `request_json` argument of `collection_batch`.
+ *
+ * The engine's entry point still reads two more keys, `prefer` and `scope` — the batch-wide
+ * filter and printing preference `?q=` carried while this port had that extension (412ca17b,
+ * removed 2026-10-08). Neither is written: absent, both read as "" and the engine resolves every
+ * name by its default pick (engine/wasm `parse_scope`), which is the only way a name resolves now.
+ */
+export function collectionBatchRequest(batch: CollectionBatch): string {
 	return JSON.stringify({
 		keys: batch.keys,
 		trees: batch.trees,
 		tree_opts: TREE_OPTS,
 		names: batch.names.map(({ folded, setCode }) => [folded, setCode]),
-		prefer: scope?.prefer ?? "default",
-		scope: scope?.filterTreeJson ?? "",
 		...(batch.presence ? { presence: true } : {}),
 	});
 }

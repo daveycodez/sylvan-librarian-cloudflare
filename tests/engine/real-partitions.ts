@@ -23,7 +23,6 @@ import type { RemoteEngine } from "../../src/engine/remote-engine";
 import {
 	type CollectionBatch,
 	type CollectionBatchAnswer,
-	type CollectionScope,
 	FUZZY_SIMILARITY_FLOOR,
 	FUZZY_SIMILARITY_LEAD,
 	FUZZY_WEAK_BELOW,
@@ -214,15 +213,9 @@ export function realNameHolders(store: RealStore, folded: string): number[] {
 }
 
 /** Partition `p`'s collection packet for a batch — store.ts `WasmEngine.scryfallCollectionPacket`. */
-export function realCollectionPacket(
-	store: RealStore,
-	p: number,
-	batch: CollectionBatch,
-	baseUrl: string,
-	scope?: CollectionScope | null,
-): Uint8Array {
+export function realCollectionPacket(store: RealStore, p: number, batch: CollectionBatch, baseUrl: string): Uint8Array {
 	return (store.engines[p] as TestEngine).use((g) =>
-		(g as unknown as RealGlue).collection_batch(collectionBatchRequest(batch, scope), FIELDS, baseUrl),
+		(g as unknown as RealGlue).collection_batch(collectionBatchRequest(batch), FIELDS, baseUrl),
 	);
 }
 
@@ -246,13 +239,9 @@ export function realPartition(
 ): RemoteEngine {
 	const client = {
 		// search-engine-do.ts `scryfallCollectionBatch` and remote-engine.ts's decode of its reply.
-		scryfallCollectionBatch: async (
-			batch: CollectionBatch,
-			baseUrl: string,
-			scope?: CollectionScope | null,
-		): Promise<CollectionBatchAnswer> => {
+		scryfallCollectionBatch: async (batch: CollectionBatch, baseUrl: string): Promise<CollectionBatchAnswer> => {
 			calls.push(`batch:${p}`);
-			const packet = realCollectionPacket(store, p, batch, baseUrl, scope);
+			const packet = realCollectionPacket(store, p, batch, baseUrl);
 			const answer = decodeCollectionPacket(packet, batch);
 			if (options.beforeX47 || !batch.locate) return answer;
 			const { ranks, present } = collectionPacketRanks(packet);

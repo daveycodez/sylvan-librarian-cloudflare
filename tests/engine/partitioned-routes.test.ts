@@ -33,13 +33,7 @@ import {
 	scryfallIdKey,
 	setNumberKey,
 } from "../../src/engine/routing-filter";
-import {
-	type CollectionBatch,
-	type CollectionScope,
-	type NameRank,
-	StaleModulusError,
-	type StoreManifest,
-} from "../../src/engine/types";
+import { type CollectionBatch, type NameRank, StaleModulusError, type StoreManifest } from "../../src/engine/types";
 
 const N = 4;
 
@@ -2081,13 +2075,15 @@ describe("exact names route through the filter (backlog n6)", () => {
 			]);
 		});
 
-		// x20: DeckGen's `?q=(is:commander)` deck lists — 60–75 names, most of which the scope
-		// rejects. A served name's route missing under the scope proves nothing about the other
-		// partitions' extras of that name, so the router used to ask them in a second round: 19–20
-		// calls on ten partitions for 515 of 841 such batches (09-26), where one round is 10.
-		const SCOPE: CollectionScope = { prefer: "default", filterTreeJson: '{"t":"x"}' };
+		// x20: a name beside a SET can miss on its route — the served card may have no printing in
+		// it — and that miss proves nothing about the other partitions' extras of the name, so the
+		// router used to ask them in a second round. Measured on the batch-wide `?q=` filter the
+		// route had until 2026-10-08, which missed the same way: DeckGen's `?q=(is:commander)` deck
+		// lists of 60–75 names cost 19–20 calls on ten partitions for 515 of 841 batches (09-26),
+		// where one round is 10. `{name, set}` is what is left that rides.
+		const inSet = (...folded: string[]) => folded.map((f) => ({ folded: f, setCode: "ice" }));
 
-		test("a scoped 70-name deck list missing most names is ONE round of N calls, and the fan-out's answer", async () => {
+		test("a 70-name `{name, set}` list missing most names is ONE round of N calls, and the fan-out's answer", async () => {
 			const deck = Array.from({ length: 70 }, (_, i) => `card ${i}`);
 			const owner = (i: number) => i % N;
 			// Every seventh name is also an extras-only card (an art-series face) one partition over.
@@ -2098,8 +2094,8 @@ describe("exact names route through the filter (backlog n6)", () => {
 					...(served(i) ? [{ key: `nm:${name.replace(" ", "")}`, partition: (owner(i) + 1) % N }] : []),
 				]),
 			);
-			// The scope passes every fifth name where it lives; card 7's served card fails it and its
-			// extra passes, card 35's served card and its extra both pass.
+			// The set holds every fifth name where it lives; card 7's served card is not in it and its
+			// extra is, card 35's served card and its extra both are.
 			const perPartition: Record<number, Record<string, unknown>> = {};
 			for (let p = 0; p < N; p++) perPartition[p] = { rankByName: {}, presentNames: [] };
 			const at = (p: number) => perPartition[p] as { rankByName: Record<string, NameRank>; presentNames: string[] };
@@ -2112,9 +2108,8 @@ describe("exact names route through the filter (backlog n6)", () => {
 
 			const routed = build(perPartition, undefined, routing);
 			const got = await routed.engine.scryfallCollectionBatch(
-				{ keys: [], trees: [], names: names(...deck) },
+				{ keys: [], trees: [], names: inSet(...deck) },
 				"https://x",
-				SCOPE,
 			);
 			expect(routed.calls.length).toBe(N);
 			expect(routed.engine.collectionRounds).toBe(1);
@@ -2122,9 +2117,8 @@ describe("exact names route through the filter (backlog n6)", () => {
 			// Parity: exactly what asking every partition for every name answers.
 			const fanOut = build(perPartition, undefined, null);
 			const everywhere = await fanOut.engine.scryfallCollectionBatch(
-				{ keys: [], trees: [], names: names(...deck) },
+				{ keys: [], trees: [], names: inSet(...deck) },
 				"https://x",
-				SCOPE,
 			);
 			expect(names0(got)).toEqual(names0(everywhere));
 			expect(got.nameRanks).toEqual(everywhere.nameRanks);
@@ -2136,9 +2130,8 @@ describe("exact names route through the filter (backlog n6)", () => {
 		test("a served name rides only calls round 1 makes anyway: alone it is its route, then the rest", async () => {
 			const { engine, calls } = build({ 0: { rankByName: { brainstorm: [3, "", 0, 0] } } }, undefined, SERVED);
 			const got = await engine.scryfallCollectionBatch(
-				{ keys: [], trees: [], names: names("brainstorm") },
+				{ keys: [], trees: [], names: inSet("brainstorm") },
 				"https://x",
-				SCOPE,
 			);
 			expect(names0(got)).toEqual([{ p: 0, name: "brainstorm" }]);
 			// Round 1 is its route (2); the repair round the three partitions that have not answered it.
@@ -2151,7 +2144,7 @@ describe("exact names route through the filter (backlog n6)", () => {
 			expect(engine.collectionRounds).toBe(2);
 		});
 
-		test("a served name with a set rides too; one with neither set nor filter stays on its route", async () => {
+		test("a served name with a set rides beside another route's call; one with no set stays on its route", async () => {
 			// Beside a name routed to 0, a served name routed to 2: with a set it is sent to 0 as well.
 			const routing = named([
 				{ key: "ns:brainstorm", partition: 2 },
@@ -2170,11 +2163,10 @@ describe("exact names route through the filter (backlog n6)", () => {
 			expect(withSet.calls.sort()).toEqual(["scryfallCollectionBatch[|t0|n1]:2", "scryfallCollectionBatch[|t0|n2]:0"]);
 
 			const plain = build(perPartition, undefined, routing);
-			// `prefer:` alone is no filter: the served card always answers on its route.
+			// No set: the served card always answers on its route.
 			await plain.engine.scryfallCollectionBatch(
 				{ keys: [], trees: [], names: names("opt", "brainstorm") },
 				"https://x",
-				{ prefer: "borderless", filterTreeJson: null },
 			);
 			expect(plain.calls.sort()).toEqual(["scryfallCollectionBatch[|t0|n1]:0", "scryfallCollectionBatch[|t0|n1]:2"]);
 			expect(plain.engine.collectionRounds).toBe(1);
@@ -2345,7 +2337,7 @@ describe("exact names route through the filter (backlog n6)", () => {
 			expect(mixed.engine.collectionRounds).toBe(1);
 			expect(batches(mixed.calls).length).toBe(N);
 
-			// A riding name (served-routed, under a scope filter) is asked of every partition round 1
+			// A riding name (served-routed, beside a set) is asked of every partition round 1
 			// calls. When that is all of them there is nothing left to locate it in...
 			const ridingRouting = named([
 				{ key: "ns:brainstorm", partition: 2 },
@@ -2355,14 +2347,13 @@ describe("exact names route through the filter (backlog n6)", () => {
 			]);
 			const wide = build(withIndex({}, holders), undefined, ridingRouting, indexed());
 			await wide.engine.scryfallCollectionBatch(
-				{ keys: [], trees: [], names: names("brainstorm", "mystery") },
+				{ keys: [], trees: [], names: [...inSet("brainstorm"), ...names("mystery")] },
 				"https://x",
-				SCOPE,
 			);
 			expect(wide.calls.filter((c) => c.startsWith("located"))).toEqual([]);
 			expect(wide.engine.collectionRounds).toBe(1);
-			// ...and when round 1 is its route alone, the route says who else holds it: the scope
-			// rejects the served card in 2, and only partition 0 — the extra's — is asked after it.
+			// ...and when round 1 is its route alone, the route says who else holds it: the served
+			// card in 2 has no printing in the set, and only partition 0 — the extra's — is asked after it.
 			const alone = build(
 				withIndex({ 0: { rankByName: { brainstorm: [3, "", 0, 0] } } }, { brainstorm: [0, 2] }),
 				undefined,
@@ -2370,9 +2361,8 @@ describe("exact names route through the filter (backlog n6)", () => {
 				indexed(),
 			);
 			const got = await alone.engine.scryfallCollectionBatch(
-				{ keys: [], trees: [], names: names("brainstorm") },
+				{ keys: [], trees: [], names: inSet("brainstorm") },
 				"https://x",
-				SCOPE,
 			);
 			expect(names0(got)).toEqual([{ p: 0, name: "brainstorm" }]);
 			expect(batches(alone.calls)).toEqual(["scryfallCollectionBatch[|t0|n1]:2", "scryfallCollectionBatch[|t0|n1]:0"]);

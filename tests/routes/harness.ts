@@ -10,7 +10,6 @@ import { serializeCards } from "../../src/engine/columnar";
 import type {
 	CollectionBatch,
 	CollectionBatchAnswer,
-	CollectionScope,
 	Engine,
 	EngineSearchOptions,
 	EngineSerializedResult,
@@ -317,8 +316,13 @@ export class FakeEngine implements Engine {
 	/** Every batch the routes handed over — the fake's proof that 75 identifiers are one call. */
 	collectionNameBatches: NameIdentifier[][] = [];
 
-	/** The scope each batch came with (`?q=`), null when the request sent none. */
-	collectionScopes: (CollectionScope | null)[] = [];
+	/**
+	 * Whatever the routes handed `scryfallCollectionBatch` AFTER the batch and the base URL, per
+	 * call. Always empty: the method takes those two and nothing of the request's query string —
+	 * the `?q=` scope that once rode third is gone (2026-10-08) — and a route test reads this to
+	 * prove a `?q=` reaches the engine as nothing at all.
+	 */
+	collectionExtraArgs: unknown[][] = [];
 
 	/**
 	 * A collection identifier's `name` keys: the two FACE names when the name splits in exactly
@@ -371,14 +375,15 @@ export class FakeEngine implements Engine {
 	 * card as Scryfall JSON bytes. A Scryfall id goes through scryfallCardById, an external id
 	 * through scryfallCardByExternalId and the trees through scryfallFirstOfEach, so a route test's
 	 * override of those still applies; an oracle or illustration id is the first fixture card, as
-	 * the fake has always answered them. A batch with names is recorded in collectionNameBatches /
-	 * collectionScopes, once per request.
+	 * the fake has always answered them. A batch with names is recorded in collectionNameBatches,
+	 * once per request, and every call's surplus arguments in collectionExtraArgs.
 	 */
 	async scryfallCollectionBatch(
 		batch: CollectionBatch,
 		baseUrl: string,
-		scope?: CollectionScope | null,
+		...extra: unknown[]
 	): Promise<CollectionBatchAnswer> {
+		this.collectionExtraArgs.push(extra);
 		const bytes = (card: Record<string, unknown> | null) => (card ? encodeUtf8(stringifyScryfall(card)) : null);
 		const keys: (Uint8Array | null)[] = [];
 		for (const key of batch.keys) {
@@ -390,7 +395,6 @@ export class FakeEngine implements Engine {
 		const trees = batch.trees.length === 0 ? [] : (await this.scryfallFirstOfEach(batch.trees, baseUrl)).map(bytes);
 		if (batch.names.length > 0) {
 			this.collectionNameBatches.push(batch.names);
-			this.collectionScopes.push(scope ?? null);
 		}
 		const at = batch.names.map(({ folded }) => this.collectionAt(folded));
 		return {

@@ -259,14 +259,13 @@ const utf8 = new TextDecoder();
 export function scryfallCollectionBytes(
 	found: readonly Uint8Array[],
 	notFound: unknown[],
-	warnings: string[] | undefined,
 	pretty: boolean,
 ): Uint8Array {
 	if (pretty) {
 		const cards = found.map((bytes) => JSON.parse(utf8.decode(bytes)) as unknown);
-		return encodeUtf8(stringifyScryfall(collectionList(cards, notFound, warnings), true));
+		return encodeUtf8(stringifyScryfall(collectionList(cards, notFound), true));
 	}
-	const { head, tail } = spliceMarkers(collectionList([], notFound, warnings), false);
+	const { head, tail } = spliceMarkers(collectionList([], notFound), false);
 	const parts: Uint8Array[] = [head, OPEN];
 	for (const [i, card] of found.entries()) {
 		if (i > 0) parts.push(COMMA);
@@ -285,11 +284,10 @@ export function scryfallCollectionResponse(body: Uint8Array, cache: Record<strin
 export function scryfallCollectionJson(
 	found: readonly Uint8Array[],
 	notFound: unknown[],
-	warnings: string[] | undefined,
 	pretty: boolean,
 	cache: Record<string, string>,
 ): Response {
-	return scryfallCollectionResponse(scryfallCollectionBytes(found, notFound, warnings, pretty), cache);
+	return scryfallCollectionResponse(scryfallCollectionBytes(found, notFound, pretty), cache);
 }
 
 /**

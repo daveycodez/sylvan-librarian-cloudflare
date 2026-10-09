@@ -675,29 +675,30 @@ describe("through the routes, against the mirrored set catalog", () => {
 		expect(tree).not.toContain('"ecl"');
 	});
 
-	test("/cards/collection?q= scopes a batch to the group", async () => {
-		const scoped = async (query: string, kv: FakeKV | undefined) => {
+	test("/cards/collection reads no `g:` — a `?q=` there is ignored, catalog and all", async () => {
+		// The collection's `?q=` was this port's own (a batch-wide scope, removed 2026-10-08) and the
+		// one place outside search and random that read the `/sets` catalog for a group. Scryfall
+		// ignores a `q` on a collection, so nothing is parsed, nothing is read and nothing is scoped.
+		const sent = async (query: string | null, kv: FakeKV | undefined) => {
 			const engine = new FakeEngine();
-			const url = `https://sylvan-librarian.com/cards/collection?q=${encodeURIComponent(query)}`;
+			const tail = query === null ? "" : `?q=${encodeURIComponent(query)}`;
+			const url = `https://sylvan-librarian.com/cards/collection${tail}`;
 			const request = new Request(url, {
 				method: "POST",
 				headers: { "content-type": "application/json" },
 				body: JSON.stringify({ identifiers: [{ name: "Llanowar Elves" }] }),
 			});
 			const res = await testDispatch(makeCtx({ engine, kv, request }), url, "POST");
-			return { status: res.status, body: await json(res), scopes: engine.collectionScopes };
+			return { status: res.status, body: await res.text(), extra: engine.collectionExtraArgs };
 		};
-		const group = await scoped("g:ecc", published());
-		expect([group.status, group.body.warnings]).toEqual([200, undefined]);
-		expect(group.scopes).toEqual([{ prefer: "default", filterTreeJson: wire(ECC) }]);
-		const negated = await scoped("-group:tecc prefer:oldest", published());
-		expect(negated.scopes).toEqual([{ prefer: "oldest", filterTreeJson: wire("-(e:ecc)") }]);
-		// With no catalog the scope is the one that matches nothing — not a parse failure.
-		const unread = await scoped("g:ecc", undefined);
-		expect([unread.status, unread.scopes]).toEqual([200, [{ prefer: "default", filterTreeJson: wire("cmc<0") }]]);
-		// `e:` is the scope it always was, and reads nothing.
-		const kv = published();
-		expect((await scoped("e:ecc", kv)).scopes).toEqual([{ prefer: "default", filterTreeJson: wire("e:ecc") }]);
-		expect(kv.reads).toEqual([]);
+		const bare = await sent(null, published());
+		expect([bare.status, bare.extra]).toEqual([200, [[]]]);
+		for (const query of ["g:ecc", "-group:tecc prefer:oldest", "e:ecc"]) {
+			const kv = published();
+			expect({ query, ...(await sent(query, kv)) }).toEqual({ query, ...bare });
+			expect(kv.reads).toEqual([]);
+		}
+		// And with no catalog to read at all.
+		expect(await sent("g:ecc", undefined)).toEqual(bare);
 	});
 });

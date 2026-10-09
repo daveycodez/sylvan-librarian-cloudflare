@@ -13,7 +13,6 @@ import type {
 	CollectionBatch,
 	CollectionBatchAnswer,
 	CollectionLocated,
-	CollectionScope,
 	CollectionSource,
 	Engine,
 	EngineSearchOptions,
@@ -170,7 +169,8 @@ interface SearchEngineStub {
 	scryfallCollectionBatch(
 		batch: CollectionBatch,
 		baseUrl: string,
-		scope: CollectionScope | null,
+		/** Always null: the retired `?q=` scope's place on the wire — see the method in search-engine-do.ts. */
+		retiredScope: null,
 		reportedShards?: number,
 	): Promise<{ packet: Uint8Array; located?: CollectionLocated; answeredFrom?: CollectionSource } & Telemetry>;
 	scryfallNamesContaining(
@@ -1328,13 +1328,11 @@ export class RemoteEngine implements Engine {
 	}
 
 	/** The one-round collection batch — see Engine.scryfallCollectionBatch. */
-	async scryfallCollectionBatch(
-		batch: CollectionBatch,
-		baseUrl: string,
-		scope?: CollectionScope | null,
-	): Promise<CollectionBatchAnswer> {
+	async scryfallCollectionBatch(batch: CollectionBatch, baseUrl: string): Promise<CollectionBatchAnswer> {
+		// The `null` holds the retired scope's position, so `shards` lands where an engine object on
+		// the build before this one reads it (search-engine-do.ts `scryfallCollectionBatch`).
 		const { packet, located, answeredFrom } = await this.searchRpc("scryfallCollectionBatch", (stub, shards) =>
-			stub.scryfallCollectionBatch(batch, baseUrl, scope ?? null, shards),
+			stub.scryfallCollectionBatch(batch, baseUrl, null, shards),
 		);
 		const answer = decodeCollectionPacket(packet, batch);
 		// x58: the store and code that wrote the packet — of whichever object answered, the hedge's
