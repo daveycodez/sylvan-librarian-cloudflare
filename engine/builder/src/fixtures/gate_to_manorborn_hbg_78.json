@@ -1,0 +1,123 @@
+{
+ "arena_id": 81289,
+ "artist": "Andreas Rocha",
+ "artist_ids": [
+  "d084e74b-f63a-4107-b72c-ed6250ecc93b"
+ ],
+ "booster": true,
+ "border_color": "black",
+ "card_back_id": "0aeebaf5-8c7d-4636-9e82-8c27447861f7",
+ "cmc": 0.0,
+ "collector_number": "78",
+ "color_identity": [
+  "G"
+ ],
+ "colors": [],
+ "digital": true,
+ "finishes": [
+  "nonfoil"
+ ],
+ "foil": false,
+ "frame": "2015",
+ "full_art": false,
+ "game_changer": false,
+ "games": [
+  "arena"
+ ],
+ "highres_image": false,
+ "id": "a902d474-0d02-449e-ab6c-8c2f32c99384",
+ "illustration_id": "7b95cec2-0e13-4aca-8bf0-b03c65d408ab",
+ "image_status": "lowres",
+ "image_updated_at": "2026-07-13T05:54:51Z",
+ "image_uris": {
+  "art": "https://cards.scryfall.io/art/front/a/9/a902d474-0d02-449e-ab6c-8c2f32c99384.webp?1783922091",
+  "art_crop": "https://cards.scryfall.io/art_crop/front/a/9/a902d474-0d02-449e-ab6c-8c2f32c99384.jpg?1783922091",
+  "border_crop": "https://cards.scryfall.io/border_crop/front/a/9/a902d474-0d02-449e-ab6c-8c2f32c99384.jpg?1783922091",
+  "crop": "https://cards.scryfall.io/crop/front/a/9/a902d474-0d02-449e-ab6c-8c2f32c99384.webp?1783922091",
+  "display": "https://cards.scryfall.io/display/front/a/9/a902d474-0d02-449e-ab6c-8c2f32c99384.webp?1783922091",
+  "grid": "https://cards.scryfall.io/grid/front/a/9/a902d474-0d02-449e-ab6c-8c2f32c99384.webp?1783922091",
+  "large": "https://cards.scryfall.io/large/front/a/9/a902d474-0d02-449e-ab6c-8c2f32c99384.jpg?1783922091",
+  "normal": "https://cards.scryfall.io/normal/front/a/9/a902d474-0d02-449e-ab6c-8c2f32c99384.jpg?1783922091",
+  "png": "https://cards.scryfall.io/png/front/a/9/a902d474-0d02-449e-ab6c-8c2f32c99384.png?1783922091",
+  "small": "https://cards.scryfall.io/small/front/a/9/a902d474-0d02-449e-ab6c-8c2f32c99384.jpg?1783922091",
+  "thumb": "https://cards.scryfall.io/thumb/front/a/9/a902d474-0d02-449e-ab6c-8c2f32c99384.webp?1783922091"
+ },
+ "keywords": [
+  "Seek"
+ ],
+ "lang": "en",
+ "layout": "normal",
+ "legalities": {
+  "alchemy": "not_legal",
+  "brawl": "legal",
+  "commander": "not_legal",
+  "competitivebrawl": "legal",
+  "duel": "not_legal",
+  "future": "not_legal",
+  "gladiator": "legal",
+  "historic": "legal",
+  "legacy": "not_legal",
+  "modern": "not_legal",
+  "oathbreaker": "not_legal",
+  "oldschool": "not_legal",
+  "pauper": "not_legal",
+  "paupercommander": "not_legal",
+  "penny": "not_legal",
+  "pioneer": "not_legal",
+  "predh": "not_legal",
+  "premodern": "not_legal",
+  "standard": "not_legal",
+  "standardbrawl": "not_legal",
+  "timeless": "legal",
+  "tlr": "not_legal",
+  "vintage": "not_legal"
+ },
+ "mana_cost": "",
+ "multiverse_ids": [
+  574292
+ ],
+ "name": "Gate to Manorborn",
+ "nonfoil": true,
+ "object": "card",
+ "oracle_id": "eb64ece7-e75f-4812-89cc-9522beb5219e",
+ "oracle_text": "({T}: Add {G}.)\nGate to Manorborn enters the battlefield tapped.\n{3}{G}, {T}: Seek a nonland card. Activate only once.",
+ "oversized": false,
+ "prices": {
+  "eur": null,
+  "eur_foil": null,
+  "tix": null,
+  "usd": null,
+  "usd_etched": null,
+  "usd_foil": null
+ },
+ "prints_search_uri": "https://api.scryfall.com/cards/search?order=released&q=oracleid%3Aeb64ece7-e75f-4812-89cc-9522beb5219e&unique=prints",
+ "produced_mana": [
+  "G"
+ ],
+ "promo": false,
+ "rarity": "uncommon",
+ "related_uris": {
+  "edhrec": "https://edhrec.com/route/?cc=Gate+to+Manorborn",
+  "gatherer": "https://gatherer.wizards.com/Pages/Card/Details.aspx?multiverseid=574292&printed=false",
+  "tcgplayer_infinite_articles": "https://partner.tcgplayer.com/c/4931599/1830156/21018?subId1=api&trafcat=tcgplayer.com%2Fsearch%2Farticles&u=https%3A%2F%2Fwww.tcgplayer.com%2Fsearch%2Farticles%3FproductLineName%3Dmagic%26q%3DGate%2Bto%2BManorborn",
+  "tcgplayer_infinite_decks": "https://partner.tcgplayer.com/c/4931599/1830156/21018?subId1=api&trafcat=tcgplayer.com%2Fsearch%2Fdecks&u=https%3A%2F%2Fwww.tcgplayer.com%2Fsearch%2Fdecks%3FproductLineName%3Dmagic%26q%3DGate%2Bto%2BManorborn"
+ },
+ "released_at": "2022-07-07",
+ "reprint": false,
+ "reserved": false,
+ "rulings_uri": "https://api.scryfall.com/cards/a902d474-0d02-449e-ab6c-8c2f32c99384/rulings",
+ "scryfall_set_uri": "https://scryfall.com/sets/hbg?utm_source=api",
+ "scryfall_uri": "https://scryfall.com/card/hbg/78/gate-to-manorborn?utm_source=api",
+ "security_stamp": "arena",
+ "set": "hbg",
+ "set_id": "35528ede-7870-4598-a2ee-7f3d6464a74b",
+ "set_name": "Alchemy Horizons: Baldur's Gate",
+ "set_search_uri": "https://api.scryfall.com/cards/search?order=set&q=e%3Ahbg&unique=prints",
+ "set_type": "alchemy",
+ "set_uri": "https://api.scryfall.com/sets/35528ede-7870-4598-a2ee-7f3d6464a74b",
+ "story_spotlight": false,
+ "textless": false,
+ "type_line": "Land — Forest Gate",
+ "uri": "https://api.scryfall.com/cards/a902d474-0d02-449e-ab6c-8c2f32c99384",
+ "variation": false
+}

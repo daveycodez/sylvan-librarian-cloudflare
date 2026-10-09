@@ -2559,6 +2559,31 @@ impl RowDraft {
         self.card_is_tags.iter().any(|t| t == tag)
     }
 
+    /// Mark the first printing of an artwork with `card_engine::NEW_ART_TAG`, the word the
+    /// engine's build turns into the printing's `new:art` bit and removes — so it is never stored,
+    /// never indexed and never a value `is:` answers. See [`NewArt`].
+    fn set_new_art(&mut self, is_new_art: bool) {
+        self.card_is_tags.retain(|t| t != card_engine::NEW_ART_TAG);
+        if is_new_art {
+            self.card_is_tags.push(card_engine::NEW_ART_TAG.to_owned());
+        }
+    }
+
+    /// What [`NewArt`] reads of this draft.
+    pub fn new_art_facts(&self) -> NewArtFacts<'_> {
+        NewArtFacts {
+            is_canonical: self.is_canonical,
+            raw_set_type: self.raw_set_type.as_deref(),
+            card_set_code: self.card_set_code.as_deref(),
+            illustration_id: self.illustration_id.as_deref(),
+            card_name: &self.card_name,
+            released_at: &self.released_at,
+            collector_number_int: self.collector_number_int,
+            compat_blob: &self.compat_blob,
+            scryfall_id: &self.scryfall_id,
+        }
+    }
+
     fn is_token_layout(&self) -> bool {
         self.card_layout.as_deref().is_some_and(|layout| TOKEN_LAYOUTS.contains(&layout))
     }
@@ -3249,6 +3274,10 @@ pub struct CorpusTables {
     /// with the rest, so it survives a DO eviction mid-import exactly as the scores do.
     #[serde(default)]
     artists: ArtistSpellings,
+    /// Each artwork's first printing — `new:art`, the fourth corpus-wide fact. See [`NewArt`].
+    /// `default` so a snapshot written before it existed still reads (as an empty table).
+    #[serde(default)]
+    new_art: NewArt,
     /// card_name → index into `pending`, rebuilt on demand (a restored snapshot has none).
     #[serde(skip)]
     index: HashMap<String, usize>,
@@ -3271,6 +3300,21 @@ impl CorpusTables {
     /// Artists with more than one credited spelling — the only ones `card_artist_alt` names.
     pub fn multi_spelling_artists(&self) -> usize {
         self.artists.values().filter(|s| s.len() > 1).count()
+    }
+
+    /// Observe one draft for `new:art` — see [`NewArt`].
+    pub fn observe_new_art(&mut self, r: &NewArtFacts) {
+        self.new_art.observe(r);
+    }
+
+    /// Is `r` the first printing of its artwork? False until sealed.
+    pub fn is_new_art(&self, r: &NewArtFacts) -> bool {
+        self.new_art.is_new(r)
+    }
+
+    /// (illustration, name) entries in the `new:art` table.
+    pub fn new_art_entries(&self) -> usize {
+        self.new_art.len()
     }
 
     pub fn observe(&mut self, card_name: &str, edhrec_rank: Option<i64>, illust_key: Option<&str>) {
@@ -3297,6 +3341,7 @@ impl CorpusTables {
         }
         self.pending = Vec::new();
         self.index = HashMap::new();
+        self.new_art.seal();
         self.names()
     }
 
@@ -3308,8 +3353,13 @@ impl CorpusTables {
     /// restore, which reads a sealed snapshot back keeping only the names and illustration groups
     /// one partition's rows can ask about. Every lookup those rows make is answered exactly as the
     /// whole table would answer it; nothing else is asked of a partition's copy.
-    pub fn sealed_from_parts(scores: HashMap<String, f64>, illust: HashMap<String, u64>, artists: ArtistSpellings) -> Self {
-        CorpusTables { pending: Vec::new(), scores: Some(scores), illust, artists, index: HashMap::new() }
+    pub fn sealed_from_parts(
+        scores: HashMap<String, f64>,
+        illust: HashMap<String, u64>,
+        artists: ArtistSpellings,
+        new_art: NewArt,
+    ) -> Self {
+        CorpusTables { pending: Vec::new(), scores: Some(scores), illust, artists, new_art, index: HashMap::new() }
     }
 
     /// The card name inside an [`illust_group_key`] — what the partition-scoped restore filters the
@@ -3340,6 +3390,170 @@ impl CorpusTables {
     /// Distinct (illustration_id, card_name) groups counted.
     pub fn illustration_groups(&self) -> usize {
         self.illust.len()
+    }
+}
+
+/// The memorabilia sets whose printings ARE eligible for `new:art` — see [`NewArt`].
+const NEW_ART_MEMORABILIA_SETS: [&str; 2] = ["olgc", "o90p"];
+
+/// What [`NewArt`] reads of one printing: `RowDraft`'s fields under their own names, so the
+/// nightly's corpus-wide pass can hand over a narrow parse of the same staged blob.
+#[derive(Debug, Clone, Copy)]
+pub struct NewArtFacts<'a> {
+    pub is_canonical: bool,
+    pub raw_set_type: Option<&'a str>,
+    pub card_set_code: Option<&'a str>,
+    pub illustration_id: Option<&'a str>,
+    pub card_name: &'a str,
+    pub released_at: &'a str,
+    pub collector_number_int: Option<i64>,
+    pub compat_blob: &'a Map<String, Value>,
+    pub scryfall_id: &'a str,
+}
+
+impl NewArtFacts<'_> {
+    fn variation(&self) -> bool {
+        self.compat_blob.get("variation").and_then(Value::as_bool).unwrap_or(false)
+    }
+
+    fn eligible(&self) -> bool {
+        self.is_canonical
+            && (self.raw_set_type != Some("memorabilia")
+                || self.card_set_code.is_some_and(|set| NEW_ART_MEMORABILIA_SETS.contains(&set)))
+    }
+
+    /// The row's entry: its illustration (none is a group of its own) and its card's name.
+    fn group(&self) -> String {
+        illust_group_key(self.illustration_id.unwrap_or(""), self.card_name)
+    }
+
+    /// `card_engine::new_order_key` as a string that sorts as the key does — fixed-width hex, most
+    /// significant first — because the table it is kept in is snapshotted as JSON, rewritten by
+    /// every slice of the nightly's scores phase. 39 characters: the id is cut to its leading 64
+    /// bits, which order two ids exactly as the whole does unless they share all 64 (two v4 uuids
+    /// of one painting on one day do not), and which still name the row among the rows it ties.
+    fn order(&self) -> String {
+        let date = self.released_at.replace('-', "").parse::<u32>().ok();
+        let (date, batch, lead, variation, number, tie, id) = card_engine::new_order_key(
+            date,
+            self.card_set_code.unwrap_or(""),
+            self.collector_number_int,
+            self.variation(),
+            self.scryfall_id,
+        );
+        format!(
+            "{date:08x}{batch:04x}{}{}{number:08x}{}{:016x}",
+            u8::from(lead),
+            u8::from(variation),
+            u8::from(tie),
+            (id >> 64) as u64
+        )
+    }
+}
+
+/// Scryfall's `new:art` — the first printing ANYWHERE of each artwork — which is the one `new:`
+/// value a partition build cannot decide, and so the fourth corpus-wide fact.
+///
+/// MEASURED on api.scryfall.com 2026-10-09 by reading the whole list (`new:art`, `unique=prints`,
+/// extras in: 52,047 printings; `new:illustration` the same count) against the 2026-10-08
+/// `all_cards` and `default_cards`. card_engine's `assign_new_flags` carries the evidence for
+/// each clause beside the other values'; what differs from them, and is the reason this lives
+/// here:
+///
+///   - THE GROUP IS THE ILLUSTRATION, NOT THE CARD. A painting a second card reuses is new once:
+///     Alchemy's rebalanced `A-` cards share their originals', tokens share paintings across
+///     token cards, the Baldur's Gate Alchemy set reuses Commander Legends'. Grouped inside a
+///     card, 175 printings are over. The FRONT face's illustration is the one read.
+///   - NO ILLUSTRATION IS ONE GROUP, corpus-wide: of the 764 canonical rows with no illustration
+///     id exactly one is in the list, the earliest, the 2010 poison counter `tsom/10`.
+///   - MEMORABILIA IS OUTSIDE, BUT FOR TWO SETS: `olgc` (27 of its 27 rows lead and all 27 are in
+///     the list) and `o90p` (2 of 2), against 0 of the 1,784 rows of every other memorabilia set
+///     that would lead. Nothing a card object or `/sets` carries tells the two from `ovnt` or
+///     `olep`: a measured exception, as `wot` is for `new:rarity`.
+///
+/// 52,047 of 52,047. A card's printings all hash to one partition and an illustration's do not,
+/// so the leading row is found over the WHOLE corpus — the native builder's spill aggregator, the
+/// in-memory `finalize`, and the nightly's scores phase through [`CorpusTables`] — and each row
+/// that leads is marked with `card_engine::NEW_ART_TAG`, which the engine's build turns into
+/// the printing's `new:art` bit and takes off again.
+///
+/// KEYED BY (illustration, card name), the illustration counts' own key, though the group is the
+/// illustration alone: a partition restores only the entries its own names can ask for
+/// (`filtered_illust`'s rule), so every name's entry has to hold the answer for the whole
+/// illustration. [`NewArt::seal`] writes it there.
+#[derive(Debug, Default, Clone, serde::Serialize, serde::Deserialize)]
+pub struct NewArt {
+    /// [`illust_group_key`] → the leading row's [`NewArtFacts::order`]: of that name's rows
+    /// until sealed, of the whole illustration's after.
+    #[serde(default)]
+    leads: HashMap<String, String>,
+    #[serde(default)]
+    sealed: bool,
+}
+
+impl NewArt {
+    pub fn observe(&mut self, r: &NewArtFacts) {
+        if !r.eligible() {
+            return;
+        }
+        let order = r.order();
+        match self.leads.entry(r.group()) {
+            std::collections::hash_map::Entry::Occupied(mut lead) => {
+                if order < *lead.get() {
+                    lead.insert(order);
+                }
+            }
+            std::collections::hash_map::Entry::Vacant(slot) => {
+                slot.insert(order);
+            }
+        }
+    }
+
+    /// Give every (illustration, name) entry its ILLUSTRATION's leading row. Idempotent.
+    pub fn seal(&mut self) {
+        if self.sealed {
+            return;
+        }
+        let illustration = |key: &str| key.split_once('\u{1f}').map_or("", |(ill, _)| ill).to_owned();
+        let mut best: HashMap<String, String> = HashMap::new();
+        for (key, order) in &self.leads {
+            match best.entry(illustration(key)) {
+                std::collections::hash_map::Entry::Occupied(mut lead) => {
+                    if order < lead.get() {
+                        lead.insert(order.clone());
+                    }
+                }
+                std::collections::hash_map::Entry::Vacant(slot) => {
+                    slot.insert(order.clone());
+                }
+            }
+        }
+        for (key, order) in &mut self.leads {
+            if let Some(lead) = best.get(&illustration(key)) {
+                order.clone_from(lead);
+            }
+        }
+        self.sealed = true;
+    }
+
+    /// Is `r` the first printing of its artwork? A variation leads its group and is never new
+    /// itself, exactly as for the other `new:` values.
+    pub fn is_new(&self, r: &NewArtFacts) -> bool {
+        self.sealed && r.eligible() && !r.variation() && self.leads.get(&r.group()).is_some_and(|lead| *lead == r.order())
+    }
+
+    /// A table from parts read elsewhere — the nightly's partition-scoped restore.
+    pub fn from_parts(leads: HashMap<String, String>, sealed: bool) -> Self {
+        NewArt { leads, sealed }
+    }
+
+    /// (illustration, name) entries held.
+    pub fn len(&self) -> usize {
+        self.leads.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.leads.is_empty()
     }
 }
 
@@ -3462,6 +3676,14 @@ pub fn finalize(drafts: Vec<RowDraft>, tags: &TagData) -> impl Iterator<Item = V
         related.observe(r);
     }
 
+    // 9. each artwork's first printing — the one `new:` value whose group crosses cards. See
+    //    `NewArt`.
+    let mut new_art = NewArt::default();
+    for r in &rows {
+        new_art.observe(&r.new_art_facts());
+    }
+    new_art.seal();
+
     let empty: Vec<u32> = Vec::new();
     let tags = tags.clone();
     rows.into_iter().map(move |mut r| {
@@ -3478,7 +3700,8 @@ pub fn finalize(drafts: Vec<RowDraft>, tags: &TagData) -> impl Iterator<Item = V
         let pinned = is_pinned(&r, &tags.labels, &pins);
         let rank = ranks.rank_of(&r);
         let is_funny = funny.is_funny(&r);
-        finalize_row(r, &oracle_tags, &art_tags, illustration_count, cubecobra_score, pinned, rank, is_funny)
+        let is_new_art = new_art.is_new(&r.new_art_facts());
+        finalize_row(r, &oracle_tags, &art_tags, illustration_count, cubecobra_score, pinned, rank, is_funny, is_new_art)
     })
 }
 
@@ -3699,9 +3922,13 @@ pub fn finalize_row(
     // per-card fact, the caller's for the same reason: the draft's own tag is only its PRINTING's
     // verdict, and the class also asks the card's other printings.
     is_funny: bool,
+    // Whether this printing is the first of its ARTWORK anywhere ([`NewArt::is_new`]) — the one
+    // corpus-wide fact among these, the caller's because no single card's rows can answer it.
+    is_new_art: bool,
 ) -> Value {
     let mut r = r;
     r.set_funny(is_funny);
+    r.set_new_art(is_new_art);
     {
         // The rank leads by construction: one rank step outweighs the ordinary score and the pin
         // bonus together, so the card's order is the measured rule and everything underneath only
@@ -4157,6 +4384,11 @@ pub struct CorpusPassDraft {
     pub collector_number: Option<String>,
     #[serde(default)]
     pub is_canonical: bool,
+    // `new:art`'s order ([`NewArtFacts`]) reads these two beside the fields above.
+    #[serde(default)]
+    pub released_at: String,
+    #[serde(default)]
+    pub collector_number_int: Option<i64>,
     // The name keys' inputs (name_routing_keys_of).
     #[serde(default)]
     pub card_name_folded: String,
@@ -4185,6 +4417,22 @@ pub struct CorpusPassFace {
 }
 
 impl CorpusPassDraft {
+    /// What [`NewArt`] reads of this draft — the same nine fields `RowDraft::new_art_facts` hands
+    /// over, parsed off the same staged blob.
+    pub fn new_art_facts(&self) -> NewArtFacts<'_> {
+        NewArtFacts {
+            is_canonical: self.is_canonical,
+            raw_set_type: self.raw_set_type.as_deref(),
+            card_set_code: self.card_set_code.as_deref(),
+            illustration_id: self.illustration_id.as_deref(),
+            card_name: &self.card_name,
+            released_at: &self.released_at,
+            collector_number_int: self.collector_number_int,
+            compat_blob: &self.compat_blob,
+            scryfall_id: &self.scryfall_id,
+        }
+    }
+
     /// This draft's oracle-index entry — [`oracle_pair_of_row`] over the finalized row it becomes.
     pub fn oracle_pair(&self) -> Option<[u8; ORACLE_PAIR_BYTES]> {
         oracle_pair_of(&self.scryfall_id, &self.oracle_id)
@@ -4222,6 +4470,62 @@ mod tests {
         serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap()
     }
 
+    /// `new:art` through the nightly's shape of it: observed off the NARROW parse of each staged
+    /// draft, sealed, snapshotted as JSON, and restored into a partition that holds only its own
+    /// names' entries. Real card objects: Manor Gate's painting, reused a month later by another
+    /// card that hashes wherever its own oracle id says.
+    #[test]
+    fn new_art_is_decided_over_the_corpus_and_a_partition_keeps_the_answer_for_its_names() {
+        let drafts: Vec<RowDraft> =
+            ["manor_gate_clb_356", "gate_to_manorborn_hbg_78", "thermokarst_ice_268", "thermokarst_me2_183"]
+                .iter()
+                .map(|name| transform(&fixture(name)).unwrap().unwrap())
+                .collect();
+        let (manor, manorborn, ice, me2) = (&drafts[0], &drafts[1], &drafts[2], &drafts[3]);
+
+        let mut whole = CorpusTables::default();
+        for draft in &drafts {
+            // What `scores_add_drafts` does: the narrow struct, off the staged blob.
+            let staged = serde_json::to_vec(draft).unwrap();
+            let narrow: CorpusPassDraft = serde_json::from_slice(&staged).unwrap();
+            let (a, b) = (narrow.new_art_facts(), draft.new_art_facts());
+            assert_eq!((a.group(), a.order(), a.eligible()), (b.group(), b.order(), b.eligible()));
+            whole.observe_new_art(&a);
+        }
+        // Nothing is new until the corpus has gone past: an unsealed table read as an answer
+        // would call the first row of every SLICE new.
+        assert!(!whole.is_new_art(&manor.new_art_facts()));
+        whole.seal();
+        whole.seal(); // idempotent: the phase's last slice can be retried
+        let answers = |t: &CorpusTables| [manor, manorborn, ice, me2].map(|d| t.is_new_art(&d.new_art_facts()));
+        assert_eq!(answers(&whole), [true, false, true, false]);
+
+        // The snapshot is JSON, and a snapshot older than the table reads as an empty one.
+        let snapshot = serde_json::to_value(&whole).unwrap();
+        let restored: CorpusTables = serde_json::from_value(snapshot.clone()).unwrap();
+        assert_eq!(answers(&restored), [true, false, true, false]);
+        let mut older = snapshot.clone();
+        older.as_object_mut().unwrap().remove("new_art");
+        assert_eq!(serde_json::from_value::<CorpusTables>(older).unwrap().new_art_entries(), 0);
+
+        // A partition holding Gate to Manorborn and not Manor Gate: its one entry carries the
+        // painting's first printing, so the reuse is still not new.
+        let leads: HashMap<String, String> = serde_json::from_value(snapshot["new_art"]["leads"].clone()).unwrap();
+        assert_eq!(leads.len(), 3, "one entry a (painting, name) pair");
+        let kept: HashMap<String, String> = leads
+            .into_iter()
+            .filter(|(key, _)| CorpusTables::illust_key_name(key) == manorborn.card_name)
+            .collect();
+        assert_eq!(kept.len(), 1);
+        let part = CorpusTables::sealed_from_parts(
+            HashMap::new(),
+            HashMap::new(),
+            ArtistSpellings::new(),
+            NewArt::from_parts(kept, true),
+        );
+        assert!(!part.is_new_art(&manorborn.new_art_facts()));
+    }
+
     /// The partition-scoped restore rebuilds a sealed table from a partition's share of the entries
     /// and filters the illustration counts on the name inside each key: both must answer exactly
     /// what the whole table answers for the names kept.
@@ -4243,7 +4547,7 @@ mod tests {
             .collect();
         let illust: HashMap<String, u64> =
             illust.into_iter().filter(|(k, _)| keep(CorpusTables::illust_key_name(k))).collect();
-        let part = CorpusTables::sealed_from_parts(scores, illust, ArtistSpellings::new());
+        let part = CorpusTables::sealed_from_parts(scores, illust, ArtistSpellings::new(), NewArt::default());
         assert!(part.is_sealed());
         for name in ["Alpha", "Gamma"] {
             assert_eq!(part.cubecobra(name), whole.cubecobra(name));
@@ -5591,7 +5895,11 @@ mod tests {
                 "spell": true,
                 // Its `all_parts` lists a combo piece: `RelatedCards`, written at finalize. And
                 // NOT `covered`: a plain English printing of a core set is in the default tier.
-                "related": true
+                "related": true,
+                // The only row of this corpus, so its artwork's first printing: the builder's
+                // mark for `new:art` (`NewArt`), which the engine's build turns into a bit and
+                // takes off again — a finalized row carries it, a store never does.
+                "new_art": true
             })
         );
         assert_eq!(row["card_subtypes"], json!(["Elf", "Druid"]));
@@ -5748,6 +6056,9 @@ mod tests {
             for tag in [SPELL_IS_TAG, COVERED_IS_TAG, RELATED_IS_TAG] {
                 tags.as_object_mut().unwrap().remove(tag);
             }
+            // ...and less the `new:art` mark each one-row corpus earns (`NewArt`), pinned in
+            // tests/new_flags.rs.
+            tags.as_object_mut().unwrap().remove(card_engine::NEW_ART_TAG);
             tags
         };
 

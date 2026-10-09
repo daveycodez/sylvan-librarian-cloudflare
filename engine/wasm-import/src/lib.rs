@@ -117,7 +117,8 @@ use sylvan_store_builder::ranks::PrintingRanks;
 use sylvan_store_builder::tags::{TagAccumulator, TagData, TagKind};
 use sylvan_store_builder::transform::{
     art_tags_of, finalize_row, illust_count_qualifies, illustration_ids, is_name_routing_key, is_pinned, transform_row,
-    ArtistSpellings, CorpusPassDraft, CorpusTables, FunnyCards, PinnedPrintings, RelatedCards, RowDraft, NAME_KEYS_STAMP,
+    ArtistSpellings, CorpusPassDraft, CorpusTables, FunnyCards, NewArt, PinnedPrintings, RelatedCards, RowDraft,
+    NAME_KEYS_STAMP,
     ORACLE_PAIR_BYTES,
 };
 
@@ -721,6 +722,11 @@ fn filtered_illust<'de, D: serde::Deserializer<'de>>(d: D) -> Result<HashMap<Str
     filtered_map_by(d, CorpusTables::illust_key_name)
 }
 
+/// `new:art`'s leading rows, filtered the same way: the keys are the same pairs.
+fn filtered_new_art<'de, D: serde::Deserializer<'de>>(d: D) -> Result<HashMap<String, String>, D::Error> {
+    filtered_map_by(d, CorpusTables::illust_key_name)
+}
+
 fn filtered_map_by<'de, D, V>(d: D, project: fn(&str) -> &str) -> Result<HashMap<String, V>, D::Error>
 where
     D: serde::Deserializer<'de>,
@@ -800,6 +806,19 @@ struct PartitionCorpus {
     illust: HashMap<String, u64>,
     #[serde(default)]
     artists: ArtistSpellings,
+    /// `new:art`'s table, kept to the partition's names exactly as `illust` is — its keys are the
+    /// same (illustration, name) pairs. Absent from a snapshot older than the table.
+    #[serde(default)]
+    new_art: PartitionNewArt,
+}
+
+/// `transform::NewArt` as it is snapshotted, its entries filtered on the card name inside each key.
+#[derive(Default, serde::Deserialize)]
+struct PartitionNewArt {
+    #[serde(default, deserialize_with = "filtered_new_art")]
+    leads: HashMap<String, String>,
+    #[serde(default)]
+    sealed: bool,
 }
 
 /// A TagData snapshot's `corpus` field alone: where the tables lived before they had a snapshot of
@@ -864,9 +883,10 @@ pub extern "C" fn partition_tables_restore_pull(which: u32) -> i64 {
     };
     let corpus = |part: Option<PartitionCorpus>| -> i64 {
         match part {
-            Some(PartitionCorpus { scores: Some(scores), illust, artists }) => with_state(|s| {
+            Some(PartitionCorpus { scores: Some(scores), illust, artists, new_art }) => with_state(|s| {
                 let n = scores.len() as i64;
-                s.tags.corpus = CorpusTables::sealed_from_parts(scores, illust, artists);
+                let new_art = NewArt::from_parts(new_art.leads, new_art.sealed);
+                s.tags.corpus = CorpusTables::sealed_from_parts(scores, illust, artists, new_art);
                 n
             }),
             _ => {
@@ -1080,6 +1100,9 @@ pub extern "C" fn scores_add_drafts(ptr: *mut u8, len: usize, partition_count: u
             // spelling of an artist and not the other would answer for its own rows and silently
             // drop the other nine partitions'. See `transform::ArtistSpellings`.
             s.tags.corpus.observe_artists(draft.card_artist.as_deref(), &draft.compat_blob);
+            // `new:art`, the fourth corpus-wide fact: an artwork's first printing may sit in any
+            // partition, and this is the one pass that sees them all. See `transform::NewArt`.
+            s.tags.corpus.observe_new_art(&draft.new_art_facts());
             if partition_count > 0 {
                 keys.clear();
                 draft.routing_keys(&mut keys);
@@ -1121,6 +1144,7 @@ pub extern "C" fn scores_finish() -> i64 {
             "cubecobra_names": names,
             "illust_groups": s.tags.corpus.illustration_groups(),
             "multi_spelling_artists": s.tags.corpus.multi_spelling_artists(),
+            "new_art_entries": s.tags.corpus.new_art_entries(),
         }));
         names as i64
     })
@@ -1291,8 +1315,19 @@ pub extern "C" fn finalize_drafts(ptr: *mut u8, len: usize) -> i64 {
             let pinned = is_pinned(&draft, &s.tags.labels, &s.agg.pins);
             let rank = s.agg.ranks.rank_of(&draft);
             let is_funny = s.agg.funny.is_funny(&draft);
-            let row =
-                finalize_row(draft, &oracle_tags, &art_tags, illustration_count, cubecobra_score, pinned, rank, is_funny);
+            // Corpus-wide, like the two scores above — see `transform::NewArt`.
+            let is_new_art = s.tags.corpus.is_new_art(&draft.new_art_facts());
+            let row = finalize_row(
+                draft,
+                &oracle_tags,
+                &art_tags,
+                illustration_count,
+                cubecobra_score,
+                pinned,
+                rank,
+                is_funny,
+                is_new_art,
+            );
             let row_json = row.to_string();
             let builder = s.staging.as_mut().expect("checked above");
             match builder.add_card(&row) {

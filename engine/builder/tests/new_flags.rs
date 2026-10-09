@@ -317,6 +317,72 @@ fn new_nonfoil_is_the_first_paper_printing_in_nonfoil() {
 }
 
 #[test]
+fn new_art_is_the_first_printing_of_each_artwork_across_cards() {
+    let store = store_of(&[
+        // A reprint of the same painting is not new.
+        ("thermokarst_ice_268", true),
+        ("thermokarst_me2_183", true),
+        // THE GROUP CROSSES CARDS: Alchemy's Gate to Manorborn reuses Manor Gate's painting a
+        // month later, and has no new art of its own.
+        ("manor_gate_clb_356", true),
+        ("gate_to_manorborn_hbg_78", true),
+        // A VARIATION sorts after every plain row of its date and batch, whatever the numbers:
+        // Mirage's Spanish misprint `mir/87†` carries Shaper Guildmage's artwork and a lower
+        // number than `mir/91`, and `mir/91` is the new one.
+        ("shaper_guildmage_mir_91", true),
+        ("reality_ripple_mir_87_dagger_es", true),
+        // NO ILLUSTRATION IS ONE GROUP, corpus-wide: the first such row is new — Scars of
+        // Mirrodin's poison counter — and no other, of its card or of any.
+        ("poison_counter_tsom_10", true),
+        ("poison_counter_tmbs_6", true),
+        ("innistrad_checklist_tisd_13", true),
+        // MEMORABILIA is outside but for two sets: the Legacy Championship's oversized Plateau
+        // is new, the Vintage Championship's Ancestral Recall is not.
+        ("plateau_olgc_2018a", true),
+        ("ovnt_2018", true),
+        // A MEASURED TIE LEAD (`NEW_TIE_LEADS`): `ltr/401` over its prerelease twin, whose id is
+        // the lower.
+        ("gandalf_ltr_401", true),
+        ("gandalf_pltr_401s", true),
+        // SERIALIZED printings count here, where `new:flavor` leaves them out: the schematic
+        // `brr/91z` carries the lower id and is the new one.
+        ("liquimetal_coating_som_171", true),
+        ("liquimetal_coating_brr_28", true),
+        ("liquimetal_coating_brr_91", true),
+        ("liquimetal_coating_brr_91z", true),
+    ]);
+    assert_eq!(
+        rows(&store, &is("newart")),
+        [
+            "brr/91z/en",
+            "clb/356/en",
+            "ice/268/en",
+            "ltr/401/en",
+            "mir/91/en",
+            "olgc/2018A/en",
+            "som/171/en",
+            "tsom/10/en"
+        ]
+    );
+    assert_eq!(
+        rows(&store, &not(is("newart"))),
+        [
+            "brr/28/en",
+            "brr/91/en",
+            "hbg/78/en",
+            "me2/183/en",
+            "mir/87†/es",
+            "ovnt/2018/en",
+            "pltr/401s/en",
+            "tisd/13/en",
+            "tmbs/6/en"
+        ]
+    );
+    // The builder's mark is not a stored tag: the engine's build turned it into the bit.
+    assert_eq!(rows(&store, &is("new_art")), [] as [&str; 0]);
+}
+
+#[test]
 fn new_flavor_is_the_first_printing_with_each_flavor_text_as_scryfall_compares_them() {
     let store = store_of(&[
         // CASE: Visions capitalises "Sandstalkers" where the 1996 Multiverse Gift Box does not.

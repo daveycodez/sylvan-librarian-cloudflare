@@ -4271,6 +4271,54 @@
 			"method": "GET",
 			"path": "/cards/search?q=%28new%3Aft+or+new%3Aflavortext%29+e%3Akhm+t%3Agod&unique=prints",
 			"note": "2026-10-09. 5 of the 25: the gods whose front face has a flavor text."
+		},
+		{
+			"name": "new-art-is-the-first-printing-of-an-artwork",
+			"method": "GET",
+			"path": "/cards/search?q=new%3Aart+%21%22Thermokarst%22&unique=prints",
+			"note": "2026-10-09. ice/268 alone: me2/183 reprints the painting (52,047 printings corpus-wide, the same under new:illustration)."
+		},
+		{
+			"name": "new-art-the-group-crosses-cards",
+			"method": "GET",
+			"path": "/cards/search?q=new%3Aart+%28%21%22Manor+Gate%22+or+%21%22Gate+to+Manorborn%22%29&unique=prints",
+			"note": "2026-10-09. clb/356 only: Alchemy's Gate to Manorborn (hbg/78) reuses Manor Gate's painting, and an artwork is new once, whichever card carries it."
+		},
+		{
+			"name": "new-art-a-variation-does-not-lead-its-date",
+			"method": "GET",
+			"path": "/cards/search?q=new%3Aart+%28%21%22Shaper+Guildmage%22+or+%21%22Reality+Ripple%22%29&unique=prints",
+			"note": "2026-10-09. mir/91 and mir/87: the Spanish misprint mir/87† shows Shaper Guildmage's art, is a variation and has the lower number, and mir/91 is still the first."
+		},
+		{
+			"name": "new-art-no-illustration-is-one-group",
+			"method": "GET",
+			"path": "/cards/search?q=new%3Aart+%21%22Poison+Counter%22&unique=prints",
+			"note": "2026-10-09. tsom/10, of five poison counters with no illustration id — and the only such row in the list, of 764: the rows without an illustration are one group corpus-wide."
+		},
+		{
+			"name": "new-art-legacy-championship-is-inside",
+			"method": "GET",
+			"path": "/cards/search?q=new%3Aart+e%3Aolgc&unique=prints&include_extras=true",
+			"note": "2026-10-09. All 27: one of the two memorabilia sets whose printings are new (the other is o90p); new:art e:ovnt is a 404."
+		},
+		{
+			"name": "new-art-a-measured-tie-lead",
+			"method": "GET",
+			"path": "/cards/search?q=new%3Aart+%21%22Gandalf%2C+Friend+of+the+Shire%22+e%3Altr&unique=prints",
+			"note": "2026-10-09. ltr/50, ltr/308 and ltr/401 — the last though its prerelease twin pltr/401s has the lower id, one of two such ties the id does not decide (ltr/404 the other)."
+		},
+		{
+			"name": "new-art-serialized-printings-count",
+			"method": "GET",
+			"path": "/cards/search?q=new%3Aart+%21%22Liquimetal+Coating%22&unique=prints",
+			"note": "2026-10-09. som/171 and the serialized brr/91z, where new:flavor answers brr/91: eligibility is each value's own."
+		},
+		{
+			"name": "new-illustration-is-new-art",
+			"method": "GET",
+			"path": "/cards/search?q=-new%3Aillustration+e%3Akhm+t%3Agod&unique=prints",
+			"note": "2026-10-09. 404: all 25 are new (every showcase god has its own artwork)."
 		}
 	]
 }

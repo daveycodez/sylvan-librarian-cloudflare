@@ -1,0 +1,286 @@
+{
+ "all_parts": [
+  {
+   "component": "combo_piece",
+   "id": "88db324f-11f1-43d3-a897-f4e3caf8d642",
+   "name": "Screeching Bat // Stalking Vampire",
+   "object": "related_card",
+   "type_line": "Creature — Bat // Creature — Vampire",
+   "uri": "https://api.scryfall.com/cards/88db324f-11f1-43d3-a897-f4e3caf8d642"
+  },
+  {
+   "component": "combo_piece",
+   "id": "bb90a6f1-c7f2-4c2e-ab1e-59c5c7937841",
+   "name": "Instigator Gang // Wildblood Pack",
+   "object": "related_card",
+   "type_line": "Creature — Human Werewolf // Creature — Werewolf",
+   "uri": "https://api.scryfall.com/cards/bb90a6f1-c7f2-4c2e-ab1e-59c5c7937841"
+  },
+  {
+   "component": "combo_piece",
+   "id": "25b54a1d-e201-453b-9173-b04e06ee6fb7",
+   "name": "Daybreak Ranger // Nightfall Predator",
+   "object": "related_card",
+   "type_line": "Creature — Human Archer Ranger Werewolf // Creature — Werewolf",
+   "uri": "https://api.scryfall.com/cards/25b54a1d-e201-453b-9173-b04e06ee6fb7"
+  },
+  {
+   "component": "combo_piece",
+   "id": "13896468-e3d0-4bcb-b09e-b5c187aecb03",
+   "name": "Bloodline Keeper // Lord of Lineage",
+   "object": "related_card",
+   "type_line": "Creature — Vampire // Creature — Vampire",
+   "uri": "https://api.scryfall.com/cards/13896468-e3d0-4bcb-b09e-b5c187aecb03"
+  },
+  {
+   "component": "combo_piece",
+   "id": "8325c570-4d74-4e65-891c-3e153abf4bf9",
+   "name": "Ulvenwald Mystics // Ulvenwald Primordials",
+   "object": "related_card",
+   "type_line": "Creature — Human Shaman Werewolf // Creature — Werewolf",
+   "uri": "https://api.scryfall.com/cards/8325c570-4d74-4e65-891c-3e153abf4bf9"
+  },
+  {
+   "component": "combo_piece",
+   "id": "ebf5e16f-a8bd-419f-b5ca-8c7fce09c4f1",
+   "name": "Ludevic's Test Subject // Ludevic's Abomination",
+   "object": "related_card",
+   "type_line": "Creature — Lizard Egg // Creature — Lizard Horror",
+   "uri": "https://api.scryfall.com/cards/ebf5e16f-a8bd-419f-b5ca-8c7fce09c4f1"
+  },
+  {
+   "component": "combo_piece",
+   "id": "dd8ca448-f734-4cb9-b1d5-790eed9a4b2d",
+   "name": "Mayor of Avabruck // Howlpack Alpha",
+   "object": "related_card",
+   "type_line": "Creature — Human Advisor Werewolf // Creature — Werewolf",
+   "uri": "https://api.scryfall.com/cards/dd8ca448-f734-4cb9-b1d5-790eed9a4b2d"
+  },
+  {
+   "component": "combo_piece",
+   "id": "f8b8f0b4-71e1-4822-99a1-b1b3c2f10cb2",
+   "name": "Cloistered Youth // Unholy Fiend",
+   "object": "related_card",
+   "type_line": "Creature — Human // Creature — Horror",
+   "uri": "https://api.scryfall.com/cards/f8b8f0b4-71e1-4822-99a1-b1b3c2f10cb2"
+  },
+  {
+   "component": "combo_piece",
+   "id": "b4160322-ff40-41a4-887a-73cd6b85ae45",
+   "name": "Garruk Relentless // Garruk, the Veil-Cursed",
+   "object": "related_card",
+   "type_line": "Legendary Planeswalker — Garruk // Legendary Planeswalker — Garruk",
+   "uri": "https://api.scryfall.com/cards/b4160322-ff40-41a4-887a-73cd6b85ae45"
+  },
+  {
+   "component": "combo_piece",
+   "id": "7bf864db-4754-433d-9d77-6695f78f6c09",
+   "name": "Civilized Scholar // Homicidal Brute",
+   "object": "related_card",
+   "type_line": "Creature — Human Advisor // Creature — Human Mutant",
+   "uri": "https://api.scryfall.com/cards/7bf864db-4754-433d-9d77-6695f78f6c09"
+  },
+  {
+   "component": "combo_piece",
+   "id": "2b14ed17-1a35-4c49-ac46-3cad42d46c14",
+   "name": "Hanweir Watchkeep // Bane of Hanweir",
+   "object": "related_card",
+   "type_line": "Creature — Human Warrior Werewolf // Creature — Werewolf",
+   "uri": "https://api.scryfall.com/cards/2b14ed17-1a35-4c49-ac46-3cad42d46c14"
+  },
+  {
+   "component": "combo_piece",
+   "id": "58ae9cbc-d88d-42df-ab76-63ab5d05c023",
+   "name": "Thraben Sentry // Thraben Militia",
+   "object": "related_card",
+   "type_line": "Creature — Human Soldier // Creature — Human Soldier",
+   "uri": "https://api.scryfall.com/cards/58ae9cbc-d88d-42df-ab76-63ab5d05c023"
+  },
+  {
+   "component": "combo_piece",
+   "id": "99ce1bee-8f95-4284-8e06-9de9bfcb53b5",
+   "name": "Innistrad Checklist",
+   "object": "related_card",
+   "type_line": "Card",
+   "uri": "https://api.scryfall.com/cards/99ce1bee-8f95-4284-8e06-9de9bfcb53b5"
+  },
+  {
+   "component": "combo_piece",
+   "id": "4b43b0cb-a5a3-47b4-9b6b-9d2638222bb6",
+   "name": "Grizzled Outcasts // Krallenhorde Wantons",
+   "object": "related_card",
+   "type_line": "Creature — Human Werewolf // Creature — Werewolf",
+   "uri": "https://api.scryfall.com/cards/4b43b0cb-a5a3-47b4-9b6b-9d2638222bb6"
+  },
+  {
+   "component": "combo_piece",
+   "id": "028aeebc-4073-4595-94da-02f9f96ea148",
+   "name": "Reckless Waif // Merciless Predator",
+   "object": "related_card",
+   "type_line": "Creature — Human Rogue Werewolf // Creature — Werewolf",
+   "uri": "https://api.scryfall.com/cards/028aeebc-4073-4595-94da-02f9f96ea148"
+  },
+  {
+   "component": "combo_piece",
+   "id": "6151cae7-92a4-4891-a952-21def412d3e4",
+   "name": "Tormented Pariah // Rampaging Werewolf",
+   "object": "related_card",
+   "type_line": "Creature — Human Warrior Werewolf // Creature — Werewolf",
+   "uri": "https://api.scryfall.com/cards/6151cae7-92a4-4891-a952-21def412d3e4"
+  },
+  {
+   "component": "combo_piece",
+   "id": "57f0907f-74f4-4d86-93df-f2e50c9d0b2f",
+   "name": "Gatstaf Shepherd // Gatstaf Howler",
+   "object": "related_card",
+   "type_line": "Creature — Human Werewolf // Creature — Werewolf",
+   "uri": "https://api.scryfall.com/cards/57f0907f-74f4-4d86-93df-f2e50c9d0b2f"
+  },
+  {
+   "component": "combo_piece",
+   "id": "cd5435d0-789f-4c42-8efc-165c072404a2",
+   "name": "Village Ironsmith // Ironfang",
+   "object": "related_card",
+   "type_line": "Creature — Human Werewolf // Creature — Werewolf",
+   "uri": "https://api.scryfall.com/cards/cd5435d0-789f-4c42-8efc-165c072404a2"
+  },
+  {
+   "component": "combo_piece",
+   "id": "ec00d2d2-6597-474a-9353-345bbedfe57e",
+   "name": "Kruin Outlaw // Terror of Kruin Pass",
+   "object": "related_card",
+   "type_line": "Creature — Human Rogue Werewolf // Creature — Werewolf",
+   "uri": "https://api.scryfall.com/cards/ec00d2d2-6597-474a-9353-345bbedfe57e"
+  },
+  {
+   "component": "combo_piece",
+   "id": "e42a0a3d-a987-4b24-b9d4-27380a12e093",
+   "name": "Villagers of Estwald // Howlpack of Estwald",
+   "object": "related_card",
+   "type_line": "Creature — Human Werewolf // Creature — Werewolf",
+   "uri": "https://api.scryfall.com/cards/e42a0a3d-a987-4b24-b9d4-27380a12e093"
+  },
+  {
+   "component": "combo_piece",
+   "id": "11bf83bb-c95b-4b4f-9a56-ce7a1816307a",
+   "name": "Delver of Secrets // Insectile Aberration",
+   "object": "related_card",
+   "type_line": "Creature — Human Wizard // Creature — Human Insect",
+   "uri": "https://api.scryfall.com/cards/11bf83bb-c95b-4b4f-9a56-ce7a1816307a"
+  }
+ ],
+ "artist": "",
+ "booster": true,
+ "border_color": "black",
+ "card_back_id": "0aeebaf5-8c7d-4636-9e82-8c27447861f7",
+ "cmc": 0.0,
+ "collector_number": "13",
+ "color_identity": [],
+ "colors": [],
+ "digital": false,
+ "finishes": [
+  "nonfoil"
+ ],
+ "foil": false,
+ "frame": "2003",
+ "full_art": false,
+ "game_changer": false,
+ "games": [
+  "paper"
+ ],
+ "highres_image": true,
+ "id": "99ce1bee-8f95-4284-8e06-9de9bfcb53b5",
+ "image_status": "highres_scan",
+ "image_updated_at": "2026-07-13T11:08:00Z",
+ "image_uris": {
+  "art": "https://cards.scryfall.io/art/front/9/9/99ce1bee-8f95-4284-8e06-9de9bfcb53b5.webp?1783940880",
+  "art_crop": "https://cards.scryfall.io/art_crop/front/9/9/99ce1bee-8f95-4284-8e06-9de9bfcb53b5.jpg?1783940880",
+  "border_crop": "https://cards.scryfall.io/border_crop/front/9/9/99ce1bee-8f95-4284-8e06-9de9bfcb53b5.jpg?1783940880",
+  "crop": "https://cards.scryfall.io/crop/front/9/9/99ce1bee-8f95-4284-8e06-9de9bfcb53b5.webp?1783940880",
+  "display": "https://cards.scryfall.io/display/front/9/9/99ce1bee-8f95-4284-8e06-9de9bfcb53b5.webp?1783940880",
+  "grid": "https://cards.scryfall.io/grid/front/9/9/99ce1bee-8f95-4284-8e06-9de9bfcb53b5.webp?1783940880",
+  "large": "https://cards.scryfall.io/large/front/9/9/99ce1bee-8f95-4284-8e06-9de9bfcb53b5.jpg?1783940880",
+  "normal": "https://cards.scryfall.io/normal/front/9/9/99ce1bee-8f95-4284-8e06-9de9bfcb53b5.jpg?1783940880",
+  "png": "https://cards.scryfall.io/png/front/9/9/99ce1bee-8f95-4284-8e06-9de9bfcb53b5.png?1783940880",
+  "small": "https://cards.scryfall.io/small/front/9/9/99ce1bee-8f95-4284-8e06-9de9bfcb53b5.jpg?1783940880",
+  "thumb": "https://cards.scryfall.io/thumb/front/9/9/99ce1bee-8f95-4284-8e06-9de9bfcb53b5.webp?1783940880"
+ },
+ "keywords": [],
+ "lang": "en",
+ "layout": "token",
+ "legalities": {
+  "alchemy": "not_legal",
+  "brawl": "not_legal",
+  "commander": "not_legal",
+  "competitivebrawl": "not_legal",
+  "duel": "not_legal",
+  "future": "not_legal",
+  "gladiator": "not_legal",
+  "historic": "not_legal",
+  "legacy": "not_legal",
+  "modern": "not_legal",
+  "oathbreaker": "not_legal",
+  "oldschool": "not_legal",
+  "pauper": "not_legal",
+  "paupercommander": "not_legal",
+  "penny": "not_legal",
+  "pioneer": "not_legal",
+  "predh": "not_legal",
+  "premodern": "not_legal",
+  "standard": "not_legal",
+  "standardbrawl": "not_legal",
+  "timeless": "not_legal",
+  "tlr": "not_legal",
+  "vintage": "not_legal"
+ },
+ "mana_cost": "",
+ "multiverse_ids": [],
+ "name": "Innistrad Checklist",
+ "nonfoil": true,
+ "object": "card",
+ "oracle_id": "a4dac8ac-f350-4f46-b966-950da2295be3",
+ "oracle_text": "(You can mark this card to represent a double-faced card in your library or hand.)\n☐ Cloistered Youth {1}{W}\n☐ Thraben Sentry {3}{W}\n☐ Civilized Scholar {2}{U}\n☐ Delver of Secrets {U}\n☐ Ludevic's Test Subject {1}{U}\n☐ Bloodline Keeper {2}{B}{B}\n☐ Screeching Bat {2}{B}\n☐ Hanweir Watchkeep {2}{R}\n☐ Instigator Gang {3}{R}\n☐ Kruin Outlaw {1}{R}{R}\n☐ Reckless Waif {R}\n☐ Tormented Pariah {3}{R}\n☐ Village Ironsmith {1}{R}\n☐ Daybreak Ranger {2}{G}\n☐ Garruk Relentless {3}{G}\n☐ Gatstaf Shepherd {1}{G}\n☐ Grizzled Outcasts {4}{G}\n☐ Mayor of Avabruck {1}{G}\n☐ Ulvenwald Mystics {2}{G}{G}\n☐ Villagers of Estwald {2}{G}",
+ "oversized": false,
+ "prices": {
+  "eur": null,
+  "eur_foil": null,
+  "tix": null,
+  "usd": "0.19",
+  "usd_etched": null,
+  "usd_foil": null
+ },
+ "prints_search_uri": "https://api.scryfall.com/cards/search?order=released&q=oracleid%3Aa4dac8ac-f350-4f46-b966-950da2295be3&unique=prints",
+ "promo": false,
+ "promo_types": [
+  "setpromo"
+ ],
+ "purchase_uris": {
+  "cardhoarder": "https://www.cardhoarder.com/cards?affiliate_id=scryfall&data%5Bsearch%5D=Innistrad+Checklist&ref=card-profile&utm_campaign=affiliate&utm_medium=card&utm_source=scryfall",
+  "cardmarket": "https://www.cardmarket.com/en/Magic/Products/Search?referrer=scryfall&searchString=Innistrad+Checklist&utm_campaign=card_prices&utm_medium=text&utm_source=scryfall",
+  "tcgplayer": "https://partner.tcgplayer.com/c/4931599/1830156/21018?subId1=api&u=https%3A%2F%2Fwww.tcgplayer.com%2Fproduct%2F52180%3Fpage%3D1"
+ },
+ "rarity": "common",
+ "related_uris": {
+  "edhrec": "https://edhrec.com/route/?cc=Innistrad+Checklist",
+  "tcgplayer_infinite_articles": "https://partner.tcgplayer.com/c/4931599/1830156/21018?subId1=api&trafcat=tcgplayer.com%2Fsearch%2Farticles&u=https%3A%2F%2Fwww.tcgplayer.com%2Fsearch%2Farticles%3FproductLineName%3Dmagic%26q%3DInnistrad%2BChecklist",
+  "tcgplayer_infinite_decks": "https://partner.tcgplayer.com/c/4931599/1830156/21018?subId1=api&trafcat=tcgplayer.com%2Fsearch%2Fdecks&u=https%3A%2F%2Fwww.tcgplayer.com%2Fsearch%2Fdecks%3FproductLineName%3Dmagic%26q%3DInnistrad%2BChecklist"
+ },
+ "released_at": "2011-09-30",
+ "reprint": false,
+ "reserved": false,
+ "rulings_uri": "https://api.scryfall.com/cards/99ce1bee-8f95-4284-8e06-9de9bfcb53b5/rulings",
+ "scryfall_set_uri": "https://scryfall.com/sets/tisd?utm_source=api",
+ "scryfall_uri": "https://scryfall.com/card/tisd/13/innistrad-checklist?utm_source=api",
+ "set": "tisd",
+ "set_id": "a91850e1-a8b4-49dd-a5dc-2a73ea4f9e40",
+ "set_name": "Innistrad Tokens",
+ "set_search_uri": "https://api.scryfall.com/cards/search?order=set&q=e%3Atisd&unique=prints",
+ "set_type": "token",
+ "set_uri": "https://api.scryfall.com/sets/a91850e1-a8b4-49dd-a5dc-2a73ea4f9e40",
+ "story_spotlight": false,
+ "tcgplayer_id": 52180,
+ "textless": false,
+ "type_line": "Card",
+ "uri": "https://api.scryfall.com/cards/99ce1bee-8f95-4284-8e06-9de9bfcb53b5",
+ "variation": false
+}

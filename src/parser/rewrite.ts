@@ -391,6 +391,8 @@ export const NEW_RARITY_IS_VALUE = "newrarity";
  *   newnonfoil `new:nonfoil` — the card's first paper printing in nonfoil; 35,018 of 35,018
  *   newflavor `new:flavor`, `new:ft`, `new:flavortext` — the card's first printing with each flavor
  *             text, compared without case, accents or punctuation; 27,459 of 27,459
+ *   newart    `new:art`, `new:illustration` — the first printing anywhere of each artwork, across
+ *             cards; 52,047 of 52,047
  */
 export const NEW_FLAG_IS_VALUES: readonly string[] = [
 	"newcard",
@@ -403,6 +405,7 @@ export const NEW_FLAG_IS_VALUES: readonly string[] = [
 	"newfoil",
 	"newnonfoil",
 	"newflavor",
+	"newart",
 ];
 
 /**

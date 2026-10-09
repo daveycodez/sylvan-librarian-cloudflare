@@ -1792,9 +1792,10 @@ describe("a keyword Scryfall honors is never called unknown", () => {
 	// (tests/routes/scryfall-keywords-x71.test.ts). What is left is listed, with the reason for
 	// each, at SCRYFALL_ONLY_KEYWORDS.
 	const HONORED_THERE = [
-		// Two of the five that were already here.
+		// Two of the five that were already here. `new:art` stood for `new:` until the store answered
+		// it (generation 85); `new:artist` is the value still refused — tests/routes/scryfall-new-x72.
 		"cube:vintage",
-		"new:art",
+		"new:artist",
 	];
 
 	test.each(HONORED_THERE)("%s is kept, unwarned, and the parser refuses the query", (term) => {

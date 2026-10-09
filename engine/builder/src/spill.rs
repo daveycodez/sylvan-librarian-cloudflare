@@ -63,8 +63,8 @@ use serde_json::Value;
 use crate::ranks::PrintingRanks;
 use crate::tags::TagData;
 use crate::transform::{
-    cubecobra_scores_from_pairs, finalize_row, illust_count_key, is_pinned, FunnyCards, PinnedPrintings, RelatedCards,
-    RowDraft,
+    cubecobra_scores_from_pairs, finalize_row, illust_count_key, is_pinned, FunnyCards, NewArt, PinnedPrintings,
+    RelatedCards, RowDraft,
 };
 
 
@@ -157,6 +157,9 @@ struct CorpusAggregator<'a> {
     /// Which cards have a printing with related parts (`transform::RelatedCards`) — the same
     /// shape again, one oracle id per related card.
     related: RelatedCards,
+    /// Each artwork's first printing, corpus-wide (`transform::NewArt`) — `new:art`, whose group
+    /// crosses cards. Collected as rows stream past, as `pins` is.
+    new_art: NewArt,
     /// Every artist's credited spellings, corpus-wide — see `transform::ArtistSpellings`.
     artist_spellings: crate::transform::ArtistSpellings,
 }
@@ -175,6 +178,7 @@ impl<'a> CorpusAggregator<'a> {
             ranks: PrintingRanks::default(),
             funny: FunnyCards::default(),
             related: RelatedCards::default(),
+            new_art: NewArt::default(),
             artist_spellings: crate::transform::ArtistSpellings::new(),
         }
     }
@@ -184,6 +188,7 @@ impl<'a> CorpusAggregator<'a> {
         self.ranks.observe(draft);
         self.funny.observe(draft);
         self.related.observe(draft);
+        self.new_art.observe(&draft.new_art_facts());
         crate::transform::observe_artist_spellings(&mut self.artist_spellings, draft.card_artist.as_deref(), &draft.compat_blob);
         let info = Winner {
             record,
@@ -222,9 +227,11 @@ impl<'a> CorpusAggregator<'a> {
             mut ranks,
             funny,
             related,
+            mut new_art,
             artist_spellings,
             labels: _,
         } = self;
+        new_art.seal();
         drop(by_id);
         // The order asks "is this slot pinned" first, so it can only be frozen once every row
         // has gone past and `pins` is complete.
@@ -260,6 +267,7 @@ impl<'a> CorpusAggregator<'a> {
             ranks,
             funny,
             related,
+            new_art,
             artist_spellings,
             superseded,
             cross_partition_dupes,
@@ -289,6 +297,8 @@ pub struct Aggregates {
     /// The cards with related parts — what puts every printing of one in `is:related`
     /// (`transform::RelatedCards`). Observed as rows stream past, exactly as `pins` is.
     related: RelatedCards,
+    /// Each artwork's first printing (`transform::NewArt`), sealed.
+    new_art: NewArt,
     /// Every credited spelling of every artist, corpus-wide — the input to the `card_artist_alt`
     /// column. Observed as rows STREAM PAST rather than from the deduped winners, exactly as
     /// `pins` is, and for the same reason: a repeated scryfall_id cannot change who drew the card.
@@ -326,7 +336,8 @@ impl Aggregates {
         let pinned = is_pinned(&draft, &tags.labels, &self.pins);
         let rank = self.ranks.rank_of(&draft);
         let is_funny = self.funny.is_funny(&draft);
-        finalize_row(draft, &oracle_tags, &art_tags, illustration_count, cubecobra_score, pinned, rank, is_funny)
+        let is_new_art = self.new_art.is_new(&draft.new_art_facts());
+        finalize_row(draft, &oracle_tags, &art_tags, illustration_count, cubecobra_score, pinned, rank, is_funny, is_new_art)
     }
 }
 

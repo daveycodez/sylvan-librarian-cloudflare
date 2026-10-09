@@ -5447,6 +5447,16 @@ pub(crate) const NEW_NONFOIL: u32 = 1 << 7;
 /// and `new:ft`, `new:flavortext`.
 pub(crate) const NEW_FLAVOR: u32 = 1 << 8;
 
+/// The `card_is_tags` word the builder marks a `new:art` printing with — see `NEW_ART`. Never
+/// stored: `assign_new_flags` turns it into the bit and removes it.
+pub const NEW_ART_TAG: &str = "new_art";
+
+/// `Printing::new_flags`: the printing is the first anywhere with its ARTWORK — `new:art`, and
+/// `new:illustration`. The one value whose groups cross cards, so the one this crate does not
+/// decide: the builder's corpus-wide pass does (engine/builder `NewArt`, in the order
+/// [`new_order_key`] gives it) and marks the row with [`NEW_ART_TAG`].
+pub(crate) const NEW_ART: u32 = 1 << 9;
+
 /// The engine's `is:` spelling of each `new:` value `Printing::new_flags` answers, and the bits
 /// it reads. None of these is a Scryfall `is:` value: the compat surface writes `new:<value>` as
 /// one (query-terms.ts NEW_VALUE_IS_TAGS) and drops the spelling when it is typed.
@@ -5461,6 +5471,7 @@ pub(crate) const NEW_FLAG_IS_VALUES: &[(&str, u32)] = &[
     ("newfoil", NEW_FOIL),
     ("newnonfoil", NEW_NONFOIL),
     ("newflavor", NEW_FLAVOR),
+    ("newart", NEW_ART),
 ];
 
 /// The printings Scryfall's own order puts FIRST among the rows of their card that share their
@@ -5472,6 +5483,56 @@ pub(crate) const NEW_FLAG_IS_VALUES: &[(&str, u32)] = &[
 /// to `prefer:oldest` (2026-10-09), where the number and the id both say J1.
 const NEW_ORDER_LEADS: &[u128] = &[0xbc9c_39d1_1e10_4cd3_a4b1_b6eb_7c1a_0b65];
 
+/// ...and the printings Scryfall puts first among rows that tie on EVERYTHING before the id — the
+/// date, the batch, the variation flag and the number — where the id says otherwise. MEASURED, and
+/// two printings long: The Lord of the Rings' `ltr/401` (Gandalf, Friend of the Shire) and
+/// `ltr/404` (Frodo Baggins) are `new:art` on api.scryfall.com (2026-10-09) though their
+/// prerelease twins `pltr/401s` and `pltr/404s` carry the lower ids. The id decides the other
+/// 1,669 such ties of that list, `pltr` over `ltr` in 45 of them; no field of the four card
+/// objects tells these two from those. A lead here does not pass a printing with a lower number,
+/// which is why it is a list of its own: `ltr/401` must not lead `ltr/50`.
+const NEW_TIE_LEADS: &[u128] =
+    &[0x646f_f18e_9d6a_4a55_838c_0bd8_8b8c_9fae, 0x770e_a046_3008_4d4e_b316_e6c5_e804_22d3];
+
+/// The order `new:` reads printings in, least first: release date (none last), the date's release
+/// batch, a measured lead (`NEW_ORDER_LEADS`), variations after everything else of their date
+/// and batch, the collector number's digits as one integer, a measured tie lead
+/// (`NEW_TIE_LEADS`), the Scryfall id. `assign_new_flags` carries what each key was measured on.
+pub type NewOrderKey = (u32, u16, bool, bool, u32, bool, u128);
+
+fn new_order_key_of(date: Option<u32>, batch: u16, collector: Option<u32>, variation: bool, id: u128) -> NewOrderKey {
+    (
+        date.unwrap_or(u32::MAX),
+        batch,
+        !NEW_ORDER_LEADS.contains(&id),
+        variation,
+        collector.unwrap_or(0),
+        !NEW_TIE_LEADS.contains(&id),
+        id,
+    )
+}
+
+/// [`NewOrderKey`] from a card object's own values, for the one `new:` value this crate cannot
+/// decide inside a partition: `new:art` groups by illustration ACROSS cards, so the builder's
+/// corpus-wide pass orders the rows (engine/builder `NewArt`) and hands each partition the answer
+/// as the [`NEW_ART_TAG`] tag. One definition of the order, here, so the two cannot drift.
+pub fn new_order_key(
+    released_yyyymmdd: Option<u32>,
+    set: &str,
+    collector_number_int: Option<i64>,
+    variation: bool,
+    scryfall_id: &str,
+) -> NewOrderKey {
+    let batch = released_yyyymmdd.map_or(0, |date| release_batch(date, set));
+    new_order_key_of(
+        released_yyyymmdd,
+        batch,
+        collector_number_int.and_then(collector_int_from_i64),
+        variation,
+        parse_uuid_or_hash(scryfall_id),
+    )
+}
+
 /// LOCAL PATCH (Cloudflare port): decide every printing's `new_flags` — Scryfall's `new:<value>`,
 /// "the first printing of this card with this", for each value this store answers.
 ///
@@ -5481,8 +5542,8 @@ const NEW_ORDER_LEADS: &[u128] = &[0xbc9c_39d1_1e10_4cd3_a4b1_b6eb_7c1a_0b65];
 ///
 ///   per card (oracle id) and GROUP, over the card's CANONICAL rows that are ELIGIBLE, the one
 ///   row that is least by
-///     (release date, release batch, the collector number's digits as one integer,
-///      variation last, Scryfall id)
+///     (release date, release batch, variation last, the collector number's digits as one
+///      integer, Scryfall id)                                         — [`NewOrderKey`]
 ///   — and that row is flagged unless it is a `variation`
 ///
 /// with eligibility and the group the only things a value chooses:
@@ -5524,6 +5585,17 @@ const NEW_ORDER_LEADS: &[u128] = &[0xbc9c_39d1_1e10_4cd3_a4b1_b6eb_7c1a_0b65];
 ///               both are new). And a printing whose FRONT has no flavor leads without being
 ///               flagged, as a variation does: Clive's `fin/133` carries its line on the back,
 ///               `fin/385` the same line on the front, and neither is new. 27,459 of 27,459.
+///   `NEW_ART`   new:art, new:illustration — 52,047 printings. The group is the FRONT illustration
+///               id and NOT the card: an artwork a second card reuses is new once (Alchemy's
+///               rebalanced `A-` cards, tokens sharing a painting, the 2022 Baldur's Gate
+///               Alchemy set — 175 printings over with a group a card). The 764 rows with no
+///               illustration id are ONE group, whose first row, the token `tsom/10`, is in
+///               the list and no other. Eligible: every row outside memorabilia, and inside it
+///               the two sets `olgc` and `o90p` (27 of 27 and 2 of 2 of their leading rows are
+///               in the list, 0 of the 1,784 other memorabilia rows that would lead — no field
+///               of a card or of `/sets` tells the two from `ovnt` or `olep`: measured, as
+///               `wot` is for `new:rarity`). Serialized printings count (74 of the list). 52,047 of 52,047, with
+///               the two `NEW_TIE_LEADS`; decided by the builder, see `NEW_ART`.
 ///
 /// What the values share, each clause measured rather than read off the name:
 ///
@@ -5535,9 +5607,13 @@ const NEW_ORDER_LEADS: &[u128] = &[0xbc9c_39d1_1e10_4cd3_a4b1_b6eb_7c1a_0b65];
 ///   - the COLLECTOR NUMBER is `collector_number_int`, every digit of it as one integer:
 ///     `psus/14` is before `pjjt/1N07` and `psus/15` before `pjas/2U07` (the same date and
 ///     batch; `new:frame`), where the number's FIRST integer says the reverse.
-///   - a VARIATION sorts after its plain twin and is NEVER flagged, though it still stands in
-///     the order: Zombify's `ody/171†` (Simplified Chinese, a variation, the only row its card
-///     has in that frame before 2018) is not `new:frame`, and neither is `a25/116` after it.
+///   - a VARIATION sorts after every plain row of its date and batch, whatever their numbers,
+///     and is NEVER flagged, though it still stands in the order: Zombify's `ody/171†`
+///     (Simplified Chinese, a variation, the only row its card has in that frame before 2018) is
+///     not `new:frame`, and neither is `a25/116` after it; and Mirage's `mir/87†`, a misprint
+///     carrying Shaper Guildmage's artwork, does not lead `mir/91` of the same day (`new:art`),
+///     which the number alone would have it do. Every other list fits the flag on either side
+///     of the number.
 ///   - the SET CODE is no key and neither is the set type: promos, masterpieces and box sets
 ///     are first wherever the order puts them (713 of the 35,158 are promos).
 ///   - NEGATION is the plain complement, over every row of every language. No value forces
@@ -5577,17 +5653,24 @@ fn assign_new_flags(
         }
     };
     let key = |p: &Printing| {
-        (
-            p.released_at_int.unwrap_or(u32::MAX),
+        new_order_key_of(
+            p.released_at_int,
             p.release_set_key >> RELEASE_KEY_CODE_BITS,
-            !NEW_ORDER_LEADS.contains(&p.scryfall_id),
-            p.collector_number_int.unwrap_or(0),
+            p.collector_number_int,
             p.compat.flags & COMPAT_VARIATION != 0,
             p.scryfall_id,
         )
     };
+    // `new:art` arrives decided: its groups cross cards, so the builder's corpus-wide pass marks
+    // the leading row with `NEW_ART_TAG`. The tag is taken off again here — the bit is the answer,
+    // and a tag left on 52,000 rows would be stored and indexed for nothing.
+    let new_art = vid(NEW_ART_TAG);
     for p in printings.iter_mut().chain(foreign.iter_mut()) {
         p.new_flags = 0;
+        if let Some(at) = new_art.and_then(|tag| p.card_is_tags.iter().position(|t| *t == tag)) {
+            p.card_is_tags.remove(at);
+            p.new_flags = NEW_ART;
+        }
     }
     for cid in 0..offsets.len().saturating_sub(1) {
         let rows = &mut printings[offsets[cid] as usize..offsets[cid + 1] as usize];
@@ -21762,7 +21845,10 @@ const ARCHIVE_MAGIC: [u8; 8] = *b"ATCARDS\0";
 //                store. No layout moves. Paired with STORE_CONTENT_GENERATION 83.
 //   2026100909 — NEW:FLAVOR (LOCAL PATCH). Bit 8 of `Printing::new_flags`, clear in every older
 //                store. No layout moves. Paired with STORE_CONTENT_GENERATION 84.
-const ARCHIVE_FORMAT_VERSION: u32 = 2026100909;
+//   2026100910 — NEW:ART (LOCAL PATCH). Bit 9 of `Printing::new_flags`, clear in every older
+//                store, and set from the builder's `NEW_ART_TAG` rather than decided here. No layout
+//                moves. Paired with STORE_CONTENT_GENERATION 85.
+const ARCHIVE_FORMAT_VERSION: u32 = 2026100910;
 const ARCHIVE_HEADER_LEN: usize = 16;
 
 fn archive_header() -> [u8; ARCHIVE_HEADER_LEN] {

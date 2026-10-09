@@ -1,0 +1,1319 @@
+{
+ "all_parts": [
+  {
+   "component": "combo_piece",
+   "id": "a9f6ed6c-8095-4a81-b428-36b2916eec88",
+   "name": "Phyrexian Juggernaut",
+   "object": "related_card",
+   "type_line": "Artifact Creature — Phyrexian Juggernaut",
+   "uri": "https://api.scryfall.com/cards/a9f6ed6c-8095-4a81-b428-36b2916eec88"
+  },
+  {
+   "component": "combo_piece",
+   "id": "e83a9dea-2aa1-48cd-afe2-f98057b95f6e",
+   "name": "Contagious Nim",
+   "object": "related_card",
+   "type_line": "Creature — Phyrexian Zombie",
+   "uri": "https://api.scryfall.com/cards/e83a9dea-2aa1-48cd-afe2-f98057b95f6e"
+  },
+  {
+   "component": "combo_piece",
+   "id": "aae856bc-f65f-42ba-9344-1a30b356c041",
+   "name": "Plague Stinger",
+   "object": "related_card",
+   "type_line": "Creature — Phyrexian Insect Horror",
+   "uri": "https://api.scryfall.com/cards/aae856bc-f65f-42ba-9344-1a30b356c041"
+  },
+  {
+   "component": "combo_piece",
+   "id": "9f1fa1c5-ff87-4bbc-89aa-dbebc91eada0",
+   "name": "Vraska, Betrayal's Sting",
+   "object": "related_card",
+   "type_line": "Legendary Planeswalker — Vraska",
+   "uri": "https://api.scryfall.com/cards/9f1fa1c5-ff87-4bbc-89aa-dbebc91eada0"
+  },
+  {
+   "component": "combo_piece",
+   "id": "e2652c4d-38a7-4014-94bb-7efd277de992",
+   "name": "Skrelv's Hive",
+   "object": "related_card",
+   "type_line": "Enchantment",
+   "uri": "https://api.scryfall.com/cards/e2652c4d-38a7-4014-94bb-7efd277de992"
+  },
+  {
+   "component": "combo_piece",
+   "id": "157cf43c-f7f2-4362-bfc8-11682e94b747",
+   "name": "Tyrranax Atrocity",
+   "object": "related_card",
+   "type_line": "Creature — Phyrexian Dinosaur",
+   "uri": "https://api.scryfall.com/cards/157cf43c-f7f2-4362-bfc8-11682e94b747"
+  },
+  {
+   "component": "combo_piece",
+   "id": "73204c3b-c178-4d4c-bac3-cb5aaf3a7645",
+   "name": "Bloated Contaminator",
+   "object": "related_card",
+   "type_line": "Creature — Phyrexian Beast",
+   "uri": "https://api.scryfall.com/cards/73204c3b-c178-4d4c-bac3-cb5aaf3a7645"
+  },
+  {
+   "component": "combo_piece",
+   "id": "dfd3a839-8f73-4fa2-afd6-d5185fe14f4f",
+   "name": "Bloodroot Apothecary",
+   "object": "related_card",
+   "type_line": "Creature — Squirrel Druid",
+   "uri": "https://api.scryfall.com/cards/dfd3a839-8f73-4fa2-afd6-d5185fe14f4f"
+  },
+  {
+   "component": "combo_piece",
+   "id": "05414ba7-0f59-4c73-931c-e599d149d3ba",
+   "name": "Core Prowler",
+   "object": "related_card",
+   "type_line": "Artifact Creature — Phyrexian Horror",
+   "uri": "https://api.scryfall.com/cards/05414ba7-0f59-4c73-931c-e599d149d3ba"
+  },
+  {
+   "component": "combo_piece",
+   "id": "8a48705f-bd8a-43f1-b1fe-14a5c9a83ccd",
+   "name": "Voidwing Hybrid",
+   "object": "related_card",
+   "type_line": "Creature — Phyrexian Bat",
+   "uri": "https://api.scryfall.com/cards/8a48705f-bd8a-43f1-b1fe-14a5c9a83ccd"
+  },
+  {
+   "component": "combo_piece",
+   "id": "5e2ee41c-5592-42bd-8db2-92b3233b1d61",
+   "name": "Serpent Generator",
+   "object": "related_card",
+   "type_line": "Artifact",
+   "uri": "https://api.scryfall.com/cards/5e2ee41c-5592-42bd-8db2-92b3233b1d61"
+  },
+  {
+   "component": "combo_piece",
+   "id": "c708fa9f-eee0-4c4c-bb91-a43f28e3791b",
+   "name": "Wurmquake",
+   "object": "related_card",
+   "type_line": "Sorcery",
+   "uri": "https://api.scryfall.com/cards/c708fa9f-eee0-4c4c-bb91-a43f28e3791b"
+  },
+  {
+   "component": "combo_piece",
+   "id": "fc4f30d9-f510-41a8-9df0-fff617eefb8c",
+   "name": "Sabertooth Cobra",
+   "object": "related_card",
+   "type_line": "Creature — Snake",
+   "uri": "https://api.scryfall.com/cards/fc4f30d9-f510-41a8-9df0-fff617eefb8c"
+  },
+  {
+   "component": "combo_piece",
+   "id": "1a2918d6-50f7-4bc1-aef2-930a5c84be8d",
+   "name": "Pistus Strike",
+   "object": "related_card",
+   "type_line": "Instant",
+   "uri": "https://api.scryfall.com/cards/1a2918d6-50f7-4bc1-aef2-930a5c84be8d"
+  },
+  {
+   "component": "combo_piece",
+   "id": "b00ea7bb-705b-4669-bb2a-560bed04b14a",
+   "name": "Jawbone Duelist",
+   "object": "related_card",
+   "type_line": "Creature — Phyrexian Soldier",
+   "uri": "https://api.scryfall.com/cards/b00ea7bb-705b-4669-bb2a-560bed04b14a"
+  },
+  {
+   "component": "combo_piece",
+   "id": "95986875-59f5-414f-867f-94f30cefa5d6",
+   "name": "Blackcleave Goblin",
+   "object": "related_card",
+   "type_line": "Creature — Phyrexian Goblin Zombie",
+   "uri": "https://api.scryfall.com/cards/95986875-59f5-414f-867f-94f30cefa5d6"
+  },
+  {
+   "component": "combo_piece",
+   "id": "d7b09fea-4243-4f19-bd96-de666bfa550f",
+   "name": "Venser, Corpse Puppet",
+   "object": "related_card",
+   "type_line": "Legendary Creature — Phyrexian Zombie Wizard",
+   "uri": "https://api.scryfall.com/cards/d7b09fea-4243-4f19-bd96-de666bfa550f"
+  },
+  {
+   "component": "combo_piece",
+   "id": "bcb1b486-e336-4e88-b635-b6ff18cb4841",
+   "name": "Whispering Specter",
+   "object": "related_card",
+   "type_line": "Creature — Phyrexian Specter",
+   "uri": "https://api.scryfall.com/cards/bcb1b486-e336-4e88-b635-b6ff18cb4841"
+  },
+  {
+   "component": "combo_piece",
+   "id": "7ffe86e1-ad47-4ccb-aa55-119dc681d370",
+   "name": "Vector Asp",
+   "object": "related_card",
+   "type_line": "Artifact Creature — Phyrexian Snake",
+   "uri": "https://api.scryfall.com/cards/7ffe86e1-ad47-4ccb-aa55-119dc681d370"
+  },
+  {
+   "component": "combo_piece",
+   "id": "947a1e44-3485-4e24-a34d-6c318584743c",
+   "name": "Pestilent Syphoner",
+   "object": "related_card",
+   "type_line": "Creature — Phyrexian Insect",
+   "uri": "https://api.scryfall.com/cards/947a1e44-3485-4e24-a34d-6c318584743c"
+  },
+  {
+   "component": "combo_piece",
+   "id": "7a802def-efe2-4f65-9dff-a1c0d800b146",
+   "name": "Slaughter Singer",
+   "object": "related_card",
+   "type_line": "Creature — Phyrexian Cleric",
+   "uri": "https://api.scryfall.com/cards/7a802def-efe2-4f65-9dff-a1c0d800b146"
+  },
+  {
+   "component": "combo_piece",
+   "id": "cc6ea52f-4b24-45ff-99e1-4d0e1bd42875",
+   "name": "Viridian Betrayers",
+   "object": "related_card",
+   "type_line": "Creature — Phyrexian Elf Warrior",
+   "uri": "https://api.scryfall.com/cards/cc6ea52f-4b24-45ff-99e1-4d0e1bd42875"
+  },
+  {
+   "component": "combo_piece",
+   "id": "509c00d2-6a84-4760-8927-483ed123b05f",
+   "name": "Skrelv, Defector Mite",
+   "object": "related_card",
+   "type_line": "Legendary Artifact Creature — Phyrexian Mite",
+   "uri": "https://api.scryfall.com/cards/509c00d2-6a84-4760-8927-483ed123b05f"
+  },
+  {
+   "component": "combo_piece",
+   "id": "7b200986-f553-4156-8f5e-37678db09687",
+   "name": "Fallen Ferromancer",
+   "object": "related_card",
+   "type_line": "Creature — Phyrexian Human Shaman",
+   "uri": "https://api.scryfall.com/cards/7b200986-f553-4156-8f5e-37678db09687"
+  },
+  {
+   "component": "combo_piece",
+   "id": "a300a645-aec6-4cda-8c11-1e8a6af056ff",
+   "name": "Reaper of Sheoldred",
+   "object": "related_card",
+   "type_line": "Creature — Phyrexian Horror",
+   "uri": "https://api.scryfall.com/cards/a300a645-aec6-4cda-8c11-1e8a6af056ff"
+  },
+  {
+   "component": "token",
+   "id": "e9c68c64-f3b9-45b7-83d1-bd1439a49942",
+   "name": "Phyrexian Mite",
+   "object": "related_card",
+   "type_line": "Token Artifact Creature — Phyrexian Mite",
+   "uri": "https://api.scryfall.com/cards/e9c68c64-f3b9-45b7-83d1-bd1439a49942"
+  },
+  {
+   "component": "combo_piece",
+   "id": "26da4278-ba44-4555-8837-e24627b46533",
+   "name": "Blightwidow",
+   "object": "related_card",
+   "type_line": "Creature — Phyrexian Spider",
+   "uri": "https://api.scryfall.com/cards/26da4278-ba44-4555-8837-e24627b46533"
+  },
+  {
+   "component": "combo_piece",
+   "id": "8f932690-9a38-4a3f-8805-a192208152a3",
+   "name": "Plague Myr",
+   "object": "related_card",
+   "type_line": "Artifact Creature — Phyrexian Myr",
+   "uri": "https://api.scryfall.com/cards/8f932690-9a38-4a3f-8805-a192208152a3"
+  },
+  {
+   "component": "combo_piece",
+   "id": "56444440-a9e6-4583-a289-9f0571a98093",
+   "name": "Duelist of Deep Faith",
+   "object": "related_card",
+   "type_line": "Creature — Phyrexian Soldier",
+   "uri": "https://api.scryfall.com/cards/56444440-a9e6-4583-a289-9f0571a98093"
+  },
+  {
+   "component": "combo_piece",
+   "id": "0173b7b4-2832-4943-ba45-8ba498d7a056",
+   "name": "Vraska's Fall",
+   "object": "related_card",
+   "type_line": "Instant",
+   "uri": "https://api.scryfall.com/cards/0173b7b4-2832-4943-ba45-8ba498d7a056"
+  },
+  {
+   "component": "combo_piece",
+   "id": "7668c6cb-593e-41f9-b6a1-9a31d353ecac",
+   "name": "Ajani, Sleeper Agent",
+   "object": "related_card",
+   "type_line": "Legendary Planeswalker — Ajani",
+   "uri": "https://api.scryfall.com/cards/7668c6cb-593e-41f9-b6a1-9a31d353ecac"
+  },
+  {
+   "component": "combo_piece",
+   "id": "29d2c689-af37-433a-a012-e8d384702811",
+   "name": "Dune Mover",
+   "object": "related_card",
+   "type_line": "Artifact Creature — Phyrexian Golem",
+   "uri": "https://api.scryfall.com/cards/29d2c689-af37-433a-a012-e8d384702811"
+  },
+  {
+   "component": "combo_piece",
+   "id": "b2b2c3f9-a831-4fd2-80e8-b67b0df3e98b",
+   "name": "Putrefax",
+   "object": "related_card",
+   "type_line": "Creature — Phyrexian Horror",
+   "uri": "https://api.scryfall.com/cards/b2b2c3f9-a831-4fd2-80e8-b67b0df3e98b"
+  },
+  {
+   "component": "combo_piece",
+   "id": "d89b312b-cc90-4f08-ae2e-043a79e51156",
+   "name": "Viral Drake",
+   "object": "related_card",
+   "type_line": "Creature — Phyrexian Drake",
+   "uri": "https://api.scryfall.com/cards/d89b312b-cc90-4f08-ae2e-043a79e51156"
+  },
+  {
+   "component": "combo_piece",
+   "id": "c16b90ff-d256-4ac6-b687-3430b8c80dd7",
+   "name": "Triumph of the Hordes",
+   "object": "related_card",
+   "type_line": "Sorcery",
+   "uri": "https://api.scryfall.com/cards/c16b90ff-d256-4ac6-b687-3430b8c80dd7"
+  },
+  {
+   "component": "combo_piece",
+   "id": "ac625f30-ed91-4b21-ada8-aaa5b2ad79b8",
+   "name": "Prologue to Phyresis",
+   "object": "related_card",
+   "type_line": "Instant",
+   "uri": "https://api.scryfall.com/cards/ac625f30-ed91-4b21-ada8-aaa5b2ad79b8"
+  },
+  {
+   "component": "combo_piece",
+   "id": "b9cba67a-b714-49b0-9797-24aca283f162",
+   "name": "Tainted Observer",
+   "object": "related_card",
+   "type_line": "Creature — Phyrexian Bird",
+   "uri": "https://api.scryfall.com/cards/b9cba67a-b714-49b0-9797-24aca283f162"
+  },
+  {
+   "component": "combo_piece",
+   "id": "73071a3b-9329-418e-9285-fa4765463d1f",
+   "name": "Shriek Raptor",
+   "object": "related_card",
+   "type_line": "Creature — Phyrexian Bird",
+   "uri": "https://api.scryfall.com/cards/73071a3b-9329-418e-9285-fa4765463d1f"
+  },
+  {
+   "component": "combo_piece",
+   "id": "4f7bcd36-13e2-4ac7-a449-246cecb3fc0f",
+   "name": "Crypt Cobra",
+   "object": "related_card",
+   "type_line": "Creature — Snake",
+   "uri": "https://api.scryfall.com/cards/4f7bcd36-13e2-4ac7-a449-246cecb3fc0f"
+  },
+  {
+   "component": "combo_piece",
+   "id": "40923aaf-c935-4aaf-920c-ae2c6ab6c1f9",
+   "name": "Phyresis Outbreak",
+   "object": "related_card",
+   "type_line": "Sorcery",
+   "uri": "https://api.scryfall.com/cards/40923aaf-c935-4aaf-920c-ae2c6ab6c1f9"
+  },
+  {
+   "component": "combo_piece",
+   "id": "bcd96de9-1b46-4923-a694-888a2d1ff180",
+   "name": "Pit Scorpion",
+   "object": "related_card",
+   "type_line": "Creature — Scorpion",
+   "uri": "https://api.scryfall.com/cards/bcd96de9-1b46-4923-a694-888a2d1ff180"
+  },
+  {
+   "component": "combo_piece",
+   "id": "0017de60-ee1c-4675-b04e-cdfa2c2a596e",
+   "name": "Flensermite",
+   "object": "related_card",
+   "type_line": "Creature — Phyrexian Gremlin",
+   "uri": "https://api.scryfall.com/cards/0017de60-ee1c-4675-b04e-cdfa2c2a596e"
+  },
+  {
+   "component": "combo_piece",
+   "id": "450800c5-28e0-4eeb-9164-db9fdebc595f",
+   "name": "Swamp Mosquito",
+   "object": "related_card",
+   "type_line": "Creature — Insect",
+   "uri": "https://api.scryfall.com/cards/450800c5-28e0-4eeb-9164-db9fdebc595f"
+  },
+  {
+   "component": "combo_piece",
+   "id": "2fb022a3-5f9e-491e-8340-087e33f927d6",
+   "name": "Razor Swine",
+   "object": "related_card",
+   "type_line": "Creature — Phyrexian Boar",
+   "uri": "https://api.scryfall.com/cards/2fb022a3-5f9e-491e-8340-087e33f927d6"
+  },
+  {
+   "component": "combo_piece",
+   "id": "77032519-833d-4569-9f40-6886c7eb9f0e",
+   "name": "Phyresis Roach",
+   "object": "related_card",
+   "type_line": "Creature — Phyrexian Insect",
+   "uri": "https://api.scryfall.com/cards/77032519-833d-4569-9f40-6886c7eb9f0e"
+  },
+  {
+   "component": "combo_piece",
+   "id": "8a91dea7-9792-4714-82b0-ba2c06cef304",
+   "name": "Phyrexian Swarmlord",
+   "object": "related_card",
+   "type_line": "Creature — Phyrexian Insect Horror",
+   "uri": "https://api.scryfall.com/cards/8a91dea7-9792-4714-82b0-ba2c06cef304"
+  },
+  {
+   "component": "combo_piece",
+   "id": "ba4c0606-f9af-4dee-bc36-5051395b5f44",
+   "name": "Marsh Viper",
+   "object": "related_card",
+   "type_line": "Creature — Snake",
+   "uri": "https://api.scryfall.com/cards/ba4c0606-f9af-4dee-bc36-5051395b5f44"
+  },
+  {
+   "component": "combo_piece",
+   "id": "c720cb57-7788-4065-9bab-99227606c677",
+   "name": "Mirrex",
+   "object": "related_card",
+   "type_line": "Land — Sphere",
+   "uri": "https://api.scryfall.com/cards/c720cb57-7788-4065-9bab-99227606c677"
+  },
+  {
+   "component": "combo_piece",
+   "id": "45ded51b-2ced-46d6-a1d4-0f49d4b1ed2d",
+   "name": "Scourge Servant",
+   "object": "related_card",
+   "type_line": "Creature — Phyrexian Zombie",
+   "uri": "https://api.scryfall.com/cards/45ded51b-2ced-46d6-a1d4-0f49d4b1ed2d"
+  },
+  {
+   "component": "combo_piece",
+   "id": "5163600e-f87a-4a8e-8123-c9d499a689bd",
+   "name": "Nettling Host",
+   "object": "related_card",
+   "type_line": "Creature — Phyrexian Horror",
+   "uri": "https://api.scryfall.com/cards/5163600e-f87a-4a8e-8123-c9d499a689bd"
+  },
+  {
+   "component": "combo_piece",
+   "id": "0955b64f-6721-4fa6-b161-cae404cb5b9f",
+   "name": "Ichorspit Basilisk",
+   "object": "related_card",
+   "type_line": "Creature — Phyrexian Basilisk",
+   "uri": "https://api.scryfall.com/cards/0955b64f-6721-4fa6-b161-cae404cb5b9f"
+  },
+  {
+   "component": "combo_piece",
+   "id": "134aecf0-dc48-4fb3-8c8b-4e5272077856",
+   "name": "Flensing Raptor",
+   "object": "related_card",
+   "type_line": "Creature — Phyrexian Bird",
+   "uri": "https://api.scryfall.com/cards/134aecf0-dc48-4fb3-8c8b-4e5272077856"
+  },
+  {
+   "component": "combo_piece",
+   "id": "775e81e5-4dcb-4625-9aa1-5b98b218fe53",
+   "name": "Largepox",
+   "object": "related_card",
+   "type_line": "Sorcery",
+   "uri": "https://api.scryfall.com/cards/775e81e5-4dcb-4625-9aa1-5b98b218fe53"
+  },
+  {
+   "component": "combo_piece",
+   "id": "92fcdd2b-dd90-458d-9b8b-5b1b9a3f8bd3",
+   "name": "Poison Counter",
+   "object": "related_card",
+   "type_line": "Card",
+   "uri": "https://api.scryfall.com/cards/92fcdd2b-dd90-458d-9b8b-5b1b9a3f8bd3"
+  },
+  {
+   "component": "combo_piece",
+   "id": "483e99fd-7e48-400d-9817-451089089e0c",
+   "name": "Glistening Oil",
+   "object": "related_card",
+   "type_line": "Enchantment — Aura",
+   "uri": "https://api.scryfall.com/cards/483e99fd-7e48-400d-9817-451089089e0c"
+  },
+  {
+   "component": "combo_piece",
+   "id": "b4a1e16a-39f0-47ab-aba8-73e82ba9ab18",
+   "name": "Phyrexian Unlife",
+   "object": "related_card",
+   "type_line": "Enchantment",
+   "uri": "https://api.scryfall.com/cards/b4a1e16a-39f0-47ab-aba8-73e82ba9ab18"
+  },
+  {
+   "component": "combo_piece",
+   "id": "0a10f284-b043-4307-bdc7-6dad47cc9221",
+   "name": "Infectious Inquiry",
+   "object": "related_card",
+   "type_line": "Sorcery",
+   "uri": "https://api.scryfall.com/cards/0a10f284-b043-4307-bdc7-6dad47cc9221"
+  },
+  {
+   "component": "combo_piece",
+   "id": "2318627b-7bef-482f-a66e-89119d46190f",
+   "name": "Skullpiercer Gnat",
+   "object": "related_card",
+   "type_line": "Creature — Phyrexian Insect",
+   "uri": "https://api.scryfall.com/cards/2318627b-7bef-482f-a66e-89119d46190f"
+  },
+  {
+   "component": "combo_piece",
+   "id": "ec50c1c3-885e-47d3-ada7-cc0edbf09df1",
+   "name": "Inkmoth Nexus",
+   "object": "related_card",
+   "type_line": "Land",
+   "uri": "https://api.scryfall.com/cards/ec50c1c3-885e-47d3-ada7-cc0edbf09df1"
+  },
+  {
+   "component": "combo_piece",
+   "id": "7ae09e1a-c257-45e9-88c8-7b1a7a6d714b",
+   "name": "Virulent Wound",
+   "object": "related_card",
+   "type_line": "Instant",
+   "uri": "https://api.scryfall.com/cards/7ae09e1a-c257-45e9-88c8-7b1a7a6d714b"
+  },
+  {
+   "component": "combo_piece",
+   "id": "19c7d89a-2b02-4faa-83cf-7dcf7faf6c4a",
+   "name": "Myr Convert",
+   "object": "related_card",
+   "type_line": "Artifact Creature — Phyrexian Myr",
+   "uri": "https://api.scryfall.com/cards/19c7d89a-2b02-4faa-83cf-7dcf7faf6c4a"
+  },
+  {
+   "component": "combo_piece",
+   "id": "be409a80-846c-4883-8aee-c2e3f973fc0f",
+   "name": "Trigon of Infestation",
+   "object": "related_card",
+   "type_line": "Artifact",
+   "uri": "https://api.scryfall.com/cards/be409a80-846c-4883-8aee-c2e3f973fc0f"
+  },
+  {
+   "component": "combo_piece",
+   "id": "cdbbcbe1-5317-455e-8d71-a4e2ad0addfc",
+   "name": "Stinging Hivemaster",
+   "object": "related_card",
+   "type_line": "Creature — Phyrexian Warlock",
+   "uri": "https://api.scryfall.com/cards/cdbbcbe1-5317-455e-8d71-a4e2ad0addfc"
+  },
+  {
+   "component": "combo_piece",
+   "id": "44efeebb-695d-41d8-b4d8-f8502bcae7b3",
+   "name": "Tyrranax Rex",
+   "object": "related_card",
+   "type_line": "Creature — Phyrexian Dinosaur",
+   "uri": "https://api.scryfall.com/cards/44efeebb-695d-41d8-b4d8-f8502bcae7b3"
+  },
+  {
+   "component": "combo_piece",
+   "id": "7a81dfcf-a7c4-41a4-b1e9-b9e9c3f75742",
+   "name": "Rot Wolf",
+   "object": "related_card",
+   "type_line": "Creature — Phyrexian Wolf",
+   "uri": "https://api.scryfall.com/cards/7a81dfcf-a7c4-41a4-b1e9-b9e9c3f75742"
+  },
+  {
+   "component": "combo_piece",
+   "id": "c2a1cf33-74c8-40c0-ab98-dbce32d2ff17",
+   "name": "Etali, Primal Conqueror // Etali, Primal Sickness",
+   "object": "related_card",
+   "type_line": "Legendary Creature — Elder Dinosaur // Legendary Creature — Phyrexian Elder Dinosaur",
+   "uri": "https://api.scryfall.com/cards/c2a1cf33-74c8-40c0-ab98-dbce32d2ff17"
+  },
+  {
+   "component": "combo_piece",
+   "id": "dd9df44a-a0ab-435f-914c-aa11cd88f4ec",
+   "name": "Venomous Brutalizer",
+   "object": "related_card",
+   "type_line": "Creature — Phyrexian Knight",
+   "uri": "https://api.scryfall.com/cards/dd9df44a-a0ab-435f-914c-aa11cd88f4ec"
+  },
+  {
+   "component": "combo_piece",
+   "id": "c145b06b-45b0-4133-b88d-9cb130aeeeb5",
+   "name": "Virulent Sliver",
+   "object": "related_card",
+   "type_line": "Creature — Sliver",
+   "uri": "https://api.scryfall.com/cards/c145b06b-45b0-4133-b88d-9cb130aeeeb5"
+  },
+  {
+   "component": "combo_piece",
+   "id": "17c26bdb-46a1-4864-b73b-0f0d05ce206c",
+   "name": "Ria Ivor, Bane of Bladehold",
+   "object": "related_card",
+   "type_line": "Legendary Creature — Phyrexian Knight",
+   "uri": "https://api.scryfall.com/cards/17c26bdb-46a1-4864-b73b-0f0d05ce206c"
+  },
+  {
+   "component": "combo_piece",
+   "id": "a978c49d-483a-42fe-971c-858288d07e40",
+   "name": "Priests of Norn",
+   "object": "related_card",
+   "type_line": "Creature — Phyrexian Cleric",
+   "uri": "https://api.scryfall.com/cards/a978c49d-483a-42fe-971c-858288d07e40"
+  },
+  {
+   "component": "combo_piece",
+   "id": "6d97fa12-b4c0-49fe-98fd-dc560f43a79c",
+   "name": "Vishgraz, the Doomhive",
+   "object": "related_card",
+   "type_line": "Legendary Creature — Phyrexian Insect",
+   "uri": "https://api.scryfall.com/cards/6d97fa12-b4c0-49fe-98fd-dc560f43a79c"
+  },
+  {
+   "component": "combo_piece",
+   "id": "83dfb2a5-cd5c-46c6-9bb8-7c5d00f3e003",
+   "name": "Infectious Bite",
+   "object": "related_card",
+   "type_line": "Instant",
+   "uri": "https://api.scryfall.com/cards/83dfb2a5-cd5c-46c6-9bb8-7c5d00f3e003"
+  },
+  {
+   "component": "combo_piece",
+   "id": "4120fcfc-3547-4774-a15d-b9cccac04e76",
+   "name": "Virulent Silencer",
+   "object": "related_card",
+   "type_line": "Artifact Creature — Robot Assassin",
+   "uri": "https://api.scryfall.com/cards/4120fcfc-3547-4774-a15d-b9cccac04e76"
+  },
+  {
+   "component": "combo_piece",
+   "id": "2a0ffea1-e103-4f06-b652-7b9f37de8754",
+   "name": "Necrogen Rotpriest",
+   "object": "related_card",
+   "type_line": "Creature — Phyrexian Zombie Cleric",
+   "uri": "https://api.scryfall.com/cards/2a0ffea1-e103-4f06-b652-7b9f37de8754"
+  },
+  {
+   "component": "combo_piece",
+   "id": "ca940b4e-6f5e-4492-b6e0-dbf619eddadd",
+   "name": "Relic Putrescence",
+   "object": "related_card",
+   "type_line": "Enchantment — Aura",
+   "uri": "https://api.scryfall.com/cards/ca940b4e-6f5e-4492-b6e0-dbf619eddadd"
+  },
+  {
+   "component": "combo_piece",
+   "id": "75a1beec-bafe-4243-b91e-040a88fb0e95",
+   "name": "Prosthetic Injector",
+   "object": "related_card",
+   "type_line": "Artifact — Equipment",
+   "uri": "https://api.scryfall.com/cards/75a1beec-bafe-4243-b91e-040a88fb0e95"
+  },
+  {
+   "component": "combo_piece",
+   "id": "b6c10302-f0b3-4076-ae5c-a8c8c09a7d41",
+   "name": "Cystbearer",
+   "object": "related_card",
+   "type_line": "Creature — Phyrexian Beast",
+   "uri": "https://api.scryfall.com/cards/b6c10302-f0b3-4076-ae5c-a8c8c09a7d41"
+  },
+  {
+   "component": "combo_piece",
+   "id": "5ef987ad-a3dc-4ef5-90ec-9a8cfa95965b",
+   "name": "Caress of Phyrexia",
+   "object": "related_card",
+   "type_line": "Sorcery",
+   "uri": "https://api.scryfall.com/cards/5ef987ad-a3dc-4ef5-90ec-9a8cfa95965b"
+  },
+  {
+   "component": "combo_piece",
+   "id": "dfb81cb1-ac56-4803-a962-359854a447df",
+   "name": "Bilious Skulldweller",
+   "object": "related_card",
+   "type_line": "Creature — Phyrexian Insect",
+   "uri": "https://api.scryfall.com/cards/dfb81cb1-ac56-4803-a962-359854a447df"
+  },
+  {
+   "component": "combo_piece",
+   "id": "faef8b8b-2c45-4fed-b6ba-a8ac49c66330",
+   "name": "Ichorclaw Myr",
+   "object": "related_card",
+   "type_line": "Artifact Creature — Phyrexian Myr",
+   "uri": "https://api.scryfall.com/cards/faef8b8b-2c45-4fed-b6ba-a8ac49c66330"
+  },
+  {
+   "component": "token",
+   "id": "919381b0-2d23-4794-b4ff-923c23e18196",
+   "name": "Phyrexian Beast",
+   "object": "related_card",
+   "type_line": "Token Creature — Phyrexian Beast",
+   "uri": "https://api.scryfall.com/cards/919381b0-2d23-4794-b4ff-923c23e18196"
+  },
+  {
+   "component": "combo_piece",
+   "id": "b678bd68-e866-4081-95f9-2bd93a84d400",
+   "name": "Tangle Angler",
+   "object": "related_card",
+   "type_line": "Creature — Phyrexian Horror",
+   "uri": "https://api.scryfall.com/cards/b678bd68-e866-4081-95f9-2bd93a84d400"
+  },
+  {
+   "component": "combo_piece",
+   "id": "0cc13aee-5a74-4dab-a6af-7dc31255981d",
+   "name": "Viridian Corrupter",
+   "object": "related_card",
+   "type_line": "Creature — Phyrexian Elf Shaman",
+   "uri": "https://api.scryfall.com/cards/0cc13aee-5a74-4dab-a6af-7dc31255981d"
+  },
+  {
+   "component": "combo_piece",
+   "id": "8a287ed5-34b5-4f8f-bcfa-ab518dcf4323",
+   "name": "Lukka, Bound to Ruin",
+   "object": "related_card",
+   "type_line": "Legendary Planeswalker — Lukka",
+   "uri": "https://api.scryfall.com/cards/8a287ed5-34b5-4f8f-bcfa-ab518dcf4323"
+  },
+  {
+   "component": "combo_piece",
+   "id": "bc3c1a8e-3bdb-42cf-9442-5de7e4670d66",
+   "name": "Carrion Call",
+   "object": "related_card",
+   "type_line": "Instant",
+   "uri": "https://api.scryfall.com/cards/bc3c1a8e-3bdb-42cf-9442-5de7e4670d66"
+  },
+  {
+   "component": "combo_piece",
+   "id": "9c6e19a1-b9ea-4724-96d6-63c4b4967257",
+   "name": "Corpse Cur",
+   "object": "related_card",
+   "type_line": "Artifact Creature — Phyrexian Dog",
+   "uri": "https://api.scryfall.com/cards/9c6e19a1-b9ea-4724-96d6-63c4b4967257"
+  },
+  {
+   "component": "combo_piece",
+   "id": "1ec8f984-5ed4-4b34-8b2a-a113cbba001d",
+   "name": "Ribskiff",
+   "object": "related_card",
+   "type_line": "Artifact — Vehicle",
+   "uri": "https://api.scryfall.com/cards/1ec8f984-5ed4-4b34-8b2a-a113cbba001d"
+  },
+  {
+   "component": "combo_piece",
+   "id": "32aaa8b9-987b-4809-8a54-aa29bdc18805",
+   "name": "Phyrexian Crusader",
+   "object": "related_card",
+   "type_line": "Creature — Phyrexian Zombie Knight",
+   "uri": "https://api.scryfall.com/cards/32aaa8b9-987b-4809-8a54-aa29bdc18805"
+  },
+  {
+   "component": "combo_piece",
+   "id": "81ef3cfa-63e6-4450-af65-da7f05d13cf3",
+   "name": "Basilica Shepherd",
+   "object": "related_card",
+   "type_line": "Creature — Phyrexian Angel",
+   "uri": "https://api.scryfall.com/cards/81ef3cfa-63e6-4450-af65-da7f05d13cf3"
+  },
+  {
+   "component": "combo_piece",
+   "id": "e431e06c-5999-4008-a823-2569e5e8ce70",
+   "name": "Norn's Decree",
+   "object": "related_card",
+   "type_line": "Enchantment",
+   "uri": "https://api.scryfall.com/cards/e431e06c-5999-4008-a823-2569e5e8ce70"
+  },
+  {
+   "component": "combo_piece",
+   "id": "df362eee-2ead-4a47-8b23-66dd4113d9f9",
+   "name": "Noxious Bayou",
+   "object": "related_card",
+   "type_line": "Land",
+   "uri": "https://api.scryfall.com/cards/df362eee-2ead-4a47-8b23-66dd4113d9f9"
+  },
+  {
+   "component": "combo_piece",
+   "id": "0059d21b-0725-4806-8691-2451db36787f",
+   "name": "Phyresis",
+   "object": "related_card",
+   "type_line": "Enchantment — Aura",
+   "uri": "https://api.scryfall.com/cards/0059d21b-0725-4806-8691-2451db36787f"
+  },
+  {
+   "component": "combo_piece",
+   "id": "d051bfc7-b402-444d-896e-c3a9562cdb0d",
+   "name": "Indoctrination Attendant",
+   "object": "related_card",
+   "type_line": "Creature — Phyrexian Cleric",
+   "uri": "https://api.scryfall.com/cards/d051bfc7-b402-444d-896e-c3a9562cdb0d"
+  },
+  {
+   "component": "combo_piece",
+   "id": "d0f82007-99f6-4c6c-8182-ee631c33531f",
+   "name": "Tainted Strike",
+   "object": "related_card",
+   "type_line": "Instant",
+   "uri": "https://api.scryfall.com/cards/d0f82007-99f6-4c6c-8182-ee631c33531f"
+  },
+  {
+   "component": "combo_piece",
+   "id": "9649de6c-a9f7-4f0a-8bf7-cacaea60ed54",
+   "name": "Noxious Assault",
+   "object": "related_card",
+   "type_line": "Sorcery",
+   "uri": "https://api.scryfall.com/cards/9649de6c-a9f7-4f0a-8bf7-cacaea60ed54"
+  },
+  {
+   "component": "combo_piece",
+   "id": "85ad30a1-3ecc-42ca-afe8-85df5bad9196",
+   "name": "Viral Spawning",
+   "object": "related_card",
+   "type_line": "Sorcery",
+   "uri": "https://api.scryfall.com/cards/85ad30a1-3ecc-42ca-afe8-85df5bad9196"
+  },
+  {
+   "component": "combo_piece",
+   "id": "30225e40-4bde-4e2e-b0f0-48ed16aebafd",
+   "name": "Unctus's Retrofitter",
+   "object": "related_card",
+   "type_line": "Creature — Phyrexian Artificer",
+   "uri": "https://api.scryfall.com/cards/30225e40-4bde-4e2e-b0f0-48ed16aebafd"
+  },
+  {
+   "component": "combo_piece",
+   "id": "aace4c44-7250-414b-aac4-df042a1e2e1d",
+   "name": "Crawling Chorus",
+   "object": "related_card",
+   "type_line": "Creature — Phyrexian Horror",
+   "uri": "https://api.scryfall.com/cards/aace4c44-7250-414b-aac4-df042a1e2e1d"
+  },
+  {
+   "component": "combo_piece",
+   "id": "cfc79ac6-ffc6-4506-9dea-e20176f960ea",
+   "name": "Spinebiter",
+   "object": "related_card",
+   "type_line": "Creature — Phyrexian Beast",
+   "uri": "https://api.scryfall.com/cards/cfc79ac6-ffc6-4506-9dea-e20176f960ea"
+  },
+  {
+   "component": "combo_piece",
+   "id": "8b94f4c6-b518-43b3-be52-e889d1f3ea38",
+   "name": "Glistener Elf",
+   "object": "related_card",
+   "type_line": "Creature — Phyrexian Elf Warrior",
+   "uri": "https://api.scryfall.com/cards/8b94f4c6-b518-43b3-be52-e889d1f3ea38"
+  },
+  {
+   "component": "combo_piece",
+   "id": "f9112062-1a1b-462b-85d3-821ea91778b8",
+   "name": "Phyrexian Digester",
+   "object": "related_card",
+   "type_line": "Artifact Creature — Phyrexian Construct",
+   "uri": "https://api.scryfall.com/cards/f9112062-1a1b-462b-85d3-821ea91778b8"
+  },
+  {
+   "component": "combo_piece",
+   "id": "bf7a75a5-a21a-44e9-9e42-b3496cbbd307",
+   "name": "Ixhel, Scion of Atraxa",
+   "object": "related_card",
+   "type_line": "Legendary Creature — Phyrexian Angel",
+   "uri": "https://api.scryfall.com/cards/bf7a75a5-a21a-44e9-9e42-b3496cbbd307"
+  },
+  {
+   "component": "combo_piece",
+   "id": "ae7a778c-f4a7-447f-90f0-146997e03398",
+   "name": "White Sun's Twilight",
+   "object": "related_card",
+   "type_line": "Sorcery",
+   "uri": "https://api.scryfall.com/cards/ae7a778c-f4a7-447f-90f0-146997e03398"
+  },
+  {
+   "component": "combo_piece",
+   "id": "3878d4c7-5fda-4cea-bfa0-f9af102156fa",
+   "name": "Blightwing Whelp",
+   "object": "related_card",
+   "type_line": "Creature — Phyrexian Imp",
+   "uri": "https://api.scryfall.com/cards/3878d4c7-5fda-4cea-bfa0-f9af102156fa"
+  },
+  {
+   "component": "combo_piece",
+   "id": "8c6b818f-6912-4ea1-a35a-c8cd7ee9aead",
+   "name": "Sheoldred's Headcleaver",
+   "object": "related_card",
+   "type_line": "Creature — Phyrexian Warrior",
+   "uri": "https://api.scryfall.com/cards/8c6b818f-6912-4ea1-a35a-c8cd7ee9aead"
+  },
+  {
+   "component": "combo_piece",
+   "id": "e5290a4c-1f98-4e97-a407-f951e386b8b0",
+   "name": "Branchblight Stalker",
+   "object": "related_card",
+   "type_line": "Creature — Phyrexian Elf Scout",
+   "uri": "https://api.scryfall.com/cards/e5290a4c-1f98-4e97-a407-f951e386b8b0"
+  },
+  {
+   "component": "combo_piece",
+   "id": "5e7eef9e-68ae-4743-ad89-64f6fafbe365",
+   "name": "Plague Nurse",
+   "object": "related_card",
+   "type_line": "Creature — Phyrexian Cleric",
+   "uri": "https://api.scryfall.com/cards/5e7eef9e-68ae-4743-ad89-64f6fafbe365"
+  },
+  {
+   "component": "combo_piece",
+   "id": "5823990c-8d40-4352-8d34-74332934adb2",
+   "name": "Toxic Nim",
+   "object": "related_card",
+   "type_line": "Creature — Phyrexian Zombie",
+   "uri": "https://api.scryfall.com/cards/5823990c-8d40-4352-8d34-74332934adb2"
+  },
+  {
+   "component": "combo_piece",
+   "id": "e4bf86e8-df70-4ec0-8fe6-f15191774e50",
+   "name": "Blightbelly Rat",
+   "object": "related_card",
+   "type_line": "Creature — Phyrexian Rat",
+   "uri": "https://api.scryfall.com/cards/e4bf86e8-df70-4ec0-8fe6-f15191774e50"
+  },
+  {
+   "component": "combo_piece",
+   "id": "cb135aa1-9f46-4d60-a1a4-97aa0e852ced",
+   "name": "Phyrexian Hydra",
+   "object": "related_card",
+   "type_line": "Creature — Phyrexian Hydra",
+   "uri": "https://api.scryfall.com/cards/cb135aa1-9f46-4d60-a1a4-97aa0e852ced"
+  },
+  {
+   "component": "combo_piece",
+   "id": "6d5ee9f3-80fe-43b0-be5b-0c93103e1077",
+   "name": "Flesh-Eater Imp",
+   "object": "related_card",
+   "type_line": "Creature — Phyrexian Imp",
+   "uri": "https://api.scryfall.com/cards/6d5ee9f3-80fe-43b0-be5b-0c93103e1077"
+  },
+  {
+   "component": "combo_piece",
+   "id": "6c134956-ba18-415e-b101-c1254415ea04",
+   "name": "Persuasive Interrogators",
+   "object": "related_card",
+   "type_line": "Creature — Gorgon Detective",
+   "uri": "https://api.scryfall.com/cards/6c134956-ba18-415e-b101-c1254415ea04"
+  },
+  {
+   "component": "combo_piece",
+   "id": "b50b39e8-3dd6-40d9-bd75-177308409573",
+   "name": "Norn's Fetchling",
+   "object": "related_card",
+   "type_line": "Creature — Phyrexian Insect",
+   "uri": "https://api.scryfall.com/cards/b50b39e8-3dd6-40d9-bd75-177308409573"
+  },
+  {
+   "component": "combo_piece",
+   "id": "93b47606-82d1-402c-b1c6-591457b10d86",
+   "name": "Snake Cult Initiation",
+   "object": "related_card",
+   "type_line": "Enchantment — Aura",
+   "uri": "https://api.scryfall.com/cards/93b47606-82d1-402c-b1c6-591457b10d86"
+  },
+  {
+   "component": "token",
+   "id": "594c55d3-d435-4dec-bc92-011442a43684",
+   "name": "Phyrexian Wurm",
+   "object": "related_card",
+   "type_line": "Token Creature — Phyrexian Wurm",
+   "uri": "https://api.scryfall.com/cards/594c55d3-d435-4dec-bc92-011442a43684"
+  },
+  {
+   "component": "combo_piece",
+   "id": "dd899d93-15f9-4297-8da0-e20e21ec01ce",
+   "name": "Contaminant Grafter",
+   "object": "related_card",
+   "type_line": "Creature — Phyrexian Druid",
+   "uri": "https://api.scryfall.com/cards/dd899d93-15f9-4297-8da0-e20e21ec01ce"
+  },
+  {
+   "component": "combo_piece",
+   "id": "29261589-ce89-435d-9497-bb8f8b911c7f",
+   "name": "Annex Sentry",
+   "object": "related_card",
+   "type_line": "Artifact Creature — Phyrexian Cleric",
+   "uri": "https://api.scryfall.com/cards/29261589-ce89-435d-9497-bb8f8b911c7f"
+  },
+  {
+   "component": "combo_piece",
+   "id": "89333698-5913-4655-a79f-5e084f66182d",
+   "name": "Karumonix, the Rat King",
+   "object": "related_card",
+   "type_line": "Legendary Creature — Phyrexian Rat",
+   "uri": "https://api.scryfall.com/cards/89333698-5913-4655-a79f-5e084f66182d"
+  },
+  {
+   "component": "combo_piece",
+   "id": "e983925b-de9c-4a09-8bff-913301aff269",
+   "name": "Fynn, the Fangbearer",
+   "object": "related_card",
+   "type_line": "Legendary Creature — Human Warrior",
+   "uri": "https://api.scryfall.com/cards/e983925b-de9c-4a09-8bff-913301aff269"
+  },
+  {
+   "component": "combo_piece",
+   "id": "8209fa5d-2c0e-4827-813b-fff123533f16",
+   "name": "Lost Leonin",
+   "object": "related_card",
+   "type_line": "Creature — Phyrexian Cat Soldier",
+   "uri": "https://api.scryfall.com/cards/8209fa5d-2c0e-4827-813b-fff123533f16"
+  },
+  {
+   "component": "combo_piece",
+   "id": "a069cc07-55eb-4ddb-a548-cbf463d078d3",
+   "name": "Pestilent Souleater",
+   "object": "related_card",
+   "type_line": "Artifact Creature — Phyrexian Insect",
+   "uri": "https://api.scryfall.com/cards/a069cc07-55eb-4ddb-a548-cbf463d078d3"
+  },
+  {
+   "component": "combo_piece",
+   "id": "0d55c882-bf32-4d52-8af2-6a59c00bde5c",
+   "name": "Goliath Hatchery",
+   "object": "related_card",
+   "type_line": "Enchantment",
+   "uri": "https://api.scryfall.com/cards/0d55c882-bf32-4d52-8af2-6a59c00bde5c"
+  },
+  {
+   "component": "combo_piece",
+   "id": "7276c584-76ed-4c20-a5ea-627c8f7751e6",
+   "name": "Corrupted Conscience",
+   "object": "related_card",
+   "type_line": "Enchantment — Aura",
+   "uri": "https://api.scryfall.com/cards/7276c584-76ed-4c20-a5ea-627c8f7751e6"
+  },
+  {
+   "component": "combo_piece",
+   "id": "8e7915d9-b941-4675-9a1b-18e579977144",
+   "name": "Septic Rats",
+   "object": "related_card",
+   "type_line": "Creature — Phyrexian Rat",
+   "uri": "https://api.scryfall.com/cards/8e7915d9-b941-4675-9a1b-18e579977144"
+  },
+  {
+   "component": "combo_piece",
+   "id": "a99fe9a8-d9e7-4286-81a1-adfb753e4741",
+   "name": "Nimraiser Paladin",
+   "object": "related_card",
+   "type_line": "Creature — Phyrexian Knight",
+   "uri": "https://api.scryfall.com/cards/a99fe9a8-d9e7-4286-81a1-adfb753e4741"
+  },
+  {
+   "component": "combo_piece",
+   "id": "a107f2ea-1888-4fc6-b7e9-005d5ba4ca8d",
+   "name": "Glissa's Retriever",
+   "object": "related_card",
+   "type_line": "Creature — Phyrexian Beast",
+   "uri": "https://api.scryfall.com/cards/a107f2ea-1888-4fc6-b7e9-005d5ba4ca8d"
+  },
+  {
+   "component": "combo_piece",
+   "id": "a83a0027-e82d-46ec-b40b-8bf16eb1f379",
+   "name": "Mite Overseer",
+   "object": "related_card",
+   "type_line": "Creature — Phyrexian Soldier",
+   "uri": "https://api.scryfall.com/cards/a83a0027-e82d-46ec-b40b-8bf16eb1f379"
+  },
+  {
+   "component": "combo_piece",
+   "id": "c930c9cc-1b64-4f36-afe2-6bf120a74ce2",
+   "name": "Skithiryx, the Blight Dragon",
+   "object": "related_card",
+   "type_line": "Legendary Creature — Phyrexian Dragon Skeleton",
+   "uri": "https://api.scryfall.com/cards/c930c9cc-1b64-4f36-afe2-6bf120a74ce2"
+  },
+  {
+   "component": "combo_piece",
+   "id": "1b7178c6-f989-437d-83e3-04b9817f2c54",
+   "name": "Suq'Ata Assassin",
+   "object": "related_card",
+   "type_line": "Creature — Human Assassin",
+   "uri": "https://api.scryfall.com/cards/1b7178c6-f989-437d-83e3-04b9817f2c54"
+  },
+  {
+   "component": "combo_piece",
+   "id": "0f47d877-3cbf-4134-985f-092c5c3fda1e",
+   "name": "Monument to Perfection",
+   "object": "related_card",
+   "type_line": "Artifact",
+   "uri": "https://api.scryfall.com/cards/0f47d877-3cbf-4134-985f-092c5c3fda1e"
+  },
+  {
+   "component": "combo_piece",
+   "id": "643891b6-23d0-4734-81e0-b315d2d58f50",
+   "name": "Tel-Jilad Fallen",
+   "object": "related_card",
+   "type_line": "Creature — Phyrexian Elf Warrior",
+   "uri": "https://api.scryfall.com/cards/643891b6-23d0-4734-81e0-b315d2d58f50"
+  },
+  {
+   "component": "combo_piece",
+   "id": "cf9b3335-565c-406d-bd94-f36974602552",
+   "name": "Blight Mamba",
+   "object": "related_card",
+   "type_line": "Creature — Phyrexian Snake",
+   "uri": "https://api.scryfall.com/cards/cf9b3335-565c-406d-bd94-f36974602552"
+  },
+  {
+   "component": "combo_piece",
+   "id": "845b665e-8236-4ab9-bee4-414f075461d2",
+   "name": "Tine Shrike",
+   "object": "related_card",
+   "type_line": "Creature — Phyrexian Bird",
+   "uri": "https://api.scryfall.com/cards/845b665e-8236-4ab9-bee4-414f075461d2"
+  },
+  {
+   "component": "combo_piece",
+   "id": "cddaebde-a060-4510-8c97-68432d931987",
+   "name": "Blighted Agent",
+   "object": "related_card",
+   "type_line": "Creature — Phyrexian Human Rogue",
+   "uri": "https://api.scryfall.com/cards/cddaebde-a060-4510-8c97-68432d931987"
+  },
+  {
+   "component": "combo_piece",
+   "id": "a0359c24-6a70-476f-b26b-cd992d9acecf",
+   "name": "Kinzu of the Bleak Coven",
+   "object": "related_card",
+   "type_line": "Legendary Creature — Phyrexian Vampire",
+   "uri": "https://api.scryfall.com/cards/a0359c24-6a70-476f-b26b-cd992d9acecf"
+  },
+  {
+   "component": "combo_piece",
+   "id": "8d2e522b-e6f8-4fae-8c08-ce2bb8bed04f",
+   "name": "Necropede",
+   "object": "related_card",
+   "type_line": "Artifact Creature — Phyrexian Insect",
+   "uri": "https://api.scryfall.com/cards/8d2e522b-e6f8-4fae-8c08-ce2bb8bed04f"
+  },
+  {
+   "component": "combo_piece",
+   "id": "6271c5c1-5f39-4908-b838-0f34c74e912e",
+   "name": "Ogre Menial",
+   "object": "related_card",
+   "type_line": "Creature — Phyrexian Ogre",
+   "uri": "https://api.scryfall.com/cards/6271c5c1-5f39-4908-b838-0f34c74e912e"
+  },
+  {
+   "component": "combo_piece",
+   "id": "7928bb14-7631-4830-a756-26d1ea832ba2",
+   "name": "Blightsteel Colossus",
+   "object": "related_card",
+   "type_line": "Artifact Creature — Phyrexian Golem",
+   "uri": "https://api.scryfall.com/cards/7928bb14-7631-4830-a756-26d1ea832ba2"
+  },
+  {
+   "component": "combo_piece",
+   "id": "f0024556-0317-4c28-83c3-0a6020d72a2b",
+   "name": "Phyrexian Vatmother",
+   "object": "related_card",
+   "type_line": "Creature — Phyrexian Horror",
+   "uri": "https://api.scryfall.com/cards/f0024556-0317-4c28-83c3-0a6020d72a2b"
+  },
+  {
+   "component": "combo_piece",
+   "id": "9f03d6bf-cbba-4ad7-8cec-065a47f03dbe",
+   "name": "Infested Fleshcutter",
+   "object": "related_card",
+   "type_line": "Artifact — Equipment",
+   "uri": "https://api.scryfall.com/cards/9f03d6bf-cbba-4ad7-8cec-065a47f03dbe"
+  },
+  {
+   "component": "combo_piece",
+   "id": "dfb09439-1935-424b-b95d-919a0d37bc3d",
+   "name": "Venerated Rotpriest",
+   "object": "related_card",
+   "type_line": "Creature — Phyrexian Druid",
+   "uri": "https://api.scryfall.com/cards/dfb09439-1935-424b-b95d-919a0d37bc3d"
+  },
+  {
+   "component": "combo_piece",
+   "id": "57551332-e2a4-4e6a-9bd8-e3a9baafcd17",
+   "name": "Aspirant's Ascent",
+   "object": "related_card",
+   "type_line": "Instant",
+   "uri": "https://api.scryfall.com/cards/57551332-e2a4-4e6a-9bd8-e3a9baafcd17"
+  },
+  {
+   "component": "combo_piece",
+   "id": "fa1fe29f-cf84-45d3-b8fe-e4de1d2bebbf",
+   "name": "Decimator Web",
+   "object": "related_card",
+   "type_line": "Artifact",
+   "uri": "https://api.scryfall.com/cards/fa1fe29f-cf84-45d3-b8fe-e4de1d2bebbf"
+  },
+  {
+   "component": "combo_piece",
+   "id": "9aa64374-0693-47c9-8b69-56def3817b14",
+   "name": "Grafted Exoskeleton",
+   "object": "related_card",
+   "type_line": "Artifact — Equipment",
+   "uri": "https://api.scryfall.com/cards/9aa64374-0693-47c9-8b69-56def3817b14"
+  },
+  {
+   "component": "combo_piece",
+   "id": "94ca493e-f09b-4b11-bb47-0562dfc203ca",
+   "name": "Hand of the Praetors",
+   "object": "related_card",
+   "type_line": "Creature — Phyrexian Zombie",
+   "uri": "https://api.scryfall.com/cards/94ca493e-f09b-4b11-bb47-0562dfc203ca"
+  },
+  {
+   "component": "combo_piece",
+   "id": "2013aed6-7415-4bf0-a3bb-46d6beecbaff",
+   "name": "Ichor Rats",
+   "object": "related_card",
+   "type_line": "Creature — Phyrexian Rat",
+   "uri": "https://api.scryfall.com/cards/2013aed6-7415-4bf0-a3bb-46d6beecbaff"
+  },
+  {
+   "component": "combo_piece",
+   "id": "3a7bb447-c2b0-429e-bf82-02d6a966fe73",
+   "name": "Chained Throatseeker",
+   "object": "related_card",
+   "type_line": "Creature — Phyrexian Horror",
+   "uri": "https://api.scryfall.com/cards/3a7bb447-c2b0-429e-bf82-02d6a966fe73"
+  },
+  {
+   "component": "combo_piece",
+   "id": "42060b9d-de58-485e-817a-1e64839943aa",
+   "name": "Charge of the Mites",
+   "object": "related_card",
+   "type_line": "Instant",
+   "uri": "https://api.scryfall.com/cards/42060b9d-de58-485e-817a-1e64839943aa"
+  },
+  {
+   "component": "combo_piece",
+   "id": "758dbe61-6dc7-4b08-bdd6-7262257955fc",
+   "name": "Paladin of Predation",
+   "object": "related_card",
+   "type_line": "Creature — Phyrexian Knight",
+   "uri": "https://api.scryfall.com/cards/758dbe61-6dc7-4b08-bdd6-7262257955fc"
+  },
+  {
+   "component": "combo_piece",
+   "id": "6ac8cd7c-992f-4953-b5bf-42e5a9ff09ad",
+   "name": "Necrogen Communion",
+   "object": "related_card",
+   "type_line": "Enchantment — Aura",
+   "uri": "https://api.scryfall.com/cards/6ac8cd7c-992f-4953-b5bf-42e5a9ff09ad"
+  }
+ ],
+ "artist": "",
+ "booster": true,
+ "border_color": "black",
+ "card_back_id": "0aeebaf5-8c7d-4636-9e82-8c27447861f7",
+ "cardmarket_id": 245504,
+ "cmc": 0.0,
+ "collector_number": "6",
+ "color_identity": [],
+ "colors": [],
+ "digital": false,
+ "finishes": [
+  "nonfoil"
+ ],
+ "foil": false,
+ "frame": "2003",
+ "full_art": false,
+ "game_changer": false,
+ "games": [
+  "paper"
+ ],
+ "highres_image": true,
+ "id": "92fcdd2b-dd90-458d-9b8b-5b1b9a3f8bd3",
+ "image_status": "highres_scan",
+ "image_updated_at": "2026-07-13T11:15:55Z",
+ "image_uris": {
+  "art": "https://cards.scryfall.io/art/front/9/2/92fcdd2b-dd90-458d-9b8b-5b1b9a3f8bd3.webp?1783941355",
+  "art_crop": "https://cards.scryfall.io/art_crop/front/9/2/92fcdd2b-dd90-458d-9b8b-5b1b9a3f8bd3.jpg?1783941355",
+  "border_crop": "https://cards.scryfall.io/border_crop/front/9/2/92fcdd2b-dd90-458d-9b8b-5b1b9a3f8bd3.jpg?1783941355",
+  "crop": "https://cards.scryfall.io/crop/front/9/2/92fcdd2b-dd90-458d-9b8b-5b1b9a3f8bd3.webp?1783941355",
+  "display": "https://cards.scryfall.io/display/front/9/2/92fcdd2b-dd90-458d-9b8b-5b1b9a3f8bd3.webp?1783941355",
+  "grid": "https://cards.scryfall.io/grid/front/9/2/92fcdd2b-dd90-458d-9b8b-5b1b9a3f8bd3.webp?1783941355",
+  "large": "https://cards.scryfall.io/large/front/9/2/92fcdd2b-dd90-458d-9b8b-5b1b9a3f8bd3.jpg?1783941355",
+  "normal": "https://cards.scryfall.io/normal/front/9/2/92fcdd2b-dd90-458d-9b8b-5b1b9a3f8bd3.jpg?1783941355",
+  "png": "https://cards.scryfall.io/png/front/9/2/92fcdd2b-dd90-458d-9b8b-5b1b9a3f8bd3.png?1783941355",
+  "small": "https://cards.scryfall.io/small/front/9/2/92fcdd2b-dd90-458d-9b8b-5b1b9a3f8bd3.jpg?1783941355",
+  "thumb": "https://cards.scryfall.io/thumb/front/9/2/92fcdd2b-dd90-458d-9b8b-5b1b9a3f8bd3.webp?1783941355"
+ },
+ "keywords": [],
+ "lang": "en",
+ "layout": "normal",
+ "legalities": {
+  "alchemy": "not_legal",
+  "brawl": "not_legal",
+  "commander": "not_legal",
+  "competitivebrawl": "not_legal",
+  "duel": "not_legal",
+  "future": "not_legal",
+  "gladiator": "not_legal",
+  "historic": "not_legal",
+  "legacy": "not_legal",
+  "modern": "not_legal",
+  "oathbreaker": "not_legal",
+  "oldschool": "not_legal",
+  "pauper": "not_legal",
+  "paupercommander": "not_legal",
+  "penny": "not_legal",
+  "pioneer": "not_legal",
+  "predh": "not_legal",
+  "premodern": "not_legal",
+  "standard": "not_legal",
+  "standardbrawl": "not_legal",
+  "timeless": "not_legal",
+  "tlr": "not_legal",
+  "vintage": "not_legal"
+ },
+ "mana_cost": "",
+ "multiverse_ids": [],
+ "name": "Poison Counter",
+ "nonfoil": true,
+ "object": "card",
+ "oracle_id": "60acebe2-e1e5-478a-ab88-6a9c1409bca5",
+ "oracle_text": "(A player with ten or more poison counters loses the game.)",
+ "oversized": false,
+ "prices": {
+  "eur": "0.22",
+  "eur_foil": null,
+  "tix": null,
+  "usd": "0.47",
+  "usd_etched": null,
+  "usd_foil": null
+ },
+ "prints_search_uri": "https://api.scryfall.com/cards/search?order=released&q=oracleid%3A60acebe2-e1e5-478a-ab88-6a9c1409bca5&unique=prints",
+ "promo": false,
+ "promo_types": [
+  "setpromo"
+ ],
+ "purchase_uris": {
+  "cardhoarder": "https://www.cardhoarder.com/cards?affiliate_id=scryfall&data%5Bsearch%5D=Poison+Counter&ref=card-profile&utm_campaign=affiliate&utm_medium=card&utm_source=scryfall",
+  "cardmarket": "https://www.cardmarket.com/en/Magic/Products?idProduct=245504&referrer=scryfall&utm_campaign=card_prices&utm_medium=text&utm_source=scryfall",
+  "tcgplayer": "https://partner.tcgplayer.com/c/4931599/1830156/21018?subId1=api&u=https%3A%2F%2Fwww.tcgplayer.com%2Fproduct%2F91394%3Fpage%3D1"
+ },
+ "rarity": "common",
+ "related_uris": {
+  "edhrec": "https://edhrec.com/route/?cc=Poison+Counter",
+  "tcgplayer_infinite_articles": "https://partner.tcgplayer.com/c/4931599/1830156/21018?subId1=api&trafcat=tcgplayer.com%2Fsearch%2Farticles&u=https%3A%2F%2Fwww.tcgplayer.com%2Fsearch%2Farticles%3FproductLineName%3Dmagic%26q%3DPoison%2BCounter",
+  "tcgplayer_infinite_decks": "https://partner.tcgplayer.com/c/4931599/1830156/21018?subId1=api&trafcat=tcgplayer.com%2Fsearch%2Fdecks&u=https%3A%2F%2Fwww.tcgplayer.com%2Fsearch%2Fdecks%3FproductLineName%3Dmagic%26q%3DPoison%2BCounter"
+ },
+ "released_at": "2011-02-04",
+ "reprint": true,
+ "reserved": false,
+ "rulings_uri": "https://api.scryfall.com/cards/92fcdd2b-dd90-458d-9b8b-5b1b9a3f8bd3/rulings",
+ "scryfall_set_uri": "https://scryfall.com/sets/tmbs?utm_source=api",
+ "scryfall_uri": "https://scryfall.com/card/tmbs/6/poison-counter?utm_source=api",
+ "set": "tmbs",
+ "set_id": "ab9695ca-ca49-46c2-9bc4-c18e50f8689b",
+ "set_name": "Mirrodin Besieged Tokens",
+ "set_search_uri": "https://api.scryfall.com/cards/search?order=set&q=e%3Atmbs&unique=prints",
+ "set_type": "token",
+ "set_uri": "https://api.scryfall.com/sets/ab9695ca-ca49-46c2-9bc4-c18e50f8689b",
+ "story_spotlight": false,
+ "tcgplayer_id": 91394,
+ "textless": false,
+ "type_line": "Card",
+ "uri": "https://api.scryfall.com/cards/92fcdd2b-dd90-458d-9b8b-5b1b9a3f8bd3",
+ "variation": false
+}

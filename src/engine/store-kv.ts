@@ -2147,8 +2147,14 @@ export async function gzipBytes(bytes: Uint8Array): Promise<Uint8Array> {
  *      are not serialized, a text compared without case, accents, spacing or punctuation: 27,459 of
  *      27,459, the list read whole. Bit 8 of `new_flags`; ARCHIVE_FORMAT_VERSION 2026100908 ->
  *      2026100909.
+ *
+ *   85 (2026-10-09): `new:art`, and `new:illustration`. The first printing ANYWHERE of each
+ *      artwork: the group is the illustration id across cards, so the builder's corpus-wide pass
+ *      decides it (`NewArt`, riding the corpus tables through the nightly's scores phase) and marks
+ *      the row with a tag card_engine turns into bit 9 of `new_flags` and removes. 52,047 of 52,047,
+ *      the list read whole. ARCHIVE_FORMAT_VERSION 2026100909 -> 2026100910.
  */
-export const STORE_CONTENT_GENERATION = 84;
+export const STORE_CONTENT_GENERATION = 85;
 
 /**
  * Chunk key for a store. Keyed by store_key, so publishes never collide.

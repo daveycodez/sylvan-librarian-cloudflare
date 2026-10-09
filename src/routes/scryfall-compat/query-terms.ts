@@ -2126,6 +2126,10 @@ const NEW_KEYWORDS: ReadonlySet<string> = new Set(["new"]);
  *                    and serialized printings; two texts are one when they differ only in case,
  *                    accents, spacing or punctuation. A faced printing's text is its faces' in turn,
  *                    and one whose front has none is never new. 27,459 of 27,459.
+ *   art, illustration   the first printing ANYWHERE of each illustration id — the group crosses
+ *                    cards, so a reused painting is new once — outside memorabilia but for the two
+ *                    sets `olgc` and `o90p`; the rows with no illustration id are one group.
+ *                    52,047 of 52,047. Decided by the builder's corpus-wide pass (`NewArt`).
  *
  * None forces extras or widens, and each negation is the complement over every row of every
  * language (`-new:card lang:any` is 510,145 of 545,303).
@@ -2149,6 +2153,8 @@ const NEW_VALUE_IS_TAGS: ReadonlyMap<string, string> = new Map([
 	["flavor", "newflavor"],
 	["ft", "newflavor"],
 	["flavortext", "newflavor"],
+	["art", "newart"],
+	["illustration", "newart"],
 ]);
 
 /**
@@ -2157,9 +2163,9 @@ const NEW_VALUE_IS_TAGS: ReadonlyMap<string, string> = new Map([
  * parse, as `new:` did before — never dropped, which would answer wider than Scryfall does, and
  * never guessed:
  *
- *   language, lang, art, artist, illustration
+ *   language, lang, artist
  */
-const NEW_HONORED_UNANSWERED: ReadonlySet<string> = new Set(["language", "lang", "art", "artist", "illustration"]);
+const NEW_HONORED_UNANSWERED: ReadonlySet<string> = new Set(["language", "lang", "artist"]);
 
 const STRICT_REGEX_KEYWORDS: ReadonlySet<string> = new Set([
 	...STAMP_KEYWORDS,

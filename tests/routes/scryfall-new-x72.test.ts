@@ -25,6 +25,7 @@ const NEW_FLAG_VALUES = [
 	"foil",
 	"nonfoil",
 	"flavor",
+	"art",
 ];
 
 const ignored = (echo: string, reason: string) => `Invalid expression “${echo}” was ignored. ${reason}`;
@@ -131,6 +132,10 @@ describe("the new: values the store's new_flags answer are the engine's is:new<v
 		["new:ft", "is:newflavor"],
 		["new:flavortext", "is:newflavor"],
 		["-new:flavor", "-is:newflavor"],
+		// `new:illustration` is 52,046 corpus-wide, as `new:art` (25 and 25 on the anchor).
+		["new:art", "is:newart"],
+		["new:illustration", "is:newart"],
+		["-new:art", "-is:newart"],
 	])("%s", (q, rewritten) => {
 		const policy = scryfallTermPolicy(`${q} e:khm t:god`);
 		expect(policy.warnings).toEqual([]);
@@ -162,9 +167,7 @@ describe("the values Scryfall honors and this port does not answer fail to parse
 		"new:lang",
 		"new:LANGUAGE",
 		"-new:language",
-		"new:art",
 		"new:artist",
-		"new:illustration",
 		// Honored there too, measured 2026-10-09 (each moves the anchor's count, or answers a 404
 		// with no warning): the plural, and the games under their other names.
 	])("%s is kept, unwarned, and refused", (term) => {
