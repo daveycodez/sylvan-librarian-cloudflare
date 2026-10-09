@@ -873,62 +873,20 @@ export class SearchEngine extends DurableObject<Env> {
 	 * settle — every deck list of real names — reads the packet's header and nothing else: the index
 	 * is not loaded for it. No index, no `located`; the router then asks every partition, as before.
 	 *
-	 * THE WIDTH IS READ FROM WHICHEVER OF THE THIRD AND FOURTH ARGUMENTS IS A NUMBER, the fourth
-	 * first. The third position carried the batch's `?q=` scope while the collection route had that
-	 * extension (412ca17b, removed 2026-10-08), ahead of the shard count, and it is being taken off
-	 * the wire in two deploys, because no single one can do it. Arguments cross the RPC by position,
-	 * and a deploy replaces the Workers and the engine objects separately, so for a while each build
-	 * calls the other. Were the slot dropped at once, the BATCH would still answer either way round,
-	 * and the shard count would not arrive: a Worker on the build before sends
-	 * `(batch, baseUrl, null, shards)` and would land its `null` where the new object reads the
-	 * count, and a Worker on the new build would send `(batch, baseUrl, shards)` and land its count
-	 * in the older object's third position, where nothing reads a number — so every collection call
-	 * across the deploy would report a width of 1 to the rendezvous (`instrumented`), and a region
-	 * whose wider width only those calls were holding up would see it age out (WIDTH_TTL_MS).
-	 *
-	 * STEP 1 (this deploy): the object reads either position; the Worker is unchanged and still
-	 * sends `(batch, baseUrl, null, shards)` (RemoteEngine.scryfallCollectionBatch), because an
-	 * object on the build before this one reads the count fourth and nowhere else.
-	 *   (batch, baseUrl, null, shards)  → shards   today's Worker, and every Worker before it
-	 *   (batch, baseUrl, shards)        → shards   step 2's Worker
-	 *   (batch, baseUrl, null)          → 1        no width reported (the hedge reports none)
-	 *   (batch, baseUrl)                → 1
-	 * A third argument that is not a number — `null`, `undefined`, or the scope object a Worker
-	 * from before 2026-10-08 sent — is the retired slot, and nothing is read from it.
-	 *
-	 * STEP 2 (a later deploy, once no object older than step 1 can be running): the Worker sends
-	 * `(batch, baseUrl, shards)` and the parameter list drops to three. An object that read the
-	 * fourth argument alone would report 1 for that Worker, so step 2 waits until every engine
-	 * object — every partition and shard, in every region, on BOTH accounts this repo deploys to —
-	 * is on step 1's code or later.
-	 *
-	 * What drops to three in step 2 is the WORKER'S side: its call and its stub type
-	 * (SearchEngineStub). This method's own fourth parameter has the same two-sided problem one
-	 * deploy on: while step 2 rolls out, a step-1 Worker still calls a step-2 object with
-	 * `(batch, baseUrl, null, shards)`, and an object reading the third argument alone would make a
-	 * width of 1 of it. So the object keeps reading both positions in step 2, and loses the fourth
-	 * only in a deploy after it, once no Worker older than step 2 can be running.
-	 *
-	 * STEP 2 IS DONE (2026-10-09): the Worker sends `(batch, baseUrl, shards)` (remote-engine.ts).
-	 * OWED: step 3 — once no isolate older than step 2 can be running, drop the fourth parameter and
-	 * read the width from the third alone.
+	 * `(batch, baseUrl, reportedShards)`. The third position once carried the batch's `?q=` scope and
+	 * the count came fourth; the scope went on 2026-10-08 and its place was retired over three
+	 * deploys on 2026-10-09, because a deploy replaces Workers and engine objects separately and each
+	 * build calls the other for a while: (1) ebf29e5c — this object read the count from either
+	 * position; (2) e0ccda14 — the Worker sent it third; (3) this — the fourth position is gone. An
+	 * isolate older than step 2 would land `null` here and report a width of 1; none can be running.
 	 */
 	async scryfallCollectionBatch(
 		batch: CollectionBatch,
 		baseUrl: string,
-		/** Step 2's shard count, or the retired `?q=` scope's place (`null` from today's Worker). */
-		shardsOrRetired?: number | null,
-		/** Today's shard count: what every Worker up to and including step 1's sends. */
 		reportedShards?: number,
 	): Promise<{ packet: Uint8Array; located?: CollectionLocated; answeredFrom: CollectionSource } & SearchTelemetry> {
-		// `typeof`, not `??`: an older Worker's `null` (or scope object) third must not be read as a
-		// width, and a `null` fourth must fall through to the third rather than count as one.
-		const width =
-			typeof reportedShards === "number"
-				? reportedShards
-				: typeof shardsOrRetired === "number"
-					? shardsOrRetired
-					: undefined;
+		// `typeof`, not `??`: anything that is not a number is no width.
+		const width = typeof reportedShards === "number" ? reportedShards : undefined;
 		return this.instrumented(width, async (engine) => {
 			const packet = collectionPacketOf(engine, batch, baseUrl);
 			// x58: which store and code wrote the packet, read in the packet's own turn — nothing is

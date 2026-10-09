@@ -169,11 +169,6 @@ interface SearchEngineStub {
 	scryfallCollectionBatch(
 		batch: CollectionBatch,
 		baseUrl: string,
-		/**
-		 * The shard width, THIRD since step 2 (2026-10-09). The retired `?q=` scope held this place
-		 * (always null) and the width came fourth; the object has read either position since step 1
-		 * and keeps doing so until step 3 — see the method in search-engine-do.ts.
-		 */
 		reportedShards?: number,
 	): Promise<{ packet: Uint8Array; located?: CollectionLocated; answeredFrom?: CollectionSource } & Telemetry>;
 	scryfallNamesContaining(
@@ -1332,13 +1327,8 @@ export class RemoteEngine implements Engine {
 
 	/** The one-round collection batch — see Engine.scryfallCollectionBatch. */
 	async scryfallCollectionBatch(batch: CollectionBatch, baseUrl: string): Promise<CollectionBatchAnswer> {
-		// STEP 2 of retiring the scope's place on the wire (search-engine-do.ts
-		// `scryfallCollectionBatch`): the width goes THIRD. Every engine object has read it from
-		// either position since step 1 (ebf29e5c, 2026-10-09), so this pairs with any object still
-		// running; an isolate on step 1 keeps sending `(batch, baseUrl, null, shards)`, which the
-		// object still reads.
-		// OWED, 2026-10-09: step 3 — once no isolate older than this deploy can be running, the
-		// object's parameter list drops to three and its either-position read goes.
+		// The width goes third: `(batch, baseUrl, shards)` — see the object's method for how the
+		// retired `?q=` scope's place was closed over three deploys (2026-10-09).
 		const { packet, located, answeredFrom } = await this.searchRpc("scryfallCollectionBatch", (stub, shards) =>
 			stub.scryfallCollectionBatch(batch, baseUrl, shards),
 		);
