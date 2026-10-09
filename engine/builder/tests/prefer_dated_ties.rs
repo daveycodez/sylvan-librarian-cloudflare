@@ -1,22 +1,27 @@
 //! `prefer:oldest` AND `prefer:newest` INSIDE ONE RELEASE DATE — through the whole native pipeline:
 //! Scryfall JSON → transform → finalize → store → query → card objects.
 //!
-//! Real card objects, api.scryfall.com 2026-10-08: the four printings of Ultima, Origin of
-//! Oblivion and the four of Ultima, all released 2025-06-13. The date ties on every one of them, so
-//! the answer is the whole of Scryfall's tiebreak — the release batch of the set (ascending for
-//! `oldest`, descending for `newest`), the set code, then the SMALLEST Scryfall id:
+//! Real card objects, api.scryfall.com 2026-10-08. The date ties on every one of them, so the
+//! answer is the whole of Scryfall's tiebreak — the release batch of the set (ascending for
+//! `oldest`, descending for `newest`), then the SMALLEST Scryfall id of that batch, whichever set
+//! holds it:
 //!
 //! ```text
 //! Ultima, Origin of Oblivion   fin/2 d55a4c02…   pfin/2s 67bd0d2c…   fin/324 2ac1b165…   fin/421 e6e27054…
 //!   prefer:oldest  fin/324      prefer:newest  pfin/2s      with e:fin, both  fin/324
 //! Ultima                       fin/38 39504a0e…  pfin/38s 1586fec8…  fin/328 e673fb51…   pss5/1 e9fabb82…
 //!   prefer:oldest  fin/38       prefer:newest  pfin/38s
+//! Path to Exile (2024-08-02)   blc/147 a5b070f2…   mb2/15 4f92d5e6…     both prefers  mb2/15
+//! Swords to Plowshares         blc/109 948cdb9d…   mb2/153 b635680a…    both prefers  blc/109
 //! ```
 //!
-//! `pfin` is batch 1 of that date and `fin` and `pss5` batch 0 (card_engine's release_batches.tsv),
-//! so `newest` leads with the prerelease promo and `oldest` with fin, whose smallest id is the
-//! borderless fin/324 — not the default printing fin/2 that the tie used to fall to here, which is
-//! what `e:fin t:god prefer:oldest` showed: fin/2 and fin/128 against Scryfall's fin/324 and fin/336.
+//! `pfin` is batch 1 of 2025-06-13 and `fin` and `pss5` batch 0 (card_engine's
+//! release_batches.tsv), so `newest` leads with the prerelease promo and `oldest` with fin, whose
+//! smallest id is the borderless fin/324 — not the default printing fin/2 that the tie used to fall
+//! to here, which is what `e:fin t:god prefer:oldest` showed: fin/2 and fin/128 against Scryfall's
+//! fin/324 and fin/336. `blc` and `mb2` are ONE batch of 2024-08-02, and the set code does not
+//! decide between them: of the 14 cards both print, Scryfall keeps `mb2` for 8 and `blc` for 6, the
+//! lowest id every time and the same row under both prefers.
 
 use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -34,6 +39,10 @@ const FIXTURES: &[&str] = &[
     "ultima_pfin_38s",
     "ultima_fin_328",
     "ultima_pss5_1",
+    "path_to_exile_blc_147",
+    "path_to_exile_mb2_15",
+    "swords_to_plowshares_blc_109",
+    "swords_to_plowshares_mb2_153",
 ];
 
 fn fixture(name: &str) -> Value {
@@ -98,7 +107,7 @@ fn pick(store: &BufferStore, tree: &Value, prefer: &str) -> String {
 }
 
 #[test]
-fn a_date_tie_breaks_by_the_release_batch_the_set_and_the_smallest_id() {
+fn a_date_tie_breaks_by_the_release_batch_and_the_smallest_id() {
     for reversed in [false, true] {
         let store = store(reversed);
         let god = oracle(fixture("ultima_origin_of_oblivion_fin_2")["oracle_id"].as_str().unwrap());
@@ -116,8 +125,22 @@ fn a_date_tie_breaks_by_the_release_batch_the_set_and_the_smallest_id() {
         // Two sets of one date: the earlier batch for `oldest`, the later for `newest`.
         assert_eq!(pick(&store, &god, "oldest"), "fin/324");
         assert_eq!(pick(&store, &god, "newest"), "pfin/2s");
-        // Three: fin and pss5 share batch 0 and the code decides between them, ascending in both.
+        // Three: fin and pss5 share batch 0, where fin/38 holds the smallest id.
         assert_eq!(pick(&store, &spell, "oldest"), "fin/38");
         assert_eq!(pick(&store, &spell, "newest"), "pfin/38s");
+    }
+}
+
+#[test]
+fn inside_one_batch_the_smallest_id_wins_whichever_set_holds_it() {
+    for reversed in [false, true] {
+        let store = store(reversed);
+        let path = oracle(fixture("path_to_exile_blc_147")["oracle_id"].as_str().unwrap());
+        let swords = oracle(fixture("swords_to_plowshares_blc_109")["oracle_id"].as_str().unwrap());
+        for prefer in ["oldest", "newest"] {
+            // The later code, on the smaller id — the set code is not a key.
+            assert_eq!(pick(&store, &path, prefer), "mb2/15", "{prefer}");
+            assert_eq!(pick(&store, &swords, prefer), "blc/109", "{prefer}");
+        }
     }
 }

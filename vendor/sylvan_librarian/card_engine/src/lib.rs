@@ -11462,37 +11462,48 @@ fn mode_from_unique(unique: &str) -> Mode {
 /// whose extreme date holds two or more printings (1,674 picks):
 ///
 /// ```text
-/// prefer:oldest   released_at ASC,  release batch ASC,  set code ASC, scryfall id ASC   850 of 851
-/// prefer:newest   released_at DESC, release batch DESC, set code ASC, scryfall id ASC   823 of 823
+/// prefer:oldest   released_at ASC,  release batch ASC,  scryfall id ASC   851 of 851
+/// prefer:newest   released_at DESC, release batch DESC, scryfall id ASC   823 of 823
 /// ```
 ///
-/// — the set order `order=released` uses (`release_set_key`: the measured batch, then the code),
-/// with the batch following the direction and the code not, and the SMALLEST Scryfall id inside
-/// one set: Ultima, Origin of Oblivion's fin printings are fin/2 `d55a…`, fin/324 `2ac1…` and
-/// fin/421 `e6e2…`, and both prefers answer fin/324. With the prerelease promo in scope
-/// (`pfin`, batch 1 of that date) `oldest` still answers fin/324 and `newest` answers pfin/2s.
-/// Store order, which is what the date alone left the tie to, agreed on 644 of those 1,674; the
-/// id alone on 1,336.
+/// — the batch `order=released` cuts a date's sets into (`release_batches.tsv`), following the
+/// direction, and then the SMALLEST Scryfall id of the whole batch, whichever set it is in. The set
+/// code is NOT a key: this read `batch, set code, id` at first, which the same picks fit on 850 and
+/// 823 because their date-tied sets were nearly all in different batches, and which four pairs of
+/// sets that share a batch refute — cards printed in both on one date, asked across the pair:
 ///
-/// PACKED so an f64 holds it exactly: the date as `released_sort_ord` (under 2^20), the set key
-/// (16 bits) and the printing's id RANK among its card's printings of that date and set (11 bits;
-/// a card has at most a few). The rank is a scan of `siblings` per printing, paid only under these
-/// two prefers. A missing date keeps the side it had: last for `oldest`, last for `newest`.
+/// ```text
+/// 2024-08-02  blc / mb2    14 cards   mb2 kept 8, blc 6    the lowest id 14 of 14, the code 6
+/// 2024-08-02  blc / plst   30 cards   blc 17, plst 13      30 of 30, the code 17
+/// 2024-11-15  fdn / j25    72 cards   j25 40, fdn 32       72 of 72, the code 32
+/// 2026-06-26  mar / msc     6 cards   msc 4, mar 2          6 of 6, the code 2
+/// ```
+///
+/// and identically under both prefers, which is what one batch looks like: across a boundary the
+/// two disagree (`eld`/`peld` on 2019-10-04, 68 cards: `peld` under newest, `eld` under oldest).
+/// Ultima, Origin of Oblivion's fin printings are fin/2 `d55a…`, fin/324 `2ac1…` and fin/421
+/// `e6e2…`, and both prefers answer fin/324. With the prerelease promo in scope (`pfin`, batch 1 of
+/// that date) `oldest` still answers fin/324 and `newest` answers pfin/2s. Store order, which is
+/// what the date alone left the tie to, agreed on 644 of those 1,674; the id alone on 1,336.
+///
+/// PACKED so an f64 holds it exactly: the date as `released_sort_ord` (under 2^20), the batch (the
+/// 16-bit slot the whole set key had) and the printing's id RANK among its card's printings of
+/// that date and batch (11 bits; a card has at most a few). The rank is a scan of `siblings` per
+/// printing, paid only under these two prefers. A missing date keeps the side it had: last for
+/// `oldest`, last for `newest`.
 fn dated_prefer_key(p: &APrinting, siblings: &[APrinting], newest: bool) -> f64 {
     const ID_RANKS: u32 = 1 << 11;
+    let batch_of = |q: &APrinting| u32::from(u16::from(q.release_set_key)) >> RELEASE_KEY_CODE_BITS;
     let date = p.released_at_int.as_ref().map(|v| u32::from(*v));
     // `oldest` negates the key, so its missing date must be the LARGEST; `newest`'s the smallest.
     let ord = date.map_or(if newest { 0 } else { (1 << 21) - 1 }, released_sort_ord);
-    let set_key = u32::from(u16::from(p.release_set_key));
-    let (batch, code) = (set_key >> RELEASE_KEY_CODE_BITS, set_key & ((1 << RELEASE_KEY_CODE_BITS) - 1));
-    // Newest: the later batch first, and inside it the code still ascending.
-    let set = if newest { (batch << RELEASE_KEY_CODE_BITS) | (((1 << RELEASE_KEY_CODE_BITS) - 1) - code) } else { set_key };
+    let batch = batch_of(p);
     let id = u128::from(p.scryfall_id);
     let smaller = siblings
         .iter()
         .filter(|s| {
             s.released_at_int.as_ref().map(|v| u32::from(*v)) == date
-                && u16::from(s.release_set_key) == u16::from(p.release_set_key)
+                && batch_of(s) == batch
                 && u128::from(s.scryfall_id) < id
         })
         .count() as u32;
@@ -11500,7 +11511,7 @@ fn dated_prefer_key(p: &APrinting, siblings: &[APrinting], newest: bool) -> f64 
     // The smallest id wins under BOTH prefers: rank 0 is the largest key for `newest` and, once
     // negated, must be the largest for `oldest` too.
     let id_key = if newest { ID_RANKS - 1 - id_rank } else { id_rank };
-    (f64::from(ord) * 65536.0 + f64::from(set)) * f64::from(ID_RANKS) + f64::from(id_key)
+    (f64::from(ord) * 65536.0 + f64::from(batch)) * f64::from(ID_RANKS) + f64::from(id_key)
 }
 
 /// `unique=art` with no prefer written: THE ARTWORK'S FIRST PRINTING represents it, not the card's
