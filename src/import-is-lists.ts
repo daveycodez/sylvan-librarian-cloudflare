@@ -443,6 +443,19 @@ export function noteOf(state: IsListsState | null, baseDate: string | null): IsL
 	return note;
 }
 
+/** A note in a sentence, for whoever asks what a store's lists are (scripts/store-age.ts). */
+export function describeNote(note: IsListsNote): string {
+	if (note.source !== "nightly") return `the compiled table of ${note.base ?? "an unrecorded day"}, never refreshed`;
+	const lists = Object.entries(note.fetched ?? {})
+		.map(([tag, night]) => `${tag} ${night}`)
+		.join(", ");
+	return (
+		`the nightly's refresh of ${note.checked ?? "an unfinished night"} over the compiled table of ${note.base}` +
+		(lists ? ` (read whole: ${lists})` : "") +
+		(note.sets ? `; ${note.sets} set(s) read for covered and related, the latest ${note.sets_fetched}` : "")
+	);
+}
+
 /**
  * The table the builder is handed: the compiled lines, with every list the state holds in place
  * of the compiled one. Null when the state refines nothing — the compiled table then stands, and

@@ -317,6 +317,44 @@ if ! cmp -s "$PERF_DIR/rows.jsonl" "$PERF_DIR/rows-wasm.jsonl"; then
 fi
 ./target/release/examples/memprobe compare --a "$STORE" --b "$PERF_DIR/store-wasm.store" | sed 's/^/  /'
 
+# ── …and the same under the night's `is:` lists ───────────────────────────────
+# THE NIGHTLY DOES NOT TAG FROM THE COMPILED `is:` LISTS ALONE. It refreshes the eight that are
+# Scryfall's own record before its first row and installs the result over the compiled table
+# (src/import-is-lists.ts; `is_lists_override` in the wasm import), and a deploy's native build is
+# handed the same table (`--is-lists`, scripts/import-store.sh). The step above compares the two
+# builders with NO override installed, which is the compiled table on both sides — the path a
+# night whose refresh failed takes. This is the other one: one table, composed by the nightly's
+# own code and naming rows of this corpus through every kind of line it writes, installed in
+# both builders; the rows must be the same bytes.
+#
+# With its own NEGATIVE CONTROL: the rows under the table must DIFFER from the rows without it. A
+# table neither builder installed would pass the comparison above it just as well.
+step "native vs wasm rows under one is: lists override"
+bun scripts/gate-is-lists-table.ts "$CORPUS_BULK" "$PERF_DIR/is-lists.tsv" | sed 's/^/  /'
+./target/release/examples/memprobe rows --is-lists "$PERF_DIR/is-lists.tsv" \
+    --bulk "$CORPUS_BULK" --tags "$CORPUS_TAGS" --out "$PERF_DIR/rows-lists.jsonl" >/dev/null 2>&1
+bun engine/wasm-import/driver.ts \
+    target/wasm32-unknown-unknown/release/sylvan_wasm_import.wasm \
+    "$CORPUS_BULK" "$CORPUS_TAGS" \
+    "$PERF_DIR/rows-lists-wasm.jsonl" "$PERF_DIR/store-lists-wasm.store" "$PERF_DIR/is-lists.tsv" \
+    >"$PERF_DIR/wasm-import-lists.txt" 2>&1 || {
+    tail -8 "$PERF_DIR/wasm-import-lists.txt" | sed 's/^/  /'
+    echo "  ERROR: the wasm import refused or failed under the is: lists override."
+    exit 1
+}
+if ! cmp -s "$PERF_DIR/rows-lists.jsonl" "$PERF_DIR/rows-lists-wasm.jsonl"; then
+    echo "  ERROR: under the same is: lists override the wasm-built rows differ from the native-built rows."
+    echo "  The nightly and a deploy would tag different printings from the same lists."
+    cmp "$PERF_DIR/rows-lists.jsonl" "$PERF_DIR/rows-lists-wasm.jsonl" | sed 's/^/  /' | head -3
+    exit 1
+fi
+if cmp -s "$PERF_DIR/rows.jsonl" "$PERF_DIR/rows-lists.jsonl"; then
+    echo "  ERROR: the rows built under the override are the rows built without it — the table was"
+    echo "  not installed, or names nothing in this corpus, and the comparison above proved nothing."
+    exit 1
+fi
+echo "  identical rows from both builders under the override, and not the rows without it"
+
 # ── the cut does not change the answer ────────────────────────────────────────
 # CARD-PARTITIONING §6 asked for "byte-identical envelopes, partitioned vs unpartitioned". No such
 # thing can be built: the partition sizing floors at MIN_PARTITION_COUNT=2, writeManifest refuses a

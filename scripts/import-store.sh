@@ -272,9 +272,30 @@ echo "==> Fencing off any nightly import in flight (the deploy wins)..."
 bun scripts/deploy-fence.ts --remote \
     || echo "!!! Deploy fence not written — the store upload writes one and waits for it to settle."
 
+# 3a. The `is:` lists the last nightly refreshed (src/import-is-lists.ts), handed to the builder so
+#     this store is tagged from the lists the nightly's was. Eight `is:` values — covered, intro,
+#     invitational, jumpstart, misprint, related, spellbook, spikey — are Scryfall's own record,
+#     compiled into the builder as of the day `bun run is-lists` was last committed and refreshed
+#     from api.scryfall.com by every nightly, which leaves what it read in KV. This build runs on
+#     most pushes (whenever Scryfall has regenerated its dumps since the live store), and without
+#     this step each one would take those eight values back to the committed day until 11:17 UTC.
+#
+#     It asks Scryfall nothing — a deploy's lists are the last night's, never fresher — and it is
+#     never fatal: with no file (no nightly yet, a commit that regenerated the compiled table, a KV
+#     read that failed) the builder tags from the compiled table and the script has said which.
+#     The builder itself refuses a table that was not composed over ITS compiled one.
+mkdir -p store-build
+IS_LISTS_FLAG=""
+bun scripts/is-lists-override.ts --remote --out store-build/is-lists-override.tsv \
+    || echo "!!! Could not ask for the nightly's is: lists — building with the compiled table."
+if [[ -s store-build/is-lists-override.tsv ]]; then
+    IS_LISTS_FLAG="--is-lists store-build/is-lists-override.tsv"
+fi
+
 echo "==> Building the card store from Scryfall bulk data (~450MB, a few minutes)..."
 "$REPO_ROOT/scripts/with-rust.sh" cargo build --profile fast-native -p sylvan-store-builder
-./target/fast-native/sylvan-store-builder --out store-build --partitions auto
+# shellcheck disable=SC2086  # deliberately split: empty, or a flag and its path
+./target/fast-native/sylvan-store-builder --out store-build --partitions auto $IS_LISTS_FLAG
 
 # 4. The parser's tag alias map is no longer generated here. It ships WITH the store: the builder
 #    wrote it to store-build/tag-aliases.json beside the archives, and seed-remote-kv.ts publishes

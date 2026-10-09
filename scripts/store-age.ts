@@ -55,6 +55,7 @@ import {
 	routingFilterKey,
 	STORE_CONTENT_GENERATION,
 } from "../src/engine/store-kv";
+import { describeNote, type IsListsNote } from "../src/import-is-lists";
 import { kvName } from "./project-config";
 import { readArchiveFormatVersion } from "./wasm-provenance";
 import { wranglerArgv } from "./wrangler-cmd";
@@ -214,6 +215,7 @@ let manifest: {
 	partition_count?: number;
 	format_version?: number;
 	partitions?: { store_key?: string; store_bytes?: number; chunk_count?: number }[];
+	is_lists?: IsListsNote;
 };
 try {
 	manifest = JSON.parse(json) as typeof manifest;
@@ -388,5 +390,10 @@ if (upstream !== null) {
 			"already in the live store — no rebuild needed.",
 	);
 }
+
+// The other date a store has: the `is:` lists it was tagged from (the eight that are Scryfall's own
+// record, refreshed by the nightly import — src/import-is-lists.ts). Said beside the store's age
+// because it is not the store's age: a deploy's build tags from the last NIGHT's lists.
+if (manifest.is_lists) console.error(`store-age: its is: lists are ${describeNote(manifest.is_lists)}.`);
 
 console.log(ago(ageMs));

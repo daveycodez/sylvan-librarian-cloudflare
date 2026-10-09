@@ -34,19 +34,42 @@
 //
 // IT STOPS on a shape it does not understand: a value that should answer nothing and answers, a
 // synonym that is no longer one, a list that is not exact at any key, a key holding a tab or a
-// space. It writes nothing then.
+// space, an answer that is not a whole list (a page that is not one, a list that moved while it
+// was read, a row twice). It writes nothing then.
 //
-// Run by hand and commit the diff, like `bun run print-tiers`: the nightly import cannot touch
-// committed code. A change here changes stored `is:` tags, so it ships with a
-// STORE_CONTENT_GENERATION bump. RUN IT AFTER `bun run print-tiers` WHENEVER THAT TABLE CHANGES:
-// `covered` is written as differences from the tier rule, and the builder refuses a table whose
-// recorded fingerprint of print_tiers.tsv is not the one it compiled with.
+// THE NIGHTLY IMPORT REFRESHES THIS TABLE WITHOUT IT (src/import-is-lists.ts): it reads the small
+// lists whole and `covered` and `related` set by set, where a set's printings moved, and hands the
+// builder the result over the compiled table. What an answer must be to count as a list is the
+// same code here and there — `checkSearchPage`, `acceptPage`, `refuseRepeats` — and this script
+// remains the WHOLE measurement, the only one that holds every row against the bulk file: run it
+// when the night's log line says rows moved in sets whose count did not, and from time to time
+// regardless. Committing its table starts the nightly's state over from it.
+//
+// Run by hand and commit the diff, like `bun run print-tiers`. A change here changes what a
+// deploy's build tags, so it ships with a STORE_CONTENT_GENERATION bump. RUN IT AFTER
+// `bun run print-tiers` WHENEVER THAT TABLE CHANGES: `covered` is written as differences from the
+// tier rule, and the builder refuses a table whose recorded fingerprint of print_tiers.tsv is not
+// the one it compiled with.
 
 import { createHash } from "node:crypto";
 import { createReadStream, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { StringDecoder } from "node:string_decoder";
 import { createGunzip } from "node:zlib";
+import {
+	type ApiCard,
+	acceptPage,
+	byNumber,
+	checkLine,
+	checkSearchPage,
+	fnv1a64,
+	ListRefused,
+	newList,
+	oraclesOf,
+	refuseRepeats,
+	type SearchAnswer,
+	searchQuery,
+} from "../src/import-is-lists";
 import { defaultTier, isVariant, type Row as TierRow } from "./generate-print-tiers";
 
 const OUT = "engine/builder/src/is_lists.tsv";
@@ -69,28 +92,8 @@ function stop(message: string): never {
 
 // ── requests ─────────────────────────────────────────────────────────────────────────────────────
 
-interface Answer {
-	status: number;
-	body: {
-		object?: string;
-		code?: string;
-		data?: ApiCard[];
-		has_more?: boolean;
-		next_page?: string;
-		total_cards?: number;
-		warnings?: string[];
-	};
-}
-
-interface ApiCard {
-	id: string;
-	oracle_id?: string;
-	name: string;
-	set: string;
-	collector_number: string;
-	lang: string;
-	card_faces?: { oracle_id?: string }[];
-}
+/** One answer, as the shared checks read it (src/import-is-lists.ts): the status and the parsed body. */
+type Answer = SearchAnswer & { body: { code?: string; warnings?: string[] } | null };
 
 const cacheDir = arg("--cache");
 let lastRequest = 0;
@@ -107,43 +110,38 @@ async function get(url: string): Promise<Answer> {
 			await sleep((Number(res.headers.get("retry-after")) || 60) * 1000 + 1000);
 			continue;
 		}
-		const answer: Answer = { status: res.status, body: (await res.json()) as Answer["body"] };
+		// A body that is not JSON is kept as null: the shared check refuses it by name.
+		const answer: Answer = { status: res.status, body: (await res.json().catch(() => null)) as Answer["body"] };
 		if (path) writeFileSync(path, JSON.stringify({ url, ...answer, at: new Date().toISOString() }));
 		return answer;
 	}
 }
 
+/** Page 1 of `q`: every printing, extras in. */
 function searchUrl(q: string): string {
-	return `${SEARCH}?${new URLSearchParams({ q, unique: "prints", include_extras: "true" })}`;
+	return `${SEARCH}${searchQuery(q)}`;
 }
 
-/** Every row a query answers; an empty list for Scryfall's plain no-match. */
+/**
+ * Every row a query answers; an empty list for Scryfall's plain no-match. The pages are asked for
+ * by number and checked by the code the nightly refresh uses: each a page of a list, the totals
+ * agreeing from page to page, as many rows as the total, no row twice.
+ */
 async function list(q: string): Promise<ApiCard[]> {
-	const rows: ApiCard[] = [];
-	let url: string | null = searchUrl(q);
-	while (url) {
-		const { status, body }: Answer = await get(url);
-		if (status === 404 && body.code === "not_found" && !body.warnings) return [];
-		if (status !== 200 || body.object !== "list" || !Array.isArray(body.data)) {
-			stop(`${q}: ${status} ${JSON.stringify(body).slice(0, 200)}`);
-		}
-		if (body.warnings) stop(`${q}: answered with a warning: ${body.warnings.join(" | ")}`);
-		for (const c of body.data) {
-			if (!c.id || !c.set || !c.collector_number || !c.lang) stop(`${q}: a row without id, set, number or lang`);
-			rows.push(c);
-		}
-		if (rows.length % 5250 < 175 && body.has_more) console.log(`  ${q}: ${rows.length} of ${body.total_cards} rows`);
-		url = body.has_more && body.next_page ? body.next_page : null;
+	const reading = newList<ApiCard>(q);
+	while (!reading.done) {
+		const page = checkSearchPage(q, await get(`${SEARCH}${searchQuery(q, "prints", reading.page)}`));
+		acceptPage(reading, page, (card) => card);
+		if (reading.rows.length % 5250 < 175 && !reading.done)
+			console.log(`  ${q}: ${reading.rows.length} of ${page.total} rows`);
 	}
-	return rows;
+	refuseRepeats(reading, (card) => card.id);
+	return reading.rows;
 }
 
 /** A query's `total_cards`, from its first page alone. */
 async function total(q: string): Promise<number> {
-	const { status, body } = await get(searchUrl(q));
-	if (status === 404 && body.code === "not_found") return 0;
-	if (status !== 200 || typeof body.total_cards !== "number") stop(`${q}: ${status}`);
-	return body.total_cards;
+	return checkSearchPage(q, await get(searchUrl(q))).total;
 }
 
 /** Does Scryfall's search return this row at all? */
@@ -166,14 +164,6 @@ interface Card {
 	tier: number;
 }
 
-function oraclesOf(c: { oracle_id?: string; card_faces?: { oracle_id?: string }[] }): string[] {
-	const ids: string[] = [];
-	for (const id of [c.oracle_id, ...(c.card_faces ?? []).map((f) => f.oracle_id)]) {
-		if (id && !ids.includes(id)) ids.push(id);
-	}
-	return ids;
-}
-
 function readTiers(): Map<string, number> {
 	const tiers = new Map<string, number>();
 	for (const line of readFileSync(TIERS, "utf8").split("\n")) {
@@ -190,13 +180,6 @@ function printTier(c: TierRow & { oversized?: boolean }, tiers: ReadonlyMap<stri
 	if (setTier === 2 || c.border_color === "gold" || c.oversized) return 2;
 	if (c.lang !== "en" || setTier === 1) return 1;
 	return isVariant(c) ? 1 : 0;
-}
-
-/** 64-bit FNV-1a of a file's bytes, as the builder computes it (is_lists.rs `fnv1a64`). */
-function fnv1a64(bytes: Uint8Array): string {
-	let hash = 0xcbf29ce484222325n;
-	for (const byte of bytes) hash = ((hash ^ BigInt(byte)) * 0x100000001b3n) & 0xffffffffffffffffn;
-	return hash.toString(16).padStart(16, "0");
 }
 
 async function bulkPath(): Promise<string> {
@@ -292,13 +275,6 @@ class Entries {
 		}
 		return out;
 	}
-}
-
-function byNumber(a: string, b: string): number {
-	const [x, y] = [Number.parseInt(a, 10), Number.parseInt(b, 10)];
-	if (!Number.isNaN(x) && !Number.isNaN(y) && x !== y) return x - y;
-	if (Number.isNaN(x) !== Number.isNaN(y)) return Number.isNaN(x) ? 1 : -1;
-	return a < b ? -1 : a > b ? 1 : 0;
 }
 
 interface Corpus {
@@ -464,8 +440,8 @@ async function main(): Promise<void> {
 
 	for (const value of ["gateway", "lair"]) {
 		const { status, body } = await get(searchUrl(`is:${value}`));
-		if (status !== 404 || body.code !== "not_found" || body.warnings) {
-			stop(`is:${value} answered ${status}${body.warnings ? " with a warning" : ""}: it is no longer the empty class`);
+		if (status !== 404 || body?.code !== "not_found" || body.warnings) {
+			stop(`is:${value} answered ${status}${body?.warnings ? " with a warning" : ""}: it is no longer the empty class`);
 		}
 	}
 	for (const q of ["is:beginner -is:intro", "is:intro -is:beginner"]) {
@@ -501,7 +477,7 @@ async function main(): Promise<void> {
 		`# print_tiers.tsv ${fnv1a64(readFileSync(TIERS))}`,
 	];
 	const lines = measured.flatMap(([tag, m]) => m.entries.lines(tag));
-	for (const line of lines) if (line.split("\t").some((field) => field === "")) stop(`an empty field: ${line}`);
+	lines.forEach(checkLine);
 	writeFileSync(OUT, `${[...header, ...lines].join("\n")}\n`);
 	console.log(`Wrote ${OUT} — ${lines.length} lines; ${unindexed.size} unindexed rows ignored`);
 }
@@ -510,7 +486,8 @@ if (import.meta.main) {
 	try {
 		await main();
 	} catch (error) {
-		if (!(error instanceof Stop)) throw error;
+		// Its own stops, and an answer the shared checks refused as not being a whole list.
+		if (!(error instanceof Stop) && !(error instanceof ListRefused)) throw error;
 		console.error(`STOPPED, nothing written: ${error.message}`);
 		process.exit(1);
 	}
