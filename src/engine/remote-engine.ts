@@ -169,7 +169,11 @@ interface SearchEngineStub {
 	scryfallCollectionBatch(
 		batch: CollectionBatch,
 		baseUrl: string,
-		/** Always null: the retired `?q=` scope's place on the wire — see the method in search-engine-do.ts. */
+		/**
+		 * Always null: the retired `?q=` scope's place on the wire. Step 1 (2026-10-09) made the
+		 * object read the width from either position; step 2 sends it here and drops the fourth —
+		 * see the method in search-engine-do.ts.
+		 */
 		retiredScope: null,
 		reportedShards?: number,
 	): Promise<{ packet: Uint8Array; located?: CollectionLocated; answeredFrom?: CollectionSource } & Telemetry>;
@@ -1330,8 +1334,13 @@ export class RemoteEngine implements Engine {
 	/** The one-round collection batch — see Engine.scryfallCollectionBatch. */
 	async scryfallCollectionBatch(batch: CollectionBatch, baseUrl: string): Promise<CollectionBatchAnswer> {
 		// The `null` holds the retired scope's position, so `shards` lands where an engine object on
-		// the build before this one reads it — fourth. It cannot be dropped in one deploy; see
-		// search-engine-do.ts `scryfallCollectionBatch` for the two it takes.
+		// the build before this one reads it — fourth, and nowhere else. Dropping it takes two
+		// deploys (search-engine-do.ts `scryfallCollectionBatch`):
+		//   step 1 (this deploy): the object reads the width from either position; this call is
+		//     UNCHANGED, because the objects it meets while the deploy rolls read only the fourth.
+		//   step 2 (a later deploy, once no object older than step 1 can be running): this sends
+		//     `(batch, baseUrl, shards)` and the parameter list drops to three.
+		// OWED, 2026-10-09: step 2.
 		const { packet, located, answeredFrom } = await this.searchRpc("scryfallCollectionBatch", (stub, shards) =>
 			stub.scryfallCollectionBatch(batch, baseUrl, null, shards),
 		);

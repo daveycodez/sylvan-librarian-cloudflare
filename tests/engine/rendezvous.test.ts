@@ -1597,8 +1597,8 @@ describe("a collection batch's route says where the names it did not settle live
 		scryfallCollectionBatch(
 			batch: unknown,
 			baseUrl: string,
-			retiredScope: unknown,
-			reportedShards?: number,
+			shardsOrRetired?: unknown,
+			reportedShards?: number | null,
 		): Promise<{
 			packet: Uint8Array;
 			located?: { builtAt: string; names: number[]; holders: number[][] };
@@ -1672,32 +1672,43 @@ describe("a collection batch's route says where the names it did not settle live
 		expect(Object.keys(scoped).sort()).toEqual(Object.keys(bare).sort());
 	});
 
-	test("EITHER BUILD'S ISOLATE: (batch, baseUrl, null, shards) lands its width; a width sent third would not", async () => {
-		// The Worker on the build before this one and the Worker on this one send the same four
-		// arguments, so each object reads its caller's width whichever way the deploy has them paired.
+	test("EITHER BUILD'S ISOLATE: (batch, baseUrl, null, shards) lands its width, and so does a width sent third", async () => {
+		// Step 1 of the retired slot's removal (2026-10-09). The Worker on the build before this
+		// one and the Worker on this one both send four arguments, the width fourth; step 2's
+		// Worker will send three, the width third. This object reads whichever is a number.
 		collectionPacket = packetOf([null], 1);
 		const batch = { keys: [], trees: [], names: names("nope") };
+		// Today's Worker, and every one before it.
 		expect((await batchDo().scryfallCollectionBatch(batch, "https://x", null, 4)).shards).toBe(4);
+		// Step 2's Worker: the width where the scope used to ride.
+		const third = await batchDo().scryfallCollectionBatch(batch, "https://x", 4);
+		expect(third.packet).toBe(collectionPacket);
+		expect(third.shards).toBe(4);
+		// No width reported — the hedge's call, in either shape — is a width of 1.
+		expect((await batchDo().scryfallCollectionBatch(batch, "https://x", null)).shards).toBe(1);
+		expect((await batchDo().scryfallCollectionBatch(batch, "https://x")).shards).toBe(1);
+		expect((await batchDo().scryfallCollectionBatch(batch, "https://x", null, undefined)).shards).toBe(1);
+		expect((await batchDo().scryfallCollectionBatch(batch, "https://x", undefined, 4)).shards).toBe(4);
+	});
 
-		// Why the slot is still there: a Worker that dropped it would send (batch, baseUrl, shards),
-		// and this object — like the one on the build before — reads the fourth argument. The batch
-		// answers, and the width it reports is 1 whatever the caller holds.
-		const dropped = batchDo() as unknown as {
-			scryfallCollectionBatch(
-				batch: unknown,
-				baseUrl: string,
-				shards: number,
-			): Promise<{ packet: Uint8Array; shards?: number }>;
-		};
-		const reply = await dropped.scryfallCollectionBatch(batch, "https://x", 4);
-		expect(reply.packet).toBe(collectionPacket);
-		expect(reply.shards).toBe(1);
-		// And a `null` where the width is read is a width of 1: what an object that dropped the slot
-		// would make of the third argument this build and the one before it send.
-		const nulled = batchDo() as unknown as {
-			scryfallCollectionBatch(batch: unknown, baseUrl: string, a: null, b: null): Promise<{ shards?: number }>;
-		};
-		expect((await nulled.scryfallCollectionBatch(batch, "https://x", null, null)).shards).toBe(1);
+	test("the fourth argument wins, and nothing that is not a number is read as a width", async () => {
+		collectionPacket = packetOf([null], 1);
+		const batch = { keys: [], trees: [], names: names("nope") };
+		const width = async (...rest: [unknown?, (number | null)?]) =>
+			(await batchDo().scryfallCollectionBatch(batch, "https://x", ...rest)).shards;
+		// Both numbers: the fourth, which is where every Worker that sends four puts the width.
+		expect(await width(2, 4)).toBe(4);
+		// A `null` fourth is not a width, so a number third still is one; two nulls are none.
+		expect(await width(4, null)).toBe(4);
+		expect(await width(null, null)).toBe(1);
+		// The scope object a Worker from before 2026-10-08 sent third is the retired slot: with a
+		// width behind it the width is read, and alone it is no width at all.
+		const scope = { prefer: "atypical", filterTreeJson: '{"node_type":"TrueNode"}' };
+		expect(await width(scope, 3)).toBe(3);
+		expect(await width(scope)).toBe(1);
+		expect(await width("4")).toBe(1);
+		// Every shape answers the same batch with the same keys: only the width moved.
+		expect(collectionPacketArgs.every((args) => args.length === 3 && args[1] === batch)).toBe(true);
 	});
 
 	test("an unsettled routed name comes back with its holders — none, for a name no card carries", async () => {

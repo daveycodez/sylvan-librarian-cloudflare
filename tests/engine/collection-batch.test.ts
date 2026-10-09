@@ -122,6 +122,11 @@ describe("RemoteEngine's batch keeps the RPC's argument positions across the `?q
 	//
 	// It is still so one deploy later (the Rust behind the scope went then, the slot did not): the
 	// object on the build before reads the count fourth on any day, so the Worker sends it fourth.
+	//
+	// Step 1 (2026-10-09) changed the OBJECT alone: it reads the count from whichever of the third
+	// and fourth arguments is a number (rendezvous.test.ts pins the four shapes). The Worker's send
+	// is unchanged and these tests still hold. Step 2 — a later deploy, once no object older than
+	// step 1 can be running — sends `(batch, baseUrl, shards)`, and flips the first two tests here.
 	test("the third argument is null and the shard count is still the fourth", async () => {
 		const sent: unknown[][] = [];
 		const stub = {
