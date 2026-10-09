@@ -383,6 +383,43 @@ fn new_art_is_the_first_printing_of_each_artwork_across_cards() {
 }
 
 #[test]
+fn new_language_is_the_first_printing_in_each_language_over_the_annex_too() {
+    let store = store_of(&[
+        // EVERY ROW OF THE CARD, the annex too: Transluminant's English `rav/186` is the canonical
+        // row and its Russian edition an annex row, and each is the first in its language.
+        ("transluminant_rav_186", true),
+        ("transluminant_rav_186_ru", false),
+        // One a language, by the order: Counterspell in Japanese is first `cmm/81` (2023), not
+        // `cmm/630` of the same day nor `dsc/114` a year on — all three annex rows — and in
+        // English `cmm/81` again.
+        ("counterspell_cmm_81", true),
+        ("counterspell_cmm_81_ja", false),
+        ("counterspell_cmm_630_ja", false),
+        ("counterspell_dsc_114", true),
+        ("counterspell_dsc_114_ja", false),
+        // THE RELEASE BATCH: Hour of Devastation and its promo set share 2017-07-14, `phou` is the
+        // date's later batch, and `hou/83` leads though `phou/83` carries the lower id — one of
+        // the eleven set pairs the 2026-10-04 measurement could not place.
+        ("abrade_hou_83", true),
+        ("abrade_phou_83", true),
+        // MEMORABILIA is outside.
+        ("mirror_mirror_olep_48", true),
+        ("mirror_mirror_ugl_77", true),
+        // SERIALIZED printings are outside: `brr/91z` carries the lower id.
+        ("liquimetal_coating_brr_91", true),
+        ("liquimetal_coating_brr_91z", true),
+    ]);
+    assert_eq!(
+        rows(&store, &is("newlanguage")),
+        ["brr/91/en", "cmm/81/en", "cmm/81/ja", "hou/83/en", "rav/186/en", "rav/186/ru", "ugl/77/en"]
+    );
+    assert_eq!(
+        rows(&store, &not(is("newlanguage"))),
+        ["brr/91z/en", "cmm/630/ja", "dsc/114/en", "dsc/114/ja", "olep/48/en", "phou/83/en"]
+    );
+}
+
+#[test]
 fn new_flavor_is_the_first_printing_with_each_flavor_text_as_scryfall_compares_them() {
     let store = store_of(&[
         // CASE: Visions capitalises "Sandstalkers" where the 1996 Multiverse Gift Box does not.

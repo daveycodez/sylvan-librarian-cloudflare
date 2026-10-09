@@ -2078,8 +2078,8 @@ const CHEAPEST_CURRENCIES: ReadonlyMap<string, string> = new Map([
  *   new:/rarity/  -new:/rarity/     25 + Unknown regular expression keyword “new”. / “-new”.
  *   new>rarity 404, -new>rarity 25  (the comparison rule)
  *
- * THE VOCABULARY, measured again 2026-10-09 on the same anchor, 86 values tried: Scryfall honors
- * twenty-five — `rarity`; `language`, `lang`; `art`, `illustration`; `artist`; `flavor`, `ft`,
+ * THE VOCABULARY, measured again 2026-10-09 on the same anchor, 135 values tried: Scryfall honors
+ * twenty-four — `rarity`; `language`, `lang`; `art`, `illustration`; `artist`; `flavor`, `ft`,
  * `flavortext`; `frame`; `card`; `foil`, `nonfoil`; `game`, `games`; and the games themselves under
  * every name it has for them, `paper`, `printed`, `cardboard`, `mtgo`, `modo`, `arena`, `mtga`,
  * `astral`, `sega` (the last two 404 on the anchor, with no warning: honored, and empty there).
@@ -2130,6 +2130,10 @@ const NEW_KEYWORDS: ReadonlySet<string> = new Set(["new"]);
  *                    cards, so a reused painting is new once — outside memorabilia but for the two
  *                    sets `olgc` and `o90p`; the rows with no illustration id are one group.
  *                    52,047 of 52,047. Decided by the builder's corpus-wide pass (`NewArt`).
+ *   language, lang   the card's first printing in each LANGUAGE, read over every row of every
+ *                    language — the one value an annex row answers — outside memorabilia and
+ *                    serialized printings. 285,762 of 285,762; 36,503 by default, the term does not
+ *                    widen the search.
  *
  * None forces extras or widens, and each negation is the complement over every row of every
  * language (`-new:card lang:any` is 510,145 of 545,303).
@@ -2155,17 +2159,27 @@ const NEW_VALUE_IS_TAGS: ReadonlyMap<string, string> = new Map([
 	["flavortext", "newflavor"],
 	["art", "newart"],
 	["illustration", "newart"],
+	["language", "newlanguage"],
+	["lang", "newlanguage"],
 ]);
 
 /**
- * The `new:` values Scryfall HONORS that this port does not answer (`new:<value> e:khm t:god`
- * moves the count, or answers with no `warnings` key). The term is left as written and fails to
- * parse, as `new:` did before — never dropped, which would answer wider than Scryfall does, and
- * never guessed:
+ * The `new:` value Scryfall HONORS that this port does not answer. The term is left as written and
+ * fails to parse, as `new:` did before — never dropped, which would answer wider than Scryfall
+ * does, and never guessed:
  *
- *   language, lang, artist
+ *   artist   NOT EXACT, measured 2026-10-09. It is nearly every row: `new:artist lang:any` is
+ *            542,546 of 545,303, so the list read is its complement, 2,757 rows. "A printing that is
+ *            `new:art` by an artist an earlier printing of the card already credits" picks 2,644
+ *            of the 2,756 canonical ones and 6 others. 92 of the 112 it misses are not new art at
+ *            all — who/504, an extended-art printing of the painting who/288 already carries —
+ *            109 of the 112 were released since 2022, and no combination of up to three of eleven
+ *            other card fields beside the illustration tells them from the printings around them;
+ *            and one annex row is in the list (tdm/400 in Japanese). What would make it exact is
+ *            whatever Scryfall held for those printings' artwork when it flagged them, which no
+ *            bulk file carries.
  */
-const NEW_HONORED_UNANSWERED: ReadonlySet<string> = new Set(["language", "lang", "artist"]);
+const NEW_HONORED_UNANSWERED: ReadonlySet<string> = new Set(["artist"]);
 
 const STRICT_REGEX_KEYWORDS: ReadonlySet<string> = new Set([
 	...STAMP_KEYWORDS,

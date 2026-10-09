@@ -761,8 +761,8 @@ const GAME_ORDER_MASK: u8 = 0b111;
 /// LOCAL PATCH (Cloudflare port): one of the two spare bits of the `games` byte holds the
 /// printing's answer to Scryfall's `new:rarity` — "the first printing of its card at this rarity".
 /// Decided by `assign_new_rarity_flags`, which carries the measured rule; zero on every row until
-/// that pass has run. Bit 7 is still spare: `new:language` was measured and is not exact (see that
-/// pass's doc).
+/// that pass has run. Bit 7 is still spare: `new:language` is exact (285,762 of 285,762 rows) and
+/// is held elsewhere, as `NEW_LANGUAGE` in `Printing::new_flags` (see `assign_new_flags`).
 const GAMES_NEW_RARITY: u8 = 1 << 6;
 const FINISH_NONFOIL: u8 = 1 << 0;
 const FINISH_FOIL: u8 = 1 << 1;
@@ -5457,6 +5457,10 @@ pub const NEW_ART_TAG: &str = "new_art";
 /// [`new_order_key`] gives it) and marks the row with [`NEW_ART_TAG`].
 pub(crate) const NEW_ART: u32 = 1 << 9;
 
+/// `Printing::new_flags`: the printing is the first of its card in its LANGUAGE — `new:language`,
+/// and `new:lang`. The one bit an annex row can carry.
+pub(crate) const NEW_LANGUAGE: u32 = 1 << 10;
+
 /// The engine's `is:` spelling of each `new:` value `Printing::new_flags` answers, and the bits
 /// it reads. None of these is a Scryfall `is:` value: the compat surface writes `new:<value>` as
 /// one (query-terms.ts NEW_VALUE_IS_TAGS) and drops the spelling when it is typed.
@@ -5472,6 +5476,7 @@ pub(crate) const NEW_FLAG_IS_VALUES: &[(&str, u32)] = &[
     ("newnonfoil", NEW_NONFOIL),
     ("newflavor", NEW_FLAVOR),
     ("newart", NEW_ART),
+    ("newlanguage", NEW_LANGUAGE),
 ];
 
 /// The printings Scryfall's own order puts FIRST among the rows of their card that share their
@@ -5594,16 +5599,29 @@ pub fn new_order_key(
 ///               the two sets `olgc` and `o90p` (27 of 27 and 2 of 2 of their leading rows are
 ///               in the list, 0 of the 1,784 other memorabilia rows that would lead — no field
 ///               of a card or of `/sets` tells the two from `ovnt` or `olep`: measured, as
-///               `wot` is for `new:rarity`). Serialized printings count (74 of the list). 52,047 of 52,047, with
-///               the two `NEW_TIE_LEADS`; decided by the builder, see `NEW_ART`.
+///               `wot` is for `new:rarity`). Serialized printings count (74 of the list).
+///               52,047 of 52,047, with the two `NEW_TIE_LEADS`; decided by the builder, see
+///               `NEW_ART`.
+///   `NEW_LANGUAGE` new:language, new:lang — 285,762 rows with every language, 36,503 by default.
+///               The one value read over EVERY row of a card, the annex too: the group is the
+///               row's `lang`, and its first printing is flagged wherever it sits. Eligible:
+///               every row outside memorabilia and outside SERIALIZED printings — 0 of the
+///               corpus's 299 are in the list: the Quenya Sol Ring `ltc/408z` carries a lower id
+///               than `ltc/408`, and The One Ring's `ltr/0` and the two Ancient Greek `acr`
+///               cards, each the only row of its language, are not new. 285,762 of 285,762, and
+///               the canonical ones are the default list's 36,503 id for id. This is the value
+///               2026-10-04 measured at 285,528 of 285,760: the 232 were same-day set pairs —
+///               `grn` beside `pgrn`, `eld` beside `peld`, `akh` beside `mp2` — and every one is
+///               a release batch boundary `release_batches.tsv` has held since generation 73.
 ///
 /// What the values share, each clause measured rather than read off the name:
 ///
-///   - MEMORABILIA is never eligible. With it `new:card` is 37,854 printings here against
-///     35,158, and 2,695 cards printed in nothing else have no `new:card` printing at all.
-///   - CANONICAL rows only: `lang:any` beside any of these values changes no count, none of the
-///     rows returned is an annex row, and `-new:card lang:any` is 510,145 — every row of every
-///     language but the 35,158.
+///   - MEMORABILIA is not eligible (but for `new:art`'s two sets). With it `new:card` is 37,854
+///     printings here against 35,158, and 2,695 cards printed in nothing else have no `new:card`
+///     printing at all.
+///   - CANONICAL rows only, for every value but `new:language`: `lang:any` beside any of them
+///     changes no count, none of the rows returned is an annex row, and `-new:card lang:any` is
+///     510,145 — every row of every language but the 35,158.
 ///   - the COLLECTOR NUMBER is `collector_number_int`, every digit of it as one integer:
 ///     `psus/14` is before `pjjt/1N07` and `psus/15` before `pjas/2U07` (the same date and
 ///     batch; `new:frame`), where the number's FIRST integer says the reverse.
@@ -5622,6 +5640,7 @@ fn assign_new_flags(
     printings: &mut [Printing],
     offsets: &[u32],
     foreign: &mut [Printing],
+    foreign_offsets: &[u32],
     coll_vocab: &[String],
     strings: &[String],
 ) {
@@ -5732,6 +5751,35 @@ fn assign_new_flags(
             let unflagged = rows[i].compat.flags & COMPAT_VARIATION != 0 || (bit == NEW_FLAVOR && backs_only.contains(&i));
             if !unflagged {
                 rows[i].new_flags |= bit;
+            }
+        }
+
+        // `new:language` is the one value the ANNEX answers: a group is a language, and its first
+        // printing is whichever row carries it — the canonical one, or another language's edition
+        // of a printing whose canonical row is English. One slot a language: (lang, in the annex,
+        // index into that slice).
+        let annex = foreign_offsets[cid] as usize..foreign_offsets[cid + 1] as usize;
+        let mut languages: Vec<(u16, bool, usize)> = Vec::new();
+        for (in_annex, slice) in [(false, &printings[offsets[cid] as usize..offsets[cid + 1] as usize]), (true, &foreign[annex.clone()])] {
+            for (i, p) in slice.iter().enumerate() {
+                if Some(p.compat.set_type_id) == memorabilia || serialized.is_some_and(|tag| p.compat.promo_types.contains(&tag)) {
+                    continue;
+                }
+                match languages.iter_mut().find(|(lang, _, _)| *lang == p.compat.lang_id) {
+                    Some(slot) => {
+                        let lead = if slot.1 { &foreign[annex.start + slot.2] } else { &printings[offsets[cid] as usize + slot.2] };
+                        if key(p) < key(lead) {
+                            (slot.1, slot.2) = (in_annex, i);
+                        }
+                    }
+                    None => languages.push((p.compat.lang_id, in_annex, i)),
+                }
+            }
+        }
+        for (_, in_annex, i) in languages {
+            let lead = if in_annex { &mut foreign[annex.start + i] } else { &mut printings[offsets[cid] as usize + i] };
+            if lead.compat.flags & COMPAT_VARIATION == 0 {
+                lead.new_flags |= NEW_LANGUAGE;
             }
         }
     }
@@ -21848,7 +21896,10 @@ const ARCHIVE_MAGIC: [u8; 8] = *b"ATCARDS\0";
 //   2026100910 — NEW:ART (LOCAL PATCH). Bit 9 of `Printing::new_flags`, clear in every older
 //                store, and set from the builder's `NEW_ART_TAG` rather than decided here. No layout
 //                moves. Paired with STORE_CONTENT_GENERATION 85.
-const ARCHIVE_FORMAT_VERSION: u32 = 2026100910;
+//   2026100911 — NEW:LANGUAGE (LOCAL PATCH). Bit 10 of `Printing::new_flags`, clear in every
+//                older store — and the first of these bits set on ANNEX rows. No layout moves. Paired
+//                with STORE_CONTENT_GENERATION 86.
+const ARCHIVE_FORMAT_VERSION: u32 = 2026100911;
 const ARCHIVE_HEADER_LEN: usize = 16;
 
 fn archive_header() -> [u8; ARCHIVE_HEADER_LEN] {
@@ -22776,7 +22827,7 @@ fn build_card_data_sorted(
     // ...and `new:rarity`, over the canonical rows: needs the release batch `assign_set_ranks` set.
     assign_new_rarity_flags(&mut printings, &offsets, &mut foreign, &coll_vocab, &strings);
     // ...and the other `new:` values, in the same order: `new_flags`.
-    assign_new_flags(&mut printings, &offsets, &mut foreign, &coll_vocab, &strings);
+    assign_new_flags(&mut printings, &offsets, &mut foreign, &foreign_offsets, &coll_vocab, &strings);
     // Same walk as the line above — canonical rows AND the annex — because `in:ja` is exactly the
     // question the annex exists to answer. Interns the words it needs, so it runs before
     // `coll_vocab_sorted` below is cut.

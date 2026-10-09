@@ -2153,8 +2153,14 @@ export async function gzipBytes(bytes: Uint8Array): Promise<Uint8Array> {
  *      decides it (`NewArt`, riding the corpus tables through the nightly's scores phase) and marks
  *      the row with a tag card_engine turns into bit 9 of `new_flags` and removes. 52,047 of 52,047,
  *      the list read whole. ARCHIVE_FORMAT_VERSION 2026100909 -> 2026100910.
+ *
+ *   86 (2026-10-09): `new:language`, and `new:lang`. The card's first printing in each language —
+ *      the order of generation 76 over EVERY row of the card, the annex too, outside memorabilia and
+ *      serialized printings: 285,762 of 285,762, the list read whole with every language. The 232 rows
+ *      generation 66 could not place were release batch boundaries generation 73 has since measured.
+ *      Bit 10 of `new_flags`; ARCHIVE_FORMAT_VERSION 2026100910 -> 2026100911.
  */
-export const STORE_CONTENT_GENERATION = 85;
+export const STORE_CONTENT_GENERATION = 86;
 
 /**
  * Chunk key for a store. Keyed by store_key, so publishes never collide.

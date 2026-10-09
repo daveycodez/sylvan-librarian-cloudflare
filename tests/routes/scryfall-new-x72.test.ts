@@ -26,6 +26,7 @@ const NEW_FLAG_VALUES = [
 	"nonfoil",
 	"flavor",
 	"art",
+	"language",
 ];
 
 const ignored = (echo: string, reason: string) => `Invalid expression “${echo}” was ignored. ${reason}`;
@@ -136,6 +137,10 @@ describe("the new: values the store's new_flags answer are the engine's is:new<v
 		["new:art", "is:newart"],
 		["new:illustration", "is:newart"],
 		["-new:art", "-is:newart"],
+		// `new:lang` is 285,762 with every language, as `new:language` (12 and 12 on the anchor).
+		["new:language", "is:newlanguage"],
+		["new:lang", "is:newlanguage"],
+		["-new:language", "-is:newlanguage"],
 	])("%s", (q, rewritten) => {
 		const policy = scryfallTermPolicy(`${q} e:khm t:god`);
 		expect(policy.warnings).toEqual([]);
@@ -161,16 +166,11 @@ describe("the new: values the store's new_flags answer are the engine's is:new<v
 	});
 });
 
-describe("the values Scryfall honors and this port does not answer fail to parse", () => {
-	test.each([
-		"new:language",
-		"new:lang",
-		"new:LANGUAGE",
-		"-new:language",
-		"new:artist",
-		// Honored there too, measured 2026-10-09 (each moves the anchor's count, or answers a 404
-		// with no warning): the plural, and the games under their other names.
-	])("%s is kept, unwarned, and refused", (term) => {
+describe("the one value Scryfall honors and this port does not answer fails to parse", () => {
+	// `new:artist` is nearly every row there (542,546 of 545,303 with every language) and follows
+	// no rule the bulk files hold — NEW_HONORED_UNANSWERED has the measurement. Refused, never
+	// dropped: dropping it would answer every printing where Scryfall leaves 2,757 out.
+	test.each(["new:artist", "new:ARTIST", "-new:artist"])("%s is kept, unwarned, and refused", (term) => {
 		const policy = scryfallTermPolicy(`${term} e:khm t:god`);
 		expect(policy.warnings).toEqual([]);
 		expect(policy.query).toBe(`${term} e:khm t:god`);

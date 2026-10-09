@@ -4319,6 +4319,36 @@
 			"method": "GET",
 			"path": "/cards/search?q=-new%3Aillustration+e%3Akhm+t%3Agod&unique=prints",
 			"note": "2026-10-09. 404: all 25 are new (every showcase god has its own artwork)."
+		},
+		{
+			"name": "new-language-is-the-first-printing-in-each-language",
+			"method": "GET",
+			"path": "/cards/search?q=new%3Alanguage+lang%3Aany+%21%22Transluminant%22&unique=prints",
+			"note": "2026-10-09. Nine rows, rav/186 in each of its nine languages — eight of them annex rows: the one new: value read over every row of a card (285,762 rows with every language, 36,503 by default)."
+		},
+		{
+			"name": "new-language-the-release-batch-orders-a-set-and-its-promos",
+			"method": "GET",
+			"path": "/cards/search?q=new%3Alanguage+%21%22Abrade%22&unique=prints",
+			"note": "2026-10-09. hou/83 alone, not the game-day promo phou/83 of the same date and lower id: phou is the date's later release batch. One of the eleven set pairs the 2026-10-04 measurement could not place (285,528 of 285,760); the boundaries of store generation 73 place all of them."
+		},
+		{
+			"name": "new-language-in-one-language",
+			"method": "GET",
+			"path": "/cards/search?q=new%3Alanguage+lang%3Aja+%21%22Counterspell%22&unique=prints",
+			"note": "2026-10-09. 4ed/65, the 1995 Japanese Fourth Edition printing, of every Japanese Counterspell."
+		},
+		{
+			"name": "new-lang-is-new-language",
+			"method": "GET",
+			"path": "/cards/search?q=new%3Alang+e%3Akhm+t%3Agod&unique=prints",
+			"note": "2026-10-09. 12 of the 25, the same 12 as new:language; the term does not widen the search to other languages."
+		},
+		{
+			"name": "new-language-negated-over-every-language",
+			"method": "GET",
+			"path": "/cards/search?q=-new%3Alanguage+lang%3Aany+%21%22Transluminant%22&unique=prints",
+			"note": "2026-10-09. clu/177 alone: Ravnica: Clue Edition reprints the card in English only, and every Ravnica row is its language's first."
 		}
 	]
 }
