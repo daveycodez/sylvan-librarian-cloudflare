@@ -30,6 +30,7 @@
     "set-blocks": "bun scripts/generate-set-blocks.ts",
     "set-digital": "bun scripts/generate-set-digital.ts",
     "release-batches": "bun scripts/generate-release-batches.ts",
+    "print-tiers": "bun scripts/generate-print-tiers.ts",
     "seed:local": "scripts/seed-local.sh",
     "cf-typegen": "wrangler types"
   },

@@ -1,0 +1,131 @@
+{
+ "artist": "Florian de Gesincourt",
+ "artist_ids": [
+  "f28c54ff-bbe3-485d-81a4-b2cb49430a52"
+ ],
+ "booster": true,
+ "border_color": "black",
+ "card_back_id": "0aeebaf5-8c7d-4636-9e82-8c27447861f7",
+ "cardmarket_id": 497565,
+ "cmc": 2.0,
+ "collector_number": "HOU-83",
+ "color_identity": [
+  "R"
+ ],
+ "colors": [
+  "R"
+ ],
+ "digital": false,
+ "edhrec_rank": 145,
+ "finishes": [
+  "nonfoil"
+ ],
+ "foil": false,
+ "frame": "2015",
+ "frame_effects": [
+  "inverted"
+ ],
+ "full_art": false,
+ "game_changer": false,
+ "games": [
+  "paper"
+ ],
+ "highres_image": true,
+ "id": "61ada5ce-3a58-4da9-aff2-93a61411dd64",
+ "illustration_id": "6be40cfb-452c-4152-9fb6-a72b5e107e5d",
+ "image_status": "highres_scan",
+ "image_updated_at": "2026-07-13T08:01:37Z",
+ "image_uris": {
+  "art": "https://cards.scryfall.io/art/front/6/1/61ada5ce-3a58-4da9-aff2-93a61411dd64.webp?1783929697",
+  "art_crop": "https://cards.scryfall.io/art_crop/front/6/1/61ada5ce-3a58-4da9-aff2-93a61411dd64.jpg?1783929697",
+  "border_crop": "https://cards.scryfall.io/border_crop/front/6/1/61ada5ce-3a58-4da9-aff2-93a61411dd64.jpg?1783929697",
+  "crop": "https://cards.scryfall.io/crop/front/6/1/61ada5ce-3a58-4da9-aff2-93a61411dd64.webp?1783929697",
+  "display": "https://cards.scryfall.io/display/front/6/1/61ada5ce-3a58-4da9-aff2-93a61411dd64.webp?1783929697",
+  "grid": "https://cards.scryfall.io/grid/front/6/1/61ada5ce-3a58-4da9-aff2-93a61411dd64.webp?1783929697",
+  "large": "https://cards.scryfall.io/large/front/6/1/61ada5ce-3a58-4da9-aff2-93a61411dd64.jpg?1783929697",
+  "normal": "https://cards.scryfall.io/normal/front/6/1/61ada5ce-3a58-4da9-aff2-93a61411dd64.jpg?1783929697",
+  "png": "https://cards.scryfall.io/png/front/6/1/61ada5ce-3a58-4da9-aff2-93a61411dd64.png?1783929697",
+  "small": "https://cards.scryfall.io/small/front/6/1/61ada5ce-3a58-4da9-aff2-93a61411dd64.jpg?1783929697",
+  "thumb": "https://cards.scryfall.io/thumb/front/6/1/61ada5ce-3a58-4da9-aff2-93a61411dd64.webp?1783929697"
+ },
+ "keywords": [],
+ "lang": "en",
+ "layout": "normal",
+ "legalities": {
+  "alchemy": "legal",
+  "brawl": "legal",
+  "commander": "legal",
+  "competitivebrawl": "legal",
+  "duel": "legal",
+  "future": "legal",
+  "gladiator": "legal",
+  "historic": "legal",
+  "legacy": "legal",
+  "modern": "legal",
+  "oathbreaker": "legal",
+  "oldschool": "not_legal",
+  "pauper": "legal",
+  "paupercommander": "legal",
+  "penny": "not_legal",
+  "pioneer": "legal",
+  "predh": "not_legal",
+  "premodern": "not_legal",
+  "standard": "legal",
+  "standardbrawl": "legal",
+  "timeless": "legal",
+  "tlr": "legal",
+  "vintage": "legal"
+ },
+ "mana_cost": "{1}{R}",
+ "multiverse_ids": [],
+ "name": "Abrade",
+ "nonfoil": true,
+ "object": "card",
+ "oracle_id": "f9db72dc-9a5b-48a4-a86e-7464d9a2166a",
+ "oracle_text": "Choose one —\n• Abrade deals 3 damage to target creature.\n• Destroy target artifact.",
+ "oversized": false,
+ "penny_rank": 242,
+ "prices": {
+  "eur": "1.13",
+  "eur_foil": null,
+  "tix": null,
+  "usd": "1.04",
+  "usd_etched": null,
+  "usd_foil": null
+ },
+ "prints_search_uri": "https://api.scryfall.com/cards/search?order=released&q=oracleid%3Af9db72dc-9a5b-48a4-a86e-7464d9a2166a&unique=prints",
+ "promo": false,
+ "promo_types": [
+  "gameday"
+ ],
+ "purchase_uris": {
+  "cardhoarder": "https://www.cardhoarder.com/cards?affiliate_id=scryfall&data%5Bsearch%5D=Abrade&ref=card-profile&utm_campaign=affiliate&utm_medium=card&utm_source=scryfall",
+  "cardmarket": "https://www.cardmarket.com/en/Magic/Products?idProduct=497565&referrer=scryfall&utm_campaign=card_prices&utm_medium=text&utm_source=scryfall",
+  "tcgplayer": "https://partner.tcgplayer.com/c/4931599/1830156/21018?subId1=api&u=https%3A%2F%2Fwww.tcgplayer.com%2Fproduct%2F222413%3Fpage%3D1"
+ },
+ "rarity": "uncommon",
+ "related_uris": {
+  "edhrec": "https://edhrec.com/route/?cc=Abrade",
+  "tcgplayer_infinite_articles": "https://partner.tcgplayer.com/c/4931599/1830156/21018?subId1=api&trafcat=tcgplayer.com%2Fsearch%2Farticles&u=https%3A%2F%2Fwww.tcgplayer.com%2Fsearch%2Farticles%3FproductLineName%3Dmagic%26q%3DAbrade",
+  "tcgplayer_infinite_decks": "https://partner.tcgplayer.com/c/4931599/1830156/21018?subId1=api&trafcat=tcgplayer.com%2Fsearch%2Fdecks&u=https%3A%2F%2Fwww.tcgplayer.com%2Fsearch%2Fdecks%3FproductLineName%3Dmagic%26q%3DAbrade"
+ },
+ "released_at": "2020-09-01",
+ "reprint": true,
+ "reserved": false,
+ "rulings_uri": "https://api.scryfall.com/cards/61ada5ce-3a58-4da9-aff2-93a61411dd64/rulings",
+ "scryfall_set_uri": "https://scryfall.com/sets/plst?utm_source=api",
+ "scryfall_uri": "https://scryfall.com/card/plst/HOU-83/abrade?utm_source=api",
+ "security_stamp": "oval",
+ "set": "plst",
+ "set_id": "67e47ba2-b019-4181-9005-fe9fc021de44",
+ "set_name": "The List",
+ "set_search_uri": "https://api.scryfall.com/cards/search?order=set&q=e%3Aplst&unique=prints",
+ "set_type": "masters",
+ "set_uri": "https://api.scryfall.com/sets/67e47ba2-b019-4181-9005-fe9fc021de44",
+ "story_spotlight": false,
+ "tcgplayer_id": 222413,
+ "textless": false,
+ "type_line": "Instant",
+ "uri": "https://api.scryfall.com/cards/61ada5ce-3a58-4da9-aff2-93a61411dd64",
+ "variation": false
+}

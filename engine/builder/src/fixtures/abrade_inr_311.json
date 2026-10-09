@@ -1,0 +1,141 @@
+{
+ "artist": "Valera Lutfullina",
+ "artist_ids": [
+  "76bc57c7-47c6-40c5-8797-8ffcce430ac7"
+ ],
+ "booster": false,
+ "border_color": "borderless",
+ "card_back_id": "0aeebaf5-8c7d-4636-9e82-8c27447861f7",
+ "cardmarket_id": 805197,
+ "cmc": 2.0,
+ "collector_number": "311",
+ "color_identity": [
+  "R"
+ ],
+ "colors": [
+  "R"
+ ],
+ "digital": false,
+ "edhrec_rank": 145,
+ "finishes": [
+  "nonfoil",
+  "foil"
+ ],
+ "foil": true,
+ "frame": "2015",
+ "frame_effects": [
+  "inverted"
+ ],
+ "full_art": false,
+ "game_changer": false,
+ "games": [
+  "paper",
+  "mtgo"
+ ],
+ "highres_image": true,
+ "id": "25a6e1bb-c751-447c-be69-e03692568678",
+ "illustration_id": "4d9fbcbb-26be-4a8e-8eb3-c2a6fd6b6740",
+ "image_status": "highres_scan",
+ "image_updated_at": "2026-07-13T02:00:50Z",
+ "image_uris": {
+  "art": "https://cards.scryfall.io/art/front/2/5/25a6e1bb-c751-447c-be69-e03692568678.webp?1783908050",
+  "art_crop": "https://cards.scryfall.io/art_crop/front/2/5/25a6e1bb-c751-447c-be69-e03692568678.jpg?1783908050",
+  "border_crop": "https://cards.scryfall.io/border_crop/front/2/5/25a6e1bb-c751-447c-be69-e03692568678.jpg?1783908050",
+  "crop": "https://cards.scryfall.io/crop/front/2/5/25a6e1bb-c751-447c-be69-e03692568678.webp?1783908050",
+  "display": "https://cards.scryfall.io/display/front/2/5/25a6e1bb-c751-447c-be69-e03692568678.webp?1783908050",
+  "grid": "https://cards.scryfall.io/grid/front/2/5/25a6e1bb-c751-447c-be69-e03692568678.webp?1783908050",
+  "large": "https://cards.scryfall.io/large/front/2/5/25a6e1bb-c751-447c-be69-e03692568678.jpg?1783908050",
+  "normal": "https://cards.scryfall.io/normal/front/2/5/25a6e1bb-c751-447c-be69-e03692568678.jpg?1783908050",
+  "png": "https://cards.scryfall.io/png/front/2/5/25a6e1bb-c751-447c-be69-e03692568678.png?1783908050",
+  "small": "https://cards.scryfall.io/small/front/2/5/25a6e1bb-c751-447c-be69-e03692568678.jpg?1783908050",
+  "thumb": "https://cards.scryfall.io/thumb/front/2/5/25a6e1bb-c751-447c-be69-e03692568678.webp?1783908050"
+ },
+ "keywords": [],
+ "lang": "en",
+ "layout": "normal",
+ "legalities": {
+  "alchemy": "legal",
+  "brawl": "legal",
+  "commander": "legal",
+  "competitivebrawl": "legal",
+  "duel": "legal",
+  "future": "legal",
+  "gladiator": "legal",
+  "historic": "legal",
+  "legacy": "legal",
+  "modern": "legal",
+  "oathbreaker": "legal",
+  "oldschool": "not_legal",
+  "pauper": "legal",
+  "paupercommander": "legal",
+  "penny": "not_legal",
+  "pioneer": "legal",
+  "predh": "not_legal",
+  "premodern": "not_legal",
+  "standard": "legal",
+  "standardbrawl": "legal",
+  "timeless": "legal",
+  "tlr": "legal",
+  "vintage": "legal"
+ },
+ "mana_cost": "{1}{R}",
+ "mtgo_id": 135334,
+ "multiverse_ids": [
+  685677
+ ],
+ "name": "Abrade",
+ "nonfoil": true,
+ "object": "card",
+ "oracle_id": "f9db72dc-9a5b-48a4-a86e-7464d9a2166a",
+ "oracle_text": "Choose one —\n• Abrade deals 3 damage to target creature.\n• Destroy target artifact.",
+ "oversized": false,
+ "penny_rank": 242,
+ "preview": {
+  "previewed_at": "2025-01-07",
+  "source": "Wizards of the Coast",
+  "source_uri": ""
+ },
+ "prices": {
+  "eur": "0.76",
+  "eur_foil": "0.52",
+  "tix": "0.61",
+  "usd": "0.57",
+  "usd_etched": null,
+  "usd_foil": "1.03"
+ },
+ "prints_search_uri": "https://api.scryfall.com/cards/search?order=released&q=oracleid%3Af9db72dc-9a5b-48a4-a86e-7464d9a2166a&unique=prints",
+ "promo": false,
+ "promo_types": [
+  "boosterfun"
+ ],
+ "purchase_uris": {
+  "cardhoarder": "https://www.cardhoarder.com/cards/135334?affiliate_id=scryfall&ref=card-profile&utm_campaign=affiliate&utm_medium=card&utm_source=scryfall",
+  "cardmarket": "https://www.cardmarket.com/en/Magic/Products?idProduct=805197&referrer=scryfall&utm_campaign=card_prices&utm_medium=text&utm_source=scryfall",
+  "tcgplayer": "https://partner.tcgplayer.com/c/4931599/1830156/21018?subId1=api&u=https%3A%2F%2Fwww.tcgplayer.com%2Fproduct%2F609710%3Fpage%3D1"
+ },
+ "rarity": "common",
+ "related_uris": {
+  "edhrec": "https://edhrec.com/route/?cc=Abrade",
+  "gatherer": "https://gatherer.wizards.com/Pages/Card/Details.aspx?multiverseid=685677&printed=false",
+  "tcgplayer_infinite_articles": "https://partner.tcgplayer.com/c/4931599/1830156/21018?subId1=api&trafcat=tcgplayer.com%2Fsearch%2Farticles&u=https%3A%2F%2Fwww.tcgplayer.com%2Fsearch%2Farticles%3FproductLineName%3Dmagic%26q%3DAbrade",
+  "tcgplayer_infinite_decks": "https://partner.tcgplayer.com/c/4931599/1830156/21018?subId1=api&trafcat=tcgplayer.com%2Fsearch%2Fdecks&u=https%3A%2F%2Fwww.tcgplayer.com%2Fsearch%2Fdecks%3FproductLineName%3Dmagic%26q%3DAbrade"
+ },
+ "released_at": "2025-01-24",
+ "reprint": true,
+ "reserved": false,
+ "rulings_uri": "https://api.scryfall.com/cards/25a6e1bb-c751-447c-be69-e03692568678/rulings",
+ "scryfall_set_uri": "https://scryfall.com/sets/inr?utm_source=api",
+ "scryfall_uri": "https://scryfall.com/card/inr/311/abrade?utm_source=api",
+ "set": "inr",
+ "set_id": "b9618c8c-9f31-4b42-9798-2991893c27bf",
+ "set_name": "Innistrad Remastered",
+ "set_search_uri": "https://api.scryfall.com/cards/search?order=set&q=e%3Ainr&unique=prints",
+ "set_type": "masters",
+ "set_uri": "https://api.scryfall.com/sets/b9618c8c-9f31-4b42-9798-2991893c27bf",
+ "story_spotlight": false,
+ "tcgplayer_id": 609710,
+ "textless": false,
+ "type_line": "Instant",
+ "uri": "https://api.scryfall.com/cards/25a6e1bb-c751-447c-be69-e03692568678",
+ "variation": false
+}

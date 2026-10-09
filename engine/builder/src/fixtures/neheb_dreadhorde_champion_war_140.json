@@ -1,0 +1,148 @@
+{
+ "arena_id": 69591,
+ "artist": "Igor Kieryluk",
+ "artist_ids": [
+  "9c3e9d17-509f-485c-9360-46d897ce716b"
+ ],
+ "booster": true,
+ "border_color": "black",
+ "card_back_id": "0aeebaf5-8c7d-4636-9e82-8c27447861f7",
+ "cardmarket_id": 371877,
+ "cmc": 4.0,
+ "collector_number": "140",
+ "color_identity": [
+  "R"
+ ],
+ "colors": [
+  "R"
+ ],
+ "digital": false,
+ "edhrec_rank": 3959,
+ "finishes": [
+  "nonfoil",
+  "foil"
+ ],
+ "foil": true,
+ "frame": "2015",
+ "frame_effects": [
+  "legendary"
+ ],
+ "full_art": false,
+ "game_changer": false,
+ "games": [
+  "arena",
+  "paper",
+  "mtgo"
+ ],
+ "highres_image": true,
+ "id": "60c90d5d-7b3b-48d2-85f6-d6a2a452c0e9",
+ "illustration_id": "88192763-a751-4e51-9a14-46bc8eaf3e89",
+ "image_status": "highres_scan",
+ "image_updated_at": "2026-07-13T09:03:43Z",
+ "image_uris": {
+  "art": "https://cards.scryfall.io/art/front/6/0/60c90d5d-7b3b-48d2-85f6-d6a2a452c0e9.webp?1783933423",
+  "art_crop": "https://cards.scryfall.io/art_crop/front/6/0/60c90d5d-7b3b-48d2-85f6-d6a2a452c0e9.jpg?1783933423",
+  "border_crop": "https://cards.scryfall.io/border_crop/front/6/0/60c90d5d-7b3b-48d2-85f6-d6a2a452c0e9.jpg?1783933423",
+  "crop": "https://cards.scryfall.io/crop/front/6/0/60c90d5d-7b3b-48d2-85f6-d6a2a452c0e9.webp?1783933423",
+  "display": "https://cards.scryfall.io/display/front/6/0/60c90d5d-7b3b-48d2-85f6-d6a2a452c0e9.webp?1783933423",
+  "grid": "https://cards.scryfall.io/grid/front/6/0/60c90d5d-7b3b-48d2-85f6-d6a2a452c0e9.webp?1783933423",
+  "large": "https://cards.scryfall.io/large/front/6/0/60c90d5d-7b3b-48d2-85f6-d6a2a452c0e9.jpg?1783933423",
+  "normal": "https://cards.scryfall.io/normal/front/6/0/60c90d5d-7b3b-48d2-85f6-d6a2a452c0e9.jpg?1783933423",
+  "png": "https://cards.scryfall.io/png/front/6/0/60c90d5d-7b3b-48d2-85f6-d6a2a452c0e9.png?1783933423",
+  "small": "https://cards.scryfall.io/small/front/6/0/60c90d5d-7b3b-48d2-85f6-d6a2a452c0e9.jpg?1783933423",
+  "thumb": "https://cards.scryfall.io/thumb/front/6/0/60c90d5d-7b3b-48d2-85f6-d6a2a452c0e9.webp?1783933423"
+ },
+ "keywords": [
+  "Trample"
+ ],
+ "lang": "en",
+ "layout": "normal",
+ "legalities": {
+  "alchemy": "not_legal",
+  "brawl": "legal",
+  "commander": "legal",
+  "competitivebrawl": "legal",
+  "duel": "legal",
+  "future": "not_legal",
+  "gladiator": "legal",
+  "historic": "legal",
+  "legacy": "legal",
+  "modern": "legal",
+  "oathbreaker": "legal",
+  "oldschool": "not_legal",
+  "pauper": "not_legal",
+  "paupercommander": "not_legal",
+  "penny": "legal",
+  "pioneer": "legal",
+  "predh": "not_legal",
+  "premodern": "not_legal",
+  "standard": "not_legal",
+  "standardbrawl": "not_legal",
+  "timeless": "legal",
+  "tlr": "not_legal",
+  "vintage": "legal"
+ },
+ "mana_cost": "{2}{R}{R}",
+ "mtgo_id": 71886,
+ "multiverse_ids": [
+  461067
+ ],
+ "name": "Neheb, Dreadhorde Champion",
+ "nonfoil": true,
+ "object": "card",
+ "oracle_id": "ed8e9a2e-5fb8-4f39-b954-dbcbc96d909f",
+ "oracle_text": "Trample\nWhenever Neheb deals combat damage to a player or planeswalker, you may discard any number of cards. If you do, draw that many cards and add that much {R}. Until end of turn, you don't lose this mana as steps and phases end.",
+ "oversized": false,
+ "penny_rank": 7022,
+ "power": "5",
+ "preview": {
+  "previewed_at": "2019-04-02",
+  "source": "MTGGoldfish",
+  "source_uri": "https://www.mtggoldfish.com/articles/the-return-of-neheb-exclusive-war-of-the-spark-preview"
+ },
+ "prices": {
+  "eur": "0.45",
+  "eur_foil": "1.51",
+  "tix": "0.02",
+  "usd": "0.92",
+  "usd_etched": null,
+  "usd_foil": "1.05"
+ },
+ "prints_search_uri": "https://api.scryfall.com/cards/search?order=released&q=oracleid%3Aed8e9a2e-5fb8-4f39-b954-dbcbc96d909f&unique=prints",
+ "produced_mana": [
+  "R"
+ ],
+ "promo": false,
+ "purchase_uris": {
+  "cardhoarder": "https://www.cardhoarder.com/cards/71886?affiliate_id=scryfall&ref=card-profile&utm_campaign=affiliate&utm_medium=card&utm_source=scryfall",
+  "cardmarket": "https://www.cardmarket.com/en/Magic/Products?idProduct=371877&referrer=scryfall&utm_campaign=card_prices&utm_medium=text&utm_source=scryfall",
+  "tcgplayer": "https://partner.tcgplayer.com/c/4931599/1830156/21018?subId1=api&u=https%3A%2F%2Fwww.tcgplayer.com%2Fproduct%2F187228%3Fpage%3D1"
+ },
+ "rarity": "rare",
+ "related_uris": {
+  "edhrec": "https://edhrec.com/route/?cc=Neheb%2C+Dreadhorde+Champion",
+  "gatherer": "https://gatherer.wizards.com/Pages/Card/Details.aspx?multiverseid=461067&printed=false",
+  "tcgplayer_infinite_articles": "https://partner.tcgplayer.com/c/4931599/1830156/21018?subId1=api&trafcat=tcgplayer.com%2Fsearch%2Farticles&u=https%3A%2F%2Fwww.tcgplayer.com%2Fsearch%2Farticles%3FproductLineName%3Dmagic%26q%3DNeheb%252C%2BDreadhorde%2BChampion",
+  "tcgplayer_infinite_decks": "https://partner.tcgplayer.com/c/4931599/1830156/21018?subId1=api&trafcat=tcgplayer.com%2Fsearch%2Fdecks&u=https%3A%2F%2Fwww.tcgplayer.com%2Fsearch%2Fdecks%3FproductLineName%3Dmagic%26q%3DNeheb%252C%2BDreadhorde%2BChampion"
+ },
+ "released_at": "2019-05-03",
+ "reprint": false,
+ "reserved": false,
+ "rulings_uri": "https://api.scryfall.com/cards/60c90d5d-7b3b-48d2-85f6-d6a2a452c0e9/rulings",
+ "scryfall_set_uri": "https://scryfall.com/sets/war?utm_source=api",
+ "scryfall_uri": "https://scryfall.com/card/war/140/neheb-dreadhorde-champion?utm_source=api",
+ "security_stamp": "oval",
+ "set": "war",
+ "set_id": "ee044f0b-e101-4ead-8d0e-aa510aad4277",
+ "set_name": "War of the Spark",
+ "set_search_uri": "https://api.scryfall.com/cards/search?order=set&q=e%3Awar&unique=prints",
+ "set_type": "expansion",
+ "set_uri": "https://api.scryfall.com/sets/ee044f0b-e101-4ead-8d0e-aa510aad4277",
+ "story_spotlight": false,
+ "tcgplayer_id": 187228,
+ "textless": false,
+ "toughness": "4",
+ "type_line": "Legendary Creature — Zombie Minotaur Warrior",
+ "uri": "https://api.scryfall.com/cards/60c90d5d-7b3b-48d2-85f6-d6a2a452c0e9",
+ "variation": false
+}

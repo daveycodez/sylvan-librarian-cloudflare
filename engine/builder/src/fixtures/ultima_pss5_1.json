@@ -1,0 +1,141 @@
+{
+ "artist": "Kotakan",
+ "artist_ids": [
+  "81519769-b8a8-4a28-a5c6-a64b1a345495"
+ ],
+ "booster": false,
+ "border_color": "borderless",
+ "card_back_id": "0aeebaf5-8c7d-4636-9e82-8c27447861f7",
+ "cardmarket_id": 830160,
+ "cmc": 5.0,
+ "collector_number": "1",
+ "color_identity": [
+  "W"
+ ],
+ "colors": [
+  "W"
+ ],
+ "digital": false,
+ "edhrec_rank": 8444,
+ "finishes": [
+  "foil"
+ ],
+ "flavor_text": "\"Witness my creation!\"",
+ "foil": true,
+ "frame": "2015",
+ "frame_effects": [
+  "inverted"
+ ],
+ "full_art": false,
+ "game_changer": false,
+ "games": [
+  "paper",
+  "mtgo"
+ ],
+ "highres_image": true,
+ "id": "e9fabb82-d866-4d5b-809b-acd88005bcf7",
+ "illustration_id": "7cb58c96-71d3-4af0-8c26-fb5ff345e6e3",
+ "image_status": "highres_scan",
+ "image_updated_at": "2026-07-13T01:33:45Z",
+ "image_uris": {
+  "art": "https://cards.scryfall.io/art/front/e/9/e9fabb82-d866-4d5b-809b-acd88005bcf7.webp?1783906425",
+  "art_crop": "https://cards.scryfall.io/art_crop/front/e/9/e9fabb82-d866-4d5b-809b-acd88005bcf7.jpg?1783906425",
+  "border_crop": "https://cards.scryfall.io/border_crop/front/e/9/e9fabb82-d866-4d5b-809b-acd88005bcf7.jpg?1783906425",
+  "crop": "https://cards.scryfall.io/crop/front/e/9/e9fabb82-d866-4d5b-809b-acd88005bcf7.webp?1783906425",
+  "display": "https://cards.scryfall.io/display/front/e/9/e9fabb82-d866-4d5b-809b-acd88005bcf7.webp?1783906425",
+  "grid": "https://cards.scryfall.io/grid/front/e/9/e9fabb82-d866-4d5b-809b-acd88005bcf7.webp?1783906425",
+  "large": "https://cards.scryfall.io/large/front/e/9/e9fabb82-d866-4d5b-809b-acd88005bcf7.jpg?1783906425",
+  "normal": "https://cards.scryfall.io/normal/front/e/9/e9fabb82-d866-4d5b-809b-acd88005bcf7.jpg?1783906425",
+  "png": "https://cards.scryfall.io/png/front/e/9/e9fabb82-d866-4d5b-809b-acd88005bcf7.png?1783906425",
+  "small": "https://cards.scryfall.io/small/front/e/9/e9fabb82-d866-4d5b-809b-acd88005bcf7.jpg?1783906425",
+  "thumb": "https://cards.scryfall.io/thumb/front/e/9/e9fabb82-d866-4d5b-809b-acd88005bcf7.webp?1783906425"
+ },
+ "keywords": [],
+ "lang": "en",
+ "layout": "normal",
+ "legalities": {
+  "alchemy": "legal",
+  "brawl": "legal",
+  "commander": "legal",
+  "competitivebrawl": "legal",
+  "duel": "legal",
+  "future": "legal",
+  "gladiator": "legal",
+  "historic": "legal",
+  "legacy": "legal",
+  "modern": "legal",
+  "oathbreaker": "legal",
+  "oldschool": "not_legal",
+  "pauper": "not_legal",
+  "paupercommander": "not_legal",
+  "penny": "legal",
+  "pioneer": "legal",
+  "predh": "not_legal",
+  "premodern": "not_legal",
+  "standard": "legal",
+  "standardbrawl": "legal",
+  "timeless": "legal",
+  "tlr": "not_legal",
+  "vintage": "legal"
+ },
+ "mana_cost": "{3}{W}{W}",
+ "multiverse_ids": [],
+ "name": "Ultima",
+ "nonfoil": false,
+ "object": "card",
+ "oracle_id": "c9a45c28-826e-4e6e-8adc-1368ea1af11a",
+ "oracle_text": "Destroy all artifacts and creatures. End the turn. (Exile all spells and abilities from the stack, including this card. The player whose turn it is discards down to their maximum hand size. Damage wears off, and \"this turn\" and \"until end of turn\" effects end.)",
+ "oversized": false,
+ "penny_rank": 4424,
+ "preview": {
+  "previewed_at": "2025-05-17",
+  "source": "Wizards of the Coast",
+  "source_uri": "https://magic.wizards.com/en/news/feature/where-to-play-final-fantasy"
+ },
+ "prices": {
+  "eur": null,
+  "eur_foil": "4.32",
+  "tix": null,
+  "usd": null,
+  "usd_etched": null,
+  "usd_foil": "8.40"
+ },
+ "prints_search_uri": "https://api.scryfall.com/cards/search?order=released&q=oracleid%3Ac9a45c28-826e-4e6e-8adc-1368ea1af11a&unique=prints",
+ "promo": true,
+ "promo_types": [
+  "ffxvi",
+  "standardshowdown",
+  "universesbeyond",
+  "instore"
+ ],
+ "purchase_uris": {
+  "cardhoarder": "https://www.cardhoarder.com/cards?affiliate_id=scryfall&data%5Bsearch%5D=Ultima&ref=card-profile&utm_campaign=affiliate&utm_medium=card&utm_source=scryfall",
+  "cardmarket": "https://www.cardmarket.com/en/Magic/Products?idProduct=830160&referrer=scryfall&utm_campaign=card_prices&utm_medium=text&utm_source=scryfall",
+  "tcgplayer": "https://partner.tcgplayer.com/c/4931599/1830156/21018?subId1=api&u=https%3A%2F%2Fwww.tcgplayer.com%2Fproduct%2F638884%3Fpage%3D1"
+ },
+ "rarity": "rare",
+ "related_uris": {
+  "edhrec": "https://edhrec.com/route/?cc=Ultima",
+  "tcgplayer_infinite_articles": "https://partner.tcgplayer.com/c/4931599/1830156/21018?subId1=api&trafcat=tcgplayer.com%2Fsearch%2Farticles&u=https%3A%2F%2Fwww.tcgplayer.com%2Fsearch%2Farticles%3FproductLineName%3Dmagic%26q%3DUltima",
+  "tcgplayer_infinite_decks": "https://partner.tcgplayer.com/c/4931599/1830156/21018?subId1=api&trafcat=tcgplayer.com%2Fsearch%2Fdecks&u=https%3A%2F%2Fwww.tcgplayer.com%2Fsearch%2Fdecks%3FproductLineName%3Dmagic%26q%3DUltima"
+ },
+ "released_at": "2025-06-13",
+ "reprint": false,
+ "reserved": false,
+ "rulings_uri": "https://api.scryfall.com/cards/e9fabb82-d866-4d5b-809b-acd88005bcf7/rulings",
+ "scryfall_set_uri": "https://scryfall.com/sets/pss5?utm_source=api",
+ "scryfall_uri": "https://scryfall.com/card/pss5/1/ultima?utm_source=api",
+ "security_stamp": "triangle",
+ "set": "pss5",
+ "set_id": "02ffcfa7-6d81-4f7b-9e22-f3d207834014",
+ "set_name": "FIN Standard Showdown",
+ "set_search_uri": "https://api.scryfall.com/cards/search?order=set&q=e%3Apss5&unique=prints",
+ "set_type": "promo",
+ "set_uri": "https://api.scryfall.com/sets/02ffcfa7-6d81-4f7b-9e22-f3d207834014",
+ "story_spotlight": false,
+ "tcgplayer_id": 638884,
+ "textless": false,
+ "type_line": "Sorcery",
+ "uri": "https://api.scryfall.com/cards/e9fabb82-d866-4d5b-809b-acd88005bcf7",
+ "variation": false
+}

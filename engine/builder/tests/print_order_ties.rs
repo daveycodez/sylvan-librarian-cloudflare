@@ -16,7 +16,9 @@
 //! - Doubling Cube, `order=name`: 10e/321, 5dn/116, plst/10E-321, then sld/1080 under its own
 //!   printed name. The three `Doubling Cube` printings tie on the name, so their order is the
 //!   representative ranking's — which read `10E-321` as a bare number and put the 2021 List
-//!   reprint ahead of the 2004 printing it outdates (`cn_has_set_prefix`).
+//!   reprint ahead of the 2004 printing it outdates (`cn_has_set_prefix`). Since 2026-10-08 that
+//!   is the List's TIER (`ranks::print_tier`): the same answer, by the rule print_order_tiers.rs
+//!   asserts on four more cards.
 
 use card_engine::{BufferStore, QueryOptions};
 use serde_json::{json, Value};

@@ -5495,8 +5495,8 @@ fn assign_in_tags(
 /// within one (set, collector number) slot of one card the vpid order IS the tiebreak — arranging
 /// the rows is enough, and widening `Match` to u192 would have cost every match in every query.
 /// The "prefer-desc store order is load-bearing" note on `widened_rows` was read rather than
-/// assumed: what depends on it is (a) ties in the widened driver's best-row selection, which
-/// `annex_representative` now decides by slot before store order is consulted, and (b)
+/// assumed: what depends on it is (a) ties in the widened driver's best-row selection — rows of
+/// one slot in several languages, which share a rank and now resolve to the first language — and (b)
 /// `unique=prints` row order within a card, which is exactly what this is fixing. The canonical
 /// space — every "printings are stored prefer-desc, so the first match wins" fast path in the
 /// routed driver — is untouched, because none of it reads the annex.
@@ -5569,7 +5569,10 @@ fn assign_collector_ranks(printings: &mut [Printing], foreign: &mut [Printing], 
 /// Each character becomes a class marker and itself (letters lowercased), and the raw string
 /// follows a terminator below every marker: a prefix sorts first (`1389` before `1389★`), and two
 /// numbers differing only in case — none in the corpus — still get a total order.
-fn collector_collation_key(cn: &str) -> String {
+///
+/// Public because the builder's printing order (engine/builder/src/ranks.rs) reads collector numbers
+/// the same way: a card's printings inside one set and date come back in `order=set`'s own order.
+pub fn collector_collation_key(cn: &str) -> String {
     let mut key = String::with_capacity(2 * cn.len() + 1 + cn.len());
     for c in cn.chars() {
         if c.is_ascii_digit() {
@@ -11811,6 +11814,18 @@ fn sort_col_secondary(p: &APrinting, sort_col: SortCol, descending: bool) -> u32
         // there is nothing better to reach for here — the residual is the `Everythingamajig` shape
         // (`ust/147c, 147f, 147b, 147a, 147e, 147d`), which contradicts (set, collector number)
         // outright, on the same five-group sample the fit came from.
+        //
+        // 2026-10-08: the ordinal INSIDE one card turned out to be derivable after all — tiers,
+        // then the date, the release batch, the set and the collector number — and the builder
+        // stores it as the rank under `prefer_score` (engine/builder/src/ranks.rs), so the `pid`
+        // tail below still walks it for free. ACROSS cards of one name Scryfall groups by card and
+        // orders the cards by what they are, not by any printing: over the 105 token names that
+        // several cards share (`is:token`, 338 adjacent card pairs) the type line leads —
+        // enchantment artifact creatures, artifact creatures, enchantment creatures, creatures —
+        // then the colours as WUBRG text (`B`, `BR`, `G`, `R`, `RG`, `U`, `W`, `WRG`, `WU`), then
+        // power and the oracle text, which fits 302 of the 338. This port still breaks that tie on
+        // the oracle id: the three Elemental tokens of `g:ecc` come back tecc/9, 2, 10 there and
+        // tecc/2, 10, 9 here.
         _ => return 0,
     };
     if descending { !key } else { key }
@@ -18461,71 +18476,6 @@ fn widened_rows(data: &Archived<CardData>, cid: usize) -> impl Iterator<Item = (
         .chain(data.foreign[fs..fe].iter().enumerate().map(move |(i, p)| (n + (fs + i) as u32, p)))
 }
 
-/// The row that represents a card whose only MATCHING rows are in the annex: the annex row whose
-/// (set code, collector number) slot carries the best canonical row inside the query's own scope.
-///
-/// Scryfall picks a within-language representative by FOLLOWING its English one — but its English
-/// one as the QUERY sees it, not the card's global one. `e:khm lang:ja unique=cards` answers khm ja
-/// #240 for Maskwood Nexus even though the card's overall representative printing is clb 865,
-/// because #240 is the best khm English row and the ja row at that slot inherits the pick
-/// (verified against api.scryfall.com, with Tyrite Sanctum -> cmm 1049 and Crippling Fear ->
-/// cmm 862 behaving the same way).
-///
-/// A per-row score cannot express that. The importer's PIN_BONUS propagates by (set, collector
-/// number) and so agrees wherever the representative printing IS in the queried set; where it is
-/// not, NO row of the set carries the pin, and the two khm ja rows then tie down to the last bit —
-/// Scryfall's own data gives the ja extended-art printing no `frame_effects`, so the -6 that
-/// separates the English pair does not exist between the annex rows and an arbitrary tiebreak
-/// decides. The missing input is the QUERY's scope, which only the driver has.
-///
-/// So: rank each matching annex row by the prefer score of the best canonical row at its own slot
-/// under `relaxed` (the filter with its language constraint lifted — `e:khm` survives, `lang:ja`
-/// does not), and break ties on the row's own score and then on store order. An annex row whose
-/// slot has no canonical row in scope ranks below every row whose slot does, which leaves a
-/// foreign-only printing represented by the same row phase 1 chose.
-fn annex_representative(
-    data: &Archived<CardData>,
-    params: &QueryParams,
-    filter: &FilterExpr,
-    relaxed: &FilterExpr,
-    card: &AOracleCard,
-    cid: usize,
-) -> Option<u32> {
-    let n = data.printings.len() as u32;
-    let full: [&FilterExpr; 1] = [filter];
-    let loose: [&FilterExpr; 1] = [relaxed];
-    // The card's canonical rows that the query WOULD have matched but for the language, keyed by
-    // slot. Small (a card's printings), so this is a linear scan per annex row rather than a map.
-    let canonical: Vec<(&APrinting, f64)> = widened_rows(data, cid)
-        .filter(|&(vpid, _)| vpid < n)
-        .filter(|(_, p)| FilterExpr::residual_matches(card, p, &data.strings, &loose, false))
-        .map(|(_, p)| (p, prefer_score(card, p, params.prefer, &data.strings, canonical_printings(data, cid))))
-        .collect();
-    let slot_score = |a: &APrinting| -> Option<f64> {
-        canonical
-            .iter()
-            .filter(|(c, _)| {
-                c.card_set_code.as_str() == a.card_set_code.as_str()
-                    && u32::from(c.collector_number_id) == u32::from(a.collector_number_id)
-            })
-            .map(|&(_, s)| s)
-            .fold(None, |best: Option<f64>, s| Some(best.map_or(s, |b| b.max(s))))
-    };
-    let mut best: Option<(u32, Option<f64>, f64)> = None;
-    for (vpid, p) in widened_rows(data, cid) {
-        if vpid < n || !FilterExpr::residual_matches(card, p, &data.strings, &full, false) {
-            continue;
-        }
-        let key = (slot_score(p), prefer_score(card, p, params.prefer, &data.strings, canonical_printings(data, cid)));
-        // Strict >, so the earliest row wins a tie — the same rule phase 1 uses, and what keeps
-        // this a REORDERING of equally-ranked rows rather than a new preference.
-        if best.is_none_or(|(_, sc, own)| (key.0, key.1) > (sc, own)) {
-            best = Some((vpid, key.0, key.1));
-        }
-    }
-    best.map(|(vpid, _, _)| vpid)
-}
-
 /// The multilingual (widened) query driver: both printing spaces, full-filter verify, no plans.
 ///
 /// Runs instead of `run_query_routed` when `include_multilingual` is set or the bound filter
@@ -18577,10 +18527,6 @@ fn run_query_widened<'a>(
     let matches = |card: &AOracleCard, p: &APrinting| {
         FilterExpr::residual_matches(card, p, &data.strings, &residual, false)
     };
-    // Built once per query, not per card: `unique=cards` needs the query's scope WITHOUT its
-    // language constraint to decide which annex row represents a card (see annex_representative).
-    let relaxed = filter.with_lang_relaxed();
-    let n_canonical = data.printings.len() as u32;
     let mut sel = GatherSelect::new(params.page_offset, params.limit);
     // Artwork scratch, reused across cards: group ids are bounded by the same
     // ARTWORK_GROUP_WORDS invariant the canonical walk relies on — asserted over the
@@ -18606,16 +18552,17 @@ fn run_query_widened<'a>(
                     }
                 }
                 if let Some((vpid, _)) = best {
-                    // When the pick is an ANNEX row, which one it is comes from the query's scope
-                    // rather than from the row — see `annex_representative`. Canonical picks skip
-                    // this entirely, so the include_multilingual lane (where the English row wins
-                    // on its +40) is untouched, as is every row of the default lane, which never
-                    // reaches this driver at all.
-                    let vpid = if vpid >= n_canonical {
-                        annex_representative(data, params, filter, &relaxed, card, cid as usize).unwrap_or(vpid)
-                    } else {
-                        vpid
-                    };
+                    // THE ROW'S OWN SCORE DECIDES, annex rows included (LOCAL PATCH, Cloudflare
+                    // port). From 2026-08-16 to 2026-10-08 an annex pick was replaced by the annex
+                    // row at the slot of the best CANONICAL row in the query's scope — "the language
+                    // follows the English pick" — read off `e:khm lang:ja`, where Maskwood Nexus
+                    // answers khm/240 in Japanese and not the extended-art khm/369. That is what a
+                    // date and a collector number give on their own, and it is all they give:
+                    // `lang:ja !"Maskwood Nexus"` is drc/132 on api.scryfall.com (2026-10-08), the
+                    // newest Japanese printing, where the English pick is clb/865; `!"Counterspell"
+                    // lang:ja` is mar/9, where it is dsc/114. A language's printings come back in
+                    // their own order — drc/132, blc/279, m3c/299, clb/865, khm/240, khm/369 — and
+                    // the builder ranks each row in it (engine/builder/src/ranks.rs).
                     let p = printing_at(data, vpid);
                     sel.buf().push((sort_key_bits(card, p, params.sort_col, params.descending), cid, vpid));
                 }

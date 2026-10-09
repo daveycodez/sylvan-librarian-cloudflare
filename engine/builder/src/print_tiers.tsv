@@ -1,0 +1,45 @@
+# GENERATED FILE - do not edit. Built by scripts/generate-print-tiers.ts from api.scryfall.com.
+#
+# set code <TAB> tier: where a set's PLAIN English printings sit in a card's own order when that is
+# not what its set type says (0 = the default tier, 1 = after it, 2 = last). See ranks.rs.
+# 36804 printings read, 462 sets measured, 422 of them where their type puts them.
+40k	1
+acr	1
+blc	1
+brc	1
+cm1	1
+drc	1
+fdc	1
+fic	1
+gn2	0
+gnt	0
+j22	1
+j25	1
+ltc	1
+mb2	1
+om1	1
+onc	1
+pip	1
+scd	1
+t30a	1
+tblc	1
+tdft	1
+tdmr	1
+tdrc	1
+tlcc	1
+tlci	1
+tltr	1
+tmsh	1
+tncc	1
+tnec	1
+tneo	1
+tpip	1
+tscd	1
+tspm	1
+ttdc	1
+ttdm	1
+tunf	1
+twho	1
+twoe	1
+who	1
+woc	1

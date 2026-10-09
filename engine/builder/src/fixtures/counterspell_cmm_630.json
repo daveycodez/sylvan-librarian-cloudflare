@@ -1,0 +1,137 @@
+{
+ "artist": "rk post",
+ "artist_ids": [
+  "81ae0f3f-1d88-4125-9aeb-b15b4c734c82"
+ ],
+ "booster": false,
+ "border_color": "borderless",
+ "card_back_id": "0aeebaf5-8c7d-4636-9e82-8c27447861f7",
+ "cardmarket_id": 723561,
+ "cmc": 2.0,
+ "collector_number": "630",
+ "color_identity": [
+  "U"
+ ],
+ "colors": [
+  "U"
+ ],
+ "digital": false,
+ "edhrec_rank": 16,
+ "finishes": [
+  "nonfoil",
+  "foil"
+ ],
+ "flavor_text": "\"Nice spell you got there. Be a shame if something happened to it.\"",
+ "foil": true,
+ "frame": "2015",
+ "frame_effects": [
+  "inverted"
+ ],
+ "full_art": false,
+ "game_changer": false,
+ "games": [
+  "paper",
+  "mtgo"
+ ],
+ "highres_image": true,
+ "id": "7e47212d-399e-4121-92d4-9fb0d85767cb",
+ "illustration_id": "db2caab3-20ae-4211-a8ec-ca9f54d454c4",
+ "image_status": "highres_scan",
+ "image_updated_at": "2026-07-13T04:05:14Z",
+ "image_uris": {
+  "art": "https://cards.scryfall.io/art/front/7/e/7e47212d-399e-4121-92d4-9fb0d85767cb.webp?1783915514",
+  "art_crop": "https://cards.scryfall.io/art_crop/front/7/e/7e47212d-399e-4121-92d4-9fb0d85767cb.jpg?1783915514",
+  "border_crop": "https://cards.scryfall.io/border_crop/front/7/e/7e47212d-399e-4121-92d4-9fb0d85767cb.jpg?1783915514",
+  "crop": "https://cards.scryfall.io/crop/front/7/e/7e47212d-399e-4121-92d4-9fb0d85767cb.webp?1783915514",
+  "display": "https://cards.scryfall.io/display/front/7/e/7e47212d-399e-4121-92d4-9fb0d85767cb.webp?1783915514",
+  "grid": "https://cards.scryfall.io/grid/front/7/e/7e47212d-399e-4121-92d4-9fb0d85767cb.webp?1783915514",
+  "large": "https://cards.scryfall.io/large/front/7/e/7e47212d-399e-4121-92d4-9fb0d85767cb.jpg?1783915514",
+  "normal": "https://cards.scryfall.io/normal/front/7/e/7e47212d-399e-4121-92d4-9fb0d85767cb.jpg?1783915514",
+  "png": "https://cards.scryfall.io/png/front/7/e/7e47212d-399e-4121-92d4-9fb0d85767cb.png?1783915514",
+  "small": "https://cards.scryfall.io/small/front/7/e/7e47212d-399e-4121-92d4-9fb0d85767cb.jpg?1783915514",
+  "thumb": "https://cards.scryfall.io/thumb/front/7/e/7e47212d-399e-4121-92d4-9fb0d85767cb.webp?1783915514"
+ },
+ "keywords": [],
+ "lang": "en",
+ "layout": "normal",
+ "legalities": {
+  "alchemy": "not_legal",
+  "brawl": "legal",
+  "commander": "legal",
+  "competitivebrawl": "legal",
+  "duel": "legal",
+  "future": "not_legal",
+  "gladiator": "legal",
+  "historic": "legal",
+  "legacy": "legal",
+  "modern": "legal",
+  "oathbreaker": "legal",
+  "oldschool": "not_legal",
+  "pauper": "legal",
+  "paupercommander": "legal",
+  "penny": "not_legal",
+  "pioneer": "not_legal",
+  "predh": "legal",
+  "premodern": "legal",
+  "standard": "not_legal",
+  "standardbrawl": "not_legal",
+  "timeless": "legal",
+  "tlr": "legal",
+  "vintage": "legal"
+ },
+ "mana_cost": "{U}{U}",
+ "mtgo_id": 113677,
+ "multiverse_ids": [
+  624414
+ ],
+ "name": "Counterspell",
+ "nonfoil": true,
+ "object": "card",
+ "oracle_id": "cc187110-1148-4090-bbb8-e205694a39f5",
+ "oracle_text": "Counter target spell.",
+ "oversized": false,
+ "penny_rank": 8,
+ "prices": {
+  "eur": "3.17",
+  "eur_foil": "4.18",
+  "tix": "0.81",
+  "usd": "2.62",
+  "usd_etched": null,
+  "usd_foil": "3.37"
+ },
+ "prints_search_uri": "https://api.scryfall.com/cards/search?order=released&q=oracleid%3Acc187110-1148-4090-bbb8-e205694a39f5&unique=prints",
+ "promo": false,
+ "promo_types": [
+  "boosterfun"
+ ],
+ "purchase_uris": {
+  "cardhoarder": "https://www.cardhoarder.com/cards/113677?affiliate_id=scryfall&ref=card-profile&utm_campaign=affiliate&utm_medium=card&utm_source=scryfall",
+  "cardmarket": "https://www.cardmarket.com/en/Magic/Products?idProduct=723561&referrer=scryfall&utm_campaign=card_prices&utm_medium=text&utm_source=scryfall",
+  "tcgplayer": "https://partner.tcgplayer.com/c/4931599/1830156/21018?subId1=api&u=https%3A%2F%2Fwww.tcgplayer.com%2Fproduct%2F507208%3Fpage%3D1"
+ },
+ "rarity": "common",
+ "related_uris": {
+  "edhrec": "https://edhrec.com/route/?cc=Counterspell",
+  "gatherer": "https://gatherer.wizards.com/Pages/Card/Details.aspx?multiverseid=624414&printed=false",
+  "tcgplayer_infinite_articles": "https://partner.tcgplayer.com/c/4931599/1830156/21018?subId1=api&trafcat=tcgplayer.com%2Fsearch%2Farticles&u=https%3A%2F%2Fwww.tcgplayer.com%2Fsearch%2Farticles%3FproductLineName%3Dmagic%26q%3DCounterspell",
+  "tcgplayer_infinite_decks": "https://partner.tcgplayer.com/c/4931599/1830156/21018?subId1=api&trafcat=tcgplayer.com%2Fsearch%2Fdecks&u=https%3A%2F%2Fwww.tcgplayer.com%2Fsearch%2Fdecks%3FproductLineName%3Dmagic%26q%3DCounterspell"
+ },
+ "released_at": "2023-08-04",
+ "reprint": true,
+ "reserved": false,
+ "rulings_uri": "https://api.scryfall.com/cards/7e47212d-399e-4121-92d4-9fb0d85767cb/rulings",
+ "scryfall_set_uri": "https://scryfall.com/sets/cmm?utm_source=api",
+ "scryfall_uri": "https://scryfall.com/card/cmm/630/counterspell?utm_source=api",
+ "set": "cmm",
+ "set_id": "cd05036f-2698-43e6-a48e-5c8d82f0a551",
+ "set_name": "Commander Masters",
+ "set_search_uri": "https://api.scryfall.com/cards/search?order=set&q=e%3Acmm&unique=prints",
+ "set_type": "masters",
+ "set_uri": "https://api.scryfall.com/sets/cd05036f-2698-43e6-a48e-5c8d82f0a551",
+ "story_spotlight": false,
+ "tcgplayer_id": 507208,
+ "textless": false,
+ "type_line": "Instant",
+ "uri": "https://api.scryfall.com/cards/7e47212d-399e-4121-92d4-9fb0d85767cb",
+ "variation": false
+}

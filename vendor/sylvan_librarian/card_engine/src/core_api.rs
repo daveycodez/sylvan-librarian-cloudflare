@@ -5644,43 +5644,48 @@ mod tests {
         assert!(store.query_widens(&is_filter("localizedname"), &opts).expect("widens?"));
     }
 
-    /// `lang:` + `unique=cards` follows the query's OWN English pick, not the card's global one.
+    /// `lang:` + `unique=cards` answers the best row OF THAT LANGUAGE by its own score.
     ///
-    /// The Maskwood Nexus shape, from the live-parity ledger: the card's representative printing
-    /// lives in ANOTHER set (clb 865), so no khm row carries the importer's PIN_BONUS, and the two
-    /// khm ja rows are left to a tiebreak Scryfall's data does not supply — its ja extended-art
-    /// printing has no `frame_effects`, so the -6 that separates the English pair (#240 over #369)
-    /// does not exist between the annex rows. api.scryfall.com answers khm ja #240 anyway, because
-    /// it follows the best English row IN THE QUERIED SET.
+    /// The Maskwood Nexus shape, from the live-parity ledger. Two measurements, and the second
+    /// replaced the rule the first was read as (LOCAL PATCH, Cloudflare port):
     ///
-    /// The fixture makes the wrong answer the easy one: ja #369 outscores ja #240 on its own
-    /// prefer, so a per-row rule picks #369. Only reading the canonical row at each slot, under
-    /// the query with its language lifted, gets #240.
+    /// - 2026-08-16, `e:khm lang:ja`: api.scryfall.com answers khm/240 in Japanese, not the
+    ///   extended-art khm/369 — read then as "the language follows the best ENGLISH row in the
+    ///   queried set", and built as a rule that replaced an annex pick by the annex row at that
+    ///   English row's slot. This test asserted it with the Japanese #369 outscoring the Japanese
+    ///   #240, so that only the English rows could produce #240.
+    /// - 2026-10-08, `lang:ja !"Maskwood Nexus"`: drc/132, the NEWEST Japanese printing, where the
+    ///   card's English pick is clb/865 and the rule above answered clb/865 in Japanese. Its
+    ///   Japanese printings come back drc/132, blc/279, m3c/299, clb/865, khm/240, khm/369 — their
+    ///   own dates, then the collector number, which is also all khm/240 over khm/369 ever was.
+    ///
+    /// So the order lives in the rows: the builder ranks each language's rows by date (see
+    /// engine/builder/src/ranks.rs), and this driver picks the best matching one. The fixture
+    /// scores are that ranking.
     #[test]
-    fn a_language_pick_follows_the_english_row_in_the_querys_own_set() {
+    fn a_language_pick_is_that_languages_own_best_row() {
         let mut rows = Vec::new();
-        // The card's GLOBAL representative, in a set the query does not ask for.
-        let mut clb = annex_row("Maskwood Nexus", "oracle-m", "row-m-clb", "en", 240.0);
-        clb["card_set_code"] = json!("clb");
-        clb["collector_number"] = json!("865");
-        rows.push(clb);
-        // The two English khm rows: #240 beats #369 by the extended-art penalty.
-        for (cn, prefer) in [("240", 197.36), ("369", 191.36)] {
-            let mut r = annex_row("Maskwood Nexus", "oracle-m", &format!("row-m-khm-{cn}"), "en", prefer);
-            r["card_set_code"] = json!("khm");
+        let slot = |name: &str, lang: &str, set: &str, cn: &str, prefer: f64| -> Value {
+            let mut r = annex_row("Maskwood Nexus", "oracle-m", name, lang, prefer);
+            r["card_set_code"] = json!(set);
             r["collector_number"] = json!(cn);
-            rows.push(r);
-        }
-        // The two Japanese khm rows, at the same two slots — and the WRONG one scores higher.
-        for (cn, prefer) in [("240", 90.0), ("369", 95.0)] {
-            let mut r = annex_row("Maskwood Nexus", "oracle-m", &format!("row-m-khm-{cn}-ja"), "ja", prefer);
-            r["is_canonical"] = json!(false);
-            r["card_set_code"] = json!("khm");
-            r["collector_number"] = json!(cn);
-            r["printed_name"] = json!("仮面の樹の交錯점");
-            r["printed_name_folded"] = json!("仮面の樹の交錯점");
-            rows.push(r);
-        }
+            if lang != "en" {
+                r["is_canonical"] = json!(false);
+                r["printed_name"] = json!("仮面の樹の交錯点");
+                r["printed_name_folded"] = json!("仮面の樹の交錯点");
+            }
+            r
+        };
+        // The card's GLOBAL representative, and the two English khm rows: #240 beats #369.
+        rows.push(slot("row-m-clb", "en", "clb", "865", 240.0));
+        rows.push(slot("row-m-khm-240", "en", "khm", "240", 197.36));
+        rows.push(slot("row-m-khm-369", "en", "khm", "369", 191.36));
+        // The Japanese rows, newest first as the builder ranks them: Aetherdrift Commander's, the
+        // clb one, and the two khm ones.
+        rows.push(slot("row-m-drc-ja", "ja", "drc", "132", 120.0));
+        rows.push(slot("row-m-clb-ja", "ja", "clb", "865", 110.0));
+        rows.push(slot("row-m-khm-240-ja", "ja", "khm", "240", 95.0));
+        rows.push(slot("row-m-khm-369-ja", "ja", "khm", "369", 90.0));
         let store = build_store(&rows).1;
         let khm = json!({
             "node_type": "CardBinaryOperatorNode",
@@ -5700,27 +5705,31 @@ mod tests {
             ..QueryOptions::default()
         };
 
+        // `e:khm lang:ja`: khm/240, as before.
         let out = store.query_value(&scoped, &opts("card", false)).expect("lang-scoped");
         assert_eq!(out.total, 1, "one card");
         assert_eq!(out.rows[0]["lang"], json!("ja"));
-        assert_eq!(out.rows[0]["collector_number"], json!("240"), "follows the best khm ENGLISH row, not the ja score");
+        assert_eq!(out.rows[0]["collector_number"], json!("240"), "the best khm row in Japanese");
 
-        // The row that outscores it is still THERE — this reorders the representative, it does not
-        // drop anything.
+        // `lang:ja` alone: the newest Japanese printing, NOT the Japanese row at the slot of the
+        // English pick (clb/865), which is what following the English row answered.
+        let out = store.query_value(&lang_filter("ja"), &opts("card", false)).expect("lang only");
+        assert_eq!(out.total, 1);
+        assert_eq!(out.rows[0]["lang"], json!("ja"));
+        assert_eq!(out.rows[0]["collector_number"], json!("132"), "the language's own best row");
+
+        // Nothing is dropped: both khm rows still match under `unique=prints`.
         let prints = store.query_value(&scoped, &opts("printing", false)).expect("prints");
         assert_eq!(prints.total, 2, "both ja rows still match");
 
         // And the English lane is unmoved: include_multilingual rolls up to the global English
-        // representative exactly as before, annex ranking never consulted.
+        // representative exactly as before.
         let all = store.query_value(&json!({ "node_type": "TrueNode" }), &opts("card", true)).expect("ml");
         assert_eq!(all.rows[0]["lang"], json!("en"));
         assert_eq!(all.rows[0]["collector_number"], json!("865"), "clb 865 is still the card's own pick");
     }
 
-    /// An annex row whose slot has no canonical row in scope keeps the pick phase 1 made.
-    ///
-    /// The fallback half of the rule above: a foreign-only printing has no English row to follow,
-    /// so nothing overrides its own prefer score and `unique=cards` answers the best of them.
+    /// A printing that exists only in another language is picked the same way: by its own score.
     #[test]
     fn a_foreign_only_slot_keeps_its_own_pick() {
         let mut rows = Vec::new();

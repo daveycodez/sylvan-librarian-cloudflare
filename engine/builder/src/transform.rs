@@ -2839,6 +2839,14 @@ pub fn is_off_style(art_tags: &[&str]) -> bool {
 /// printing at the SAME (set_code, collector_number) as its English one, which raw prefer_score
 /// gets wrong wherever a showcase printing outscores the pinned slot (14 of 175 `e:khm lang:ja`
 /// cards, verified against api.scryfall.com 2026-08-16).
+///
+/// THAT READING HELD INSIDE ONE SET AND NOT BEYOND IT (2026-10-08): `lang:ja !"Maskwood Nexus"`
+/// answers drc/132, the newest Japanese printing, where the label is clb/865 — a language's rows
+/// come back in their own date order, which inside khm is the lower collector number. That order
+/// is the RANK's now (`ranks`, which ranks a labelled slot's other languages at their date), and
+/// one rank step outweighs this bonus, so on a foreign row it no longer decides anything inside
+/// the card. It is still added to them, unchanged, for the cross-card comparisons that read the
+/// score.
 pub const PIN_BONUS: f64 = 1000.0;
 
 /// The printing SLOT a pin applies to: `(oracle_id, set_code, collector_number)`.
@@ -5761,6 +5769,10 @@ mod tests {
     /// the 175 `e:khm lang:ja` cards checked against api.scryfall.com. Scryfall's within-language
     /// representative is the printing at the same slot as its English one, which is what this
     /// asserts: the foreign row IN the pinned slot outranks the foreign row outside it.
+    ///
+    /// (Inside one set and date, that is — see [`PIN_BONUS`]. The components asserted here ride
+    /// UNDER the rank, which is what orders a language's rows across sets since 2026-10-08; here
+    /// the rank agrees, #63 before #345.)
     #[test]
     fn the_pin_propagates_to_the_labelled_slot_in_every_language() {
         const EN_ID: &str = "aaaaaaaa-0000-0000-0000-000000000063";
@@ -5817,12 +5829,13 @@ mod tests {
     }
 
     /// The order a filter falls back on when it excludes the pinned printing: newest release
-    /// first, then lowest collector number.
+    /// first, then lowest collector number — inside one tier, which is all these three plain
+    /// printings are in.
     ///
     /// Derived rather than guessed — 16,045 labelled observations harvested from
     /// api.scryfall.com on 2026-08-16, .9624 of the pin-excluded class against .6594 for the
-    /// bare component score. See [`crate::ranks`] for the measurement, the alternatives it beat
-    /// and the classes it still gets wrong.
+    /// bare component score, and the tiers above it from 33,640 rows on 2026-10-08. See
+    /// [`crate::ranks`] for the measurement and the classes it still gets wrong.
     #[test]
     fn an_excluded_pin_falls_back_to_newest_then_lowest_number() {
         let printing = |id: &str, set: &str, number: &str, released: &str| {

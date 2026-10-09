@@ -1,0 +1,130 @@
+{
+ "artist": "Bartek Fedyczak",
+ "artist_ids": [
+  "70b1ba71-4ee1-4087-8a9e-ea919f20ebff"
+ ],
+ "booster": false,
+ "border_color": "black",
+ "card_back_id": "0aeebaf5-8c7d-4636-9e82-8c27447861f7",
+ "cardmarket_id": 779328,
+ "cmc": 2.0,
+ "collector_number": "191",
+ "color_identity": [
+  "R"
+ ],
+ "colors": [
+  "R"
+ ],
+ "digital": false,
+ "edhrec_rank": 145,
+ "finishes": [
+  "nonfoil"
+ ],
+ "flavor_text": "\"What do you mean a walking clock destroyed all our cannons?!\"\n—Captain Lannery Storm",
+ "foil": false,
+ "frame": "2015",
+ "full_art": false,
+ "game_changer": false,
+ "games": [
+  "paper",
+  "mtgo"
+ ],
+ "highres_image": true,
+ "id": "c1466ae6-9dbc-4ead-844b-9b1ba7274baf",
+ "illustration_id": "da6124d8-3548-46cc-87b7-63f867197933",
+ "image_status": "highres_scan",
+ "image_updated_at": "2026-07-13T02:44:36Z",
+ "image_uris": {
+  "art": "https://cards.scryfall.io/art/front/c/1/c1466ae6-9dbc-4ead-844b-9b1ba7274baf.webp?1783910676",
+  "art_crop": "https://cards.scryfall.io/art_crop/front/c/1/c1466ae6-9dbc-4ead-844b-9b1ba7274baf.jpg?1783910676",
+  "border_crop": "https://cards.scryfall.io/border_crop/front/c/1/c1466ae6-9dbc-4ead-844b-9b1ba7274baf.jpg?1783910676",
+  "crop": "https://cards.scryfall.io/crop/front/c/1/c1466ae6-9dbc-4ead-844b-9b1ba7274baf.webp?1783910676",
+  "display": "https://cards.scryfall.io/display/front/c/1/c1466ae6-9dbc-4ead-844b-9b1ba7274baf.webp?1783910676",
+  "grid": "https://cards.scryfall.io/grid/front/c/1/c1466ae6-9dbc-4ead-844b-9b1ba7274baf.webp?1783910676",
+  "large": "https://cards.scryfall.io/large/front/c/1/c1466ae6-9dbc-4ead-844b-9b1ba7274baf.jpg?1783910676",
+  "normal": "https://cards.scryfall.io/normal/front/c/1/c1466ae6-9dbc-4ead-844b-9b1ba7274baf.jpg?1783910676",
+  "png": "https://cards.scryfall.io/png/front/c/1/c1466ae6-9dbc-4ead-844b-9b1ba7274baf.png?1783910676",
+  "small": "https://cards.scryfall.io/small/front/c/1/c1466ae6-9dbc-4ead-844b-9b1ba7274baf.jpg?1783910676",
+  "thumb": "https://cards.scryfall.io/thumb/front/c/1/c1466ae6-9dbc-4ead-844b-9b1ba7274baf.webp?1783910676"
+ },
+ "keywords": [],
+ "lang": "en",
+ "layout": "normal",
+ "legalities": {
+  "alchemy": "legal",
+  "brawl": "legal",
+  "commander": "legal",
+  "competitivebrawl": "legal",
+  "duel": "legal",
+  "future": "legal",
+  "gladiator": "legal",
+  "historic": "legal",
+  "legacy": "legal",
+  "modern": "legal",
+  "oathbreaker": "legal",
+  "oldschool": "not_legal",
+  "pauper": "legal",
+  "paupercommander": "legal",
+  "penny": "not_legal",
+  "pioneer": "legal",
+  "predh": "not_legal",
+  "premodern": "not_legal",
+  "standard": "legal",
+  "standardbrawl": "legal",
+  "timeless": "legal",
+  "tlr": "legal",
+  "vintage": "legal"
+ },
+ "mana_cost": "{1}{R}",
+ "mtgo_id": 128529,
+ "multiverse_ids": [
+  671549
+ ],
+ "name": "Abrade",
+ "nonfoil": true,
+ "object": "card",
+ "oracle_id": "f9db72dc-9a5b-48a4-a86e-7464d9a2166a",
+ "oracle_text": "Choose one —\n• Abrade deals 3 damage to target creature.\n• Destroy target artifact.",
+ "oversized": false,
+ "penny_rank": 242,
+ "prices": {
+  "eur": "0.14",
+  "eur_foil": null,
+  "tix": "0.05",
+  "usd": "0.28",
+  "usd_etched": null,
+  "usd_foil": null
+ },
+ "prints_search_uri": "https://api.scryfall.com/cards/search?order=released&q=oracleid%3Af9db72dc-9a5b-48a4-a86e-7464d9a2166a&unique=prints",
+ "promo": false,
+ "purchase_uris": {
+  "cardhoarder": "https://www.cardhoarder.com/cards/128529?affiliate_id=scryfall&ref=card-profile&utm_campaign=affiliate&utm_medium=card&utm_source=scryfall",
+  "cardmarket": "https://www.cardmarket.com/en/Magic/Products?idProduct=779328&referrer=scryfall&utm_campaign=card_prices&utm_medium=text&utm_source=scryfall",
+  "tcgplayer": "https://partner.tcgplayer.com/c/4931599/1830156/21018?subId1=api&u=https%3A%2F%2Fwww.tcgplayer.com%2Fproduct%2F559909%3Fpage%3D1"
+ },
+ "rarity": "common",
+ "related_uris": {
+  "edhrec": "https://edhrec.com/route/?cc=Abrade",
+  "gatherer": "https://gatherer.wizards.com/Pages/Card/Details.aspx?multiverseid=671549&printed=false",
+  "tcgplayer_infinite_articles": "https://partner.tcgplayer.com/c/4931599/1830156/21018?subId1=api&trafcat=tcgplayer.com%2Fsearch%2Farticles&u=https%3A%2F%2Fwww.tcgplayer.com%2Fsearch%2Farticles%3FproductLineName%3Dmagic%26q%3DAbrade",
+  "tcgplayer_infinite_decks": "https://partner.tcgplayer.com/c/4931599/1830156/21018?subId1=api&trafcat=tcgplayer.com%2Fsearch%2Fdecks&u=https%3A%2F%2Fwww.tcgplayer.com%2Fsearch%2Fdecks%3FproductLineName%3Dmagic%26q%3DAbrade"
+ },
+ "released_at": "2024-08-02",
+ "reprint": true,
+ "reserved": false,
+ "rulings_uri": "https://api.scryfall.com/cards/c1466ae6-9dbc-4ead-844b-9b1ba7274baf/rulings",
+ "scryfall_set_uri": "https://scryfall.com/sets/blc?utm_source=api",
+ "scryfall_uri": "https://scryfall.com/card/blc/191/abrade?utm_source=api",
+ "set": "blc",
+ "set_id": "c0f860b9-a2d0-4fd7-bfac-a49ac60c84f1",
+ "set_name": "Bloomburrow Commander",
+ "set_search_uri": "https://api.scryfall.com/cards/search?order=set&q=e%3Ablc&unique=prints",
+ "set_type": "commander",
+ "set_uri": "https://api.scryfall.com/sets/c0f860b9-a2d0-4fd7-bfac-a49ac60c84f1",
+ "story_spotlight": false,
+ "tcgplayer_id": 559909,
+ "textless": false,
+ "type_line": "Instant",
+ "uri": "https://api.scryfall.com/cards/c1466ae6-9dbc-4ead-844b-9b1ba7274baf",
+ "variation": false
+}

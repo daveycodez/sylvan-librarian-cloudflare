@@ -3807,27 +3807,6 @@ impl FilterExpr {
         }
     }
 
-    /// This filter with every `LangMatch` leaf replaced by `True`: the query's scope, minus the
-    /// language it asks for.
-    ///
-    /// `run_query_widened` needs it to answer "which CANONICAL rows would this query have
-    /// matched?" for a card whose only matching rows are foreign — the question that decides which
-    /// foreign row represents the card (see `annex_representative`). Relaxing to `True` rather
-    /// than deleting the leaf keeps the tree's shape, so a `LangMatch` under `Not` or `Or`
-    /// contributes exactly what a satisfied conjunct would and no arm changes arity.
-    ///
-    /// Not a narrowing helper and never used as one: this loosens the filter, so it may only be
-    /// asked about rows already known to be in scope.
-    pub(crate) fn with_lang_relaxed(&self) -> FilterExpr {
-        match self {
-            FilterExpr::LangMatch { .. } => FilterExpr::True,
-            FilterExpr::And(children) => FilterExpr::And(children.iter().map(Self::with_lang_relaxed).collect()),
-            FilterExpr::Or(children) => FilterExpr::Or(children.iter().map(Self::with_lang_relaxed).collect()),
-            FilterExpr::Not(inner) => FilterExpr::Not(Box::new(inner.with_lang_relaxed())),
-            other => other.clone(),
-        }
-    }
-
     /// Four-valued evaluation. True/False/Null mirror SQL ternary logic: Null is
     /// SQL's NULL ("unknown"), produced when a compared field is missing from the
     /// card, and NOT/AND/OR propagate it exactly like SQL — so -power>2 excludes

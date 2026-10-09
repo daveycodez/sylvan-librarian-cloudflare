@@ -1982,8 +1982,32 @@ export async function gzipBytes(bytes: Uint8Array): Promise<Uint8Array> {
  *      took (tag, pad, u16), with `collector_rank` moved ahead of it. The header cannot see a
  *      reshuffle that keeps 304 bytes, which is why the format moves; the sort key's collector
  *      segment carries four bytes of integer where it carried two, which is why its version does.
+ *
+ *   72 (2026-10-08): A CARD'S OWN ORDER IS IN SCRYFALL'S TIERS. The rank every generation up to 71
+ *      stored — the label, an English slot, a prefixed collector number, the date — was one
+ *      date-descending list with two demotions, and api.scryfall.com's order is up to three lists
+ *      one after another: the default printings newest first, then every promo, treatment,
+ *      second-tier set and non-English row newest first, then memorabilia. `g:war` answered
+ *      Neheb's 2021 resale promo pwar/140★ where Scryfall answers war/140; `g:fin` the metal
+ *      Treasure wfin/3 for tfin/23; Counterspell's printings came back dsc/114, fdc/61, sld/7117 …
+ *      where Scryfall's are dsc/114, cmm/81, dmr/45 … lea/54 and only then fdc/61. Replayed over
+ *      every printing of the 2,433 cards printed eight times or more, the stored order reproduced
+ *      226 of Scryfall's sequences and this one 2,071; on 772 cards it was not fitted on, 218 and
+ *      746 (`engine/builder/src/ranks.rs` carries the measurement, `print_tiers.tsv` the per-set
+ *      half of the tier that no card field decides).
+ *
+ *      Inside a date the sets order by release batch and code and the printings by collector
+ *      number as `order=set` reads it (Ultima: fin/38, pfin/38s, fin/328, pss5/1). And the rank is
+ *      per ROW now, not per slot: the default tier is English only, so a default-tier slot's
+ *      other languages rank at their date in the second — `!"Counterspell" lang:ja` and
+ *      `/cards/named?fuzzy=対抗呪文` answer the Japanese mar/9 as Scryfall does, where the slot's
+ *      shared rank answered the Japanese dsc/114.
+ *
+ *      GENERATION-ONLY: `prefer_score` is a stored VALUE and the order the printings are stored
+ *      in follows it. No layout, no format version, neither row touched; `prefer:borderless`
+ *      reads the same score underneath its own tiers and is otherwise unchanged.
  */
-export const STORE_CONTENT_GENERATION = 71;
+export const STORE_CONTENT_GENERATION = 72;
 
 /**
  * Chunk key for a store. Keyed by store_key, so publishes never collide.

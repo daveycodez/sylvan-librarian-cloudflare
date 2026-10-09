@@ -1,0 +1,134 @@
+{
+ "artist": "Igor Kieryluk",
+ "artist_ids": [
+  "9c3e9d17-509f-485c-9360-46d897ce716b"
+ ],
+ "booster": false,
+ "border_color": "black",
+ "card_back_id": "0aeebaf5-8c7d-4636-9e82-8c27447861f7",
+ "cardmarket_id": 832287,
+ "cmc": 4.0,
+ "collector_number": "857",
+ "color_identity": [
+  "R"
+ ],
+ "colors": [
+  "R"
+ ],
+ "digital": false,
+ "edhrec_rank": 3959,
+ "finishes": [
+  "foil"
+ ],
+ "foil": true,
+ "frame": "1997",
+ "full_art": false,
+ "game_changer": false,
+ "games": [
+  "paper"
+ ],
+ "highres_image": true,
+ "id": "b5c81384-c3c7-4033-9e5c-70143f145be5",
+ "illustration_id": "88192763-a751-4e51-9a14-46bc8eaf3e89",
+ "image_status": "highres_scan",
+ "image_updated_at": "2026-08-26T06:58:19Z",
+ "image_uris": {
+  "art": "https://cards.scryfall.io/art/front/b/5/b5c81384-c3c7-4033-9e5c-70143f145be5.webp?1787727499",
+  "art_crop": "https://cards.scryfall.io/art_crop/front/b/5/b5c81384-c3c7-4033-9e5c-70143f145be5.jpg?1787727499",
+  "border_crop": "https://cards.scryfall.io/border_crop/front/b/5/b5c81384-c3c7-4033-9e5c-70143f145be5.jpg?1787727499",
+  "crop": "https://cards.scryfall.io/crop/front/b/5/b5c81384-c3c7-4033-9e5c-70143f145be5.webp?1787727499",
+  "display": "https://cards.scryfall.io/display/front/b/5/b5c81384-c3c7-4033-9e5c-70143f145be5.webp?1787727499",
+  "grid": "https://cards.scryfall.io/grid/front/b/5/b5c81384-c3c7-4033-9e5c-70143f145be5.webp?1787727499",
+  "large": "https://cards.scryfall.io/large/front/b/5/b5c81384-c3c7-4033-9e5c-70143f145be5.jpg?1787727499",
+  "normal": "https://cards.scryfall.io/normal/front/b/5/b5c81384-c3c7-4033-9e5c-70143f145be5.jpg?1787727499",
+  "png": "https://cards.scryfall.io/png/front/b/5/b5c81384-c3c7-4033-9e5c-70143f145be5.png?1787727499",
+  "small": "https://cards.scryfall.io/small/front/b/5/b5c81384-c3c7-4033-9e5c-70143f145be5.jpg?1787727499",
+  "thumb": "https://cards.scryfall.io/thumb/front/b/5/b5c81384-c3c7-4033-9e5c-70143f145be5.webp?1787727499"
+ },
+ "keywords": [
+  "Trample"
+ ],
+ "lang": "en",
+ "layout": "normal",
+ "legalities": {
+  "alchemy": "not_legal",
+  "brawl": "legal",
+  "commander": "legal",
+  "competitivebrawl": "legal",
+  "duel": "legal",
+  "future": "not_legal",
+  "gladiator": "legal",
+  "historic": "legal",
+  "legacy": "legal",
+  "modern": "legal",
+  "oathbreaker": "legal",
+  "oldschool": "not_legal",
+  "pauper": "not_legal",
+  "paupercommander": "not_legal",
+  "penny": "legal",
+  "pioneer": "legal",
+  "predh": "not_legal",
+  "premodern": "not_legal",
+  "standard": "not_legal",
+  "standardbrawl": "not_legal",
+  "timeless": "legal",
+  "tlr": "not_legal",
+  "vintage": "legal"
+ },
+ "mana_cost": "{2}{R}{R}",
+ "multiverse_ids": [],
+ "name": "Neheb, Dreadhorde Champion",
+ "nonfoil": false,
+ "object": "card",
+ "oracle_id": "ed8e9a2e-5fb8-4f39-b954-dbcbc96d909f",
+ "oracle_text": "Trample\nWhenever Neheb deals combat damage to a player or planeswalker, you may discard any number of cards. If you do, draw that many cards and add that much {R}. Until end of turn, you don't lose this mana as steps and phases end.",
+ "oversized": false,
+ "penny_rank": 7022,
+ "power": "5",
+ "prices": {
+  "eur": null,
+  "eur_foil": "2.43",
+  "tix": null,
+  "usd": null,
+  "usd_etched": null,
+  "usd_foil": "1.99"
+ },
+ "prints_search_uri": "https://api.scryfall.com/cards/search?order=released&q=oracleid%3Aed8e9a2e-5fb8-4f39-b954-dbcbc96d909f&unique=prints",
+ "produced_mana": [
+  "R"
+ ],
+ "promo": false,
+ "promo_types": [
+  "sldbonus"
+ ],
+ "purchase_uris": {
+  "cardhoarder": "https://www.cardhoarder.com/cards?affiliate_id=scryfall&data%5Bsearch%5D=Neheb%2C+Dreadhorde+Champion&ref=card-profile&utm_campaign=affiliate&utm_medium=card&utm_source=scryfall",
+  "cardmarket": "https://www.cardmarket.com/en/Magic/Products?idProduct=832287&referrer=scryfall&utm_campaign=card_prices&utm_medium=text&utm_source=scryfall",
+  "tcgplayer": "https://partner.tcgplayer.com/c/4931599/1830156/21018?subId1=api&u=https%3A%2F%2Fwww.tcgplayer.com%2Fproduct%2F639336%3Fpage%3D1"
+ },
+ "rarity": "rare",
+ "related_uris": {
+  "edhrec": "https://edhrec.com/route/?cc=Neheb%2C+Dreadhorde+Champion",
+  "tcgplayer_infinite_articles": "https://partner.tcgplayer.com/c/4931599/1830156/21018?subId1=api&trafcat=tcgplayer.com%2Fsearch%2Farticles&u=https%3A%2F%2Fwww.tcgplayer.com%2Fsearch%2Farticles%3FproductLineName%3Dmagic%26q%3DNeheb%252C%2BDreadhorde%2BChampion",
+  "tcgplayer_infinite_decks": "https://partner.tcgplayer.com/c/4931599/1830156/21018?subId1=api&trafcat=tcgplayer.com%2Fsearch%2Fdecks&u=https%3A%2F%2Fwww.tcgplayer.com%2Fsearch%2Fdecks%3FproductLineName%3Dmagic%26q%3DNeheb%252C%2BDreadhorde%2BChampion"
+ },
+ "released_at": "2025-06-20",
+ "reprint": true,
+ "reserved": false,
+ "rulings_uri": "https://api.scryfall.com/cards/b5c81384-c3c7-4033-9e5c-70143f145be5/rulings",
+ "scryfall_set_uri": "https://scryfall.com/sets/sld?utm_source=api",
+ "scryfall_uri": "https://scryfall.com/card/sld/857/neheb-dreadhorde-champion?utm_source=api",
+ "set": "sld",
+ "set_id": "4d92a8a7-ccb0-437d-abdc-9d70fc5ed672",
+ "set_name": "Secret Lair Drop",
+ "set_search_uri": "https://api.scryfall.com/cards/search?order=set&q=e%3Asld&unique=prints",
+ "set_type": "box",
+ "set_uri": "https://api.scryfall.com/sets/4d92a8a7-ccb0-437d-abdc-9d70fc5ed672",
+ "story_spotlight": false,
+ "tcgplayer_id": 639336,
+ "textless": false,
+ "toughness": "4",
+ "type_line": "Legendary Creature — Zombie Minotaur Warrior",
+ "uri": "https://api.scryfall.com/cards/b5c81384-c3c7-4033-9e5c-70143f145be5",
+ "variation": false
+}
