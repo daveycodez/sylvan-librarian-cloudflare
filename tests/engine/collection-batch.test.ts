@@ -113,21 +113,16 @@ describe("RemoteEngine's batch has no per-kind fallback", () => {
 	});
 });
 
-describe("RemoteEngine's batch keeps the RPC's argument positions across the `?q=` scope's removal", () => {
-	// The engine object's method is (batch, baseUrl, <scope>, reportedShards), by position. The
-	// scope is gone (2026-10-08) and its place is not: an object on the build before reads the
-	// third argument as a scope and the fourth as the shard count, so a shard count sent third
-	// would never arrive there, and every collection call would report a width of 1 to the
-	// region's rendezvous for as long as the deploy rolls.
+describe("RemoteEngine's batch sends the shard count third, where the retired `?q=` scope's place was", () => {
+	// The engine object's method was (batch, baseUrl, <scope>, reportedShards), by position. The
+	// scope went on 2026-10-08 and its place stayed, because an object on an older build read the
+	// count fourth and a count sent third would have reported a width of 1 to the rendezvous.
 	//
-	// It is still so one deploy later (the Rust behind the scope went then, the slot did not): the
-	// object on the build before reads the count fourth on any day, so the Worker sends it fourth.
-	//
-	// Step 1 (2026-10-09) changed the OBJECT alone: it reads the count from whichever of the third
-	// and fourth arguments is a number (rendezvous.test.ts pins the four shapes). The Worker's send
-	// is unchanged and these tests still hold. Step 2 — a later deploy, once no object older than
-	// step 1 can be running — sends `(batch, baseUrl, shards)`, and flips the first two tests here.
-	test("the third argument is null and the shard count is still the fourth", async () => {
+	// Step 1 (ebf29e5c, 2026-10-09) made the OBJECT read the count from whichever of the third and
+	// fourth arguments is a number (rendezvous.test.ts pins the shapes). Step 2 (this) is the
+	// Worker: it sends `(batch, baseUrl, shards)`. Every object it can meet is on step 1 or later.
+	// Step 3 — once no isolate older than step 2 can be running — drops the object's fourth.
+	test("the call is (batch, baseUrl, shards): three arguments, the count third", async () => {
 		const sent: unknown[][] = [];
 		const stub = {
 			scryfallCollectionBatch: async (...args: unknown[]) => {
@@ -137,25 +132,24 @@ describe("RemoteEngine's batch keeps the RPC's argument positions across the `?q
 		};
 		await new RemoteEngine(stub as never, "wnam").scryfallCollectionBatch(BATCH, "https://x");
 		expect(sent).toHaveLength(1);
-		const [batch, baseUrl, retired, shards] = sent[0] as unknown[];
-		expect(sent[0]).toHaveLength(4);
+		const [batch, baseUrl, shards] = sent[0] as unknown[];
+		expect(sent[0]).toHaveLength(3);
 		expect(batch).toBe(BATCH);
 		expect(baseUrl).toBe("https://x");
-		expect(retired).toBeNull();
-		expect(typeof shards).toBe("number");
+		expect(shards).toBe(currentShardWidth("wnam"));
 	});
 
-	test("NEW ISOLATE, OLD OBJECT: an object reading (batch, baseUrl, retired, reportedShards) is handed the region's width", async () => {
-		// The method as the object on the build before this one declares it, read by position.
-		const read: { retired: unknown; reportedShards: unknown }[] = [];
+	test("NEW ISOLATE, STEP-1 OBJECT: an object reading either position is handed the region's width", async () => {
+		// The method as the object has read it since step 1: the fourth if a number, else the third.
+		const read: unknown[] = [];
 		const stub = {
-			scryfallCollectionBatch: async (_batch: unknown, _baseUrl: string, retired: unknown, reportedShards?: number) => {
-				read.push({ retired, reportedShards });
+			scryfallCollectionBatch: async (_batch: unknown, _baseUrl: string, third?: unknown, fourth?: unknown) => {
+				read.push(typeof fourth === "number" ? fourth : typeof third === "number" ? third : undefined);
 				return { packet: packetOf([null], ['{"k":"a"}', null, null, null, null]) };
 			},
 		};
 		await new RemoteEngine(stub as never, "wnam").scryfallCollectionBatch(BATCH, "https://x");
-		expect(read).toEqual([{ retired: null, reportedShards: currentShardWidth("wnam") }]);
+		expect(read).toEqual([currentShardWidth("wnam")]);
 	});
 
 	test("the engine's own method takes a batch and a base URL, and a third argument reaches nothing", async () => {
@@ -169,7 +163,8 @@ describe("RemoteEngine's batch keeps the RPC's argument positions across the `?q
 		const engine = new RemoteEngine(stub as never, "wnam");
 		const loose = engine.scryfallCollectionBatch.bind(engine) as (...args: unknown[]) => Promise<unknown>;
 		await loose(BATCH, "https://x", { prefer: "oldest", filterTreeJson: '{"x":1}' });
-		expect((sent[0] as unknown[])[2]).toBeNull();
+		expect(sent[0]).toHaveLength(3);
+		expect((sent[0] as unknown[])[2]).toBe(currentShardWidth("wnam"));
 	});
 });
 

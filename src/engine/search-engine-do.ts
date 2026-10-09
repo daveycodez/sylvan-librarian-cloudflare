@@ -909,11 +909,9 @@ export class SearchEngine extends DurableObject<Env> {
 	 * width of 1 of it. So the object keeps reading both positions in step 2, and loses the fourth
 	 * only in a deploy after it, once no Worker older than step 2 can be running.
 	 *
-	 * OWED, 2026-10-09: step 2 is not done. This is step 1. When it is live on both accounts, change
-	 * RemoteEngine.scryfallCollectionBatch to send `(batch, baseUrl, shards)`, narrow
-	 * SearchEngineStub to three, and flip the tests that pin the four-argument send
-	 * (tests/engine/collection-batch.test.ts); leave the read of both positions here until the
-	 * deploy after that.
+	 * STEP 2 IS DONE (2026-10-09): the Worker sends `(batch, baseUrl, shards)` (remote-engine.ts).
+	 * OWED: step 3 — once no isolate older than step 2 can be running, drop the fourth parameter and
+	 * read the width from the third alone.
 	 */
 	async scryfallCollectionBatch(
 		batch: CollectionBatch,

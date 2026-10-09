@@ -170,11 +170,10 @@ interface SearchEngineStub {
 		batch: CollectionBatch,
 		baseUrl: string,
 		/**
-		 * Always null: the retired `?q=` scope's place on the wire. Step 1 (2026-10-09) made the
-		 * object read the width from either position; step 2 sends it here and drops the fourth —
-		 * see the method in search-engine-do.ts.
+		 * The shard width, THIRD since step 2 (2026-10-09). The retired `?q=` scope held this place
+		 * (always null) and the width came fourth; the object has read either position since step 1
+		 * and keeps doing so until step 3 — see the method in search-engine-do.ts.
 		 */
-		retiredScope: null,
 		reportedShards?: number,
 	): Promise<{ packet: Uint8Array; located?: CollectionLocated; answeredFrom?: CollectionSource } & Telemetry>;
 	scryfallNamesContaining(
@@ -1333,16 +1332,15 @@ export class RemoteEngine implements Engine {
 
 	/** The one-round collection batch — see Engine.scryfallCollectionBatch. */
 	async scryfallCollectionBatch(batch: CollectionBatch, baseUrl: string): Promise<CollectionBatchAnswer> {
-		// The `null` holds the retired scope's position, so `shards` lands where an engine object on
-		// the build before this one reads it — fourth, and nowhere else. Dropping it takes two
-		// deploys (search-engine-do.ts `scryfallCollectionBatch`):
-		//   step 1 (this deploy): the object reads the width from either position; this call is
-		//     UNCHANGED, because the objects it meets while the deploy rolls read only the fourth.
-		//   step 2 (a later deploy, once no object older than step 1 can be running): this sends
-		//     `(batch, baseUrl, shards)` and the parameter list drops to three.
-		// OWED, 2026-10-09: step 2.
+		// STEP 2 of retiring the scope's place on the wire (search-engine-do.ts
+		// `scryfallCollectionBatch`): the width goes THIRD. Every engine object has read it from
+		// either position since step 1 (ebf29e5c, 2026-10-09), so this pairs with any object still
+		// running; an isolate on step 1 keeps sending `(batch, baseUrl, null, shards)`, which the
+		// object still reads.
+		// OWED, 2026-10-09: step 3 — once no isolate older than this deploy can be running, the
+		// object's parameter list drops to three and its either-position read goes.
 		const { packet, located, answeredFrom } = await this.searchRpc("scryfallCollectionBatch", (stub, shards) =>
-			stub.scryfallCollectionBatch(batch, baseUrl, null, shards),
+			stub.scryfallCollectionBatch(batch, baseUrl, shards),
 		);
 		const answer = decodeCollectionPacket(packet, batch);
 		// x58: the store and code that wrote the packet — of whichever object answered, the hedge's
