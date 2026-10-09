@@ -11756,22 +11756,74 @@ fn released_sort_ord(yyyymmdd: u32) -> u32 {
     y * 372 + m.saturating_sub(1) * 31 + d.saturating_sub(1)
 }
 
-/// Scryfall's `order=color` bucketing, measured 2026-08-09 over 923 cards spanning every colour
-/// shape: `W U B R G`, then multicolour by HOW MANY colours (not which -- guild pairs tie and fall
-/// to the secondary sort), then colourless, then lands. Two parts of that are not what a popcount
-/// would give: colourless sorts last rather than first, and lands sort after it.
-fn color_sort_rank(colors: u8, type_bits: u16) -> u32 {
-    // WUBRG in Scryfall's order; the bit values are color_to_bit's. The C bit is masked off rather
-    // than counted: a colourless card ranks by being colourless, and C alongside a real colour
-    // would otherwise read as an extra colour.
-    const MONO_ORDER: [u8; 5] = [1, 2, 4, 8, 16];
+/// Where each colour combination sits in Scryfall's `order=color`, by WUBRG bit mask (the bit values
+/// are `color_to_bit`'s: W 1, U 2, B 4, R 8, G 16). The order is the one the game prints its colours
+/// in: the five colours, the ten pairs (allied then enemy — WU UB BR RG GW, WB UR BG RW GU), the ten
+/// triples (shards then wedges — WUB UBR BRG RGW GWU, WBG URW BGU RWB GUR), the five four-colour
+/// sets, five colours, and no colour last.
+const COLOR_COMBINATION_RANK: [u8; 32] = {
+    const ORDER: [u8; 31] = [
+        1, 2, 4, 8, 16, // W U B R G
+        3, 6, 12, 24, 17, 5, 10, 20, 9, 18, // WU UB BR RG GW WB UR BG RW GU
+        7, 14, 28, 25, 19, 21, 11, 22, 13, 26, // WUB UBR BRG RGW GWU WBG URW BGU RWB GUR
+        15, 30, 29, 27, 23, // WUBR UBRG BRGW RGWU GWUB
+        31,
+    ];
+    let mut rank = [31u8; 32];
+    let mut i = 0;
+    while i < ORDER.len() {
+        rank[ORDER[i] as usize] = i as u8;
+        i += 1;
+    }
+    rank
+};
+
+/// Scryfall's `order=color` as one number per card (LOCAL PATCH, Cloudflare port).
+///
+/// THREE BLOCKS, each in the colour order of `COLOR_COMBINATION_RANK`:
+///
+///   * cards with a colour that are not lands, by their COLOURS;
+///   * colourless cards that are not lands, by their COLOUR IDENTITY (Eldrazi Skyspawner, devoid
+///     with a blue cost, ahead of Sol Ring);
+///   * lands, last, by their COLOUR IDENTITY whatever their colours — Westvale Abbey (its back is
+///     black), then Dryad Arbor and Forest, then Hengegate Pathway (white-blue), then Wastes.
+///
+/// A card Scryfall gives no top-level `colors` — a transforming or modal double-faced card, whose
+/// colours are on its faces — sorts by its FRONT face in both respects: Brigid, Clachan's Heart
+/// (white front, green back) among the white cards, Emeria's Call (a white sorcery whose back is a
+/// land) among them too, Westvale Abbey (a land whose back is a black creature) among the lands.
+/// The card's own colours are the union of its faces, which put Brigid with the green-white cards
+/// and Westvale Abbey with the black ones.
+///
+/// MEASURED against api.scryfall.com on 2026-10-08: twelve `order=color` answers read whole —
+/// `g:ecc` (534 rows) and `e:mh3` (309) in both directions, `g:ecc t:elf`, `g:war`, `c>=2 r:mythic`
+/// (940), `c=4`, `is:transform (t:land or t:artifact)`, `t:land r:rare year>=2023` (460),
+/// `t:land c>=1`, and a 31-card pool of every shape above in both directions — 3,664 rows, and this
+/// key with the collated name under it reproduces every one of the twelve row for row.
+///
+/// IT REPLACES A COARSER READING OF THE SAME ORDER, measured 2026-08-09 over 923 cards: `W U B R
+/// G`, then multicolour "by how many colours, not which — guild pairs tie and fall to the secondary
+/// sort", then colourless, then colourless lands. The pairs do not tie: `c>=2 r:mythic` returns its
+/// 940 cards as 55 white-blue, 55 blue-black, 59 black-red … with no name order across them, and
+/// that reading leaves 515 of `g:ecc`'s 534 rows in another position than Scryfall's (3,052 of
+/// 3,597 over eleven of the twelve answers). Nor are lands only the colourless ones.
+///
+/// "IS A LAND" IS THE FRONT FACE'S TYPE, read here without the type line: the card has the Land
+/// type and its front face printed no mana cost. Over every card with faces in the 2026-09-24
+/// corpus (3,282) the two agree on all of them — 32 land fronts, 3,250 others.
+fn color_sort_rank(card: &AOracleCard) -> u32 {
+    // The C bit is masked off: a colourless card ranks by being colourless.
     const WUBRG: u8 = 1 | 2 | 4 | 8 | 16;
-    let colors = colors & WUBRG;
-    match colors.count_ones() {
-        0 if type_bits & TYPE_LAND != 0 => 10,
-        0 => 9,
-        1 => MONO_ORDER.iter().position(|&bit| colors == bit).unwrap_or(0) as u32,
-        n => 3 + n, // 2 colours -> 5, 3 -> 6, 4 -> 7, 5 -> 8
+    let front = card.faces.first();
+    let colors = front.and_then(|f| f.card_colors.as_ref().copied()).unwrap_or(card.card_colors) & WUBRG;
+    let identity = u32::from(COLOR_COMBINATION_RANK[(card.card_color_identity & WUBRG) as usize]);
+    let land = u16::from(card.card_types) & TYPE_LAND != 0 && front.is_none_or(|f| f.mana_cost.is_none());
+    if land {
+        64 + identity
+    } else if colors == 0 {
+        32 + identity
+    } else {
+        u32::from(COLOR_COMBINATION_RANK[colors as usize])
     }
 }
 
@@ -11806,7 +11858,7 @@ fn sort_primary_f32(card: &AOracleCard, p: &APrinting, sort_col: SortCol) -> Opt
         SortCol::Name       => Some(printing_name_rank(card, p) as f32),
         // Packed rather than raw: yyyymmdd exceeds the exact-f32 range (see released_sort_ord).
         SortCol::Released   => p.released_at_int.as_ref().map(|v| released_sort_ord(u32::from(*v)) as f32),
-        SortCol::Color      => Some(color_sort_rank(card.card_colors, u16::from(card.card_types)) as f32),
+        SortCol::Color      => Some(color_sort_rank(card) as f32),
         // Dense ranks assigned post-load; the stored code and artist id do not sort alphabetically
         // on their own (see assign_set_ranks / assign_artist_ranks).
         SortCol::Set        => Some(u32::from(u16::from(p.set_rank)) as f32),
@@ -12004,7 +12056,13 @@ fn page_cmp(a: &Match, b: &Match) -> std::cmp::Ordering {
 /// number is a u32 (see `Printing::collector_number_int`). A version-3 key is two bytes shorter
 /// under `set` and `released` and carries 65,535 for every number above it, so a merge across the
 /// two would compare a number byte against a string byte.
-pub const SORT_KEY_VERSION: u8 = 4;
+/// 4 -> 5: `SortCol::Color`'s PRIMARY changed meaning — the canonical rank of the colour
+/// combination, by the front face, with lands and colourless cards ordered by identity
+/// (`color_sort_rank`), where version 4 wrote eleven buckets. No segment was added or removed, so
+/// a version-4 key and a version-5 key are the same length and compare without complaint while
+/// disagreeing about where every multicolour card and every land belongs — the same silent
+/// disagreement as 1 -> 2.
+pub const SORT_KEY_VERSION: u8 = 5;
 
 /// One string-primary segment. Present values are the raw bytes plus a terminator OUTSIDE the
 /// alphabet (names never contain NUL), so a prefix compares before its extensions; descending

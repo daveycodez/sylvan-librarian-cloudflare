@@ -1,0 +1,176 @@
+{
+ "arena_id": 75310,
+ "artist": "Yeong-Hao Han",
+ "artist_ids": [
+  "f8e7f8d6-6dde-4059-973c-30f1fd1bbe4e"
+ ],
+ "booster": true,
+ "border_color": "black",
+ "card_faces": [
+  {
+   "artist": "Yeong-Hao Han",
+   "artist_id": "f8e7f8d6-6dde-4059-973c-30f1fd1bbe4e",
+   "colors": [],
+   "flavor_text": "\"I cannot read these runes, yet somehow they seem like a warning. Have we passed unknowingly into a new realm?\"\n—Ekken, Omenseeker navigator",
+   "illustration_id": "90efc359-7d35-4a60-a773-4a9d1fe6abfd",
+   "image_uris": {
+    "art": "https://cards.scryfall.io/art/front/7/e/7ef37cb3-d803-47d7-8a01-9c803aa2eadc.webp?1783928182",
+    "art_crop": "https://cards.scryfall.io/art_crop/front/7/e/7ef37cb3-d803-47d7-8a01-9c803aa2eadc.jpg?1783928182",
+    "border_crop": "https://cards.scryfall.io/border_crop/front/7/e/7ef37cb3-d803-47d7-8a01-9c803aa2eadc.jpg?1783928182",
+    "crop": "https://cards.scryfall.io/crop/front/7/e/7ef37cb3-d803-47d7-8a01-9c803aa2eadc.webp?1783928182",
+    "display": "https://cards.scryfall.io/display/front/7/e/7ef37cb3-d803-47d7-8a01-9c803aa2eadc.webp?1783928182",
+    "grid": "https://cards.scryfall.io/grid/front/7/e/7ef37cb3-d803-47d7-8a01-9c803aa2eadc.webp?1783928182",
+    "large": "https://cards.scryfall.io/large/front/7/e/7ef37cb3-d803-47d7-8a01-9c803aa2eadc.jpg?1783928182",
+    "normal": "https://cards.scryfall.io/normal/front/7/e/7ef37cb3-d803-47d7-8a01-9c803aa2eadc.jpg?1783928182",
+    "png": "https://cards.scryfall.io/png/front/7/e/7ef37cb3-d803-47d7-8a01-9c803aa2eadc.png?1783928182",
+    "small": "https://cards.scryfall.io/small/front/7/e/7ef37cb3-d803-47d7-8a01-9c803aa2eadc.jpg?1783928182",
+    "thumb": "https://cards.scryfall.io/thumb/front/7/e/7ef37cb3-d803-47d7-8a01-9c803aa2eadc.webp?1783928182"
+   },
+   "mana_cost": "",
+   "name": "Hengegate Pathway",
+   "object": "card_face",
+   "oracle_text": "{T}: Add {W}.",
+   "type_line": "Land"
+  },
+  {
+   "artist": "Yeong-Hao Han",
+   "artist_id": "f8e7f8d6-6dde-4059-973c-30f1fd1bbe4e",
+   "colors": [],
+   "flavor_text": "\"I've never seen mist so unnaturally thick as this—where does the sea end and the sky begin?\"\n—Ekken, Omenseeker navigator",
+   "illustration_id": "0ca10324-9c02-48ed-93f8-9f0016a091b2",
+   "image_uris": {
+    "art": "https://cards.scryfall.io/art/back/7/e/7ef37cb3-d803-47d7-8a01-9c803aa2eadc.webp?1783928182",
+    "art_crop": "https://cards.scryfall.io/art_crop/back/7/e/7ef37cb3-d803-47d7-8a01-9c803aa2eadc.jpg?1783928182",
+    "border_crop": "https://cards.scryfall.io/border_crop/back/7/e/7ef37cb3-d803-47d7-8a01-9c803aa2eadc.jpg?1783928182",
+    "crop": "https://cards.scryfall.io/crop/back/7/e/7ef37cb3-d803-47d7-8a01-9c803aa2eadc.webp?1783928182",
+    "display": "https://cards.scryfall.io/display/back/7/e/7ef37cb3-d803-47d7-8a01-9c803aa2eadc.webp?1783928182",
+    "grid": "https://cards.scryfall.io/grid/back/7/e/7ef37cb3-d803-47d7-8a01-9c803aa2eadc.webp?1783928182",
+    "large": "https://cards.scryfall.io/large/back/7/e/7ef37cb3-d803-47d7-8a01-9c803aa2eadc.jpg?1783928182",
+    "normal": "https://cards.scryfall.io/normal/back/7/e/7ef37cb3-d803-47d7-8a01-9c803aa2eadc.jpg?1783928182",
+    "png": "https://cards.scryfall.io/png/back/7/e/7ef37cb3-d803-47d7-8a01-9c803aa2eadc.png?1783928182",
+    "small": "https://cards.scryfall.io/small/back/7/e/7ef37cb3-d803-47d7-8a01-9c803aa2eadc.jpg?1783928182",
+    "thumb": "https://cards.scryfall.io/thumb/back/7/e/7ef37cb3-d803-47d7-8a01-9c803aa2eadc.webp?1783928182"
+   },
+   "mana_cost": "",
+   "name": "Mistgate Pathway",
+   "object": "card_face",
+   "oracle_text": "{T}: Add {U}.",
+   "type_line": "Land"
+  }
+ ],
+ "cardmarket_id": 527460,
+ "cmc": 0.0,
+ "collector_number": "260",
+ "color_identity": [
+  "U",
+  "W"
+ ],
+ "digital": false,
+ "edhrec_rank": 1159,
+ "finishes": [
+  "nonfoil",
+  "foil"
+ ],
+ "foil": true,
+ "frame": "2015",
+ "full_art": false,
+ "game_changer": false,
+ "games": [
+  "arena",
+  "paper",
+  "mtgo"
+ ],
+ "highres_image": true,
+ "id": "7ef37cb3-d803-47d7-8a01-9c803aa2eadc",
+ "image_status": "highres_scan",
+ "image_updated_at": "2026-07-13T07:36:22Z",
+ "keywords": [],
+ "lang": "en",
+ "layout": "modal_dfc",
+ "legalities": {
+  "alchemy": "not_legal",
+  "brawl": "legal",
+  "commander": "legal",
+  "competitivebrawl": "legal",
+  "duel": "legal",
+  "future": "not_legal",
+  "gladiator": "legal",
+  "historic": "legal",
+  "legacy": "legal",
+  "modern": "legal",
+  "oathbreaker": "legal",
+  "oldschool": "not_legal",
+  "pauper": "not_legal",
+  "paupercommander": "not_legal",
+  "penny": "not_legal",
+  "pioneer": "legal",
+  "predh": "not_legal",
+  "premodern": "not_legal",
+  "standard": "not_legal",
+  "standardbrawl": "not_legal",
+  "timeless": "legal",
+  "tlr": "legal",
+  "vintage": "legal"
+ },
+ "mtgo_id": 87869,
+ "multiverse_ids": [
+  503879,
+  503880
+ ],
+ "name": "Hengegate Pathway // Mistgate Pathway",
+ "nonfoil": true,
+ "object": "card",
+ "oracle_id": "461b3f2f-fcee-4160-abfa-061f8b6a784f",
+ "oversized": false,
+ "penny_rank": 21,
+ "preview": {
+  "previewed_at": "2020-12-15",
+  "source": "Mastodon",
+  "source_uri": "https://www.facebook.com/Mastodon/posts/10159147003672948"
+ },
+ "prices": {
+  "eur": "4.96",
+  "eur_foil": "5.74",
+  "tix": "0.03",
+  "usd": "4.82",
+  "usd_etched": null,
+  "usd_foil": "4.93"
+ },
+ "prints_search_uri": "https://api.scryfall.com/cards/search?order=released&q=oracleid%3A461b3f2f-fcee-4160-abfa-061f8b6a784f&unique=prints",
+ "produced_mana": [
+  "U",
+  "W"
+ ],
+ "promo": false,
+ "purchase_uris": {
+  "cardhoarder": "https://www.cardhoarder.com/cards/87869?affiliate_id=scryfall&ref=card-profile&utm_campaign=affiliate&utm_medium=card&utm_source=scryfall",
+  "cardmarket": "https://www.cardmarket.com/en/Magic/Products?idProduct=527460&referrer=scryfall&utm_campaign=card_prices&utm_medium=text&utm_source=scryfall",
+  "tcgplayer": "https://partner.tcgplayer.com/c/4931599/1830156/21018?subId1=api&u=https%3A%2F%2Fwww.tcgplayer.com%2Fproduct%2F229207%3Fpage%3D1"
+ },
+ "rarity": "rare",
+ "related_uris": {
+  "edhrec": "https://edhrec.com/route/?cc=Hengegate+Pathway",
+  "gatherer": "https://gatherer.wizards.com/Pages/Card/Details.aspx?multiverseid=503879&printed=false",
+  "tcgplayer_infinite_articles": "https://partner.tcgplayer.com/c/4931599/1830156/21018?subId1=api&trafcat=tcgplayer.com%2Fsearch%2Farticles&u=https%3A%2F%2Fwww.tcgplayer.com%2Fsearch%2Farticles%3FproductLineName%3Dmagic%26q%3DHengegate%2BPathway%2B%252F%252F%2BMistgate%2BPathway",
+  "tcgplayer_infinite_decks": "https://partner.tcgplayer.com/c/4931599/1830156/21018?subId1=api&trafcat=tcgplayer.com%2Fsearch%2Fdecks&u=https%3A%2F%2Fwww.tcgplayer.com%2Fsearch%2Fdecks%3FproductLineName%3Dmagic%26q%3DHengegate%2BPathway%2B%252F%252F%2BMistgate%2BPathway"
+ },
+ "released_at": "2021-02-05",
+ "reprint": false,
+ "reserved": false,
+ "rulings_uri": "https://api.scryfall.com/cards/7ef37cb3-d803-47d7-8a01-9c803aa2eadc/rulings",
+ "scryfall_set_uri": "https://scryfall.com/sets/khm?utm_source=api",
+ "scryfall_uri": "https://scryfall.com/card/khm/260/hengegate-pathway-mistgate-pathway?utm_source=api",
+ "security_stamp": "oval",
+ "set": "khm",
+ "set_id": "43057fad-b1c1-437f-bc48-0045bce6d8c9",
+ "set_name": "Kaldheim",
+ "set_search_uri": "https://api.scryfall.com/cards/search?order=set&q=e%3Akhm&unique=prints",
+ "set_type": "expansion",
+ "set_uri": "https://api.scryfall.com/sets/43057fad-b1c1-437f-bc48-0045bce6d8c9",
+ "story_spotlight": false,
+ "tcgplayer_id": 229207,
+ "textless": false,
+ "type_line": "Land // Land",
+ "uri": "https://api.scryfall.com/cards/7ef37cb3-d803-47d7-8a01-9c803aa2eadc",
+ "variation": false
+}

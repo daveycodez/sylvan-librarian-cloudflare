@@ -1,0 +1,193 @@
+{
+ "all_parts": [
+  {
+   "component": "combo_piece",
+   "id": "ca50edb2-e50e-4601-ae18-1a313e041105",
+   "name": "Emeria's Call // Emeria, Shattered Skyclave",
+   "object": "related_card",
+   "type_line": "Sorcery // Land",
+   "uri": "https://api.scryfall.com/cards/ca50edb2-e50e-4601-ae18-1a313e041105"
+  },
+  {
+   "component": "token",
+   "id": "91098481-46c2-49bf-8123-e9cab2f22b84",
+   "name": "Angel Warrior",
+   "object": "related_card",
+   "type_line": "Token Creature — Angel Warrior",
+   "uri": "https://api.scryfall.com/cards/91098481-46c2-49bf-8123-e9cab2f22b84"
+  }
+ ],
+ "arena_id": 73194,
+ "artist": "Matt Stewart",
+ "artist_ids": [
+  "20871267-2d8a-41d5-b03a-be3d557c5734"
+ ],
+ "booster": true,
+ "border_color": "black",
+ "card_faces": [
+  {
+   "artist": "Matt Stewart",
+   "artist_id": "20871267-2d8a-41d5-b03a-be3d557c5734",
+   "colors": [
+    "W"
+   ],
+   "flavor_text": "\"Iona no longer guards this place. We do.\"\n—Kasla, Emeria shepherd",
+   "illustration_id": "0bd76506-0572-4170-bff5-53cc1ebc24c2",
+   "image_uris": {
+    "art": "https://cards.scryfall.io/art/front/c/4/c470539a-9cc7-4175-8f7c-c982b6072b6d.webp?1783929425",
+    "art_crop": "https://cards.scryfall.io/art_crop/front/c/4/c470539a-9cc7-4175-8f7c-c982b6072b6d.jpg?1783929425",
+    "border_crop": "https://cards.scryfall.io/border_crop/front/c/4/c470539a-9cc7-4175-8f7c-c982b6072b6d.jpg?1783929425",
+    "crop": "https://cards.scryfall.io/crop/front/c/4/c470539a-9cc7-4175-8f7c-c982b6072b6d.webp?1783929425",
+    "display": "https://cards.scryfall.io/display/front/c/4/c470539a-9cc7-4175-8f7c-c982b6072b6d.webp?1783929425",
+    "grid": "https://cards.scryfall.io/grid/front/c/4/c470539a-9cc7-4175-8f7c-c982b6072b6d.webp?1783929425",
+    "large": "https://cards.scryfall.io/large/front/c/4/c470539a-9cc7-4175-8f7c-c982b6072b6d.jpg?1783929425",
+    "normal": "https://cards.scryfall.io/normal/front/c/4/c470539a-9cc7-4175-8f7c-c982b6072b6d.jpg?1783929425",
+    "png": "https://cards.scryfall.io/png/front/c/4/c470539a-9cc7-4175-8f7c-c982b6072b6d.png?1783929425",
+    "small": "https://cards.scryfall.io/small/front/c/4/c470539a-9cc7-4175-8f7c-c982b6072b6d.jpg?1783929425",
+    "thumb": "https://cards.scryfall.io/thumb/front/c/4/c470539a-9cc7-4175-8f7c-c982b6072b6d.webp?1783929425"
+   },
+   "mana_cost": "{4}{W}{W}{W}",
+   "name": "Emeria's Call",
+   "object": "card_face",
+   "oracle_text": "Create two 4/4 white Angel Warrior creature tokens with flying. Non-Angel creatures you control gain indestructible until your next turn.",
+   "type_line": "Sorcery"
+  },
+  {
+   "artist": "Matt Stewart",
+   "artist_id": "20871267-2d8a-41d5-b03a-be3d557c5734",
+   "colors": [],
+   "flavor_text": "\"You called it the castle of a god. It is less than that, and so much more.\"\n—Kasla, Emeria shepherd",
+   "illustration_id": "7e4ebfcb-0a84-4510-b0e5-c7cb2138d4da",
+   "image_uris": {
+    "art": "https://cards.scryfall.io/art/back/c/4/c470539a-9cc7-4175-8f7c-c982b6072b6d.webp?1783929425",
+    "art_crop": "https://cards.scryfall.io/art_crop/back/c/4/c470539a-9cc7-4175-8f7c-c982b6072b6d.jpg?1783929425",
+    "border_crop": "https://cards.scryfall.io/border_crop/back/c/4/c470539a-9cc7-4175-8f7c-c982b6072b6d.jpg?1783929425",
+    "crop": "https://cards.scryfall.io/crop/back/c/4/c470539a-9cc7-4175-8f7c-c982b6072b6d.webp?1783929425",
+    "display": "https://cards.scryfall.io/display/back/c/4/c470539a-9cc7-4175-8f7c-c982b6072b6d.webp?1783929425",
+    "grid": "https://cards.scryfall.io/grid/back/c/4/c470539a-9cc7-4175-8f7c-c982b6072b6d.webp?1783929425",
+    "large": "https://cards.scryfall.io/large/back/c/4/c470539a-9cc7-4175-8f7c-c982b6072b6d.jpg?1783929425",
+    "normal": "https://cards.scryfall.io/normal/back/c/4/c470539a-9cc7-4175-8f7c-c982b6072b6d.jpg?1783929425",
+    "png": "https://cards.scryfall.io/png/back/c/4/c470539a-9cc7-4175-8f7c-c982b6072b6d.png?1783929425",
+    "small": "https://cards.scryfall.io/small/back/c/4/c470539a-9cc7-4175-8f7c-c982b6072b6d.jpg?1783929425",
+    "thumb": "https://cards.scryfall.io/thumb/back/c/4/c470539a-9cc7-4175-8f7c-c982b6072b6d.webp?1783929425"
+   },
+   "mana_cost": "",
+   "name": "Emeria, Shattered Skyclave",
+   "object": "card_face",
+   "oracle_text": "As this land enters, you may pay 3 life. If you don't, it enters tapped.\n{T}: Add {W}.",
+   "type_line": "Land"
+  }
+ ],
+ "cardmarket_id": 495434,
+ "cmc": 7.0,
+ "collector_number": "12",
+ "color_identity": [
+  "W"
+ ],
+ "digital": false,
+ "edhrec_rank": 2783,
+ "finishes": [
+  "nonfoil",
+  "foil"
+ ],
+ "foil": true,
+ "frame": "2015",
+ "full_art": false,
+ "game_changer": false,
+ "games": [
+  "arena",
+  "paper",
+  "mtgo"
+ ],
+ "highres_image": true,
+ "id": "c470539a-9cc7-4175-8f7c-c982b6072b6d",
+ "image_status": "highres_scan",
+ "image_updated_at": "2026-07-13T07:57:05Z",
+ "keywords": [],
+ "lang": "en",
+ "layout": "modal_dfc",
+ "legalities": {
+  "alchemy": "not_legal",
+  "brawl": "legal",
+  "commander": "legal",
+  "competitivebrawl": "legal",
+  "duel": "legal",
+  "future": "not_legal",
+  "gladiator": "legal",
+  "historic": "legal",
+  "legacy": "legal",
+  "modern": "legal",
+  "oathbreaker": "legal",
+  "oldschool": "not_legal",
+  "pauper": "not_legal",
+  "paupercommander": "not_legal",
+  "penny": "not_legal",
+  "pioneer": "legal",
+  "predh": "not_legal",
+  "premodern": "not_legal",
+  "standard": "not_legal",
+  "standardbrawl": "not_legal",
+  "timeless": "legal",
+  "tlr": "not_legal",
+  "vintage": "legal"
+ },
+ "mtgo_id": 82959,
+ "multiverse_ids": [
+  491633,
+  491634
+ ],
+ "name": "Emeria's Call // Emeria, Shattered Skyclave",
+ "nonfoil": true,
+ "object": "card",
+ "oracle_id": "6ec2a242-9068-4ee2-8ac8-8341cc570f56",
+ "oversized": false,
+ "preview": {
+  "previewed_at": "2020-09-02",
+  "source": "Luis Salvatto",
+  "source_uri": "https://twitter.com/LuisSalvatto/status/1301287364980023296"
+ },
+ "prices": {
+  "eur": "3.16",
+  "eur_foil": "4.03",
+  "tix": "0.33",
+  "usd": "4.15",
+  "usd_etched": null,
+  "usd_foil": "5.20"
+ },
+ "prints_search_uri": "https://api.scryfall.com/cards/search?order=released&q=oracleid%3A6ec2a242-9068-4ee2-8ac8-8341cc570f56&unique=prints",
+ "produced_mana": [
+  "W"
+ ],
+ "promo": false,
+ "purchase_uris": {
+  "cardhoarder": "https://www.cardhoarder.com/cards/82959?affiliate_id=scryfall&ref=card-profile&utm_campaign=affiliate&utm_medium=card&utm_source=scryfall",
+  "cardmarket": "https://www.cardmarket.com/en/Magic/Products?idProduct=495434&referrer=scryfall&utm_campaign=card_prices&utm_medium=text&utm_source=scryfall",
+  "tcgplayer": "https://partner.tcgplayer.com/c/4931599/1830156/21018?subId1=api&u=https%3A%2F%2Fwww.tcgplayer.com%2Fproduct%2F221952%3Fpage%3D1"
+ },
+ "rarity": "mythic",
+ "related_uris": {
+  "edhrec": "https://edhrec.com/route/?cc=Emeria%27s+Call",
+  "gatherer": "https://gatherer.wizards.com/Pages/Card/Details.aspx?multiverseid=491633&printed=false",
+  "tcgplayer_infinite_articles": "https://partner.tcgplayer.com/c/4931599/1830156/21018?subId1=api&trafcat=tcgplayer.com%2Fsearch%2Farticles&u=https%3A%2F%2Fwww.tcgplayer.com%2Fsearch%2Farticles%3FproductLineName%3Dmagic%26q%3DEmeria%2527s%2BCall%2B%252F%252F%2BEmeria%252C%2BShattered%2BSkyclave",
+  "tcgplayer_infinite_decks": "https://partner.tcgplayer.com/c/4931599/1830156/21018?subId1=api&trafcat=tcgplayer.com%2Fsearch%2Fdecks&u=https%3A%2F%2Fwww.tcgplayer.com%2Fsearch%2Fdecks%3FproductLineName%3Dmagic%26q%3DEmeria%2527s%2BCall%2B%252F%252F%2BEmeria%252C%2BShattered%2BSkyclave"
+ },
+ "released_at": "2020-09-25",
+ "reprint": false,
+ "reserved": false,
+ "rulings_uri": "https://api.scryfall.com/cards/c470539a-9cc7-4175-8f7c-c982b6072b6d/rulings",
+ "scryfall_set_uri": "https://scryfall.com/sets/znr?utm_source=api",
+ "scryfall_uri": "https://scryfall.com/card/znr/12/emerias-call-emeria-shattered-skyclave?utm_source=api",
+ "security_stamp": "oval",
+ "set": "znr",
+ "set_id": "f4e01fa7-b254-42dd-849f-69b58027a8c4",
+ "set_name": "Zendikar Rising",
+ "set_search_uri": "https://api.scryfall.com/cards/search?order=set&q=e%3Aznr&unique=prints",
+ "set_type": "expansion",
+ "set_uri": "https://api.scryfall.com/sets/f4e01fa7-b254-42dd-849f-69b58027a8c4",
+ "story_spotlight": false,
+ "tcgplayer_id": 221952,
+ "textless": false,
+ "type_line": "Sorcery // Land",
+ "uri": "https://api.scryfall.com/cards/c470539a-9cc7-4175-8f7c-c982b6072b6d",
+ "variation": false
+}
