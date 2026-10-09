@@ -4541,6 +4541,42 @@
 			"method": "GET",
 			"path": "/cards/search?q=%21%22Wayfarer%27s+Bauble%22+%28e%3Am3c+or+e%3Alcc%29&unique=prints",
 			"note": "2026-10-09. m3c/315, lcc/317 — the one default-tier printing of Modern Horizons 3 Commander and the one second-tier printing of Lost Caverns Commander, which `-is:covered` and `is:covered` say by name. Not variations: the same record, read for the rank. The port answered lcc/317 first."
+		},
+		{
+			"name": "unique-art-among-variations",
+			"method": "GET",
+			"path": "/cards/search?q=is%3Avariation&unique=art&include_extras=true",
+			"note": "2026-10-09, generation 90. 90 artworks, Vizzerdrix's by 9ed/S7a (2005) and not 8ed/S5a (2003): the artwork debuted in 7th Edition, which the query does not match, and with the debut out of scope the answer is the first of the card's own order, not the oldest row left. The port answered 8ed/S5a."
+		},
+		{
+			"name": "unique-art-debut-out-of-scope-answers-the-cards-order",
+			"method": "GET",
+			"path": "/cards/search?q=%21%22Vizzerdrix%22+-e%3A7ed&unique=art&include_variations=true",
+			"note": "2026-10-09. 9ed/S7 and s99/59. Six printings share the first artwork and the two of 7th Edition, its debut, are filtered away: 9ed/S7 leads the card's own order; 8ed/S5 is the oldest left."
+		},
+		{
+			"name": "unique-art-debut-day-without-the-new-art-row",
+			"method": "GET",
+			"path": "/cards/search?q=%21%22Vizzerdrix%22+-cn%3A%22110%E2%98%85%22&unique=art&include_variations=true",
+			"note": "2026-10-09. 7ed/110 and s99/59. `new:art` names the foil 7ed/110★, which this query drops; the plain 7ed/110 of the same day still represents the artwork over the 8th and 9th Edition printings ahead of it in the card's order."
+		},
+		{
+			"name": "unique-art-reprints-without-the-original",
+			"method": "GET",
+			"path": "/cards/search?q=%21%22Battle-Rattle+Shaman%22+%28e%3Aima+or+e%3Amm3%29&unique=art",
+			"note": "2026-10-09. ima/117 (2017-11), not mm3/89 (2017-03): two reprints of a Rise of the Eldrazi painting, and the newer leads the card's order. The port answered mm3/89, the oldest in scope; 47 of 47 such artworks across `e:vma or e:ema or e:ima or e:mm3` go this way."
+		},
+		{
+			"name": "unique-art-magic-online-reprints",
+			"method": "GET",
+			"path": "/cards/search?q=%21%22Gerrard%27s+Battle+Cry%22+%28e%3Atpr+or+e%3Avma%29&unique=art",
+			"note": "2026-10-09. tpr/15 (2015), not vma/28 (2014). The port answered vma/28; 53 of 53 across six Magic Online sets go this way."
+		},
+		{
+			"name": "unique-art-debut-in-scope-still-answers-it",
+			"method": "GET",
+			"path": "/cards/search?q=%21%22Phantom+Monster%22+%28e%3Aema+or+e%3Aima%29&unique=art",
+			"note": "2026-10-09. ema/65 (2016), not ima/69 (2017): this painting debuted in Eternal Masters, so the older printing answers — the one artwork of 48 in the four masters sets that keeps its oldest, and the reason the key is the debut and not the newest."
 		}
 	]
 }

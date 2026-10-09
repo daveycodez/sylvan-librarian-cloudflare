@@ -2229,8 +2229,35 @@ export async function gzipBytes(bytes: Uint8Array): Promise<Uint8Array> {
  *      in follows it, as in generation 72. No layout, no format version, neither row touched,
  *      nothing read at query time. The table read is the one in force, so a set the nightly has
  *      read is ranked by what it read.
+ *
+ *   90 (2026-10-09): `unique=art` ANSWERS A PRINTING OF THE DAY THE ARTWORK DEBUTED, AND THE
+ *      CARD'S OWN ORDER WHERE THE QUERY HOLDS NONE. `is:variation unique=art` is 90 rows on both
+ *      sides, and for Vizzerdrix api.scryfall.com keeps 9ed/S7a (2005) where this port kept
+ *      8ed/S5a (2003). Not the card's order, which is the same on both: the artwork's
+ *      representative was "its oldest printing in scope" (2026-10-08, card_engine
+ *      `artwork_prefer_key`), fitted on scopes that held each artwork's first printing, where
+ *      "oldest" and "the debut" are one rule. The artwork was first printed in 7th Edition, which
+ *      `is:variation` does not match — and with the debut out of scope Scryfall answers the first
+ *      of the card's own order, not the oldest row left: on four scopes of reprints without their
+ *      originals (`e:vma or e:ema or e:ima or e:mm3`, six Magic Online sets, the List against
+ *      three masters sets, the variations) 145 of 145 artworks, where the oldest in scope is right
+ *      for 35. With the debut in scope it is a printing of that DAY, the `new:art` row or not
+ *      (`!"Vizzerdrix"` keeps 7ed/110 where `new:art` is the foil 7ed/110★, and still does under
+ *      `-cn:"110★"`).
+ *
+ *      So the key is a stored bit — bit 11 of `new_flags`, "released the day its artwork was first
+ *      printed", decided by the builder's corpus-wide `NewArt` pass beside `new:art` and carried
+ *      to the engine as a tag it removes — and the query reads that bit where it read the date.
+ *      A store built from the rows of the 3,907 cards in seven measured scopes answers Scryfall's
+ *      printing for 786 of 927 artworks where the old key answered 686: 104 of the 105 that span
+ *      dates against 4, and the five whole release groups among them id for id as before. What
+ *      is still wrong is inside one date and set, as it was.
+ *
+ *      Paired with ARCHIVE_FORMAT_VERSION 2026100911 -> 2026100912: no layout moves and neither
+ *      row grows, but the bit is clear in every older store, and this code reading one would
+ *      answer the card's own order for EVERY artwork.
  */
-export const STORE_CONTENT_GENERATION = 89;
+export const STORE_CONTENT_GENERATION = 90;
 
 /**
  * Chunk key for a store. Keyed by store_key, so publishes never collide.

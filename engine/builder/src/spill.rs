@@ -336,8 +336,8 @@ impl Aggregates {
         let pinned = is_pinned(&draft, &tags.labels, &self.pins);
         let rank = self.ranks.rank_of(&draft);
         let is_funny = self.funny.is_funny(&draft);
-        let is_new_art = self.new_art.is_new(&draft.new_art_facts());
-        finalize_row(draft, &oracle_tags, &art_tags, illustration_count, cubecobra_score, pinned, rank, is_funny, is_new_art)
+        let art_standing = self.new_art.standing(&draft.new_art_facts());
+        finalize_row(draft, &oracle_tags, &art_tags, illustration_count, cubecobra_score, pinned, rank, is_funny, art_standing)
     }
 }
 

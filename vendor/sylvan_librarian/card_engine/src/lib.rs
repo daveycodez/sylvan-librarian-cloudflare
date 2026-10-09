@@ -5461,6 +5461,19 @@ pub(crate) const NEW_ART: u32 = 1 << 9;
 /// and `new:lang`. The one bit an annex row can carry.
 pub(crate) const NEW_LANGUAGE: u32 = 1 << 10;
 
+/// The `card_is_tags` word the builder marks a printing with when it was released THE DAY ITS
+/// ARTWORK WAS FIRST PRINTED — see `ART_DEBUT`. Never stored: `assign_new_flags` turns it into the
+/// bit and removes it, as it does `NEW_ART_TAG`.
+pub const ART_DEBUT_TAG: &str = "art_debut";
+
+/// `Printing::new_flags`: the printing shares its release date with its artwork's first printing
+/// anywhere — the `new:art` row itself, and every other row of that illustration dated the same
+/// day (a foil twin, a prerelease promo, a translation). No `new:` value reads it: it is what
+/// `unique=art` chooses an artwork's representative by (`artwork_prefer_key`). Like `NEW_ART` its
+/// group crosses cards, so the builder's corpus-wide pass decides it (engine/builder `NewArt`) and
+/// marks the row with [`ART_DEBUT_TAG`]; unlike it, annex rows carry it too.
+pub(crate) const ART_DEBUT: u32 = 1 << 11;
+
 /// The engine's `is:` spelling of each `new:` value `Printing::new_flags` answers, and the bits
 /// it reads. None of these is a Scryfall `is:` value: the compat surface writes `new:<value>` as
 /// one (query-terms.ts NEW_VALUE_IS_TAGS) and drops the spelling when it is typed.
@@ -5703,12 +5716,15 @@ fn assign_new_flags(
     // `new:art` arrives decided: its groups cross cards, so the builder's corpus-wide pass marks
     // the leading row with `NEW_ART_TAG`. The tag is taken off again here — the bit is the answer,
     // and a tag left on 52,000 rows would be stored and indexed for nothing.
-    let new_art = vid(NEW_ART_TAG);
+    // `ART_DEBUT_TAG` beside it, the same way: the rows dated the day that leading row is.
+    let marks = [(vid(NEW_ART_TAG), NEW_ART), (vid(ART_DEBUT_TAG), ART_DEBUT)];
     for p in printings.iter_mut().chain(foreign.iter_mut()) {
         p.new_flags = 0;
-        if let Some(at) = new_art.and_then(|tag| p.card_is_tags.iter().position(|t| *t == tag)) {
-            p.card_is_tags.remove(at);
-            p.new_flags = NEW_ART;
+        for (tag, bit) in marks {
+            if let Some(at) = tag.and_then(|tag| p.card_is_tags.iter().position(|t| *t == tag)) {
+                p.card_is_tags.remove(at);
+                p.new_flags |= bit;
+            }
         }
     }
     for cid in 0..offsets.len().saturating_sub(1) {
@@ -7916,9 +7932,11 @@ fn artwork_key_matches(keys: &[u128], off: usize, len: usize, key: &[u128]) -> b
 /// decisions and nothing available does better. Do not replace it with a fitted comparator.
 ///
 /// THAT IS INSIDE ONE RELEASE DATE, which is all those 65 decisions were. ACROSS dates the survivor
-/// is the artwork's oldest printing, measured 2026-10-08 on 983 artworks — `artwork_prefer_key`,
-/// which `unique=art` chooses by since then, with `prefer_score`'s order (the store's) still
-/// deciding every tie on the date (LOCAL PATCH, Cloudflare port).
+/// is a printing of the day the artwork DEBUTED, where the query matches one (measured 2026-10-08
+/// on 983 artworks as "the oldest printing", and 2026-10-09 on scopes without the first printing,
+/// where it is not the oldest left) — `artwork_prefer_key`, which `unique=art` chooses by since
+/// then, with `prefer_score`'s order (the store's) still deciding every tie and every artwork
+/// whose debut the query leaves out (LOCAL PATCH, Cloudflare port).
 ///
 /// The groups are held as concatenated key tuples (`keys`) plus one `(offset, len)` span each
 /// (`spans`), both reused across cards, so a corpus of ~100k cards costs no per-card allocation.
@@ -12106,10 +12124,49 @@ fn dated_prefer_key(p: &APrinting, siblings: &[APrinting], newest: bool) -> f64 
 /// 49, The Hobbit keeps the surge-foil or extended-art one on 6 of 67. Two artworks also keep a
 /// NEWER printing (Counterspell's sld/SCTLR over sld/175, Angelic Skirmisher's pgtc/A11 over gtc/3).
 ///
-/// Ties fall to the first printing in store order, as under every prefer. A missing date is last.
+/// IT IS THE ARTWORK'S DEBUT, NOT THE OLDEST PRINTING IN SCOPE (2026-10-09). "Oldest released_at"
+/// was fitted on scopes that held each artwork's first printing — whole release groups, a whole
+/// card — where the two are one rule. They part when the query leaves the first printing out, and
+/// Scryfall then answers the card's own order, newest default printing first, not the oldest row
+/// it has left. Found on a variation: `is:variation unique=art` keeps Vizzerdrix's 9ed/S7a (2005)
+/// over 8ed/S5a (2003), the artwork's first printing being 7ed/110, which the query does not
+/// match — while `!"Vizzerdrix" unique=art` keeps 7ed/110 over both. Measured on four scopes that
+/// hold reprints without their originals, the `unique=art` answer against the same scope's
+/// `unique=prints`, every artwork with two or more printings in scope and its `new:art` printing
+/// outside it:
+///
+/// ```text
+///                                                          the card's order   oldest in scope
+/// e:vma or e:ema or e:ima or e:mm3                              47 of 47            0
+/// is:digital -game:paper, six Magic Online sets                 53 of 53            0
+/// (e:ema or e:plst or e:ima or e:mm3) t:creature c:g            40 of 40           31
+/// is:variation                                                    5 of 5             4
+/// ```
+///
+/// (mm3/119 over plst/MIC-132 of 2026 and plst/MM3-119 of 2019: not the newest either.) And with
+/// the first printing in scope the answer is a printing of ITS DATE, the `new:art` row or not:
+/// 7ed/110 where `new:art` is the foil 7ed/110★, and still 7ed/110 under `-is:foil`, which drops
+/// the ★ — so the key is the date the artwork debuted, and the scope need not hold the row that
+/// carries the flag. On every scope above and on `g:war`, `g:snc`, `g:fin`, `e:ncc`, `e:znr`, an
+/// oracle-text query and five whole cards — 1,141 artworks of two or more printings, a scope at a
+/// time — this key is right on 992 and the oldest-date one on 882: the two agree whenever a
+/// debut-date row is in scope, so nothing the old key had right is lost, and what both still miss
+/// is the inside-one-date residue above. And through this code: a store built from the 31,582
+/// canonical rows of the 3,907 cards in seven of those scopes answers Scryfall's printing for 786
+/// of their 927 artworks where the old key answered 686 — 104 of the 105 that span dates against
+/// 4 — and the five whole release groups among them (`g:war`, `g:snc`, `g:fin`, `e:ncc`, `e:znr`)
+/// with the rows it answered before, id for id.
+///
+/// The debut is corpus-wide — an illustration's first printing may be another card's — so it is a
+/// stored bit, [`ART_DEBUT`], decided by the builder beside `new:art`; nothing is scanned here.
+/// A store built before the bit answers the card's own order for every artwork.
+///
+/// Ties fall to the first printing in store order, as under every prefer.
 fn artwork_prefer_key(p: &APrinting) -> f64 {
-    let ord = p.released_int().map_or((1 << 21) - 1, released_sort_ord);
-    -(f64::from(ord) * 2.0 + f64::from(u8::from(compat_flag(&p.compat, COMPAT_PROMO))))
+    if printing_new_flags(p) & ART_DEBUT == 0 {
+        return 0.0;
+    }
+    if compat_flag(&p.compat, COMPAT_PROMO) { 1.0 } else { 2.0 }
 }
 
 /// Prefer score for one printing of a card; higher wins, and selection uses a
@@ -21918,7 +21975,13 @@ const ARCHIVE_MAGIC: [u8; 8] = *b"ATCARDS\0";
 //   2026100911 — NEW:LANGUAGE (LOCAL PATCH). Bit 10 of `Printing::new_flags`, clear in every
 //                older store — and the first of these bits set on ANNEX rows. No layout moves. Paired
 //                with STORE_CONTENT_GENERATION 86.
-const ARCHIVE_FORMAT_VERSION: u32 = 2026100911;
+//   2026100912 — THE ARTWORK'S DEBUT (LOCAL PATCH). Bit 11 of `Printing::new_flags`, clear in
+//                every older store and set from the builder's `ART_DEBUT_TAG`: the printing was
+//                released the day its artwork was first printed. No `new:` value reads it;
+//                `unique=art` picks an artwork's representative by it (`artwork_prefer_key`), so a
+//                reader pairing this code with an older store would answer the card's own order
+//                for every artwork. No layout moves. Paired with STORE_CONTENT_GENERATION 88.
+const ARCHIVE_FORMAT_VERSION: u32 = 2026100912;
 const ARCHIVE_HEADER_LEN: usize = 16;
 
 fn archive_header() -> [u8; ARCHIVE_HEADER_LEN] {

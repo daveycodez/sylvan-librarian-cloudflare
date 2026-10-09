@@ -7042,29 +7042,42 @@ fn run_query_artwork_groups_shared_illustrations() {
     // illustration_ids, so it must be recomputed after this mutation.
     data.printings[2].illustration_id = 1;
     reassign_artwork_grouping(&mut data);
-    let bytes = rkyv::to_bytes::<Error>(&data).expect("serialize");
-    let archived = rkyv::access::<Archived<CardData>, Error>(&bytes).expect("access");
-
-    let mut all = FilterExpr::True;
-    let (total, page) = run_query(&QueryCtx::from(archived), &mut all, None, "artwork", "default", "edhrec", "asc", 100, 0);
-    assert_eq!(total, 3); // illustrations {1, 2, 4}
-    // Group {printings 0, 2}: an artwork is represented by its FIRST printing, and store_of dates
-    // its printings newest first, so that is printing 2 (LOCAL PATCH, Cloudflare port). This
-    // asserted printing 0, the higher prefer score — the card's own order, which is what
-    // `unique=art` took its representative from until api.scryfall.com was measured across dates
-    // (see `artwork_prefer_key`).
-    let chosen: Vec<u128> = page.iter().map(|(_, p)| u128::from(p.scryfall_id)).collect();
+    // The artwork DEBUTED with printing 2 (store_of dates its printings newest first): the builder
+    // marks the rows of that day, and `assign_new_flags` keeps the mark as `ART_DEBUT`.
+    data.printings[2].new_flags = super::ART_DEBUT;
+    let artworks = |data: &CardData| {
+        let bytes = rkyv::to_bytes::<Error>(data).expect("serialize");
+        let archived = rkyv::access::<Archived<CardData>, Error>(&bytes).expect("access");
+        let mut all = FilterExpr::True;
+        let (total, page) =
+            run_query(&QueryCtx::from(archived), &mut all, None, "artwork", "default", "edhrec", "asc", 100, 0);
+        assert_eq!(total, 3); // illustrations {1, 2, 4}
+        page.iter().map(|(_, p)| u128::from(p.scryfall_id)).collect::<Vec<u128>>()
+    };
+    // Group {printings 0, 2}: an artwork is represented by a printing of the day it debuted, so
+    // that is printing 2 (LOCAL PATCH, Cloudflare port). This asserted printing 0, the higher
+    // prefer score — the card's own order, which is what `unique=art` took its representative from
+    // until api.scryfall.com was measured across dates (see `artwork_prefer_key`).
+    let chosen = artworks(&data);
     assert!(chosen.contains(&3) && !chosen.contains(&1));
 
-    // On ONE date the store's order still decides: printing 0, the higher prefer score.
-    let mut data = rkyv::deserialize::<CardData, Error>(archived).expect("deserialize");
-    data.printings[2].released_at_int = data.printings[0].released_at_int;
-    let bytes = rkyv::to_bytes::<Error>(&data).expect("serialize");
-    let archived = rkyv::access::<Archived<CardData>, Error>(&bytes).expect("access");
-    let mut all = FilterExpr::True;
-    let (total, page) = run_query(&QueryCtx::from(archived), &mut all, None, "artwork", "default", "edhrec", "asc", 100, 0);
-    assert_eq!(total, 3);
-    let chosen: Vec<u128> = page.iter().map(|(_, p)| u128::from(p.scryfall_id)).collect();
+    // Two printings of the debut's day: the store's order decides, printing 0.
+    data.printings[0].new_flags = super::ART_DEBUT;
+    let chosen = artworks(&data);
+    assert!(chosen.contains(&1) && !chosen.contains(&3));
+
+    // ...and a promo of that day gives way to a printing that is not one.
+    data.printings[0].compat.flags |= COMPAT_PROMO;
+    let chosen = artworks(&data);
+    assert!(chosen.contains(&3) && !chosen.contains(&1));
+    data.printings[0].compat.flags &= !COMPAT_PROMO;
+
+    // NO printing of the debut's day in the store (the query's scope, or a store built before the
+    // bit): the card's own order — printing 0 — and NOT the oldest left, which is printing 2. That
+    // is what Scryfall answers when a query leaves an artwork's first printing out.
+    data.printings[0].new_flags = 0;
+    data.printings[2].new_flags = 0;
+    let chosen = artworks(&data);
     assert!(chosen.contains(&1) && !chosen.contains(&3));
 }
 

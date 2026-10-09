@@ -1357,7 +1357,7 @@ pub extern "C" fn finalize_drafts(ptr: *mut u8, len: usize) -> i64 {
             let rank = s.agg.ranks.rank_of(&draft);
             let is_funny = s.agg.funny.is_funny(&draft);
             // Corpus-wide, like the two scores above — see `transform::NewArt`.
-            let is_new_art = s.tags.corpus.is_new_art(&draft.new_art_facts());
+            let art_standing = s.tags.corpus.art_standing(&draft.new_art_facts());
             let row = finalize_row(
                 draft,
                 &oracle_tags,
@@ -1367,7 +1367,7 @@ pub extern "C" fn finalize_drafts(ptr: *mut u8, len: usize) -> i64 {
                 pinned,
                 rank,
                 is_funny,
-                is_new_art,
+                art_standing,
             );
             let row_json = row.to_string();
             let builder = s.staging.as_mut().expect("checked above");

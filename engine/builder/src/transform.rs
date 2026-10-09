@@ -2576,13 +2576,17 @@ impl RowDraft {
         self.card_is_tags.iter().any(|t| t == tag)
     }
 
-    /// Mark the first printing of an artwork with `card_engine::NEW_ART_TAG`, the word the
-    /// engine's build turns into the printing's `new:art` bit and removes — so it is never stored,
-    /// never indexed and never a value `is:` answers. See [`NewArt`].
-    fn set_new_art(&mut self, is_new_art: bool) {
-        self.card_is_tags.retain(|t| t != card_engine::NEW_ART_TAG);
-        if is_new_art {
+    /// Mark the first printing of an artwork with `card_engine::NEW_ART_TAG`, and every printing
+    /// released the day that one was with `card_engine::ART_DEBUT_TAG` — the words the engine's
+    /// build turns into the printing's `new:art` and artwork-debut bits and removes, so they are
+    /// never stored, never indexed and never a value `is:` answers. See [`NewArt`].
+    fn set_art_standing(&mut self, standing: ArtStanding) {
+        self.card_is_tags.retain(|t| t != card_engine::NEW_ART_TAG && t != card_engine::ART_DEBUT_TAG);
+        if standing == ArtStanding::First {
             self.card_is_tags.push(card_engine::NEW_ART_TAG.to_owned());
+        }
+        if standing != ArtStanding::Later {
+            self.card_is_tags.push(card_engine::ART_DEBUT_TAG.to_owned());
         }
     }
 
@@ -3329,6 +3333,11 @@ impl CorpusTables {
         self.new_art.is_new(r)
     }
 
+    /// Where `r` stands with its artwork — see [`NewArt::standing`]. `Later` until sealed.
+    pub fn art_standing(&self, r: &NewArtFacts) -> ArtStanding {
+        self.new_art.standing(r)
+    }
+
     /// (illustration, name) entries in the `new:art` table.
     pub fn new_art_entries(&self) -> usize {
         self.new_art.len()
@@ -3408,6 +3417,17 @@ impl CorpusTables {
     pub fn illustration_groups(&self) -> usize {
         self.illust.len()
     }
+}
+
+/// Where a printing stands with its ARTWORK — see [`NewArt::standing`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ArtStanding {
+    /// Released after the artwork's first printing, or nothing is known of the artwork.
+    Later,
+    /// Released the day the artwork's first printing was, and not that printing.
+    Debut,
+    /// The artwork's first printing anywhere: `new:art`.
+    First,
 }
 
 /// The memorabilia sets whose printings ARE eligible for `new:art` — see [`NewArt`].
@@ -3557,6 +3577,30 @@ impl NewArt {
     /// itself, exactly as for the other `new:` values.
     pub fn is_new(&self, r: &NewArtFacts) -> bool {
         self.sealed && r.eligible() && self.leads.get(&r.group()).is_some_and(|lead| *lead == r.order())
+    }
+
+    /// Where `r` stands with its artwork: its first printing, a printing released the SAME DAY as
+    /// the first, or a later one. The day is the leading eight characters of the order (the date,
+    /// `ffffffff` for none, which no row shares a debut on).
+    ///
+    /// THE DEBUT IS WHAT `unique=art` ANSWERS AN ARTWORK WITH (card_engine `artwork_prefer_key`
+    /// carries the measurement): a printing of the day the artwork was first printed where the
+    /// query matches one, and the card's own order where it does not. The same-day rows are not
+    /// the eligible ones alone — a translation, or a memorabilia printing of that day, is a
+    /// printing of the debut like any other; eligibility decides which row LEADS, and so the day.
+    /// A row with no illustration has no debut: those are one artwork corpus-wide, answered apart.
+    pub fn standing(&self, r: &NewArtFacts) -> ArtStanding {
+        const DAY: usize = 8;
+        let (group, order) = (r.group(), r.order());
+        match self.leads.get(&group).filter(|_| self.sealed) {
+            Some(lead) if r.eligible() && *lead == order => ArtStanding::First,
+            Some(lead)
+                if r.illustration_id.is_some() && lead.get(..DAY) == order.get(..DAY) && !order.starts_with("ffffffff") =>
+            {
+                ArtStanding::Debut
+            }
+            _ => ArtStanding::Later,
+        }
     }
 
     /// A table from parts read elsewhere — the nightly's partition-scoped restore.
@@ -3717,8 +3761,8 @@ pub fn finalize(drafts: Vec<RowDraft>, tags: &TagData) -> impl Iterator<Item = V
         let pinned = is_pinned(&r, &tags.labels, &pins);
         let rank = ranks.rank_of(&r);
         let is_funny = funny.is_funny(&r);
-        let is_new_art = new_art.is_new(&r.new_art_facts());
-        finalize_row(r, &oracle_tags, &art_tags, illustration_count, cubecobra_score, pinned, rank, is_funny, is_new_art)
+        let art_standing = new_art.standing(&r.new_art_facts());
+        finalize_row(r, &oracle_tags, &art_tags, illustration_count, cubecobra_score, pinned, rank, is_funny, art_standing)
     })
 }
 
@@ -3939,13 +3983,14 @@ pub fn finalize_row(
     // per-card fact, the caller's for the same reason: the draft's own tag is only its PRINTING's
     // verdict, and the class also asks the card's other printings.
     is_funny: bool,
-    // Whether this printing is the first of its ARTWORK anywhere ([`NewArt::is_new`]) — the one
-    // corpus-wide fact among these, the caller's because no single card's rows can answer it.
-    is_new_art: bool,
+    // Where this printing stands with its ARTWORK ([`NewArt::standing`]): its first printing
+    // anywhere, one of the same day, or a later one — the one corpus-wide fact among these, the
+    // caller's because no single card's rows can answer it.
+    art_standing: ArtStanding,
 ) -> Value {
     let mut r = r;
     r.set_funny(is_funny);
-    r.set_new_art(is_new_art);
+    r.set_art_standing(art_standing);
     {
         // The rank leads by construction: one rank step outweighs the ordinary score and the pin
         // bonus together, so the card's order is the measured rule and everything underneath only
@@ -4516,11 +4561,22 @@ mod tests {
         whole.seal(); // idempotent: the phase's last slice can be retried
         let answers = |t: &CorpusTables| [manor, manorborn, ice, me2].map(|d| t.is_new_art(&d.new_art_facts()));
         assert_eq!(answers(&whole), [true, false, true, false]);
+        // ...and where each stands with its artwork: the first printing, or one of a later day.
+        let standings = |t: &CorpusTables| [manor, manorborn, ice, me2].map(|d| t.art_standing(&d.new_art_facts()));
+        let first_and_later = [ArtStanding::First, ArtStanding::Later, ArtStanding::First, ArtStanding::Later];
+        assert_eq!(standings(&whole), first_and_later);
+        // A row of the first printing's day that is not it — here its own translation, an annex
+        // row, which cannot lead — is of the debut all the same.
+        let mut translation = manor.clone();
+        translation.is_canonical = false;
+        translation.scryfall_id = "ffffffff-0000-4000-8000-000000000000".to_owned();
+        assert_eq!(whole.art_standing(&translation.new_art_facts()), ArtStanding::Debut);
 
         // The snapshot is JSON, and a snapshot older than the table reads as an empty one.
         let snapshot = serde_json::to_value(&whole).unwrap();
         let restored: CorpusTables = serde_json::from_value(snapshot.clone()).unwrap();
         assert_eq!(answers(&restored), [true, false, true, false]);
+        assert_eq!(standings(&restored), first_and_later);
         let mut older = snapshot.clone();
         older.as_object_mut().unwrap().remove("new_art");
         assert_eq!(serde_json::from_value::<CorpusTables>(older).unwrap().new_art_entries(), 0);
@@ -4541,6 +4597,7 @@ mod tests {
             NewArt::from_parts(kept, true),
         );
         assert!(!part.is_new_art(&manorborn.new_art_facts()));
+        assert_eq!(part.art_standing(&manorborn.new_art_facts()), ArtStanding::Later);
     }
 
     /// The partition-scoped restore rebuilds a sealed table from a partition's share of the entries
@@ -5914,9 +5971,11 @@ mod tests {
                 // NOT `covered`: a plain English printing of a core set is in the default tier.
                 "related": true,
                 // The only row of this corpus, so its artwork's first printing: the builder's
-                // mark for `new:art` (`NewArt`), which the engine's build turns into a bit and
-                // takes off again — a finalized row carries it, a store never does.
-                "new_art": true
+                // marks for `new:art` and the artwork's debut (`NewArt`), which the engine's build
+                // turns into bits and takes off again — a finalized row carries them, a store
+                // never does.
+                "new_art": true,
+                "art_debut": true
             })
         );
         assert_eq!(row["card_subtypes"], json!(["Elf", "Druid"]));
@@ -6076,6 +6135,7 @@ mod tests {
             // ...and less the `new:art` mark each one-row corpus earns (`NewArt`), pinned in
             // tests/new_flags.rs.
             tags.as_object_mut().unwrap().remove(card_engine::NEW_ART_TAG);
+            tags.as_object_mut().unwrap().remove(card_engine::ART_DEBUT_TAG);
             tags
         };
 
