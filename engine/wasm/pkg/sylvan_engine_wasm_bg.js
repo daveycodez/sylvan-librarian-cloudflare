@@ -292,13 +292,13 @@ export function catalog() {
  * and `collection_cards_by_names` rank by the same `name_best`.
  *
  * `request_json` is `{"keys": [...], "trees": [...], "tree_opts": {...}, "names": [[folded,
- * set], ...], "prefer": "...", "scope": "..."}`:
+ * set], ...]}`:
  *
  * - `keys`: `{"kind": "scryfall_id" | "oracle_id" | "illustration_id", "id": "<uuid>"}` or
  *   `{"kind": "external", "namespace": "mtgo" | "multiverse" | ..., "id": <n>}`. An oracle id
  *   answers its representative printing, as `/cards/collection` always has.
  * - `trees`: filter trees as JSON strings, each answered by its first row under `tree_opts`.
- * - `names`, `prefer`, `scope`: exactly `collection_cards_by_names`'s arguments.
+ * - `names`: exactly `collection_cards_by_names`'s identifiers.
  *
  * The answer is little-endian bytes:
  *
@@ -341,78 +341,60 @@ export function collection_batch(request_json, fields_json, base_url) {
  * `folded` is lowercased and accent-folded by the caller (foldAccents in src/parser/pystr.ts);
  * the collating happens in the engine. `set_code` is "" for no set restriction.
  *
- * `prefer` and `scope_json` are the batch's `?q=` — its folded prefer (this API's spelling,
- * "default" for none) and its filter tree as canonical JSON ("" for none); see the engine's
- * `CollectionScope`.
- * One call for the WHOLE batch — `identifiers_json` is `[[folded, set_code], …]` — so the scope
- * is bound once rather than once per identifier (a regex in the scope compiled 75 times was
- * the difference between 25ms and 165ms on a full batch). Answers a JSON array, a card object or
- * `null` per identifier, in order.
+ * One call for the WHOLE batch — `identifiers_json` is `[[folded, set_code], …]`. Answers a JSON
+ * array, a card object or `null` per identifier, in order.
  * @param {string} identifiers_json
  * @param {string} fields_json
- * @param {string} prefer
- * @param {string} scope_json
  * @returns {string}
  */
-export function collection_cards_by_names(identifiers_json, fields_json, prefer, scope_json) {
-    let deferred6_0;
-    let deferred6_1;
+export function collection_cards_by_names(identifiers_json, fields_json) {
+    let deferred4_0;
+    let deferred4_1;
     try {
         const ptr0 = passStringToWasm0(identifiers_json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
         const len0 = WASM_VECTOR_LEN;
         const ptr1 = passStringToWasm0(fields_json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
         const len1 = WASM_VECTOR_LEN;
-        const ptr2 = passStringToWasm0(prefer, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
-        const len2 = WASM_VECTOR_LEN;
-        const ptr3 = passStringToWasm0(scope_json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
-        const len3 = WASM_VECTOR_LEN;
-        const ret = wasm.collection_cards_by_names(ptr0, len0, ptr1, len1, ptr2, len2, ptr3, len3);
-        var ptr5 = ret[0];
-        var len5 = ret[1];
+        const ret = wasm.collection_cards_by_names(ptr0, len0, ptr1, len1);
+        var ptr3 = ret[0];
+        var len3 = ret[1];
         if (ret[3]) {
-            ptr5 = 0; len5 = 0;
+            ptr3 = 0; len3 = 0;
             throw takeFromExternrefTable0(ret[2]);
         }
-        deferred6_0 = ptr5;
-        deferred6_1 = len5;
-        return getStringFromWasm0(ptr5, len5);
+        deferred4_0 = ptr3;
+        deferred4_1 = len3;
+        return getStringFromWasm0(ptr3, len3);
     } finally {
-        wasm.__wbindgen_free(deferred6_0, deferred6_1, 1);
+        wasm.__wbindgen_free(deferred4_0, deferred4_1, 1);
     }
 }
 
 /**
  * How well this partition's best collection-identifier candidate matches, as
  * `[tier, name, served, tie, score]` or `null` per identifier — the batched twin of `exact_name_rank`, and
- * there for the same partitioned router. Under a scope the score is the scope's prefer score
- * and served is always 1 (the scope's pool holds no extras).
+ * there for the same partitioned router.
  * @param {string} identifiers_json
- * @param {string} prefer
- * @param {string} scope_json
  * @returns {string}
  */
-export function collection_name_ranks(identifiers_json, prefer, scope_json) {
-    let deferred5_0;
-    let deferred5_1;
+export function collection_name_ranks(identifiers_json) {
+    let deferred3_0;
+    let deferred3_1;
     try {
         const ptr0 = passStringToWasm0(identifiers_json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
         const len0 = WASM_VECTOR_LEN;
-        const ptr1 = passStringToWasm0(prefer, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
-        const len1 = WASM_VECTOR_LEN;
-        const ptr2 = passStringToWasm0(scope_json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
-        const len2 = WASM_VECTOR_LEN;
-        const ret = wasm.collection_name_ranks(ptr0, len0, ptr1, len1, ptr2, len2);
-        var ptr4 = ret[0];
-        var len4 = ret[1];
+        const ret = wasm.collection_name_ranks(ptr0, len0);
+        var ptr2 = ret[0];
+        var len2 = ret[1];
         if (ret[3]) {
-            ptr4 = 0; len4 = 0;
+            ptr2 = 0; len2 = 0;
             throw takeFromExternrefTable0(ret[2]);
         }
-        deferred5_0 = ptr4;
-        deferred5_1 = len4;
-        return getStringFromWasm0(ptr4, len4);
+        deferred3_0 = ptr2;
+        deferred3_1 = len2;
+        return getStringFromWasm0(ptr2, len2);
     } finally {
-        wasm.__wbindgen_free(deferred5_0, deferred5_1, 1);
+        wasm.__wbindgen_free(deferred3_0, deferred3_1, 1);
     }
 }
 
