@@ -2477,17 +2477,17 @@ const SCRYFALL_IS_SYNONYMS: ReadonlyMap<string, string> = new Map([
  *                        List reprint — a list of printings, not of names.
  *     intro beginner     224: all of dpa and rqs, 32 of acr's printings and 14 of fdn's — of the
  *                        142 printings carrying the `beginnerbox` promo type it holds 14.
- *   accepted by Scryfall and answering nothing there either, extras in or out
- *       gateway lair
+ *
+ * `gateway` and `lair` stood here too. Scryfall accepts both and answers nothing for either,
+ * extras in or out — a class with no member — and since 2026-10-09 so does this port, without
+ * its warning: db-info.ts GATEWAY_IS_TAG.
  */
 export const SCRYFALL_UNANSWERED_IS_VALUES: ReadonlySet<string> = new Set([
 	"beginner",
 	"covered",
-	"gateway",
 	"intro",
 	"invitational",
 	"jumpstart",
-	"lair",
 	"misprint",
 	"related",
 	"spellbook",

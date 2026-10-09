@@ -631,6 +631,10 @@ BOOLEAN_IS_TAGS: dict[str, str] = {
         "cards.raw_card_blob->>'frame' = '1997' AND (cards.card_set_code IN ('tsb', 'tsr') "
         "OR (cards.card_set_code = 'plst' AND cards.raw_card_blob->>'rarity' = 'special'))"
     ),
+    # LOCAL PATCH (Cloudflare port): `gateway` and `lair` are accepted by Scryfall and answer
+    # nothing there (2026-10-09; see the port's db-info.ts GATEWAY_IS_TAG).
+    "gateway": "FALSE",
+    "lair": "FALSE",
     # -- single-field lookups: shapes the old {tag: blob key} table could not express -----
     # LOCAL PATCH (Cloudflare port): the SOURCE alone is not Scryfall's `is:scryfallpreview`. On
     # 2026-10-04 that answered 7 printings there; 325 carry `preview.source = 'Scryfall'`, 321 of

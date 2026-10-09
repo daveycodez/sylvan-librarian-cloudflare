@@ -323,6 +323,28 @@ describe("what Scryfall answers and this port cannot is kept, and says so", () =
 	});
 });
 
+describe("the values Scryfall accepts and answers nothing for", () => {
+	// `is:gateway` and `is:lair` are a 404 with no warning on api.scryfall.com (2026-10-09),
+	// `-is:gateway` is every printing, and `is:gateway or cmc=3` is `cmc=3` with nothing said: a
+	// class with no member. The parser knows the value, so it is neither dropped with the "not
+	// supported" sentence (which would answer `is:gateway t:goblin` with every goblin) nor warned.
+	test.each(["gateway", "lair"])("is:%s is a known value no row carries", (value) => {
+		expect(SUPPORTED_IS_VALUES.has(value)).toBe(true);
+		for (const term of [`is:${value}`, `-is:${value}`, `has:${value}`, `not:${value}`]) {
+			const policy = scryfallTermPolicy(`${term} t:goblin`);
+			expect([term, policy.warnings]).toEqual([term, []]);
+			expect([term, parsed(`${term} t:goblin`).warnings]).toEqual([term, []]);
+		}
+		expect(rewritten(`is:${value} t:goblin`)).toBe(`is:${value} t:goblin`);
+		expect(parsed(`is:${value} t:goblin`).wire).toContain(`"rhs":["${value}"]`);
+	});
+
+	// The next_page echo of `<term> or cmc=3` sent with include_extras=false.
+	test.each(["is:gateway", "-is:gateway", "is:lair"])("%s or cmc=3 does not open extras", async (term) => {
+		expect(await opensExtras(`${term} or cmc=3`)).toBe(false);
+	});
+});
+
 // ── x72: 35 of the 46 values that stood in that list, measured and answered ──────────────────
 //
 // Each list was read printing by printing on api.scryfall.com (2026-10-04) against the same day's

@@ -678,7 +678,19 @@ export const TRON_IS_TAG = "tron";
 export const VERGELAND_IS_TAG = "vergeland";
 export const TIMESHIFTED_IS_TAG = "timeshifted";
 
+/**
+ * `is:gateway` and `is:lair` — values api.scryfall.com ACCEPTS and answers nothing for. Measured
+ * 2026-10-09: each is a 404 with no warning, every way it was asked (by default, with extras,
+ * with every language, as `has:`), and the negation is every printing. A class with no member,
+ * not an unknown word — so the parser knows the two values, the builder holds the constants and
+ * gives them to no row, and nothing is stored.
+ */
+export const GATEWAY_IS_TAG = "gateway";
+export const LAIR_IS_TAG = "lair";
+
 export const COMPUTED_IS_TAGS: ReadonlySet<string> = new Set([
+	GATEWAY_IS_TAG,
+	LAIR_IS_TAG,
 	BACK_IS_TAG,
 	INDICATOR_IS_TAG,
 	ATTRACTION_LIGHTS_IS_TAG,

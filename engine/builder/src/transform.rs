@@ -1394,6 +1394,17 @@ const VERGE_LANDS: &[&str] = &[
 /// 1997-frame `TSB-`/`TSR-` reprints are `rare` or `common` and are not counted.
 pub const TIMESHIFTED_IS_TAG: &str = "timeshifted";
 
+/// `is:gateway` and `is:lair` — values api.scryfall.com ACCEPTS and answers nothing for.
+///
+/// Measured 2026-10-09: `is:gateway` and `is:lair` are each a 404 with no warning, by default,
+/// with extras, with every language and as `has:`; `-is:gateway` and `not:gateway` are every
+/// printing (118,503), and `is:gateway or cmc=3` is `cmc=3` with no warning either. So each is a
+/// class with no member, not an unknown word (`is:nonsense` is dropped with a sentence). The
+/// constants exist so the parser knows the two values and no row is ever given them: nothing is
+/// stored.
+pub const GATEWAY_IS_TAG: &str = "gateway";
+pub const LAIR_IS_TAG: &str = "lair";
+
 /// Scryfall's `/catalog/keyword-actions`, lowercased (80 on 2026-10-04) — the members of a card's
 /// `keywords` that are not keyword ABILITIES, for [`FRENCH_VANILLA_IS_TAG`]. Listed as the
 /// exclusion, not the 223 abilities as the inclusion, so a keyword ability printed after this
