@@ -5419,6 +5419,10 @@ pub(crate) const NEW_FRAME: u32 = 1 << 1;
 /// `new:modo`.
 pub(crate) const NEW_MTGO: u32 = 1 << 2;
 
+/// `Printing::new_flags`: the printing is the first of its card on ARENA — `new:arena`, and
+/// `new:mtga`.
+pub(crate) const NEW_ARENA: u32 = 1 << 3;
+
 /// The engine's `is:` spelling of each `new:` value `Printing::new_flags` answers, and the bits
 /// it reads. None of these is a Scryfall `is:` value: the compat surface writes `new:<value>` as
 /// one (query-terms.ts NEW_VALUE_IS_TAGS) and drops the spelling when it is typed.
@@ -5426,6 +5430,7 @@ pub(crate) const NEW_FLAG_IS_VALUES: &[(&str, u32)] = &[
     ("newcard", NEW_CARD),
     ("newframe", NEW_FRAME),
     ("newmtgo", NEW_MTGO),
+    ("newarena", NEW_ARENA),
 ];
 
 /// The printings Scryfall's own order puts FIRST among the rows of their card that share their
@@ -5463,6 +5468,8 @@ const NEW_ORDER_LEADS: &[u128] = &[0xbc9c_39d1_1e10_4cd3_a4b1_b6eb_7c1a_0b65];
 ///               `mtgo`, paper printings among them (`tsb/93` is Jasmine Boreal's). One group a
 ///               card. 31,261 of 31,262, the other the bulk file's age: Song of Inspiration's
 ///               `afc/42` gained `mtgo` between the file and the list.
+///   `NEW_ARENA` new:arena, new:mtga — 16,284 printings. Eligible: a printing whose `games` hold
+///               `arena`. One group a card. 16,284 of 16,284.
 ///
 /// What the values share, each clause measured rather than read off the name:
 ///
@@ -5523,6 +5530,9 @@ fn assign_new_flags(printings: &mut [Printing], offsets: &[u32], foreign: &mut [
             lead(NEW_FRAME, frame_of(p));
             if p.compat.games & GAME_MTGO != 0 {
                 lead(NEW_MTGO, 0);
+            }
+            if p.compat.games & GAME_ARENA != 0 {
+                lead(NEW_ARENA, 0);
             }
         }
         for (bit, _, i) in firsts {
@@ -21582,7 +21592,9 @@ const ARCHIVE_MAGIC: [u8; 8] = *b"ATCARDS\0";
 //                with nothing. No layout moves. Paired with STORE_CONTENT_GENERATION 77.
 //   2026100903 — NEW:MTGO (LOCAL PATCH). Bit 2 of `Printing::new_flags`, clear in every older
 //                store. No layout moves. Paired with STORE_CONTENT_GENERATION 78.
-const ARCHIVE_FORMAT_VERSION: u32 = 2026100903;
+//   2026100904 — NEW:ARENA (LOCAL PATCH). Bit 3 of `Printing::new_flags`, clear in every older
+//                store. No layout moves. Paired with STORE_CONTENT_GENERATION 79.
+const ARCHIVE_FORMAT_VERSION: u32 = 2026100904;
 const ARCHIVE_HEADER_LEN: usize = 16;
 
 fn archive_header() -> [u8; ARCHIVE_HEADER_LEN] {

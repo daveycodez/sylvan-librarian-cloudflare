@@ -185,3 +185,21 @@ fn new_mtgo_is_the_first_printing_whose_games_hold_mtgo() {
         ["ddm/58/en", "ice/268/en", "jmp/220/en", "leg/233/en", "ybro/24/en"]
     );
 }
+
+#[test]
+fn new_arena_is_the_first_printing_whose_games_hold_arena() {
+    let store = store_of(&[
+        // A DIGITAL printing: Feeling of Dread reached Arena in Shadows of the Past.
+        ("feeling_of_dread_isd_14", true),
+        ("feeling_of_dread_sis_7", true),
+        // ...OR A PAPER ONE that lists the game: Corpse Traders' Jumpstart printing.
+        ("corpse_traders_avr_90", true),
+        ("corpse_traders_ddm_58", true),
+        ("corpse_traders_jmp_220", true),
+        // A card that began there: the Arena `ybro/24` and not the paper `mb2/263`.
+        ("rusko_clockmaker_ybro_24", true),
+        ("rusko_clockmaker_mb2_263", true),
+    ]);
+    assert_eq!(rows(&store, &is("newarena")), ["jmp/220/en", "sis/7/en", "ybro/24/en"]);
+    assert_eq!(rows(&store, &not(is("newarena"))), ["avr/90/en", "ddm/58/en", "isd/14/en", "mb2/263/en"]);
+}

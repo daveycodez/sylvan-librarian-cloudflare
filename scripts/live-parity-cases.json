@@ -4121,6 +4121,30 @@
 			"method": "GET",
 			"path": "/cards/search?q=-new%3Amtgo+%21%22Corpse+Traders%22&unique=prints",
 			"note": "2026-10-09. ddm/58 and jmp/220: every printing but the first on Magic Online, avr/90 — the ones not on it at all too."
+		},
+		{
+			"name": "new-arena-is-the-first-printing-on-arena",
+			"method": "GET",
+			"path": "/cards/search?q=new%3Aarena+%21%22Feeling+of+Dread%22&unique=prints",
+			"note": "2026-10-09. sis/7, the Shadows of the Past printing, not isd/14: the card's first printing whose games hold arena (16,284 printings corpus-wide)."
+		},
+		{
+			"name": "new-arena-a-paper-printing-that-lists-the-game",
+			"method": "GET",
+			"path": "/cards/search?q=new%3Aarena+%21%22Corpse+Traders%22&unique=prints",
+			"note": "2026-10-09. jmp/220, a paper Jumpstart printing that Arena also has."
+		},
+		{
+			"name": "new-mtga-is-new-arena",
+			"method": "GET",
+			"path": "/cards/search?q=new%3Amtga+e%3Akhm+t%3Agod&unique=prints",
+			"note": "2026-10-09. 12 of the 25, the same 12 as new:arena (both 16,284 corpus-wide)."
+		},
+		{
+			"name": "new-arena-negated",
+			"method": "GET",
+			"path": "/cards/search?q=-new%3Aarena+%21%22Rusko%2C+Clockmaker%22&unique=prints",
+			"note": "2026-10-09. mb2/263: the card began on Arena, so its paper printing is the one that is not new there."
 		}
 	]
 }

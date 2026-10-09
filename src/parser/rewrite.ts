@@ -382,8 +382,9 @@ export const NEW_RARITY_IS_VALUE = "newrarity";
  *             printing; 35,158 of 35,158 printings, 2026-10-09
  *   newframe  `new:frame` — the card's first printing in each frame; 45,058 of 45,058
  *   newmtgo   `new:mtgo`, `new:modo` — the card's first printing on Magic Online; 31,261 of 31,262
+ *   newarena  `new:arena`, `new:mtga` — the card's first printing on Arena; 16,284 of 16,284
  */
-export const NEW_FLAG_IS_VALUES: readonly string[] = ["newcard", "newframe", "newmtgo"];
+export const NEW_FLAG_IS_VALUES: readonly string[] = ["newcard", "newframe", "newmtgo", "newarena"];
 
 /**
  * The `is:` values no rewrite can express and no importer tag holds: the engine answers each from a

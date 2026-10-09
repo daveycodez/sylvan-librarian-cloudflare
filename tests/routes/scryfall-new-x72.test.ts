@@ -13,7 +13,7 @@ import { applyExtrasGate } from "../../src/routes/extras-gate";
 import { scryfallTermPolicy } from "../../src/routes/scryfall-compat/query-terms";
 
 /** One spelling of each `new:` value the store's `new_flags` answer. */
-const NEW_FLAG_VALUES = ["card", "paper", "frame", "mtgo"];
+const NEW_FLAG_VALUES = ["card", "paper", "frame", "mtgo", "arena"];
 
 const ignored = (echo: string, reason: string) => `Invalid expression “${echo}” was ignored. ${reason}`;
 
@@ -96,6 +96,10 @@ describe("the new: values the store's new_flags answer are the engine's is:new<v
 		["new:mtgo", "is:newmtgo"],
 		["new:modo", "is:newmtgo"],
 		["-new:mtgo", "-is:newmtgo"],
+		// `new:mtga` is 12 on the anchor, as `new:arena`.
+		["new:arena", "is:newarena"],
+		["new:mtga", "is:newarena"],
+		["-new:arena", "-is:newarena"],
 	])("%s", (q, rewritten) => {
 		const policy = scryfallTermPolicy(`${q} e:khm t:god`);
 		expect(policy.warnings).toEqual([]);
@@ -136,11 +140,9 @@ describe("the values Scryfall honors and this port does not answer fail to parse
 		"new:foil",
 		"new:nonfoil",
 		"new:game",
-		"new:arena",
 		// Honored there too, measured 2026-10-09 (each moves the anchor's count, or answers a 404
 		// with no warning): the plural, and the games under their other names.
 		"new:games",
-		"new:mtga",
 		"new:astral",
 		"new:sega",
 	])("%s is kept, unwarned, and refused", (term) => {
