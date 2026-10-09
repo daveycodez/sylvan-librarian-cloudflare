@@ -1,0 +1,135 @@
+{
+ "artist": "Janet Aulisio",
+ "artist_ids": [
+  "19939bd6-d9fc-40f4-aea6-e1afef238b29"
+ ],
+ "booster": false,
+ "border_color": "black",
+ "card_back_id": "0aeebaf5-8c7d-4636-9e82-8c27447861f7",
+ "cardmarket_id": 15793,
+ "cmc": 2.0,
+ "collector_number": "1",
+ "color_identity": [
+  "W"
+ ],
+ "colors": [
+  "W"
+ ],
+ "digital": false,
+ "edhrec_rank": 21471,
+ "finishes": [
+  "foil"
+ ],
+ "flavor_text": "\"Fire is the test of gold; adversity, of strong men.\"\n—Seneca, \"On Providence,\" trans. Basore",
+ "foil": true,
+ "frame": "1997",
+ "full_art": false,
+ "game_changer": false,
+ "games": [
+  "paper"
+ ],
+ "highres_image": true,
+ "id": "360aed08-19b0-4506-9efb-5b540c29b0e6",
+ "illustration_id": "4b48b1b1-1590-44e9-ac9f-9a86cfadc1af",
+ "image_status": "highres_scan",
+ "image_updated_at": "2026-07-13T12:19:38Z",
+ "image_uris": {
+  "art": "https://cards.scryfall.io/art/front/3/6/360aed08-19b0-4506-9efb-5b540c29b0e6.webp?1783945178",
+  "art_crop": "https://cards.scryfall.io/art_crop/front/3/6/360aed08-19b0-4506-9efb-5b540c29b0e6.jpg?1783945178",
+  "border_crop": "https://cards.scryfall.io/border_crop/front/3/6/360aed08-19b0-4506-9efb-5b540c29b0e6.jpg?1783945178",
+  "crop": "https://cards.scryfall.io/crop/front/3/6/360aed08-19b0-4506-9efb-5b540c29b0e6.webp?1783945178",
+  "display": "https://cards.scryfall.io/display/front/3/6/360aed08-19b0-4506-9efb-5b540c29b0e6.webp?1783945178",
+  "grid": "https://cards.scryfall.io/grid/front/3/6/360aed08-19b0-4506-9efb-5b540c29b0e6.webp?1783945178",
+  "large": "https://cards.scryfall.io/large/front/3/6/360aed08-19b0-4506-9efb-5b540c29b0e6.jpg?1783945178",
+  "normal": "https://cards.scryfall.io/normal/front/3/6/360aed08-19b0-4506-9efb-5b540c29b0e6.jpg?1783945178",
+  "png": "https://cards.scryfall.io/png/front/3/6/360aed08-19b0-4506-9efb-5b540c29b0e6.png?1783945178",
+  "small": "https://cards.scryfall.io/small/front/3/6/360aed08-19b0-4506-9efb-5b540c29b0e6.jpg?1783945178",
+  "thumb": "https://cards.scryfall.io/thumb/front/3/6/360aed08-19b0-4506-9efb-5b540c29b0e6.webp?1783945178"
+ },
+ "keywords": [
+  "Shadow",
+  "Protection"
+ ],
+ "lang": "en",
+ "layout": "normal",
+ "legalities": {
+  "alchemy": "not_legal",
+  "brawl": "not_legal",
+  "commander": "legal",
+  "competitivebrawl": "not_legal",
+  "duel": "legal",
+  "future": "not_legal",
+  "gladiator": "not_legal",
+  "historic": "not_legal",
+  "legacy": "legal",
+  "modern": "legal",
+  "oathbreaker": "legal",
+  "oldschool": "not_legal",
+  "pauper": "not_legal",
+  "paupercommander": "not_legal",
+  "penny": "not_legal",
+  "pioneer": "not_legal",
+  "predh": "legal",
+  "premodern": "legal",
+  "standard": "not_legal",
+  "standardbrawl": "not_legal",
+  "timeless": "not_legal",
+  "tlr": "legal",
+  "vintage": "legal"
+ },
+ "mana_cost": "{W}{W}",
+ "multiverse_ids": [],
+ "name": "Soltari Priest",
+ "nonfoil": false,
+ "object": "card",
+ "oracle_id": "f8c9cb9f-3a37-4004-9cde-f51ca5579e1a",
+ "oracle_text": "Protection from red\nShadow (This creature can block or be blocked by only creatures with shadow.)",
+ "oversized": false,
+ "penny_rank": 6577,
+ "power": "2",
+ "prices": {
+  "eur": null,
+  "eur_foil": "9.74",
+  "tix": null,
+  "usd": null,
+  "usd_etched": null,
+  "usd_foil": "13.84"
+ },
+ "prints_search_uri": "https://api.scryfall.com/cards/search?order=released&q=oracleid%3Af8c9cb9f-3a37-4004-9cde-f51ca5579e1a&unique=prints",
+ "promo": true,
+ "promo_types": [
+  "tourney",
+  "fnm"
+ ],
+ "purchase_uris": {
+  "cardhoarder": "https://www.cardhoarder.com/cards?affiliate_id=scryfall&data%5Bsearch%5D=Soltari+Priest&ref=card-profile&utm_campaign=affiliate&utm_medium=card&utm_source=scryfall",
+  "cardmarket": "https://www.cardmarket.com/en/Magic/Products?idProduct=15793&referrer=scryfall&utm_campaign=card_prices&utm_medium=text&utm_source=scryfall",
+  "tcgplayer": "https://partner.tcgplayer.com/c/4931599/1830156/21018?subId1=api&u=https%3A%2F%2Fwww.tcgplayer.com%2Fproduct%2F38158%3Fpage%3D1"
+ },
+ "rarity": "rare",
+ "related_uris": {
+  "edhrec": "https://edhrec.com/route/?cc=Soltari+Priest",
+  "tcgplayer_infinite_articles": "https://partner.tcgplayer.com/c/4931599/1830156/21018?subId1=api&trafcat=tcgplayer.com%2Fsearch%2Farticles&u=https%3A%2F%2Fwww.tcgplayer.com%2Fsearch%2Farticles%3FproductLineName%3Dmagic%26q%3DSoltari%2BPriest",
+  "tcgplayer_infinite_decks": "https://partner.tcgplayer.com/c/4931599/1830156/21018?subId1=api&trafcat=tcgplayer.com%2Fsearch%2Fdecks&u=https%3A%2F%2Fwww.tcgplayer.com%2Fsearch%2Fdecks%3FproductLineName%3Dmagic%26q%3DSoltari%2BPriest"
+ },
+ "released_at": "2002-01-01",
+ "reprint": true,
+ "reserved": false,
+ "rulings_uri": "https://api.scryfall.com/cards/360aed08-19b0-4506-9efb-5b540c29b0e6/rulings",
+ "scryfall_set_uri": "https://scryfall.com/sets/f02?utm_source=api",
+ "scryfall_uri": "https://scryfall.com/card/f02/1/soltari-priest?utm_source=api",
+ "set": "f02",
+ "set_id": "1037d505-8080-4f98-92c6-c9816735c172",
+ "set_name": "Friday Night Magic 2002",
+ "set_search_uri": "https://api.scryfall.com/cards/search?order=set&q=e%3Af02&unique=prints",
+ "set_type": "promo",
+ "set_uri": "https://api.scryfall.com/sets/1037d505-8080-4f98-92c6-c9816735c172",
+ "story_spotlight": false,
+ "tcgplayer_id": 38158,
+ "textless": false,
+ "toughness": "1",
+ "type_line": "Creature — Soltari Cleric",
+ "uri": "https://api.scryfall.com/cards/360aed08-19b0-4506-9efb-5b540c29b0e6",
+ "variation": false,
+ "watermark": "wotc"
+}

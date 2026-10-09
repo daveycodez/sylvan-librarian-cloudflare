@@ -4193,6 +4193,30 @@
 			"method": "GET",
 			"path": "/cards/search?q=-new%3Agame+%21%22Corpse+Traders%22&unique=prints",
 			"note": "2026-10-09. ddm/58 alone."
+		},
+		{
+			"name": "new-foil-is-the-first-paper-foil",
+			"method": "GET",
+			"path": "/cards/search?q=new%3Afoil+%21%22Soltari+Priest%22&unique=prints",
+			"note": "2026-10-09. f02/1, the 2002 Friday Night Magic promo, five years after tmp/46: the card's first paper printing whose finishes hold foil (29,668 printings corpus-wide)."
+		},
+		{
+			"name": "new-foil-not-a-magic-online-foil",
+			"method": "GET",
+			"path": "/cards/search?q=new%3Afoil+%21%22Thermokarst%22&unique=prints",
+			"note": "2026-10-09. 404: its only foil is Masters Edition II's on Magic Online, and only paper printings are eligible."
+		},
+		{
+			"name": "new-foil-of-one-date-is-the-foil-printing",
+			"method": "GET",
+			"path": "/cards/search?q=new%3Afoil+%21%22Canoptek+Wraith%22&unique=prints",
+			"note": "2026-10-09. 40k/153★, the surge foil, not the nonfoil 40k/153 of the same date."
+		},
+		{
+			"name": "new-foil-negated",
+			"method": "GET",
+			"path": "/cards/search?q=-new%3Afoil+e%3Akhm+t%3Agod&unique=prints",
+			"note": "2026-10-09. 13 of the 25."
 		}
 	]
 }

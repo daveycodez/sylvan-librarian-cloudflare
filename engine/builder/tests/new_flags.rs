@@ -268,3 +268,26 @@ fn new_game_is_the_first_printing_in_any_game() {
     );
     assert_eq!(rows(&store, &not(is("newgame"))), ["ddm/58/en", "olep/48/en"]);
 }
+
+#[test]
+fn new_foil_is_the_first_paper_printing_in_foil() {
+    let store = store_of(&[
+        // Tempest had no foils: Soltari Priest's first is the 2002 promo `f02/1`.
+        ("soltari_priest_tmp_46", true),
+        ("soltari_priest_f02_1", true),
+        ("soltari_priest_tsb_14", true),
+        // PAPER ONLY: Thermokarst's one foil is Magic Online's `me2/183`, and it has none.
+        ("thermokarst_ice_268", true),
+        ("thermokarst_me2_183", true),
+        // Of one date, the printing that has the finish: the surge foil `40k/153★`.
+        ("canoptek_wraith_40k_153", true),
+        ("canoptek_wraith_40k_153_star", true),
+        ("jasmine_boreal_leg_233", true),
+        ("jasmine_boreal_tsb_93", true),
+    ]);
+    assert_eq!(rows(&store, &is("newfoil")), ["40k/153★/en", "f02/1/en", "tsb/93/en"]);
+    assert_eq!(
+        rows(&store, &not(is("newfoil"))),
+        ["40k/153/en", "ice/268/en", "leg/233/en", "me2/183/en", "tmp/46/en", "tsb/14/en"]
+    );
+}

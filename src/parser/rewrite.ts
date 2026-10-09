@@ -387,6 +387,7 @@ export const NEW_RARITY_IS_VALUE = "newrarity";
  *   newsega   `new:sega` — the card's first printing in the Sega Dreamcast game; 10 of 10
  *   newgame   `new:game`, `new:games` — first in any game: the union of the five game values;
  *             all 42,122 read, and one over, `new:mtgo`'s
+ *   newfoil   `new:foil` — the card's first paper printing in foil; 29,668 of 29,668
  */
 export const NEW_FLAG_IS_VALUES: readonly string[] = [
 	"newcard",
@@ -396,6 +397,7 @@ export const NEW_FLAG_IS_VALUES: readonly string[] = [
 	"newastral",
 	"newsega",
 	"newgame",
+	"newfoil",
 ];
 
 /**
