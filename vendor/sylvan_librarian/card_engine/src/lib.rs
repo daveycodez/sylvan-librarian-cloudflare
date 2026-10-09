@@ -5549,9 +5549,12 @@ pub fn new_order_key(
 ///   row that is least by
 ///     (release date, release batch, variation last, the collector number's digits as one
 ///      integer, Scryfall id)                                         — [`NewOrderKey`]
-///   — and that row is flagged unless it is a `variation`
+///   — and that row is flagged, a `variation` like any other
 ///
-/// with eligibility and the group the only things a value chooses:
+/// with eligibility and the group the only things a value chooses. The counts below are the
+/// lists as a search returns them by default, which HIDES variations (`include_variations`,
+/// extras-gate.ts); with them shown four lists are longer by the variations that lead a group —
+/// see the VARIATION clause.
 ///
 ///   `NEW_CARD`  new:card, new:paper, new:printed, new:cardboard — one list, 35,158 printings,
 ///               id for id. Eligible: a printing whose `games` hold `paper`. One group a card.
@@ -5588,8 +5591,9 @@ pub fn new_order_key(
 ///               group is the text as `push_flavor_key` reads it, a faced printing's faces in
 ///               turn (Jace Beleren's reversible `sld/1454` adds a back to `sld/746`'s front and
 ///               both are new). And a printing whose FRONT has no flavor leads without being
-///               flagged, as a variation does: Clive's `fin/133` carries its line on the back,
-///               `fin/385` the same line on the front, and neither is new. 27,459 of 27,459.
+///               flagged: Clive's `fin/133` carries its line on the back, `fin/385` the same
+///               line on the front, and neither is new, variations shown or hidden. 27,459 of
+///               27,459.
 ///   `NEW_ART`   new:art, new:illustration — 52,047 printings. The group is the FRONT illustration
 ///               id and NOT the card: an artwork a second card reuses is new once (Alchemy's
 ///               rebalanced `A-` cards, tokens sharing a painting, the 2022 Baldur's Gate
@@ -5626,12 +5630,28 @@ pub fn new_order_key(
 ///     `psus/14` is before `pjjt/1N07` and `psus/15` before `pjas/2U07` (the same date and
 ///     batch; `new:frame`), where the number's FIRST integer says the reverse.
 ///   - a VARIATION sorts after every plain row of its date and batch, whatever their numbers,
-///     and is NEVER flagged, though it still stands in the order: Zombify's `ody/171†`
-///     (Simplified Chinese, a variation, the only row its card has in that frame before 2018) is
-///     not `new:frame`, and neither is `a25/116` after it; and Mirage's `mir/87†`, a misprint
-///     carrying Shaper Guildmage's artwork, does not lead `mir/91` of the same day (`new:art`),
-///     which the number alone would have it do. Every other list fits the flag on either side
-///     of the number.
+///     and IS FLAGGED WHEN IT LEADS — one flagged row a group, variation or not. Until
+///     2026-10-09 this read "a variation leads without being flagged", and that was the lists'
+///     reading, not Scryfall's rule: a search hides variations unless `include_variations=true`
+///     is sent or the query names `is:variation`, so a variation that leads its group was
+///     missing from every list read without it. Read with it (2026-10-09, `new:<value>
+///     is:variation`, each list whole): `new:frame` holds 3 variations (45,061 printings against
+///     45,058) — Zombify's `ody/171†` (Simplified Chinese, the only row its card has in the 2015
+///     frame before 2018; `a25/116` after it is not new with variations shown or hidden),
+///     `4ed/134†` and `plst/JUD-78†`; `new:foil` 3 (29,671 against 29,668) — `ons/200★`,
+///     `soi/265†d`, `ph18/4†`, each beside a plain twin that has no foil; `new:flavor` 8
+///     (27,467 against 27,459) — Tamiyo's Journal's five `soi/265†a`-`†e`, each its own entry,
+///     and `4ed/107†`, `gpt/37★`, `iko/275y`; `new:art` 17 (52,064 against 52,047), ten of
+///     them Murders at Karlov Manor's `†` printings. `new:card`, `new:mtgo`, `new:arena`,
+///     `new:astral`, `new:sega`, `new:game`, `new:nonfoil` and `new:language` (every language)
+///     hold none: no variation leads a group of theirs, its plain twin of the same day being
+///     eligible wherever it is. This order picks exactly those 31 rows from the 2026-09-24
+///     corpus and no other variation. With the variation flag NOT a key — the number, then the
+///     id — 33 variations would be `new:card` where Scryfall has none; with it AFTER the number,
+///     Mirage's `mir/87†`, a misprint carrying Shaper Guildmage's artwork under a lower number
+///     than `mir/91` of the same day, would be `new:art`, and it is not, shown or hidden.
+///     `new:rarity` needed no correction: `assign_new_rarity_flags` never withheld the flag,
+///     and `new:rarity is:variation` is 0 on api.scryfall.com as it is here.
 ///   - the SET CODE is no key and neither is the set type: promos, masterpieces and box sets
 ///     are first wherever the order puts them (713 of the 35,158 are promos).
 ///   - NEGATION is the plain complement, over every row of every language. No value forces
@@ -5747,8 +5767,9 @@ fn assign_new_flags(
             }
         }
         for (bit, _, i) in firsts {
-            // A variation leads without being flagged, and so does a flavor only a back face has.
-            let unflagged = rows[i].compat.flags & COMPAT_VARIATION != 0 || (bit == NEW_FLAVOR && backs_only.contains(&i));
+            // A flavor only a back face has leads without being flagged. A VARIATION that leads
+            // is flagged like any row: the search's own default is what hides it.
+            let unflagged = bit == NEW_FLAVOR && backs_only.contains(&i);
             if !unflagged {
                 rows[i].new_flags |= bit;
             }
@@ -5778,9 +5799,7 @@ fn assign_new_flags(
         }
         for (_, in_annex, i) in languages {
             let lead = if in_annex { &mut foreign[annex.start + i] } else { &mut printings[offsets[cid] as usize + i] };
-            if lead.compat.flags & COMPAT_VARIATION == 0 {
-                lead.new_flags |= NEW_LANGUAGE;
-            }
+            lead.new_flags |= NEW_LANGUAGE;
         }
     }
 }

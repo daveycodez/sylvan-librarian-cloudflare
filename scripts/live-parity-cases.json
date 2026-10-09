@@ -4403,6 +4403,78 @@
 			"method": "GET",
 			"path": "/cards/search?q=new%3Adreamcast+e%3Akhm+t%3Agod&unique=prints",
 			"note": "2026-10-09. 404 with no warning, as new:sega."
+		},
+		{
+			"name": "new-frame-holds-the-variations-that-lead",
+			"method": "GET",
+			"path": "/cards/search?q=new%3Aframe+is%3Avariation&unique=prints&include_extras=true",
+			"note": "2026-10-09. 3: ody/171† (Simplified Chinese), 4ed/134† (German), plst/JUD-78†. A variation that leads its group IS new; the default search hides it, and `is:variation` (or `include_variations=true`) shows it — `new:frame` is 45,058 without and 45,061 with. The port flagged no variation and answered a 404."
+		},
+		{
+			"name": "new-foil-holds-the-variations-that-lead",
+			"method": "GET",
+			"path": "/cards/search?q=new%3Afoil+is%3Avariation&unique=prints&include_extras=true",
+			"note": "2026-10-09. 3: ons/200★, soi/265†d, ph18/4†, each beside a plain twin that has no foil (29,668 without variations, 29,671 with). The port answered a 404."
+		},
+		{
+			"name": "new-flavor-holds-the-variations-that-lead",
+			"method": "GET",
+			"path": "/cards/search?q=new%3Aflavor+is%3Avariation&unique=prints&include_extras=true",
+			"note": "2026-10-09. 8: Tamiyo's Journal's soi/265†a-†e, 4ed/107†, gpt/37★, iko/275y (27,459 without variations, 27,467 with). The port answered a 404."
+		},
+		{
+			"name": "new-art-holds-the-variations-that-lead",
+			"method": "GET",
+			"path": "/cards/search?q=new%3Aart+is%3Avariation&unique=prints&include_extras=true",
+			"note": "2026-10-09. 17, ten of them Murders at Karlov Manor's † printings (52,047 without variations, 52,064 with). mir/87† is not among them: a variation sorts after every plain row of its date and batch, and mir/91 leads that painting. The port answered a 404."
+		},
+		{
+			"name": "not-new-art-among-variations",
+			"method": "GET",
+			"path": "/cards/search?q=-new%3Aart+is%3Avariation&unique=prints&include_extras=true",
+			"note": "2026-10-09. 82 of the 99 canonical variations; the port answered all 99."
+		},
+		{
+			"name": "new-frame-one-row-a-group-with-variations",
+			"method": "GET",
+			"path": "/cards/search?q=%21%22Zombify%22+new%3Aframe&unique=prints&include_variations=true",
+			"note": "2026-10-09. 3 with variations shown: ody/171, ody/171† (the 2015 frame's first) and 8ed/174★ — and NOT a25/116, the next printing in the 2015 frame: one flagged row a group. The port answered 2."
+		},
+		{
+			"name": "new-frame-default-hides-the-variation",
+			"method": "GET",
+			"path": "/cards/search?q=%21%22Zombify%22+new%3Aframe&unique=prints",
+			"note": "2026-10-09. 2 by default: ody/171 and 8ed/174★. The variation is hidden by the search's own default, not by the flag."
+		},
+		{
+			"name": "new-foil-is-a-variation-alone",
+			"method": "GET",
+			"path": "/cards/search?q=%21%22Tamiyo%27s+Journal%22+new%3Afoil&unique=prints&include_variations=true",
+			"note": "2026-10-09. soi/265†d alone with variations shown — the card's only foil is a variation. The port answered a 404."
+		},
+		{
+			"name": "new-foil-of-a-variation-is-hidden-by-default",
+			"method": "GET",
+			"path": "/cards/search?q=%21%22Tamiyo%27s+Journal%22+new%3Afoil&unique=prints",
+			"note": "2026-10-09. 404 by default: the one new:foil printing is a variation, and soi/265 is not new in its place."
+		},
+		{
+			"name": "new-nonfoil-variation-sorts-after-its-twin",
+			"method": "GET",
+			"path": "/cards/search?q=%21%22Tamiyo%27s+Journal%22+new%3Anonfoil&unique=prints&include_variations=true",
+			"note": "2026-10-09. soi/265 alone with variations shown: soi/265†a is nonfoil too, of the same day, and a variation sorts after its plain twin."
+		},
+		{
+			"name": "new-rarity-holds-no-variation",
+			"method": "GET",
+			"path": "/cards/search?q=new%3Ararity+is%3Avariation&unique=prints&include_extras=true",
+			"note": "2026-10-09. 404: no variation leads a rarity (38,945 with variations and without). The same 404 for new:card, new:mtgo, new:arena, new:game and new:nonfoil."
+		},
+		{
+			"name": "new-language-holds-no-variation",
+			"method": "GET",
+			"path": "/cards/search?q=new%3Alanguage+is%3Avariation+lang%3Aany&unique=prints&include_extras=true",
+			"note": "2026-10-09. 404 over every language: each variation's plain twin of the same day leads its language (285,762 with variations and without)."
 		}
 	]
 }

@@ -4,9 +4,11 @@
 //!
 //! The rule is one shape for every value — per card and group, over the canonical rows that are
 //! eligible, the first by (release date, release batch, the collector number's digits as one
-//! integer, variation last, Scryfall id), flagged unless it is a variation — and was measured on
-//! api.scryfall.com 2026-10-09 by reading each whole list; card_engine's `assign_new_flags`
-//! carries the evidence for each clause. What is pinned here is that rule on the rows the
+//! integer, variation last, Scryfall id), flagged whether or not it is a variation — and was
+//! measured on api.scryfall.com 2026-10-09 by reading each whole list, and again with
+//! `include_variations=true`, which is what shows the variations a search hides by default;
+//! card_engine's `assign_new_flags` carries the evidence for each clause. The engine is asked
+//! directly here, with no route's `-is:variation` gate, so a flagged variation is in the answer. What is pinned here is that rule on the rows the
 //! fixtures hold: each pair one clause, and each winner the printing Scryfall's own list holds.
 //! `new:rarity` is older and has its own file, x72_new_rarity.rs.
 
@@ -143,9 +145,9 @@ fn new_frame_is_the_first_printing_in_each_frame_digital_printings_too() {
         // integer, 1, and the id both say `pjjt`.
         ("soltari_priest_psus_14", true),
         ("soltari_priest_pjjt_1n07_ja", true),
-        // A VARIATION IS NEVER FLAGGED, AND STILL LEADS: Zombify's Simplified Chinese `ody/171†`
-        // is the only row its card has in the 2015 frame before 2018, and neither it nor
-        // `a25/116` after it is `new:frame`.
+        // A VARIATION THAT LEADS IS NEW: Zombify's Simplified Chinese `ody/171†` is the only row
+        // its card has in the 2015 frame before 2018 — `new:frame` on api.scryfall.com with
+        // `include_variations=true`, hidden without — and `a25/116` after it is not, either way.
         ("zombify_ody_171", true),
         ("zombify_ody_171_dagger_zhs", true),
         ("zombify_a25_116", true),
@@ -156,11 +158,11 @@ fn new_frame_is_the_first_printing_in_each_frame_digital_printings_too() {
         ("mirror_mirror_olep_48", true),
         ("mirror_mirror_ugl_77", true),
     ]);
-    assert_eq!(rows(&store, &is("newframe")), ["ody/171/en", "psus/14/en", "tmp/46/en", "ugl/77/en", "ybro/24/en"]);
     assert_eq!(
-        rows(&store, &not(is("newframe"))),
-        ["a25/116/en", "mb2/263/en", "ody/171†/zhs", "olep/48/en", "pjjt/1N07/ja", "tsb/14/en"]
+        rows(&store, &is("newframe")),
+        ["ody/171/en", "ody/171†/zhs", "psus/14/en", "tmp/46/en", "ugl/77/en", "ybro/24/en"]
     );
+    assert_eq!(rows(&store, &not(is("newframe"))), ["a25/116/en", "mb2/263/en", "olep/48/en", "pjjt/1N07/ja", "tsb/14/en"]);
 }
 
 #[test]
@@ -284,11 +286,19 @@ fn new_foil_is_the_first_paper_printing_in_foil() {
         ("canoptek_wraith_40k_153_star", true),
         ("jasmine_boreal_leg_233", true),
         ("jasmine_boreal_tsb_93", true),
+        // A VARIATION THAT LEADS IS NEW: Onslaught's foils of Embermage Goblin are the variation
+        // `ons/200★` and Shadows over Innistrad's of Tamiyo's Journal the variation `soi/265†d`,
+        // their plain twins nonfoil only — both `new:foil` on api.scryfall.com with
+        // `include_variations=true`, and the two cards have none without.
+        ("embermage_goblin_ons_200", true),
+        ("embermage_goblin_ons_200_star", true),
+        ("tamiyos_journal_soi_265", true),
+        ("tamiyos_journal_soi_265_dagger_d", true),
     ]);
-    assert_eq!(rows(&store, &is("newfoil")), ["40k/153★/en", "f02/1/en", "tsb/93/en"]);
+    assert_eq!(rows(&store, &is("newfoil")), ["40k/153★/en", "f02/1/en", "ons/200★/en", "soi/265†d/en", "tsb/93/en"]);
     assert_eq!(
         rows(&store, &not(is("newfoil"))),
-        ["40k/153/en", "ice/268/en", "leg/233/en", "me2/183/en", "tmp/46/en", "tsb/14/en"]
+        ["40k/153/en", "ice/268/en", "leg/233/en", "me2/183/en", "ons/200/en", "soi/265/en", "tmp/46/en", "tsb/14/en"]
     );
 }
 
@@ -308,11 +318,17 @@ fn new_nonfoil_is_the_first_paper_printing_in_nonfoil() {
         ("rusko_clockmaker_mb2_263", true),
         ("soltari_priest_tmp_46", true),
         ("soltari_priest_f02_1", true),
+        // A VARIATION SORTS AFTER ITS PLAIN TWIN, and one row a group is new: Tamiyo's Journal's
+        // `soi/265` and its variation `soi/265†a` are both nonfoil, of one day, and the plain one
+        // is the answer with variations shown or hidden (`†d` is foil only).
+        ("tamiyos_journal_soi_265", true),
+        ("tamiyos_journal_soi_265_dagger_a", true),
+        ("tamiyos_journal_soi_265_dagger_d", true),
     ]);
-    assert_eq!(rows(&store, &is("newnonfoil")), ["40k/153/en", "bng/31/en", "tmp/46/en"]);
+    assert_eq!(rows(&store, &is("newnonfoil")), ["40k/153/en", "bng/31/en", "soi/265/en", "tmp/46/en"]);
     assert_eq!(
         rows(&store, &not(is("newnonfoil"))),
-        ["40k/153★/en", "f02/1/en", "mb2/263/en", "pbng/31★/en", "ybro/24/en"]
+        ["40k/153★/en", "f02/1/en", "mb2/263/en", "pbng/31★/en", "soi/265†a/en", "soi/265†d/en", "ybro/24/en"]
     );
 }
 
@@ -331,6 +347,11 @@ fn new_art_is_the_first_printing_of_each_artwork_across_cards() {
         // number than `mir/91`, and `mir/91` is the new one.
         ("shaper_guildmage_mir_91", true),
         ("reality_ripple_mir_87_dagger_es", true),
+        // A VARIATION THAT LEADS IS NEW: Embermage Goblin's foil `ons/200★` is a variation with
+        // a painting of its own, and both it and `ons/200` are `new:art` on api.scryfall.com with
+        // `include_variations=true` — one of the 17 variations that list holds.
+        ("embermage_goblin_ons_200", true),
+        ("embermage_goblin_ons_200_star", true),
         // NO ILLUSTRATION IS ONE GROUP, corpus-wide: the first such row is new — Scars of
         // Mirrodin's poison counter — and no other, of its card or of any.
         ("poison_counter_tsom_10", true),
@@ -360,6 +381,8 @@ fn new_art_is_the_first_printing_of_each_artwork_across_cards() {
             "ltr/401/en",
             "mir/91/en",
             "olgc/2018A/en",
+            "ons/200/en",
+            "ons/200★/en",
             "som/171/en",
             "tsom/10/en"
         ]
@@ -408,14 +431,31 @@ fn new_language_is_the_first_printing_in_each_language_over_the_annex_too() {
         // SERIALIZED printings are outside: `brr/91z` carries the lower id.
         ("liquimetal_coating_brr_91", true),
         ("liquimetal_coating_brr_91z", true),
+        // A VARIATION SORTS AFTER ITS PLAIN TWIN: Zombify's Simplified Chinese `ody/171` (an annex
+        // row) leads its language, not the Simplified Chinese misprint `ody/171†` of the same day
+        // (a canonical row, a variation). No variation leads a language anywhere:
+        // `new:language is:variation lang:any` is 0 on api.scryfall.com.
+        ("zombify_ody_171", true),
+        ("zombify_ody_171_zhs", false),
+        ("zombify_ody_171_dagger_zhs", true),
     ]);
     assert_eq!(
         rows(&store, &is("newlanguage")),
-        ["brr/91/en", "cmm/81/en", "cmm/81/ja", "hou/83/en", "rav/186/en", "rav/186/ru", "ugl/77/en"]
+        [
+            "brr/91/en",
+            "cmm/81/en",
+            "cmm/81/ja",
+            "hou/83/en",
+            "ody/171/en",
+            "ody/171/zhs",
+            "rav/186/en",
+            "rav/186/ru",
+            "ugl/77/en"
+        ]
     );
     assert_eq!(
         rows(&store, &not(is("newlanguage"))),
-        ["brr/91z/en", "cmm/630/ja", "dsc/114/en", "dsc/114/ja", "olep/48/en", "phou/83/en"]
+        ["brr/91z/en", "cmm/630/ja", "dsc/114/en", "dsc/114/ja", "ody/171†/zhs", "olep/48/en", "phou/83/en"]
     );
 }
 
@@ -449,10 +489,28 @@ fn new_flavor_is_the_first_printing_with_each_flavor_text_as_scryfall_compares_t
         // line on the back, `fin/385` the same line on the front, and neither is new.
         ("clive_fin_133", true),
         ("clive_fin_385", true),
+        // A VARIATION THAT LEADS IS NEW: Tamiyo's Journal was printed with six journal entries,
+        // five of them variations, and each is the first printing of its own text — `soi/265†a`
+        // through `†e` are `new:flavor` on api.scryfall.com with `include_variations=true`.
+        ("tamiyos_journal_soi_265", true),
+        ("tamiyos_journal_soi_265_dagger_a", true),
+        ("tamiyos_journal_soi_265_dagger_d", true),
     ]);
     assert_eq!(
         rows(&store, &is("newflavor")),
-        ["akh/52/en", "brr/91/en", "cn2/174/en", "ddl/69/en", "m13/50/en", "m19/66/en", "mgb/8/en", "som/171/en"]
+        [
+            "akh/52/en",
+            "brr/91/en",
+            "cn2/174/en",
+            "ddl/69/en",
+            "m13/50/en",
+            "m19/66/en",
+            "mgb/8/en",
+            "soi/265/en",
+            "soi/265†a/en",
+            "soi/265†d/en",
+            "som/171/en"
+        ]
     );
     assert_eq!(
         rows(&store, &not(is("newflavor"))),

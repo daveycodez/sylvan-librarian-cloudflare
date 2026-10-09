@@ -3536,10 +3536,10 @@ impl NewArt {
         self.sealed = true;
     }
 
-    /// Is `r` the first printing of its artwork? A variation leads its group and is never new
+    /// Is `r` the first printing of its artwork? A variation that leads its group is new
     /// itself, exactly as for the other `new:` values.
     pub fn is_new(&self, r: &NewArtFacts) -> bool {
-        self.sealed && r.eligible() && !r.variation() && self.leads.get(&r.group()).is_some_and(|lead| *lead == r.order())
+        self.sealed && r.eligible() && self.leads.get(&r.group()).is_some_and(|lead| *lead == r.order())
     }
 
     /// A table from parts read elsewhere — the nightly's partition-scoped restore.

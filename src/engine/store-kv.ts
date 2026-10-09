@@ -2159,8 +2159,25 @@ export async function gzipBytes(bytes: Uint8Array): Promise<Uint8Array> {
  *      serialized printings: 285,762 of 285,762, the list read whole with every language. The 232 rows
  *      generation 66 could not place were release batch boundaries generation 73 has since measured.
  *      Bit 10 of `new_flags`; ARCHIVE_FORMAT_VERSION 2026100910 -> 2026100911.
+ *
+ *   87 (2026-10-09): A VARIATION THAT LEADS ITS GROUP IS NEW. Generations 76-86 flagged the first
+ *      printing of a group "unless it is a variation", and that was how the lists had been read,
+ *      not Scryfall's rule: a search hides variations unless `include_variations=true` is sent or
+ *      the query names `is:variation`, so a leading variation was missing from every list read
+ *      without it. Read with it, `new:frame` is 45,061 printings (3 variations), `new:foil` 29,671
+ *      (3), `new:flavor` 27,467 (8) and `new:art` 52,064 (17); the other values hold none, and
+ *      `new:rarity` — which never withheld the flag — holds none either. Each group still has ONE
+ *      flagged row, and the order does not move (a variation after every plain row of its date
+ *      and batch). `new:frame is:variation` answered a 404 here against Scryfall's three, and
+ *      `-new:art is:variation` 99 against 82. The default lists are id for id what they were: the
+ *      routes' own `-is:variation` gate hides the rows, as it does for every other term.
+ *
+ *      31 stored bits change value and nothing else does: no layout, neither row touched, and the
+ *      bit still means what it meant to every reader — "this row is the one `new:<value>`
+ *      answers" — so ARCHIVE_FORMAT_VERSION stays 2026100911. An older store read by this code is
+ *      read correctly and answers as generation 86 did; the generation is what rebuilds it.
  */
-export const STORE_CONTENT_GENERATION = 86;
+export const STORE_CONTENT_GENERATION = 87;
 
 /**
  * Chunk key for a store. Keyed by store_key, so publishes never collide.
