@@ -2236,7 +2236,16 @@ fn main() {
         // The generated corpus's shape tag, for whoever caches it (scripts/gate.sh names its
         // cache directory with this). Printed bare so a shell can read it without parsing.
         "corpus-shape" => println!("{CORPUS_SHAPE}"),
-        "rows" => cmd_rows(&arg(&args, "bulk"), &arg(&args, "tags"), &arg(&args, "out")),
+        "rows" => {
+            // `--is-lists FILE`: the override of the compiled `is:` lists, as the native builder
+            // takes it — so scripts/gate.sh can ask both builders for the same rows under one.
+            if let Some(path) = args.get("is-lists") {
+                let lines = sylvan_store_builder::is_lists::set_override_from_file(Path::new(path))
+                    .unwrap_or_else(|why| panic!("--is-lists {path}: {why}"));
+                eprintln!("is: lists override installed ({lines} lines)");
+            }
+            cmd_rows(&arg(&args, "bulk"), &arg(&args, "tags"), &arg(&args, "out"))
+        }
         "partition" => {
             let parts: u32 = args.get("parts").map(|s| s.parse().expect("number")).unwrap_or(4);
             cmd_partition(&arg(&args, "rows"), parts, &arg(&args, "out-prefix"));

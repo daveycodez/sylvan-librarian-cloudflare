@@ -190,6 +190,9 @@ const EMIT_NAMES: u32 = 13;
 /// `StoreStats::printed_records`, no partition lead), the SAME lines the native builder appends to
 /// printed-names.tsv; the coordinator leads each with the partition when it stages them.
 const EMIT_PRINTED: u32 = 14;
+/// The compiled `is:` lists table (`is_lists::compiled_tsv`), whole, in one emit: what the
+/// coordinator composes the night's override over (src/import-is-lists.ts).
+const EMIT_IS_LISTS: u32 = 15;
 
 /// The chunk every streamed snapshot export is cut into: the coordinator's STAGE_BLOB_BYTES, so
 /// each emit is exactly one staged row — the same cut the host used to make itself by slicing one
@@ -410,6 +413,44 @@ pub extern "C" fn reset() {
         emit_bytes(EMIT_LOG, msg.as_bytes());
     }));
     *STATE.lock().unwrap() = Some(ImportState::default());
+    // A reset instance reads the compiled `is:` lists until the host installs an override again.
+    sylvan_store_builder::is_lists::clear_override();
+}
+
+// ─── the `is:` lists that are Scryfall's own record ──────────────────────────
+
+/// Emit the compiled table (EMIT_IS_LISTS, one emit). Returns its length in bytes.
+///
+/// The coordinator reads three things off it: the day it was measured, its fingerprint (an
+/// override names the table it was composed over, and `is_lists_override` refuses any other), and
+/// the lines of every value the night did not refetch.
+#[unsafe(no_mangle)]
+pub extern "C" fn is_lists_compiled() -> i64 {
+    let tsv = sylvan_store_builder::is_lists::compiled_tsv();
+    emit_bytes(EMIT_IS_LISTS, tsv.as_bytes());
+    tsv.len() as i64
+}
+
+/// Install a whole table over the compiled one for every row this instance transforms or
+/// finalizes from here on (`is_lists::set_override`). Returns the lines it holds, or -1 — with the
+/// reason logged — when it is refused: not UTF-8, a line that is not one, or composed over
+/// another build's table. A refusal changes nothing, so the host's fallback is simply to go on.
+///
+/// Called once per instance, after `reset` and before the first `transform_lines` or
+/// `finalize_drafts`: the six plain lists and `covered` are read at transform, `related` at
+/// finalize.
+#[unsafe(no_mangle)]
+pub extern "C" fn is_lists_override(ptr: *mut u8, len: usize) -> i64 {
+    let buf = take_buf(ptr, len);
+    let installed =
+        String::from_utf8(buf).map_err(|e| e.to_string()).and_then(sylvan_store_builder::is_lists::set_override);
+    match installed {
+        Ok(lines) => lines as i64,
+        Err(why) => {
+            log(&format!("is_lists_override refused: {why}"));
+            -1
+        }
+    }
 }
 
 // ─── phase: transform ────────────────────────────────────────────────────────

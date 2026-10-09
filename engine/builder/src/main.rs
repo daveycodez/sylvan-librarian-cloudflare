@@ -1,6 +1,12 @@
 //! sylvan-store-builder: build a card_engine archive from Scryfall bulk data.
 //!
-//!   sylvan-store-builder --out DIR [--partitions auto|N]
+//!   sylvan-store-builder --out DIR [--partitions auto|N] [--is-lists FILE]
+//!
+//! `--is-lists FILE` installs FILE over the compiled `is:` lists (`is_lists::set_override`): the
+//! table the last nightly import refreshed from api.scryfall.com, which scripts/import-store.sh
+//! reads back from KV so a deploy's store carries the lists the nightly's did. A file the
+//! builder refuses (composed over another build's table, or not a table) is said so and the
+//! compiled table stands — the same fallback the nightly takes.
 //!
 //! Local development's fast path (scripts/seed-local.sh) and the deploy path
 //! (scripts/import-store.sh): one native build of the same pipeline the
@@ -20,13 +26,14 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 
 use sylvan_store_builder::{
-    build_store_partitioned_spilled, build_store_spilled, bulk, spill, tags, transform, PartitionsArg,
+    build_store_partitioned_spilled, build_store_spilled, bulk, is_lists, spill, tags, transform, PartitionsArg,
 };
 
-fn parse_args() -> Result<(PathBuf, Option<PartitionsArg>), String> {
-    const USAGE: &str = "usage: sylvan-store-builder --out DIR [--partitions auto|N]";
+fn parse_args() -> Result<(PathBuf, Option<PartitionsArg>, Option<PathBuf>), String> {
+    const USAGE: &str = "usage: sylvan-store-builder --out DIR [--partitions auto|N] [--is-lists FILE]";
     let mut out: Option<PathBuf> = None;
     let mut partitions: Option<PartitionsArg> = None;
+    let mut lists: Option<PathBuf> = None;
     let mut argv = std::env::args().skip(1);
     while let Some(flag) = argv.next() {
         match flag.as_str() {
@@ -39,10 +46,11 @@ fn parse_args() -> Result<(PathBuf, Option<PartitionsArg>), String> {
                     PartitionsArg::Fixed(v.parse().map_err(|_| format!("--partitions {v:?}: {USAGE}"))?)
                 });
             }
+            "--is-lists" => lists = Some(PathBuf::from(argv.next().ok_or(USAGE)?)),
             _ => return Err(USAGE.to_owned()),
         }
     }
-    Ok((out.ok_or(USAGE)?, partitions))
+    Ok((out.ok_or(USAGE)?, partitions, lists))
 }
 
 fn now_unix() -> String {
@@ -213,6 +221,10 @@ fn run_import(out_dir: &std::path::Path, partitions: Option<PartitionsArg>) -> R
         }
     };
     std::io::Write::flush(&mut rows_file).map_err(|_| "write rows.jsonl failed".to_owned())?;
+    // Which `is:` lists this build tagged from (StoreManifest.is_lists): the override's own note,
+    // or the compiled table's day.
+    let mut manifest_json = manifest_json;
+    manifest_json["is_lists"] = is_lists::manifest_note();
     let manifest_path = out_dir.join("manifest.json");
     std::fs::write(&manifest_path, manifest_json.to_string()).map_err(|e| format!("write manifest: {e}"))?;
 
@@ -239,13 +251,20 @@ fn run_import(out_dir: &std::path::Path, partitions: Option<PartitionsArg>) -> R
 }
 
 fn main() -> ExitCode {
-    let (out_dir, partitions) = match parse_args() {
+    let (out_dir, partitions, lists) = match parse_args() {
         Ok(parsed) => parsed,
         Err(usage) => {
             eprintln!("{usage}");
             return ExitCode::from(2);
         }
     };
+    // Before the first row: the lists are read by transform. Never fatal — see the header.
+    if let Some(path) = lists {
+        match is_lists::set_override_from_file(&path) {
+            Ok(lines) => eprintln!("is: lists: {} installed over the compiled table ({lines} lines)", path.display()),
+            Err(why) => eprintln!("is: lists: {} REFUSED ({why}); building with the compiled table", path.display()),
+        }
+    }
     match run_import(&out_dir, partitions) {
         Ok(()) => ExitCode::SUCCESS,
         Err(e) => {

@@ -3,7 +3,11 @@
 // with the host side played by in-memory arrays (standing in for DO SQLite / D1).
 //
 //   bun engine/wasm-import/driver.ts <import.wasm> <bulk.jsonl> <tags.json> \
-//       <rows-out.jsonl> <store-out.store>
+//       <rows-out.jsonl> <store-out.store> [<is-lists-override.tsv>]
+//
+// The optional sixth argument is installed over the compiled `is:` lists before the first row
+// (`is_lists_override`), as the coordinator installs the night's refreshed table — so the gate can
+// ask the native builder (`memprobe rows --is-lists`) for the same rows under the same override.
 //
 // Outputs let the native pipeline act as the oracle:
 //   rows-out.jsonl   must equal memprobe's rows.jsonl byte-for-byte
@@ -12,9 +16,11 @@
 
 import { createHash } from "node:crypto";
 
-const [wasmPath, bulkPath, tagsPath, rowsOut, storeOut] = process.argv.slice(2);
+const [wasmPath, bulkPath, tagsPath, rowsOut, storeOut, isListsPath] = process.argv.slice(2);
 if (!wasmPath || !bulkPath || !tagsPath || !rowsOut || !storeOut) {
-	console.error("usage: bun driver.ts <import.wasm> <bulk.jsonl> <tags.json> <rows-out.jsonl> <store-out.store>");
+	console.error(
+		"usage: bun driver.ts <import.wasm> <bulk.jsonl> <tags.json> <rows-out.jsonl> <store-out.store> [<is-lists.tsv>]",
+	);
 	process.exit(2);
 }
 
@@ -55,6 +61,7 @@ const EMIT = {
 	CORPUS: 12,
 	NAMES: 13,
 	PRINTED: 14,
+	IS_LISTS: 15,
 } as const;
 
 const env = {
@@ -92,6 +99,7 @@ const env = {
 			case EMIT.CORPUS:
 			case EMIT.NAMES:
 			case EMIT.PRINTED:
+			case EMIT.IS_LISTS:
 				// The coordinator's persistence and publish inputs (tag data, routing keys, the inflate
 				// checkpoint, alias maps, oracle pairs, the corpus snapshot, card and printed names): this driver
 				// compares store rows only, so it has no consumer for them. n8's NAMES (13) reaching the
@@ -146,6 +154,7 @@ const ex = instance.exports as {
 	build_store_stream(): bigint;
 	current_alloc(): number;
 	peak_alloc(): number;
+	is_lists_override?(ptr: number, len: number): bigint;
 };
 memory = ex.memory;
 
@@ -194,6 +203,17 @@ async function* fileLines(path: string): AsyncGenerator<string[]> {
 
 // ── 1. transform ────────────────────────────────────────────────────────────
 ex.reset();
+if (isListsPath) {
+	// After reset (which clears one) and before the first row. A refusal is FATAL here, unlike in
+	// the coordinator: this run exists to compare rows built under the override.
+	if (!ex.is_lists_override) throw new Error("this import blob has no is_lists_override export");
+	const lines = sendBytes(
+		new Uint8Array(await Bun.file(isListsPath).arrayBuffer()),
+		(p, l) => (ex.is_lists_override as (ptr: number, len: number) => bigint)(p, l),
+		"is_lists_override",
+	);
+	console.error(`is: lists override installed (${lines} lines)`);
+}
 let t = performance.now();
 // The corpus stands in for default_cards AND all_cards at once, and default_cards is ENGLISH —
 // one representative per card — so only the English lines feed the canonical set. That is what

@@ -43,6 +43,8 @@ export interface ImportEmitHandlers {
 	onPrinted?(bytes: Uint8Array): void;
 	/** The resumable inflater's raw output: one emit per inflateFeed call. */
 	onInflate?(bytes: Uint8Array): void;
+	/** The compiled `is:` lists table, whole (isListsCompiled). */
+	onIsLists?(bytes: Uint8Array): void;
 	/** Serve row #index of whatever the running export pulls: the spilled rows (add order) during
 	 * the store build, a snapshot's staged rows during a pull restore. null = no such row. */
 	pullRow?(index: number): Uint8Array | null;
@@ -63,6 +65,7 @@ const EMIT = {
 	CORPUS: 12,
 	NAMES: 13,
 	PRINTED: 14,
+	IS_LISTS: 15,
 } as const;
 
 interface ImportExports {
@@ -101,6 +104,9 @@ interface ImportExports {
 	inflate_status(): number;
 	inflate_save(dest: number, cap: number): bigint;
 	inflate_total_out(): bigint;
+	/** Absent on a blob built before the `is:` lists could be overridden (isListsRefreshable). */
+	is_lists_compiled?(): bigint;
+	is_lists_override?(ptr: number, len: number): bigint;
 }
 
 /** A staged snapshot, served to a pull restore row by row: row `index` unpacked, null past the end. */
@@ -176,6 +182,9 @@ export class ImportWasm {
 						return;
 					case EMIT.INFLATE:
 						h.onInflate?.(view(ptr, len).slice());
+						return;
+					case EMIT.IS_LISTS:
+						h.onIsLists?.(view(ptr, len).slice());
 						return;
 					default:
 						throw new Error(`wasm-import emitted unknown kind ${kind}`);
@@ -426,6 +435,46 @@ export class ImportWasm {
 		const rc = this.ex.build_store_stream();
 		if (rc < 0n) throw new Error("wasm-import build_store_stream failed");
 		return rc;
+	}
+
+	// ── the `is:` lists that are Scryfall's own record (src/import-is-lists.ts) ──
+
+	/**
+	 * Whether this blob can take an override of its compiled lists. False on a blob committed
+	 * before the two exports existed: the nightly then builds from the compiled table, as it did.
+	 */
+	isListsRefreshable(): boolean {
+		return typeof this.ex.is_lists_compiled === "function" && typeof this.ex.is_lists_override === "function";
+	}
+
+	/** The compiled table's text (engine/builder/src/is_lists.tsv as this blob holds it), or null. */
+	isListsCompiled(): string | null {
+		if (!this.ex.is_lists_compiled) return null;
+		const prev = this.handlers;
+		let text: string | null = null;
+		this.handlers = { ...prev, onIsLists: (bytes) => (text = decoder.decode(bytes)) };
+		try {
+			this.ex.is_lists_compiled();
+		} finally {
+			this.handlers = prev;
+		}
+		return text;
+	}
+
+	/**
+	 * Install `tsv` over the compiled table for every row this instance transforms or finalizes.
+	 * Returns the lines installed, or null when the blob refuses it (the reason is in the
+	 * `[wasm-import]` log) or cannot take one — the compiled table then stands, so a null is a
+	 * fallback and never an error.
+	 */
+	isListsOverride(tsv: string): number | null {
+		const call = this.ex.is_lists_override;
+		if (!call) return null;
+		const bytes = encoder.encode(tsv);
+		const ptr = this.ex.alloc(bytes.length);
+		new Uint8Array(this.ex.memory.buffer, ptr, bytes.length).set(bytes);
+		const rc = call(ptr, bytes.length);
+		return rc < 0n ? null : Number(rc);
 	}
 
 	// ── resumable inflate (the recode phase's cross-alarm decompressor) ──────

@@ -26,11 +26,21 @@
 //!
 //! WHAT IT COSTS. One lookup by set, one by (set, collector number) and one per oracle id for each
 //! row imported, whatever the number of values; nothing at query time, where each is an ordinary
-//! `card_is_tags` member. The table is compiled in, so the nightly import reads no network for it
-//! and it goes stale until `bun run is-lists` is run again and committed.
+//! `card_is_tags` member.
+//!
+//! THE COMPILED TABLE AND ITS OVERRIDE. The table is compiled in (`include_str!`): exact on the day
+//! `bun run is-lists` wrote it, and drifting from then on — over five days `covered` moved by 125
+//! printings, `related` by 41, `misprint` by 22. So the nightly import refetches what moved
+//! (src/import-is-lists.ts) and hands this module a WHOLE table in the same encoding,
+//! [`set_override`], which supersedes the compiled one for every lookup until the process — a wasm
+//! instance, a native build — ends. An override is refused, and the table in force stands, unless
+//! it parses line for line, names the compiled table it was composed over (`# base`, the FNV-1a of
+//! this build's own table: an override composed for another build's table is not this build's)
+//! and the tier table its `covered` lines were measured against (`# print_tiers.tsv`). With no
+//! override installed nothing here differs from the compiled table alone.
 
 use std::collections::HashMap;
-use std::sync::LazyLock;
+use std::sync::{LazyLock, RwLock};
 
 use crate::transform::{
     COVERED_IS_TAG, INTRO_IS_TAG, INVITATIONAL_IS_TAG, JUMPSTART_IS_TAG, MISPRINT_IS_TAG, RELATED_IS_TAG, SPELLBOOK_IS_TAG,
@@ -73,44 +83,150 @@ struct Table {
     by_print: HashMap<(&'static str, &'static str), Vec<Entry>>,
     /// The fingerprint of print_tiers.tsv the `covered` lines were measured against.
     tiers_fingerprint: Option<&'static str>,
+    /// An override's `# base` line: the fingerprint of the compiled table it was composed over.
+    base: Option<&'static str>,
+    /// An override's `# meta` line, verbatim: what the importer says about it (its dates), carried
+    /// to the manifest and not read here.
+    meta: Option<&'static str>,
+    /// Data lines read.
+    lines: usize,
 }
 
-fn parse(tsv: &'static str) -> Table {
+/// The table in `tsv`, or the first line that is not one.
+fn try_parse(tsv: &'static str) -> Result<Table, String> {
     let mut table = Table::default();
     for line in tsv.lines().filter(|l| !l.is_empty()) {
         if let Some(comment) = line.strip_prefix('#') {
-            if let Some(fingerprint) = comment.trim().strip_prefix("print_tiers.tsv ") {
+            let comment = comment.trim();
+            if let Some(fingerprint) = comment.strip_prefix("print_tiers.tsv ") {
                 table.tiers_fingerprint = Some(fingerprint);
+            } else if let Some(base) = comment.strip_prefix("base ") {
+                table.base = Some(base);
+            } else if let Some(meta) = comment.strip_prefix("meta ") {
+                table.meta = Some(meta);
             }
             continue;
         }
+        let malformed = || format!("is_lists.tsv: malformed row {line:?}");
         let fields: Vec<&'static str> = line.split('\t').collect();
+        if fields.iter().any(|f| f.is_empty()) {
+            return Err(malformed());
+        }
         let Some(tag) = fields.first().and_then(|t| LIST_TAGS.iter().position(|x| x == t)) else {
-            panic!("is_lists.tsv: malformed row {line:?}")
+            return Err(malformed());
         };
         let tag = tag as u8;
         let numbers = |set: &'static str, lang: &'static str, numbers: &'static str, is_in: bool, table: &mut Table| {
             for number in numbers.split(' ') {
                 if number.is_empty() {
-                    panic!("is_lists.tsv: an empty collector number in {line:?}");
+                    return Err(format!("is_lists.tsv: an empty collector number in {line:?}"));
                 }
                 table.by_print.entry((set, number)).or_default().push((tag, lang, is_in));
             }
+            Ok(())
         };
         match fields[1..] {
             ["set", set] => table.by_set.entry(set).or_default().push(tag),
             ["oracle", id, _name] => table.by_oracle.entry(id).or_default().push(tag),
-            ["print", set, list] => numbers(set, "", list, true, &mut table),
-            ["not", set, list] => numbers(set, "", list, false, &mut table),
-            ["row", set, lang, list] => numbers(set, lang, list, true, &mut table),
-            ["not-row", set, lang, list] => numbers(set, lang, list, false, &mut table),
-            _ => panic!("is_lists.tsv: malformed row {line:?}"),
+            ["print", set, list] => numbers(set, "", list, true, &mut table)?,
+            ["not", set, list] => numbers(set, "", list, false, &mut table)?,
+            ["row", set, lang, list] => numbers(set, lang, list, true, &mut table)?,
+            ["not-row", set, lang, list] => numbers(set, lang, list, false, &mut table)?,
+            _ => return Err(malformed()),
         }
+        table.lines += 1;
     }
-    table
+    Ok(table)
+}
+
+/// The compiled table: a line that is not one stops the build.
+fn parse(tsv: &'static str) -> Table {
+    try_parse(tsv).unwrap_or_else(|problem| panic!("{problem}"))
 }
 
 static TABLE: LazyLock<Table> = LazyLock::new(|| parse(IS_LISTS_TSV));
+
+/// The table that supersedes the compiled one, when the importer has installed one.
+static OVERRIDE: RwLock<Option<&'static Table>> = RwLock::new(None);
+
+fn installed() -> Option<&'static Table> {
+    *OVERRIDE.read().unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+/// The compiled table's text, for the importer to compose an override over.
+pub fn compiled_tsv() -> &'static str {
+    IS_LISTS_TSV
+}
+
+/// The compiled table's fingerprint: what an override's `# base` line must name.
+pub fn compiled_fingerprint() -> String {
+    fnv1a64(IS_LISTS_TSV.as_bytes())
+}
+
+/// The day the compiled table was measured, from its first line (`… api.scryfall.com, 2026-10-09.`).
+pub fn compiled_date() -> Option<&'static str> {
+    let date = IS_LISTS_TSV.lines().next()?.trim_end_matches('.').rsplit(' ').next()?;
+    let shaped = date.len() == 10
+        && date.bytes().enumerate().all(|(i, b)| if i == 4 || i == 7 { b == b'-' } else { b.is_ascii_digit() });
+    shaped.then_some(date)
+}
+
+/// `tsv` as a table that may stand in for the compiled one, or why it may not.
+fn checked_override(tsv: &'static str) -> Result<Table, String> {
+    let table = try_parse(tsv)?;
+    let base = compiled_fingerprint();
+    if table.base != Some(base.as_str()) {
+        return Err(format!(
+            "the override was composed over table {} and this build compiles {base}",
+            table.base.unwrap_or("(no `# base` line)")
+        ));
+    }
+    if table.tiers_fingerprint != TABLE.tiers_fingerprint {
+        return Err(format!(
+            "the override's `covered` lines were measured against print_tiers.tsv {} and this build compiles {}",
+            table.tiers_fingerprint.unwrap_or("(none recorded)"),
+            TABLE.tiers_fingerprint.unwrap_or("(none recorded)")
+        ));
+    }
+    if table.lines == 0 {
+        return Err("the override holds no line".to_owned());
+    }
+    Ok(table)
+}
+
+/// Install `tsv` as the table every later [`verdicts`] call reads, in place of the compiled one.
+/// Returns the lines it holds. A refused override changes nothing: the table in force before the
+/// call stays.
+///
+/// The text is leaked — the table borrows its keys from it for the life of the process, as the
+/// compiled table borrows from the binary — so this is called once per wasm instance or native
+/// build, never per row.
+pub fn set_override(tsv: String) -> Result<usize, String> {
+    let table = checked_override(Box::leak(tsv.into_boxed_str()))?;
+    let lines = table.lines;
+    *OVERRIDE.write().unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(Box::leak(Box::new(table)));
+    Ok(lines)
+}
+
+/// [`set_override`] from a file (the native builder's `--is-lists`, memprobe's).
+pub fn set_override_from_file(path: &std::path::Path) -> Result<usize, String> {
+    set_override(std::fs::read_to_string(path).map_err(|e| format!("read {}: {e}", path.display()))?)
+}
+
+/// Back to the compiled table.
+pub fn clear_override() {
+    *OVERRIDE.write().unwrap_or_else(|poisoned| poisoned.into_inner()) = None;
+}
+
+/// What a build's manifest says about the lists it tagged from (`StoreManifest.is_lists`): the
+/// installed override's own `# meta` object, or the compiled table's day.
+pub fn manifest_note() -> serde_json::Value {
+    let meta = installed().and_then(|t| t.meta).and_then(|m| serde_json::from_str::<serde_json::Value>(m).ok());
+    match meta {
+        Some(meta) if meta.is_object() => meta,
+        _ => serde_json::json!({ "base": compiled_date(), "source": "compiled" }),
+    }
+}
 
 fn verdicts_in<'a>(
     table: &Table,
@@ -140,14 +256,13 @@ fn verdicts_in<'a>(
     out
 }
 
-/// What the measured table says about the row of `set`/`number` in `lang` whose card carries
-/// `oracle_ids` (its own, or each face's).
+/// What the measured table — the installed override, else the compiled one — says about the row
+/// of `set`/`number` in `lang` whose card carries `oracle_ids` (its own, or each face's).
 pub fn verdicts<'a>(set: &str, lang: &str, number: &str, oracle_ids: impl IntoIterator<Item = &'a str>) -> Verdicts {
-    verdicts_in(&TABLE, set, lang, number, oracle_ids)
+    verdicts_in(installed().unwrap_or(&TABLE), set, lang, number, oracle_ids)
 }
 
-/// 64-bit FNV-1a, as scripts/generate-is-lists.ts computes it over print_tiers.tsv.
-#[cfg(test)]
+/// 64-bit FNV-1a, as src/import-is-lists.ts computes it over print_tiers.tsv and over this table.
 fn fnv1a64(bytes: &[u8]) -> String {
     let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
     for byte in bytes {
@@ -207,6 +322,62 @@ mod tests {
         assert_eq!(v("ltr", "en", "7", "x").of("covered"), Some(true));
         assert_eq!(v("ltr", "fr", "7", "x").of("covered"), Some(false));
         assert_eq!(v("ltr", "fr", "8", "x").of("covered"), None);
+    }
+
+    fn leak(text: String) -> &'static str {
+        Box::leak(text.into_boxed_str())
+    }
+
+    fn override_text(body: &str) -> &'static str {
+        let tiers = TABLE.tiers_fingerprint.expect("a recorded fingerprint");
+        let base = compiled_fingerprint();
+        leak(format!("# base {base}\n# print_tiers.tsv {tiers}\n# meta {{\"checked\":\"2026-10-10\"}}\n{body}"))
+    }
+
+    /// The override's table, without the process-wide slot (tests/is_lists_override.rs installs one).
+    #[test]
+    fn an_override_is_a_whole_table_in_the_same_encoding() {
+        let table =
+            checked_override(override_text("spellbook\toracle\tbbbb\tNew Card\ncovered\trow\tzzz\ten\t1 2\n")).unwrap();
+        assert_eq!(table.lines, 2);
+        assert_eq!(table.meta, Some("{\"checked\":\"2026-10-10\"}"));
+        assert_eq!(verdicts_in(&table, "lea", "en", "1", ["bbbb"]).of("spellbook"), Some(true));
+        assert_eq!(verdicts_in(&table, "zzz", "en", "2", ["x"]).of("covered"), Some(true));
+        // It SUPERSEDES: what only the compiled table names is not in it.
+        assert_eq!(verdicts_in(&table, "jmp", "en", "1", ["x"]).of("jumpstart"), None);
+        assert_eq!(verdicts_in(&TABLE, "jmp", "en", "1", ["x"]).of("jumpstart"), Some(true));
+    }
+
+    #[test]
+    fn an_override_is_refused_whole() {
+        let tiers = TABLE.tiers_fingerprint.unwrap();
+        let base = compiled_fingerprint();
+        let refused = |text: String| checked_override(leak(text)).err().expect("refused");
+        // A line that is not one: an unknown value, an unknown kind, an empty field, an empty number.
+        for body in [
+            "gainland\tset\tktk\n",
+            "spikey\tname\tCounterspell\n",
+            "spikey\toracle\t\tCounterspell\n",
+            "covered\trow\tltr\ten\t1  2\n",
+        ] {
+            let why =
+                refused(format!("# base {base}\n# print_tiers.tsv {tiers}\nspikey\toracle\taaaa\tA\n{body}"));
+            assert!(why.contains("is_lists.tsv"), "{why}");
+        }
+        // Composed over another build's table, measured against another tier table, or empty.
+        let line = "spikey\toracle\taaaa\tA\n";
+        assert!(refused(format!("# base 0000000000000000\n# print_tiers.tsv {tiers}\n{line}")).contains("composed over"));
+        assert!(refused(format!("# print_tiers.tsv {tiers}\n{line}")).contains("no `# base` line"));
+        assert!(refused(format!("# base {base}\n# print_tiers.tsv 0000000000000000\n{line}")).contains("print_tiers.tsv"));
+        assert!(refused(format!("# base {base}\n# print_tiers.tsv {tiers}\n")).contains("no line"));
+    }
+
+    #[test]
+    fn the_compiled_table_says_when_it_was_measured() {
+        let date = compiled_date().expect("the first line ends in the day");
+        assert!(date.starts_with("20"), "{date}");
+        assert_eq!(compiled_fingerprint().len(), 16);
+        assert_eq!(manifest_note()["source"], "compiled");
     }
 
     #[test]
