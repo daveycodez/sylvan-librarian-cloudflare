@@ -244,8 +244,31 @@ import {
 	STAGING_PEAK_BYTES_2026_09_25,
 	stagingBytesOf,
 } from "./import-budget";
+import {
+	beginNight,
+	closeNight,
+	composeOverride,
+	IS_LISTS_GAP_MS,
+	IS_LISTS_KV_KEY,
+	IS_LISTS_SLICE_MS,
+	IS_LISTS_SLICE_REQUESTS,
+	type IsListsNote,
+	type NightWork,
+	noteOf,
+	readCompiled,
+	runSlice,
+	type SearchAnswer,
+	usableState,
+} from "./import-is-lists";
 import { isBlankLine, scanJsonlSlice } from "./import-lines";
-import { DUMP_KINDS, type DumpKind, firstFetchPhase, phaseAfterFetch, TRANSFORM_KIND } from "./import-phases";
+import {
+	DUMP_KINDS,
+	type DumpKind,
+	phaseAfterFetch,
+	phaseAfterIsLists,
+	phaseAfterListing,
+	TRANSFORM_KIND,
+} from "./import-phases";
 import {
 	advanceToNextPartition,
 	completePartitionPublish,
@@ -536,6 +559,18 @@ const NOTIFY_MAX_ATTEMPTS = 4;
  */
 const RULINGS_MAX_ATTEMPTS = 3;
 
+/**
+ * Attempts at an `is_lists` slice before the refresh is called off for the night.
+ *
+ * The phase catches everything it can throw, so an attempt past the first means the runtime ended
+ * a slice from outside — a reset under it, the alarm watchdog on an I/O that never settled, CPU
+ * or memory. One of those is a deploy landing; two is this phase, and it must not be the reason
+ * MAX_PHASE_ATTEMPTS ever fails a run: the store does not need it.
+ */
+const IS_LISTS_MAX_ATTEMPTS = 2;
+/** How long one request of the refresh, or one KV call around it, may take before it counts as failed. */
+const IS_LISTS_IO_TIMEOUT_MS = 20_000;
+
 /** Overridable for tests and self-hosted mirrors (SCRYFALL_BULK_URL var). */
 const BULK_DATA_URL = "https://api.scryfall.com/bulk-data";
 /**
@@ -587,6 +622,8 @@ interface DumpStream {
 type Phase =
 	| "idle"
 	| "listing"
+	// The `is:` lists that are Scryfall's own record, brought to tonight (src/import-is-lists.ts).
+	| "is_lists"
 	| `fetch:${DumpKind}`
 	| "canonical"
 	| "transform"
@@ -1918,6 +1955,8 @@ export class ImportCoordinator extends DurableObject<Env> {
 		switch (phase) {
 			case "listing":
 				return this.stepListing();
+			case "is_lists":
+				return this.stepIsLists();
 			case "canonical":
 				return this.stepCanonical();
 			case "transform":
@@ -2016,9 +2055,194 @@ export class ImportCoordinator extends DurableObject<Env> {
 					record.jsonl_download_uri,
 				);
 			}
-			this.metaSet("phase", firstFetchPhase());
+			this.metaSet("phase", phaseAfterListing());
 		});
 		console.log(`Import run listed ${kinds.length} dumps to fetch`);
+	}
+
+	// ── phase: is_lists (the lists that are Scryfall's own record, refreshed) ────
+	//
+	// Eight `is:` values are tagged from a table compiled into the import blob, exact on the day
+	// `bun run is-lists` measured it. This phase brings it to tonight before the first row is
+	// transformed — what is asked, what it costs and what a list must be to be used are written at
+	// the top of src/import-is-lists.ts — and leaves two meta rows for the rest of the run:
+	//
+	//   is_lists_table   the table every transform slice and every partition's finalize installs
+	//                    over the compiled one (installIsLists). ABSENT means the compiled table.
+	//   is_lists_note    what the manifest will say about it (StoreManifest.is_lists).
+	//
+	// THE STORE DOES NOT NEED THIS PHASE, so nothing in it may cost the store anything:
+	//
+	//   - every error is caught here and ends the refresh, never the run (only the fence's
+	//     SupersededError passes, because a replaced run must retire whatever phase it is in);
+	//   - a slice the runtime ended from outside is counted by the alarm's own `phase_attempts`,
+	//     and the second such attempt moves on without asking anything (IS_LISTS_MAX_ATTEMPTS);
+	//   - every request and KV call is raced against IS_LISTS_IO_TIMEOUT_MS, a slice stops asking
+	//     after IS_LISTS_SLICE_MS and the night after IS_LISTS_DEADLINE_MS, so the alarm watchdog
+	//     has nothing here to fire on;
+	//   - the FIRST thing the first slice does is put LAST NIGHT's table in `is_lists_table`
+	//     (the state every finished night leaves in KV, IS_LISTS_KV_KEY), so moving on from any
+	//     point builds with the last good table — and with the compiled one when there is none.
+	//
+	// What the build uses is what KV holds: tonight's table replaces last night's in the meta row
+	// only after the state it was composed from is put, so a deploy that rebuilds the store before
+	// the next night (scripts/import-store.sh reads the same key) tags from the same lists.
+	//
+	// Storage: one meta row an alarm (`is_lists_work`, the night's progress) and three at the end;
+	// one KV read and one KV put a night.
+
+	/** Race `work` against the phase's I/O timeout, so nothing in it can hold an alarm open. */
+	private async isListsIo<T>(what: string, work: Promise<T>): Promise<T> {
+		let timer: ReturnType<typeof setTimeout> | undefined;
+		const late = new Promise<never>((_, reject) => {
+			timer = setTimeout(
+				() => reject(new Error(`${what} did not answer in ${IS_LISTS_IO_TIMEOUT_MS}ms`)),
+				IS_LISTS_IO_TIMEOUT_MS,
+			);
+		});
+		try {
+			return await Promise.race([work, late]);
+		} finally {
+			clearTimeout(timer);
+		}
+	}
+
+	private async stepIsLists(): Promise<void> {
+		try {
+			const attempts = (await this.storeGet<number>("phase_attempts")) ?? 0;
+			if (attempts > IS_LISTS_MAX_ATTEMPTS) {
+				this.leaveIsLists(`a slice of the refresh was ended from outside ${attempts - 1} times`);
+				return;
+			}
+			const stored = this.metaGet("is_lists_work");
+			const work = stored === null ? await this.beginIsLists() : (JSON.parse(stored) as NightWork);
+			if (work === null) return;
+			const api = (this.env as { SCRYFALL_API_URL?: string }).SCRYFALL_API_URL ?? SCRYFALL_API_URL;
+			// Test-only, like SCRYFALL_API_URL: never set in wrangler.jsonc, so production paces at the constant.
+			const gapMs = Number((this.env as { IS_LISTS_GAP_MS?: string }).IS_LISTS_GAP_MS ?? IS_LISTS_GAP_MS);
+			// The gap goes before the first request too: this object cannot see how recently the
+			// previous alarm's last one went out.
+			let last = Date.now();
+			const get = async (path: string): Promise<SearchAnswer> => {
+				const wait = gapMs - (Date.now() - last);
+				if (wait > 0) await scheduler.wait(wait);
+				last = Date.now();
+				return this.isListsIo(
+					`GET ${path}`,
+					(async () => {
+						const res = await fetch(`${api}${path}`, {
+							headers: { "User-Agent": userAgent(), Accept: "application/json" },
+							signal: AbortSignal.timeout(IS_LISTS_IO_TIMEOUT_MS),
+						});
+						const retryAfter = Number(res.headers.get("retry-after")) || undefined;
+						const body: unknown = await res.json().catch(() => null);
+						return { status: res.status, body, retryAfter };
+					})(),
+				);
+			};
+			const over = await runSlice(work, {
+				get,
+				now: () => Date.now(),
+				maxRequests: IS_LISTS_SLICE_REQUESTS,
+				deadlineMs: Date.now() + IS_LISTS_SLICE_MS,
+			});
+			if (!over) {
+				// The alarm's requests are spent: bank the progress, and the next alarm goes on from it.
+				this.metaSet("is_lists_work", JSON.stringify(work));
+				return;
+			}
+			await this.closeIsLists(work);
+		} catch (err) {
+			if (err instanceof SupersededError) throw err;
+			this.leaveIsLists(String(err instanceof Error ? err.message : err));
+		}
+	}
+
+	/**
+	 * The night's first slice: read the compiled table off the blob and last night's state off KV,
+	 * put last night's table where the build will read it, and return the work to start on — or
+	 * null when there is nothing to do and the phase has already moved on.
+	 */
+	private async beginIsLists(): Promise<NightWork | null> {
+		const wasm = transientWasm();
+		wasm.reset();
+		const compiled = wasm.isListsCompiled();
+		if (!wasm.isListsRefreshable() || compiled === null) {
+			this.leaveIsLists("this import blob cannot take an override (built before the refresh existed)");
+			return null;
+		}
+		// A read that fails is NOT "no state": starting over on one would put a first night's state
+		// over every list the nights before it refreshed. It ends the refresh; the table stays compiled.
+		const stored = await this.isListsIo("the stored lists", this.env.STORE_KV.get(IS_LISTS_KV_KEY, "json"));
+		const { base } = readCompiled(compiled);
+		const held = usableState(stored, base);
+		this.ctx.storage.transactionSync(() => {
+			this.metaSet("is_lists_note", JSON.stringify(noteOf(held, base.date)));
+			const table = held ? composeOverride(compiled, held) : null;
+			// Asked of the blob that will read it: a table it refuses is not installed anywhere.
+			if (table !== null && wasm.isListsOverride(table) !== null) this.metaSet("is_lists_table", table);
+		});
+		return beginNight(compiled, stored, Date.now());
+	}
+
+	/** The night is over: put its state, hand its table to the build, say what moved, move on. */
+	private async closeIsLists(work: NightWork): Promise<void> {
+		const { state, line } = closeNight(work);
+		const wasm = transientWasm();
+		wasm.reset();
+		const compiled = wasm.isListsCompiled();
+		if (compiled === null) throw new Error("the import blob lost its compiled table between two slices");
+		const table = composeOverride(compiled, state);
+		if (table !== null && wasm.isListsOverride(table) === null) {
+			throw new Error("the import blob refused the table the night composed (see the [wasm-import] line)");
+		}
+		const json = JSON.stringify(state);
+		await this.isListsIo("the fence", this.fenceBeforeWrite());
+		await this.isListsIo(
+			"the stored lists' put",
+			this.env.STORE_KV.put(IS_LISTS_KV_KEY, json, { metadata: kvBytesMetadata(json.length) }),
+		);
+		const note: IsListsNote = noteOf(state, state.baseDate);
+		this.ctx.storage.transactionSync(() => {
+			if (table !== null) this.metaSet("is_lists_table", table);
+			else this.sqlRun("DELETE FROM meta WHERE key = 'is_lists_table'");
+			this.metaSet("is_lists_note", JSON.stringify(note));
+			this.sqlRun("DELETE FROM meta WHERE key = 'is_lists_work'");
+			this.metaSet("phase", phaseAfterIsLists());
+		});
+		console.log(
+			`${line}; the build uses ${table === null ? "the compiled table" : `the refreshed table (${table.split("\n").length - 5} lines)`} ` +
+				`over ${state.baseDate}'s`,
+		);
+	}
+
+	/**
+	 * Move on WITHOUT tonight's refresh, saying so in one line. The build uses whatever
+	 * `is_lists_table` holds: last night's table when the first slice got as far as putting it
+	 * there, the compiled one otherwise. Synchronous and local — it is the way out of every failure
+	 * here, including one that hung.
+	 */
+	private leaveIsLists(why: string): void {
+		const using = this.metaGet("is_lists_table") === null ? "the compiled table" : "the last night's refreshed table";
+		this.ctx.storage.transactionSync(() => {
+			this.sqlRun("DELETE FROM meta WHERE key = 'is_lists_work'");
+			this.metaSet("phase", phaseAfterIsLists());
+		});
+		console.warn(`Is lists: NOT refreshed tonight (${why}); the build uses ${using}`);
+	}
+
+	/**
+	 * Install the run's `is:` lists table over the compiled one in `wasm` — a transform slice's
+	 * instance, or a partition's fresh group instance, right after its `reset`. Nothing to do
+	 * when the run has none. A blob that refuses it (a deploy that landed mid-run with another
+	 * compiled table) reads its own compiled table instead, and says so: both are whole tables.
+	 */
+	private installIsLists(wasm: ImportWasm, where: string): void {
+		const table = this.metaGet("is_lists_table");
+		if (table === null) return;
+		if (wasm.isListsOverride(table) === null) {
+			console.warn(`Is lists: the ${where} instance refused the run's table; it reads the compiled one`);
+		}
 	}
 
 	/**
@@ -2498,6 +2722,8 @@ export class ImportCoordinator extends DurableObject<Env> {
 			throw new FatalImportError("transform: canonical id snapshot missing (canonical phase incomplete?)");
 		}
 		wasm.tagsRestorePull(this.snapshotRows("tagdata_blobs"));
+		// The night's `is:` lists, read by this slice's rows: the six plain lists and `covered`.
+		this.installIsLists(wasm, "transform");
 
 		const linesDone = Number(this.metaGet("lines_done") ?? 0);
 		// The raw-offset cursor pairs with lines_done: it names the byte at which
@@ -3547,6 +3773,8 @@ export class ImportCoordinator extends DurableObject<Env> {
 			// a corpus-wide term in a heap whose every other term is bounded by the partition size.
 			const fresh = newGroupWasm();
 			fresh.reset();
+			// The night's `is:` lists again: `related` is decided at this partition's finalize.
+			this.installIsLists(fresh, "partition");
 			if (!this.hasSnapshot("tagdata_blobs")) throw new Error("tagdata snapshot missing; cannot restore tags");
 			const oracleIds = fresh.tagsRestorePullPartition(
 				this.snapshotRows("tagdata_blobs"),
@@ -4100,6 +4328,7 @@ export class ImportCoordinator extends DurableObject<Env> {
 			store_gzip_bytes: sum((p) => p.store_gzip_bytes ?? 0),
 			chunk_count: sum((p) => p.chunk_count),
 			source_updated_at: sourceUpdatedAt,
+			is_lists: this.isListsNote(),
 			partition_count: pp.partitions.length,
 			partition_hash: PARTITION_HASH_ALGO,
 			partitions,
@@ -4210,6 +4439,16 @@ export class ImportCoordinator extends DurableObject<Env> {
 			this.metaSet("reference_step", "sets");
 			this.metaSet("purges_done", "0");
 		});
+	}
+
+	/** What the `is_lists` phase recorded about the lists this run tagged from, for the manifest. */
+	private isListsNote(): IsListsNote | undefined {
+		try {
+			const note = this.metaGet("is_lists_note");
+			return note === null ? undefined : (JSON.parse(note) as IsListsNote);
+		} catch {
+			return undefined;
+		}
 	}
 
 	/**

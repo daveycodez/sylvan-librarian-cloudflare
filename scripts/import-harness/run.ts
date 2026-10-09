@@ -58,6 +58,14 @@ import { checkCardNames } from "./card-names-check";
 import { buildCorpus, type Corpus } from "./corpus";
 import { serveDumps } from "./dump-server";
 import { measureEnginePool } from "./engine-pool";
+import {
+	checkIsLists,
+	checkLaterNights,
+	failMidway,
+	type IsListsCheck,
+	listsWorld,
+	writeRunTable,
+} from "./is-lists-check";
 import { checkOracleIndex, type OracleIndexCheck } from "./oracle-index-check";
 import { checkPrintedNames } from "./printed-names-check";
 import { checkRoutingFilter } from "./routing-filter-check";
@@ -360,11 +368,27 @@ async function main(): Promise<number> {
 		console.log(`  ${kind.padEnd(14)} ${fmt(bytes).padStart(12)} bytes gzipped`);
 	}
 
-	const server = serveDumps(corpus);
+	// The lists that are Scryfall's own record, cut from this corpus, with one list's read made to
+	// fail midway: the run must refresh the others across alarms and publish all the same.
+	const world = listsWorld(corpus);
+	failMidway(world);
+	const server = serveDumps(corpus, world.fake);
 	const storage = new MeteredStorage();
 	const kv = new FakeKV();
 	const env = makeEnv(kv, server.url) as unknown as Record<string, unknown>;
 	env.IMPORT_PARTITION_CEILING_BYTES = String(opts.partitionCeilingBytes);
+	// No pacing against a local fake (src/import-coordinator.ts stepIsLists; production reads the constant).
+	env.IS_LISTS_GAP_MS = "0";
+	const isListsLogged: string[] = [];
+	const [consoleLog, consoleWarn] = [console.log, console.warn];
+	const noting =
+		(to: typeof console.log) =>
+		(...args: unknown[]) => {
+			if (typeof args[0] === "string" && args[0].startsWith("Is lists:")) isListsLogged.push(args[0]);
+			to(...args);
+		};
+	console.log = noting(consoleLog);
+	console.warn = noting(consoleWarn);
 	for (const name of ANNOUNCED) await kv.put(`engine:live:${name}`, "1");
 
 	const ctx = {
@@ -443,10 +467,38 @@ async function main(): Promise<number> {
 		}
 	}
 
-	// Before the server stops: the parity half runs the native builder against it.
+	console.log = consoleLog;
+	console.warn = consoleWarn;
+
+	// Before the server stops: the parity half runs the native builder against it — handed the
+	// `is:` lists table the nightly installed, so the two builds are tagged from the same lists —
+	// and the nights after the first ask the fake Scryfall again.
 	let oracle: OracleIndexCheck | null = null;
+	let isLists: IsListsCheck | null = null;
+	let laterNights: IsListsCheck | null = null;
 	if (!failure && runState() === "done") {
-		oracle = await checkOracleIndex(kv, corpus, server.url, opts.corpusDir, opts.native, opts.partitionCeilingBytes);
+		const runTable = writeRunTable(storage, opts.corpusDir);
+		oracle = await checkOracleIndex(
+			kv,
+			corpus,
+			server.url,
+			opts.corpusDir,
+			opts.native,
+			opts.partitionCeilingBytes,
+			runTable,
+		);
+		if (oracle.ok) {
+			isLists = await checkIsLists(kv, storage, world, isListsLogged, oracle.nativeDir ?? null);
+			if (isLists.ok && runTable !== null) {
+				laterNights = await checkLaterNights(
+					ImportCoordinator as never,
+					env,
+					kv,
+					world,
+					await Bun.file(runTable).text(),
+				);
+			}
+		}
 	}
 
 	server.stop();
@@ -559,6 +611,15 @@ async function main(): Promise<number> {
 	for (const line of oracle?.lines ?? []) console.log(line);
 	if (!oracle?.ok) {
 		console.error("\nFAILED: the oracle index check (above)");
+		return 1;
+	}
+
+	// ── the `is:` lists the nightly refreshes: the store carries them, both builders agree, and the
+	// nights after behave (is-lists-check.ts) ──
+	console.log("");
+	for (const line of [...(isLists?.lines ?? []), ...(laterNights?.lines ?? [])]) console.log(line);
+	if (!isLists?.ok || laterNights?.ok === false) {
+		console.error("\nFAILED: the is: lists check (above)");
 		return 1;
 	}
 

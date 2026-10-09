@@ -16,7 +16,10 @@ import {
 	type DumpKind,
 	FETCHED_KINDS,
 	firstFetchPhase,
+	IS_LISTS_PHASE,
 	phaseAfterFetch,
+	phaseAfterIsLists,
+	phaseAfterListing,
 	phaseAfterStaged,
 	STREAMED_KINDS,
 	TRANSFORM_KIND,
@@ -54,6 +57,16 @@ describe("the phase chain", () => {
 			"canonical",
 		]);
 		for (const kind of DUMP_KINDS) expect(phaseAfterFetch(kind).startsWith("recode:")).toBe(false);
+	});
+
+	test("the listing hands on to the `is:` lists' refresh, and that to the first dump whatever came of it", () => {
+		// One phase, one way out: the refresh has no failure exit of its own to route.
+		expect(phaseAfterListing()).toBe(IS_LISTS_PHASE);
+		expect(phaseAfterIsLists()).toBe(firstFetchPhase());
+		const coordinator = readFileSync(join(import.meta.dir, "../../src/import-coordinator.ts"), "utf8");
+		expect(coordinator).toContain(`case "${IS_LISTS_PHASE}":`);
+		// The table is installed in both places a row reads it: a transform slice, a partition's fresh heap.
+		expect(coordinator.match(/this\.installIsLists\(/g)).toHaveLength(2);
 	});
 
 	test("the two big dumps are streamed, never fetched: the transform corpus and the canonical set's source", () => {

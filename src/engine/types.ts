@@ -797,6 +797,15 @@ export interface StoreManifest {
 	 * the store's own age. Absent on stores built before it was recorded.
 	 */
 	source_updated_at?: string;
+	/**
+	 * Which `is:` lists this store was tagged from (the eight that are Scryfall's own record:
+	 * src/import-is-lists.ts): the day the compiled table under them was measured, whether a
+	 * nightly refresh stands over it, the last night that refresh ran to its end and the night
+	 * each refreshed list was last read whole. Written by both builders — the nightly from its
+	 * own state, the deploy's native build from the override it was handed. Absent on stores
+	 * built before it was recorded. Nothing serving a request reads it.
+	 */
+	is_lists?: import("../import-is-lists").IsListsNote;
 
 	// ── The partitioned store (generation 20) ──────────────────────────────────
 	//

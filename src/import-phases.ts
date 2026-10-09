@@ -43,7 +43,25 @@ export const STREAMED_KINDS: readonly DumpKind[] = ["all_cards", "default_cards"
 /** The dumps a run downloads into stage_blobs, in fetch order: the small ones. */
 export const FETCHED_KINDS: readonly DumpKind[] = DUMP_KINDS.filter((kind) => !STREAMED_KINDS.includes(kind));
 
+/**
+ * The phase between the listing and the first dump: the night's refresh of the `is:` lists that
+ * are Scryfall's own record (src/import-is-lists.ts). BEFORE every dump, because the table it
+ * leaves is read by the transform's first row — and it cannot fail, stall or outlast its own
+ * deadline: whatever happens in it, the chain goes on to `phaseAfterIsLists`.
+ */
+export const IS_LISTS_PHASE = "is_lists";
+
 /** The phase the chain enters after listing. */
+export function phaseAfterListing(): string {
+	return IS_LISTS_PHASE;
+}
+
+/** Where the chain goes when the lists are refreshed, or were not: the first dump. */
+export function phaseAfterIsLists(): string {
+	return firstFetchPhase();
+}
+
+/** The first dump's fetch. */
 export function firstFetchPhase(): string {
 	return `fetch:${FETCHED_KINDS[0]}`;
 }

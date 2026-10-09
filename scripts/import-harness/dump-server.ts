@@ -12,9 +12,16 @@
 // /catalog/* and /symbology; those are served here too, minimally, so the chain
 // reaches `idle` instead of stopping on a phase that in production is
 // explicitly allowed to fail.
+//
+// The `is_lists` phase (pre-transform) asks `/cards/search` and `/sets` for the lists that are
+// Scryfall's own record. With a FakeScryfall (fake-scryfall.ts) those two paths are its answers,
+// faults included; without one `/cards/search` is a 404 that is not Scryfall's no-match, every
+// list is refused, and the run builds from the compiled table — which is also a path worth
+// keeping green (failover.ts runs that way).
 
 import { CATALOG_NAMES } from "../../src/engine/reference-kv";
 import type { Corpus } from "./corpus";
+import type { FakeScryfall } from "./fake-scryfall";
 
 export interface DumpServer {
 	url: string;
@@ -78,7 +85,7 @@ function referencePayload(path: string): unknown | null {
 	return null;
 }
 
-export function serveDumps(corpus: Corpus): DumpServer {
+export function serveDumps(corpus: Corpus, scryfall?: FakeScryfall): DumpServer {
 	// Filled in immediately after Bun.serve returns; the handler cannot close
 	// over `server` itself without making its own type circular.
 	let origin = "";
@@ -126,6 +133,21 @@ export function serveDumps(corpus: Corpus): DumpServer {
 						"content-range": `bytes ${range.start}-${range.end}/${bytes.byteLength}`,
 					},
 				});
+			}
+
+			if (scryfall && (path === "cards/search" || path === "sets")) {
+				try {
+					const answer = scryfall.answer(url.pathname + url.search);
+					const headers: Record<string, string> = { "content-type": "application/json" };
+					if (answer.retryAfter) headers["retry-after"] = String(answer.retryAfter);
+					return new Response(answer.body === null ? "<html>" : JSON.stringify(answer.body), {
+						status: answer.status,
+						headers,
+					});
+				} catch {
+					// A dropped connection, as near as a server can answer one.
+					return new Response("upstream connect error", { status: 502 });
+				}
 			}
 
 			const payload = referencePayload(path);

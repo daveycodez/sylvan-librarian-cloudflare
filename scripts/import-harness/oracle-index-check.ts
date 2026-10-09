@@ -64,6 +64,8 @@ export async function checkOracleIndex(
 	workDir: string,
 	native: boolean,
 	ceilingBytes: number,
+	/** The `is:` lists table the nightly installed, handed to the native builder too (is-lists-check.ts). */
+	isListsPath: string | null = null,
 ): Promise<OracleIndexCheck> {
 	const lines: string[] = [];
 	const fail = (why: string): OracleIndexCheck => ({ ok: false, lines: [...lines, `FAILED: ${why}`] });
@@ -150,7 +152,8 @@ export async function checkOracleIndex(
 	// routing filter the same build dir is compared against (routing-filter-check.ts) does, and so
 	// does every archive.
 	const nightly = (await kv.get(formatManifestKey(), "json")) as StoreManifest | null;
-	const proc = Bun.spawn([join(repo, BUILDER), "--out", out, "--partitions", "auto"], {
+	const lists = isListsPath ? ["--is-lists", isListsPath] : [];
+	const proc = Bun.spawn([join(repo, BUILDER), "--out", out, "--partitions", "auto", ...lists], {
 		cwd: repo,
 		env: builderEnv(serverUrl, ceilingBytes),
 		stdout: "pipe",
