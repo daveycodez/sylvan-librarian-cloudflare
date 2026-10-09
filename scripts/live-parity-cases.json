@@ -3539,6 +3539,120 @@
 				]
 			},
 			"note": "2026-10-08. Scryfall's own 400 for the identifier, the same 133 bytes with the `q` and without."
+		},
+		{
+			"name": "set-named-by-a-token-sets-name-under-include-extras",
+			"method": "GET",
+			"path": "/cards/search?q=e%3A%22lorwyn+eclipsed+tokens%22+include%3Aextras&unique=prints&order=set",
+			"note": "2026-10-08. 13 = `e:tecl`: a token set's name answers like any other set's. All 1,056 set names were asked that day — 191 of the 216 token sets answer their own name, 23 answer nothing and 2 answer more than their set (scripts/generate-set-blocks.ts). A 404 here until then: the table left every token set out."
+		},
+		{
+			"name": "set-named-by-a-token-sets-name-does-not-open-extras",
+			"method": "GET",
+			"path": "/cards/search?q=e%3A%22lorwyn+eclipsed+tokens%22&unique=prints&order=set",
+			"note": "2026-10-08. A 404 with no warnings: a set named by its name does not open extras, and every card of tecl is one. `e:tecl` is 13."
+		},
+		{
+			"name": "block-named-by-a-token-sets-name",
+			"method": "GET",
+			"path": "/cards/search?q=block%3A%22lorwyn+eclipsed+tokens%22+is%3Atoken&unique=prints&order=set",
+			"note": "2026-10-08. 12 = `block:tecl is:token` (`block:\"lorwyn eclipsed tokens\"` is `block:tecl`'s 421, ecl and tecl)."
+		},
+		{
+			"name": "group-named-by-a-token-sets-name",
+			"method": "GET",
+			"path": "/cards/search?q=g%3A%22lorwyn+eclipsed+tokens%22+is%3Atoken&unique=prints&order=set",
+			"note": "2026-10-08. 12 = `g:tecl is:token`: `g:\"lorwyn eclipsed tokens\"` is `g:tecl`'s 764 — the six sets `g:ecl` answers, tecc not among them. A 404 here until this date."
+		},
+		{
+			"name": "set-name-scryfall-answers-nothing",
+			"method": "GET",
+			"path": "/cards/search?q=e%3A%22kaldheim+tokens%22+include%3Aextras&unique=prints&order=set",
+			"note": "2026-10-08. A 404, though `e:tkhm` is 23: 52 of the 1,056 sets answer to no name on api.scryfall.com (23 token, 14 promo, 6 memorabilia, 4 box, 2 treasure_chest, alchemy, funny and masters one each) and nothing in `/sets` separates them — the value is compared with a name the set had before, so the list is measured, not derived."
+		},
+		{
+			"name": "set-name-comma-is-dropped",
+			"method": "GET",
+			"path": "/cards/search?q=e%3A%22warhammer+40000+tokens%22+include%3Aextras&unique=prints&order=set",
+			"note": "2026-10-08. 31 = `e:t40k`. The comma of \"Warhammer 40,000 Tokens\" is gone from the name as a colon is, and a value that carries it is no name (`e:\"warhammer 40,000 tokens\"` is a 404). The slash and the ampersand behave the same."
+		},
+		{
+			"name": "set-name-with-the-comma-written",
+			"method": "GET",
+			"path": "/cards/search?q=e%3A%22warhammer+40%2C000+tokens%22+include%3Aextras&unique=prints&order=set",
+			"note": "2026-10-08. A 404."
+		},
+		{
+			"name": "set-name-parentheses-are-written",
+			"method": "GET",
+			"path": "/cards/search?q=e%3A%22the+list+%28unfinity+foil+edition%29%22+r%3Amythic+include%3Aextras&unique=prints&order=set",
+			"note": "2026-10-08. 11 = `e:ulst r:mythic`: the parentheses are part of the name (`e:\"the list unfinity foil edition\"` is a 404, the whole set 62). The option is beside it because the name does not open extras and the code does: without it this is a 404 where `e:ulst r:mythic` is 11."
+		},
+		{
+			"name": "set-name-multiplication-sign-is-written",
+			"method": "GET",
+			"path": "/cards/search?q=e%3A%22magic+%C3%97+duel+masters+promos%22&unique=prints&order=set",
+			"note": "2026-10-08. 4 = `e:pmda`: the `×` is part of the name — without it, or with an `x`, a 404."
+		},
+		{
+			"name": "set-name-several-sets-answer-to",
+			"method": "GET",
+			"path": "/cards/search?q=e%3A%22dominaria+united+tokens%22+include%3Aextras&unique=prints&order=set",
+			"note": "2026-10-08. 29 = tdmu's 26 and ptdmu's 3: ptdmu was split off tdmu and still answers to its name — and not to its own, \"Dominaria United Southeast Asia Tokens\", a 404. Five names answer several sets; `e:` reads all of them."
+		},
+		{
+			"name": "set-name-several-sets-answer-to-historic-anthology",
+			"method": "GET",
+			"path": "/cards/search?q=e%3A%22historic+anthology+4%22&unique=prints&order=set",
+			"note": "2026-10-08. 50 = ha4 and ha5, 25 each; `e:\"historic anthology 5\"` is a 404."
+		},
+		{
+			"name": "group-of-a-name-several-sets-answer-to-is-one-set",
+			"method": "GET",
+			"path": "/cards/search?q=g%3A%22historic+anthology+4%22&unique=prints&order=set",
+			"note": "2026-10-08. 25, and they are ha5 — where one set is wanted a shared name is one of its sets, and not the one whose name it is today."
+		},
+		{
+			"name": "set-named-by-a-name-it-had-before",
+			"method": "GET",
+			"path": "/cards/search?q=e%3A%22legendary+cube%22+r%3Amythic&unique=prints&order=set",
+			"note": "2026-10-08. 16 = `e:pz1 r:mythic`: pz1 is \"Legendary Cube Prize Pack\" today, which is a 404, and still answers to \"Legendary Cube\" (149)."
+		},
+		{
+			"name": "in-named-by-a-set-name",
+			"method": "GET",
+			"path": "/cards/search?q=in%3Azendikar+t%3Agoblin+cmc%3D1&unique=prints&order=set",
+			"note": "2026-10-08. 16 printings = `in:zen t:goblin cmc=1`: `in:` reads a set's name, a nickname or a retired code where its code goes, by the table `e:` reads (`in:zendikar t:goblin` is `in:zen t:goblin`'s 27 printings). Nothing here until this date."
+		},
+		{
+			"name": "in-named-by-a-retired-code",
+			"method": "GET",
+			"path": "/cards/search?q=in%3Adar+t%3Agoblin&unique=prints&order=set",
+			"note": "2026-10-08. 54 printings = `in:dom t:goblin` (`in:dar` is `in:dom`'s 5,891 printings; `in:mb1` = `in:\"the list\"` = `in:plst` 37,578)."
+		},
+		{
+			"name": "in-set-name-beats-the-set-type",
+			"method": "GET",
+			"path": "/cards/search?q=in%3Aplanechase+t%3Agoblin&unique=prints&order=set",
+			"note": "2026-10-08. 14 printings = `in:hop t:goblin`: \"Planechase\" is a set and a set type, and the set wins — `in:planechase` is `in:hop`'s 5,939 printings, not every card of a planechase-type set."
+		},
+		{
+			"name": "in-negated-set-name",
+			"method": "GET",
+			"path": "/cards/search?q=-in%3Azendikar+e%3Aroe+t%3Aeldrazi&unique=prints&order=set",
+			"note": "2026-10-08. 19 = `-in:zen e:roe t:eldrazi` (`-in:zendikar e:roe` is `-in:zen e:roe`'s 228)."
+		},
+		{
+			"name": "in-name-several-sets-answer-to-is-one-set",
+			"method": "GET",
+			"path": "/cards/search?q=in%3A%22innistrad+crimson+vow+tokens%22+include%3Aextras&unique=prints&order=set",
+			"note": "2026-10-08. 8 = `in:ovoc` — not `in:tvow`'s 382 nor `in:tvoc`'s 147, though `e:` of the same name is all three sets."
+		},
+		{
+			"name": "in-set-name-with-a-colon-is-no-name",
+			"method": "GET",
+			"path": "/cards/search?q=in%3A%22kamigawa%3A+neon+dynasty%22",
+			"note": "2026-10-08. A 404; `in:\"kamigawa neon dynasty\"` is `in:neo`'s 5,732."
 		}
 	]
 }
