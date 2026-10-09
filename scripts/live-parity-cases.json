@@ -3460,6 +3460,85 @@
 			"method": "GET",
 			"path": "/cards/search?q=e%3Apwcs+cn%3E%3D202400&unique=prints&order=set",
 			"note": "2026-10-08. 9: pwcs/2024-01 to 2024-09 are 202,401 to 202,409 — the digits concatenated, the hyphen dropped — and `e:pmei cn>=202410` is 34 of pmei's 112 by the same rule."
+		},
+		{
+			"name": "collection-q-is-ignored-filter-and-prefer",
+			"method": "POST",
+			"path": "/cards/collection?q=-is%3Adatestamped+prefer%3Aatypical",
+			"body": {
+				"identifiers": [
+					{
+						"name": "Clive, Ifrit's Dominant"
+					}
+				]
+			},
+			"note": "2026-10-08. A `?q=` on a collection is not read: fin/133, the 7,545 bytes the bare batch answers on api.scryfall.com. Until this date the port read it as a batch-wide scope and answered the borderless fin/318 here."
+		},
+		{
+			"name": "collection-q-is-ignored-set-filter",
+			"method": "POST",
+			"path": "/cards/collection?q=e%3Alea",
+			"body": {
+				"identifiers": [
+					{
+						"name": "Lightning Bolt"
+					}
+				]
+			},
+			"note": "2026-10-08. msc/806, the name's default printing and the bare batch's bytes — not the Alpha printing the port's scope answered."
+		},
+		{
+			"name": "collection-q-is-ignored-unknown-keyword",
+			"method": "POST",
+			"path": "/cards/collection?q=zzzz%3Abad",
+			"body": {
+				"identifiers": [
+					{
+						"set": "khm",
+						"collector_number": "114"
+					}
+				]
+			},
+			"note": "2026-10-08. A 200 with khm/114 and no `warnings` key. The port's scope refused this one with a 400, all terms ignored."
+		},
+		{
+			"name": "collection-q-is-ignored-unclosed-parenthesis",
+			"method": "POST",
+			"path": "/cards/collection?q=%28t%3Agoblin",
+			"body": {
+				"identifiers": [
+					{
+						"name": "Lightning Bolt"
+					}
+				]
+			},
+			"note": "2026-10-08. A 200: a query that would not parse on /cards/search is never parsed here. The port's scope answered 400, unclosed parentheses."
+		},
+		{
+			"name": "collection-q-is-ignored-beside-pretty",
+			"method": "POST",
+			"path": "/cards/collection?pretty=true&q=e%3Alea",
+			"body": {
+				"identifiers": [
+					{
+						"name": "Lightning Bolt"
+					}
+				]
+			},
+			"note": "2026-10-08. `pretty` is the one parameter the route reads: the indented msc/806, byte for byte `?pretty=true` alone (7,462 bytes)."
+		},
+		{
+			"name": "collection-q-does-not-move-a-refusal",
+			"method": "POST",
+			"path": "/cards/collection?q=%28t%3Agoblin",
+			"body": {
+				"identifiers": [
+					{
+						"id": "not-a-uuid"
+					}
+				]
+			},
+			"note": "2026-10-08. Scryfall's own 400 for the identifier, the same 133 bytes with the `q` and without."
 		}
 	]
 }
