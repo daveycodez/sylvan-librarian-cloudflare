@@ -72,15 +72,93 @@
 // outside the six measured above, which is that rule and the safe reading of every character
 // nobody measured.
 //
-// THE TOKEN SETS ARE LEFT OUT, because their names do not resolve reliably and no rule was found:
-// `block:"zendikar tokens"`, `"theros tokens"`, `"ixalan tokens"`, `"dominaria tokens"`,
-// `"zendikar rising tokens"`, `"commander 2021 tokens"`, `"kaldheim commander tokens"` and
-// `"time spiral remastered tokens"` answer, and `block:"kaldheim tokens"` (`block:tkhm` is 328),
-// `"modern horizons 2 tokens"`, `"kamigawa neon dynasty tokens"` and
-// `"strixhaven school of mages tokens"` are 404. Eight of twelve. Every name of the other set
-// types that was asked resolved (38 of 38), so the table carries those and a token set is reached
-// by its code. The six names carrying a character outside the measured ones (`,` `/` `(` `&` `×`)
-// are left out too. Narrower than Scryfall, never wider.
+// ─── EVERY SET'S NAME, ASKED ─────────────────────────────────────────────────────────────────
+//
+// The table once left the token sets out ("eight of twelve resolve and no rule separates them")
+// and carried every other set's name on the strength of 38 that were asked. Both halves were
+// wrong, so on 2026-10-08 ALL 1,056 sets of that day's `/sets` were asked, one request each:
+// `e:"<name>"` with `include_extras=true&unique=prints`, the colon dropped, read against the
+// set's own `e:<code>` count and against the sets the answer's cards are in.
+//
+//   set type          sets  answers   nothing   more than its set   no cards
+//   token              216      191        23                   2
+//   promo              300      284        14                   2
+//   memorabilia         99       93         6
+//   box                 44       39         4                   1
+//   alchemy             19       17         1                                      1
+//   treasure_chest       2        0         2
+//   funny               22       21         1
+//   masters             32       31         1
+//   expansion          120      119                                                1
+//   the 15 others      202      202
+//   all              1,056      997        52                   5                  2
+//
+// (the 15: commander 45, duel_deck 27, core 25, draft_innovation 19, masterpiece 19, minigame 15,
+// starter 15, from_the_vault 10, eternal 6, planechase 6, archenemy 4, arsenal 3, premium_deck 3,
+// spellbook 3, vanguard 2.) The two sets with no cards cannot say under `e:` and do under `g:`:
+// `g:"nauctis the sunken realm"` is `g:nau`'s 1 and `g:"alchemy reality fracture"` `g:yfra`'s 672.
+//
+// THE RULE IS NOT IN `/sets`, AND IT IS NOT THE SET TYPE. What Scryfall compares the value with is
+// a name the set HAD — the one it was created with, kept when the set is renamed and copied when
+// a set is split off another — and no field of the set object carries it:
+//
+//   e:"legendary cube"  149 = e:pz1, which is "Legendary Cube Prize Pack" today (a 404)
+//   e:"you make the cube"  270 = e:pz2, "Treasure Chest" today (a 404)
+//   e:"commander legends battle for baldurs gate promos"  104 = e:pclb, "Battle for Baldur's
+//       Gate Promos" today (a 404) — while `e:"battle for baldurs gate tokens"` is tclb's 51
+//   e:"mystery booster playtest cards"  242 = cmb1 AND cmb2; cmb2 answers its own name too (121)
+//       and cmb1's, "Mystery Booster Playtest Cards 2019", is a 404
+//   e:"historic anthology 4"  50 = ha4 and ha5, and `e:"historic anthology 5"` is a 404
+//   e:"year of the ox 2021"  11 = pl21 and pl22 ("Year of the Tiger 2022", a 404)
+//   e:"30th anniversary history promos"  12 = p30h and p30t ("…Celebration Tokyo", a 404)
+//   e:"dominaria united tokens"  29 = tdmu and ptdmu ("…Southeast Asia Tokens", a 404)
+//   e:"innistrad crimson vow tokens"  29 = tvow, tvoc and ovoc (the last two names 404s)
+//
+// Collisions, the digital flag, the release date, the card count, the parent and the block were
+// each read against the 52 and none separates them: `tkhm` and `tkhc`, `tmid` and `tmic`, `tmh3`
+// and `smh3` differ in nothing the catalog holds. So the table is every set's name, MINUS the 52
+// measured to answer nothing (UNANSWERED_NAMES), with the names measured to answer several sets
+// and the four former names (SHARED_NAMES, FORMER_NAMES). All three lists are that day's
+// measurement and nothing else; a set renamed on Scryfall since is wrong here until it is asked
+// again, in the direction of answering a name Scryfall does not.
+//
+// A NAME SEVERAL SETS ANSWER TO is all of them under `e:` and ONE of them wherever a single set
+// is wanted — and which one follows no order of the catalog's (not the code, the name, the id,
+// the date or the size), so it is measured per name:
+//
+//   g:"historic anthology 4" 25 = g:ha5 (not ha4)        block:"year of the ox 2021" 6 = block:pl21
+//   in:"30th anniversary history promos" 60 = in:p30t (in:p30h is 254)
+//   in:"innistrad crimson vow tokens" 8 = in:ovoc (in:tvoc 147, in:tvow 382), and
+//       block:"innistrad crimson vow tokens" 1,365 = block:tvoc = block:ovoc (block:tvow 1,177)
+//   in:"dominaria united tokens" 502 = in:tdmu; block:… 462 = block:tdmu (block:ptdmu 439)
+//   g:"mystery booster playtest cards" 121 = g:cmb1
+//
+// A name that answers nothing answers nothing anywhere: `block:"kaldheim tokens"`,
+// `g:"kaldheim tokens"`, `in:"kaldheim tokens"`, `g:"shadows of the past"`,
+// `in:"mystery booster playtest cards 2019"` and `block:"historic anthology 5"` are 404s.
+//
+// ─── THE CHARACTERS OF A NAME ────────────────────────────────────────────────────────────────
+//
+// Seven names carry a character outside letters, digits, spaces and `: . ' -`. Each was asked as
+// written and with the character dropped (2026-10-08):
+//
+//   e:"warhammer 40000 commander" = e:"warhammer 40 000 commander"  617    with the comma  404
+//   e:"warhammer 40000 tokens"  31                                         with the comma  404
+//   e:"url convention promos" = e:"urlconvention promos"  18               with the slash  404
+//   e:"summer magic edgar"  306                                            with the slash  404
+//   e:"global series jiang yanggu mu yanling"  41       with the `&` 404, and with "and" 404
+//   e:"the list (unfinity foil edition)"  62                    WITHOUT the parentheses    404
+//   e:"magic × duel masters promos"  4              WITHOUT the `×` 404, and with an `x`   404
+//
+// So the comma, the slash and the ampersand behave as the colon does — gone from the name, and a
+// value that carries one is no name — while the parentheses and the multiplication sign are PART
+// of the name and must be written. One reading fits every row here and above:
+//
+//   the name's key   lower-case, minus spaces and  ' . - : , / &
+//   the value's key  lower-case, minus spaces and  ' . - _
+//
+// and the two must be equal. A name carrying any character not listed here is left out, and the
+// generator says so: nobody measured it.
 //
 // ─── THE NICKNAMES ───────────────────────────────────────────────────────────────────────────
 //
@@ -119,16 +197,24 @@
 //
 // and every nickname above answers here with its set's count (all 36 asked: `e:saga` 335,
 // `e:legacy` 143, `e:shards` 234, `e:alpha` 289, `e:"double feature"` 532 …) while `e:urza`,
-// `e:alara`, `e:tarkir` and `e:eldritch` are 404. One table, two keywords. `in:zendikar` reads it
-// too (7 goblins, as `in:zen`), and is not answered here.
+// `e:alara`, `e:tarkir` and `e:eldritch` are 404. One table, two keywords.
+//
+// AND `g:` / `group:` AND `in:` READ IT TOO, each wanting one set (2026-10-08): `g:"lorwyn
+// eclipsed tokens"` is `g:tecl`'s 764 and `block:"lorwyn eclipsed tokens"` `block:tecl`'s 421;
+// `in:zendikar t:goblin` is `in:zen t:goblin`'s 27 prints, `in:"the list"` = `in:mb1` =
+// `in:plst` 37,578, `in:dar` = `in:dom` 5,891, `in:ex t:goblin` = `in:exo t:goblin` 27,
+// `in:alpha` = `in:lea` 10,289, `in:"kamigawa neon dynasty"` = `in:neo` 5,732 with the colon a
+// 404, `in:"magic × duel masters promos"` = `in:pmda` 117, `-in:zendikar e:roe` = `-in:zen e:roe`
+// 228. A set's name beats a set TYPE of the same word: `in:planechase` is `in:hop`'s 5,939 and
+// `in:archenemy` `in:arc`'s 6,228, not the cards of every set of the type.
 //
 // A SET NAMED THIS WAY DOES NOT OPEN EXTRAS, where its code does — which is the one thing the
 // rewrite to `e:<code>` would get wrong, and why the term policy tells the extras gate which
 // codes it wrote: `e:plst` is 5,323 and `e:"the list"` 5,257 (= `e:plst -is:extra`);
 // `e:mb2` 385 and `e:"mystery booster 2"` 264; `e:unk` 521 and `e:"unknown event"` a 404, as
-// `e:"world championship decks 1997"` and `e:"mystery booster playtest cards 2019"` are — sets
-// whose every card is an extra. (`block:` opens extras whatever it is given, so the same names
-// answer there.)
+// `e:"world championship decks 1997"` and `e:"lorwyn eclipsed tokens"` are — sets whose every card
+// is an extra, which answer once `include:extras` is beside the name (tecl's 13). (`block:` opens
+// extras whatever it is given, so the same names answer there.)
 //
 // ─── THE RETIRED CODES ───────────────────────────────────────────────────────────────────────
 //
@@ -170,10 +256,57 @@ interface SetObject {
 }
 
 /** The characters a set name may carry and still be in the table: the ones measured. */
-const NAME_RE = /^[A-Za-z0-9 :.'-]+$/;
+const NAME_RE = /^[A-Za-z0-9 :.',/&()×-]+$/;
 
-/** A set name as the table keys it: lower-cased, and nothing but its letters and digits. */
-const nameKey = (name: string): string => name.toLowerCase().replace(/[^a-z0-9]/g, "");
+/**
+ * A set name as the table keys it: lower-cased, its letters and digits — and its parentheses and
+ * `×`, which a value must write. See THE CHARACTERS OF A NAME.
+ */
+const nameKey = (name: string): string => name.toLowerCase().replace(/[^a-z0-9()×]/g, "");
+
+/**
+ * MEASURED 2026-10-08 — the sets whose own name answers NOTHING on api.scryfall.com, by code:
+ * 52 of the 1,056 asked. See EVERY SET'S NAME, ASKED. Not a rule: the list is the measurement,
+ * and a code here that `/sets` no longer has stops the generator until it is asked again.
+ */
+const UNANSWERED_NAMES: readonly string[] = [
+	// token (23)
+	...["ptbro", "ptdmu", "smh3", "t30a", "tafc", "tbrc", "tbro", "tdd1", "tdmc", "tiko", "tkhm", "tmh2"],
+	...["tmic", "tnec", "tneo", "tstx", "tunf", "tvoc", "wdmu", "wmkm", "wmom", "wone", "wwoe"],
+	// promo (14)
+	...["p30t", "pclb", "pcmr", "pf23", "pl22", "plg20", "plg21", "plg22", "prcq", "psvc", "ptsr", "pw21"],
+	...["pw22", "pwor"],
+	// memorabilia (6), box (4), treasure_chest (2), alchemy, funny, masters (1 each)
+	...["adsk", "altr", "awoe", "oc21", "omic", "ovoc"],
+	...["ha5", "psdg", "q06", "q07"],
+	...["pz1", "pz2", "ysnc", "cmb1", "sis"],
+];
+
+/**
+ * MEASURED 2026-10-08 — names a set answers to that are not its name today, as `[name key, set
+ * code]`: the name it was created with. Found by asking; the catalog does not carry them, so
+ * there are more that nobody has asked.
+ */
+const FORMER_NAMES: readonly (readonly [string, string])[] = [
+	["legendarycube", "pz1"],
+	["youmakethecube", "pz2"],
+	["commanderlegendsbattleforbaldursgatepromos", "pclb"],
+	["mysteryboosterplaytestcards", "cmb1"],
+];
+
+/**
+ * MEASURED 2026-10-08 — the names MORE THAN ONE set answers to, as `[name key, sets]`. `e:` reads
+ * all of them; the FIRST is the one set `block:`, `g:` and `in:` read, which no order of the
+ * catalog's predicts. Each key is a set's name or a former name above.
+ */
+const SHARED_NAMES: readonly (readonly [string, readonly string[]])[] = [
+	["dominariaunitedtokens", ["tdmu", "ptdmu"]],
+	["innistradcrimsonvowtokens", ["ovoc", "tvoc", "tvow"]],
+	["30thanniversaryhistorypromos", ["p30t", "p30h"]],
+	["yearoftheox2021", ["pl21", "pl22"]],
+	["historicanthology4", ["ha5", "ha4"]],
+	["mysteryboosterplaytestcards", ["cmb1", "cmb2"]],
+];
 
 /**
  * Scryfall's own nicknames, as `[nickname key, set code]` — exactly the ones measured to answer.
@@ -282,7 +415,7 @@ async function main(): Promise<void> {
 	if (rows.length === 0) throw new Error("/sets answered no set with a block or a parent");
 	rows.sort();
 
-	// `name key:code`, for every set but the token sets — see the header for both exclusions. A
+	// `name key:code`, for every set but the ones measured to answer nothing — see the header. A
 	// key that is also a set code would never be reached (the code is tried first), and two sets
 	// under one key would make the answer depend on the order of `/sets`; neither exists today, and
 	// either is refused here rather than resolved quietly.
@@ -296,17 +429,41 @@ async function main(): Promise<void> {
 			throw new Error(`${what} ${JSON.stringify(key)} names ${taken} and ${own}`);
 		names.set(key, own);
 	};
+	const unanswered = new Set(UNANSWERED_NAMES);
+	if (unanswered.size !== UNANSWERED_NAMES.length) throw new Error("UNANSWERED_NAMES lists a code twice");
+	for (const own of unanswered) {
+		if (!codes.has(own)) throw new Error(`${own} is measured to answer no name, and /sets does not have it`);
+	}
 	for (const entry of sets as SetObject[]) {
 		const own = code(entry.code, "set code");
-		if (own === "" || entry.set_type === "token" || typeof entry.name !== "string") continue;
-		if (!NAME_RE.test(entry.name)) continue;
+		if (own === "" || unanswered.has(own) || typeof entry.name !== "string") continue;
+		if (!NAME_RE.test(entry.name)) {
+			console.warn(`left out: ${own} ${JSON.stringify(entry.name)} carries a character nobody measured`);
+			continue;
+		}
 		addName(nameKey(entry.name), own, "set name");
 	}
-	for (const [nickname, own] of NICKNAMES) {
-		if (!codes.has(own)) throw new Error(`nickname ${nickname} names ${own}, which /sets does not have`);
-		addName(nickname, own, "nickname");
+	for (const [list, what] of [
+		[NICKNAMES, "nickname"],
+		[FORMER_NAMES, "former name"],
+	] as const) {
+		for (const [key, own] of list) {
+			if (!codes.has(own)) throw new Error(`${what} ${key} names ${own}, which /sets does not have`);
+			addName(key, own, what);
+		}
 	}
-	const nameRows = [...names].map(([key, own]) => `${key}:${own}`).sort();
+	// A shared name keeps its key and lists its sets, the one `block:` / `g:` / `in:` read first.
+	const shared = new Map<string, readonly string[]>();
+	for (const [key, owners] of SHARED_NAMES) {
+		if (!names.has(key)) throw new Error(`shared name ${key} is no set's name and no former name`);
+		if (owners.length < 2 || new Set(owners).size !== owners.length) throw new Error(`shared name ${key} is malformed`);
+		for (const own of owners) {
+			if (!codes.has(own)) throw new Error(`shared name ${key} names ${own}, which /sets does not have`);
+		}
+		const [first, ...rest] = owners as [string, ...string[]];
+		shared.set(key, [first, ...rest.sort()]);
+	}
+	const nameRows = [...names].map(([key, own]) => `${key}:${(shared.get(key) ?? [own]).join(",")}`).sort();
 
 	// `alias:code`. An alias that is a set's own code, or a name key, would never be reached or
 	// would shadow one; neither exists today and either is refused.
@@ -335,8 +492,9 @@ const SET_BLOCKS =
 	"${rows.join("|")}";
 
 // One string literal, parsed on first use: \`name:code\` rows joined by \`|\`. The name is the
-// set's own, lower-cased and reduced to its letters and digits, or one of Scryfall's nicknames.
-// Token sets are not here — see the generator.
+// set's own, lower-cased and reduced to its letters, digits, parentheses and \`×\`, a name it
+// had before, or one of Scryfall's nicknames. A set measured to answer no name is not here, and a
+// name several sets answer to lists them all, \`name:code,code\` — see the generator.
 const SET_NAMES =
 	"${nameRows.join("|")}";
 
@@ -420,7 +578,8 @@ function setAliases(): ReadonlyMap<string, string> {
 
 /** What Scryfall drops from a set name written as a value: spaces, \`'\`, \`.\`, \`-\` and \`_\`. */
 const NAME_SEPARATORS_RE = /[\\s'._-]/g;
-const NAME_KEY_RE = /^[a-z0-9]+$/;
+/** What a name key is made of: a parenthesis or a \`×\` is part of the name, and is written. */
+const NAME_KEY_RE = /^[a-z0-9()×]+$/;
 
 /**
  * The shortest value \`setNameCode\` can resolve through SET_NAMES: no name key in the table is
@@ -429,17 +588,8 @@ const NAME_KEY_RE = /^[a-z0-9]+$/;
  */
 const SHORTEST_NAME_KEY = ${Math.min(...[...names.keys()].map((key) => key.length))};
 
-/**
- * The set code a value names when it is NOT itself one: a retired or alternate code, the set's
- * whole name with case and the five separators ignored, or one of the measured nicknames. null
- * when it names nothing here — the value is then a set code as written, known or not. A value
- * carrying any other character (a colon above all) is no name: \`e:"kamigawa: neon dynasty"\`
- * answers nothing on api.scryfall.com where \`e:"kamigawa neon dynasty"\` answers the set.
- *
- * No name key is also a set code (the generator refuses one), so this never has to ask whether
- * the value is a code first.
- */
-export function setNameCode(value: string): string | null {
+/** The row a value names — one code, or several joined by \`,\` — or null. See \`setNameCode\`. */
+function setNameRow(value: string): string | null {
 	const lower = value.toLowerCase();
 	const alias = setAliases().get(lower);
 	if (alias !== undefined) return alias;
@@ -447,6 +597,36 @@ export function setNameCode(value: string): string | null {
 	const key = lower.replace(NAME_SEPARATORS_RE, "");
 	if (!NAME_KEY_RE.test(key)) return null;
 	return setNames().get(key) ?? null;
+}
+
+/**
+ * The set code a value names when it is NOT itself one: a retired or alternate code, the set's
+ * whole name with case and the five separators ignored, a name it had before, or one of the
+ * measured nicknames. null when it names nothing here — the value is then a set code as written,
+ * known or not. A value carrying any other character (a colon above all) is no name:
+ * \`e:"kamigawa: neon dynasty"\` answers nothing on api.scryfall.com where
+ * \`e:"kamigawa neon dynasty"\` answers the set.
+ *
+ * ONE set, which is what \`block:\`, \`g:\` and \`in:\` read: of a name several sets answer to, the
+ * one measured to be read there. \`e:\` reads them all — \`setNameCodes\`.
+ *
+ * No name key is also a set code (the generator refuses one), so this never has to ask whether
+ * the value is a code first.
+ */
+export function setNameCode(value: string): string | null {
+	const row = setNameRow(value);
+	if (row === null) return null;
+	const sep = row.indexOf(",");
+	return sep < 0 ? row : row.slice(0, sep);
+}
+
+/**
+ * Every set a value names, as \`e:\` reads it: one code but for the few names measured to answer
+ * several sets (\`e:"dominaria united tokens"\` is tdmu and ptdmu). null as \`setNameCode\` is.
+ */
+export function setNameCodes(value: string): readonly string[] | null {
+	const row = setNameRow(value);
+	return row === null ? null : row.split(",");
 }
 
 /**
@@ -464,7 +644,9 @@ export function blockValueCode(value: string): string | null {
 `;
 
 	writeFileSync(OUT, source);
-	console.log(`Wrote ${OUT} — ${rows.length} sets with a block or a parent, ${nameRows.length} names`);
+	console.log(
+		`Wrote ${OUT} — ${rows.length} sets with a block or a parent, ${nameRows.length} names, ${unanswered.size} sets left out`,
+	);
 }
 
 await main();

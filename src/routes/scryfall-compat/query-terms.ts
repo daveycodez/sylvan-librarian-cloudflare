@@ -59,7 +59,7 @@ import { NEW_RARITY_IS_VALUE, SUPPORTED_HAS_VALUES, SUPPORTED_IS_VALUES } from "
 import { isKnownSetCode } from "../../parser/set-dates.gen";
 import { isWordCont, type Token, TT, tokenize } from "../../parser/tokenizer";
 import { DIRECTIVE_TABLES } from "../enums";
-import { blockSetCodes, blockValueCode, setNameCode } from "./set-blocks.gen";
+import { blockSetCodes, blockValueCode, setNameCode, setNameCodes } from "./set-blocks.gen";
 import { NO_SET_GROUPS, type SetGroups } from "./set-groups";
 
 /** Scryfall's syntax budget, independent of the engine's post-rewrite safety budget. */
@@ -466,10 +466,11 @@ const SCRYFALL_ONLY_KEYWORDS: ReadonlySet<string> = new Set([
  * `b:"return to ravnica"` is `block:rtr`'s 670 (2026-10-04): the value is the set's whole name
  * with case, spaces, apostrophes, periods, hyphens and underscores ignored, or one of Scryfall's
  * own nicknames (`block:shards`, `block:alpha`). `blockValueCode` resolves it from the generated
- * table, whose generator carries every measurement — the 38 names that answered, the nicknames,
- * and what is left out (token-set names, a value with a colon in it, a nickname nobody measured).
- * A value that names nothing and is not shaped like a code answers nothing: narrower than
- * Scryfall, never wider.
+ * table, whose generator carries every measurement — all 1,056 set names asked on 2026-10-08, the
+ * nicknames, and what is left out (the 52 sets whose name answers nothing there, a value with a
+ * colon in it, a nickname nobody measured). A token set's name answers like any other:
+ * `block:"lorwyn eclipsed tokens"` is `block:tecl`'s 421. A value that names nothing and is not
+ * shaped like a code answers nothing.
  *
  * COST: one map lookup in a table parsed on the first `block:` term, at parse time. A query
  * without the keyword never touches it.
@@ -518,8 +519,16 @@ function blockTerm(value: string): string {
  * THE VALUE IS READ AS `e:` READS ONE — a code, a retired code or the set's name: `g:dar` is
  * Dominaria's group (414), `g:"Lorwyn Eclipsed Commander"` and `g:lorwyneclipsedcommander` are
  * `g:ecc`'s 777, `g:"lorwyn eclipsed"` is `g:ecl`'s 764, `g:lorwyn` is `g:lrw`'s 315, `g:alpha`
- * 295. `setNameCode` resolves it, with what that table leaves out: a token set's name
- * (`g:"lorwyn eclipsed tokens"` is 764 there and a 404 here).
+ * 295, and a token set's name is its set (`g:"lorwyn eclipsed tokens"` is `g:tecl`'s 764,
+ * `g:"warhammer 40000 tokens"` `g:t40k`'s 648). `setNameCode` resolves it, with what that table
+ * leaves out because Scryfall does: `g:"kaldheim tokens"` and `g:"shadows of the past"` are 404s
+ * there too. Of a name several sets answer to it reads ONE: `g:"historic anthology 4"` is
+ * `g:ha5`'s 25.
+ *
+ * TWO SOURCES, TWO AGES. Which set a NAME means comes from the committed table
+ * (set-blocks.gen.ts, refreshed by hand with `bun run set-blocks`); which sets are in its group
+ * comes from the mirrored catalog, current with the nightly publish. A set released since the
+ * table was refreshed is in its group by code at once and by name only after the refresh.
  *
  * NEGATED ON THE TERM, THE NAMED SET STAYS. `-g:ecc` is NOT the complement of `g:ecc`: it drops
  * the other six sets and keeps ecc itself —
@@ -635,10 +644,22 @@ function keywordKey(value: string): string {
  * code no set has any more — is The List too (2026-10-04). The value is read exactly as `block:`
  * reads one: the set's whole name with case, spaces, apostrophes, periods, hyphens and
  * underscores ignored, one of Scryfall's nicknames (`e:shards`, `e:alpha`), or one of its retired
- * codes (`e:dar`, `e:7e`). `setNameCode` resolves it from the generated table, whose generator
+ * codes (`e:dar`, `e:7e`). `setNameCodes` resolves it from the generated table, whose generator
  * carries every measurement, and the term is respelled with the code. A value that names nothing
  * is left as the code it would be: `e:nonsense`, `e:zendika` and `e:"kamigawa: neon dynasty"`
  * are plain 404s there and here.
+ *
+ * EVERY SET TYPE, TOKEN SETS INCLUDED (all 1,056 names asked, 2026-10-08):
+ * `e:"lorwyn eclipsed tokens" include:extras` is tecl's 13 — and a 404 without the option, by the
+ * rule below. The comma, slash and ampersand of a name are dropped as its colon is
+ * (`e:"warhammer 40000 commander"` 617, `e:"url convention promos"` 18), its parentheses and `×`
+ * are written (`e:"the list (unfinity foil edition)"` 62). 52 sets answer to no name at all on
+ * Scryfall (`e:"kaldheim tokens"`, `e:"shadows of the past"`) and are not in the table.
+ *
+ * A NAME SEVERAL SETS ANSWER TO IS ALL OF THEM, here alone: `e:"dominaria united tokens"` is
+ * tdmu's 26 and ptdmu's 3, `e:"historic anthology 4"` ha4 and ha5 — the term becomes the group
+ * `(e:tdmu or e:ptdmu)`, under the term's own minus when it has one
+ * (`-e:"dominaria united tokens" (e:tdmu or e:ptdmu or e:wdmu)` is wdmu's 5).
  *
  * Under `:` and `=`, in both polarities (`-e:zendikar` is the complement, as `-e:zen` is). Under a
  * comparison the keyword matches nothing, by the rule every text keyword follows
@@ -657,6 +678,35 @@ function keywordKey(value: string): string {
  * neither.
  */
 const SET_KEYWORDS: ReadonlySet<string> = new Set(["e", "s", "set", "edition"]);
+
+/**
+ * `in:` — A SET IS NAMED AS `e:` NAMES ONE, where the value is a set at all.
+ *
+ * `in:` reads a set code, a set type, a game, a language, a rarity and more (db-info.ts), and the
+ * engine compares the word. Scryfall also reads a set's NAME, a nickname and a retired code, by
+ * the table `e:` reads (2026-10-08, counts by printing with extras on):
+ *
+ *   in:zendikar t:goblin = in:zen t:goblin     27        -in:zendikar e:roe = -in:zen e:roe   228
+ *   in:"the list" = in:mb1 = in:plst       37,578        in:dar = in:dom                    5,891
+ *   in:alpha = in:lea                      10,289        in:ex t:goblin = in:exo t:goblin      27
+ *   in:"kamigawa neon dynasty" = in:neo     5,732        in:"kamigawa: neon dynasty"          404
+ *   in:"warhammer 40000 commander" = in:40k 7,886        in:"summer magic edgar" = in:sum  10,323
+ *   in:"lorwyn eclipsed tokens" = in:tecl     139        in:"kaldheim tokens"                 404
+ *   in:"legendary cube" = in:pz1            2,209        in:"mystery booster playtest cards 2019" 404
+ *
+ * ONE set, of a name several answer to: `in:"dominaria united tokens"` is `in:tdmu`'s 502 (the
+ * two sets together are 508), `in:"innistrad crimson vow tokens"` `in:ovoc`'s 8 and
+ * `in:"30th anniversary history promos"` `in:p30t`'s 60.
+ *
+ * THE NAME WINS OVER A SET TYPE OF THE SAME WORD: `in:planechase` is `in:hop`'s 5,939 and
+ * `in:archenemy` `in:arc`'s 6,228, not every card of a set of the type. No set's name is a game,
+ * a language, a rarity or one of the other words `in:` reads (a test pins that against the
+ * table), so nothing else is displaced.
+ *
+ * COST: as `e:` — one lookup in the 24-row alias map for a short value, the name table for a
+ * longer one. A query without the keyword touches neither.
+ */
+const IN_KEYWORDS: ReadonlySet<string> = new Set(["in"]);
 
 /**
  * Scryfall cannot express a NEGATED numeric EQUALITY, and says so in two different sentences.
@@ -3690,14 +3740,14 @@ function numericValueSplit(term: string): string | null {
 type LeafVerdict =
 	/**
 	 * Kept, possibly rewritten; `include` is what the term switches on besides (see BLOCK_KEYWORDS),
-	 * and `namedSet` / `typedSet` the set code a set term was respelled to or spelled with (see
-	 * SET_KEYWORDS).
+	 * and `namedSets` / `typedSet` the set codes a set term was respelled to or the one it was
+	 * spelled with (see SET_KEYWORDS).
 	 */
 	| {
 			keep: true;
 			text: string;
 			include?: readonly (keyof IncludeOptions)[];
-			namedSet?: string;
+			namedSets?: readonly string[];
 			typedSet?: string;
 			/** A `keyword:` term kept without its value being checked, and the table that would say. */
 			asksKeywords?: "carried" | "catalog";
@@ -4009,9 +4059,18 @@ function classifyLeaf(term: string, context: TermPolicyContext = {}): LeafVerdic
 	// `e:zendikar`, `set:"the list"`, `e:mb1`: the set's code, where the value names one that is
 	// not its code — see SET_KEYWORDS. Equality only reaches here; a pattern is not a name.
 	if (SET_KEYWORDS.has(keyword) && !isRegexLiteral(rawValue)) {
+		const codes = setNameCodes(value);
+		if (codes === null) return { keep: true, text: term, typedSet: loweredValue };
+		const spelled = codes.map((code) => `${match[2]}${op}${code}`);
+		// One set, but for the few names measured to answer several — see SET_KEYWORDS.
+		const text = spelled.length === 1 ? `${match[1]}${spelled[0]}` : `${match[1]}(${spelled.join(" or ")})`;
+		return { keep: true, text, namedSets: codes };
+	}
+	// `in:zendikar`, `in:"the list"`, `in:dar`: the set's code, as above — see IN_KEYWORDS. Equality
+	// only reaches here; a value that names no set is left to be the word it is.
+	if (IN_KEYWORDS.has(keyword) && !isRegexLiteral(rawValue)) {
 		const code = setNameCode(value);
-		if (code === null) return { keep: true, text: term, typedSet: loweredValue };
-		return { keep: true, text: `${match[1]}${match[2]}${op}${code}`, namedSet: code };
+		if (code !== null) return { keep: true, text: `${match[1]}${match[2]}${op}${code}` };
 	}
 	// `keyword:untap`: a value that is no keyword — see KEYWORD_ABILITY_KEYWORDS. Equality only
 	// reaches here, in both polarities. A pattern is left to the rule it already has: a plain one
@@ -4200,7 +4259,7 @@ function policyLevel(source: string, scan: PolicyScan): string | null {
 			}
 			if (verdict.asksSets) scan.asksSets = true;
 			for (const option of verdict.include ?? []) scan.include[option] = true;
-			if (verdict.namedSet !== undefined) scan.namedSets.add(verdict.namedSet);
+			for (const code of verdict.namedSets ?? []) scan.namedSets.add(code);
 			if (verdict.typedSet !== undefined) scan.typedSets.add(verdict.typedSet);
 			if (verdict.text !== piece.text) changed = true;
 			kept.push({ ...piece, text: verdict.text });

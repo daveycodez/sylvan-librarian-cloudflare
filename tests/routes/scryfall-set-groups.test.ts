@@ -249,6 +249,12 @@ describe("g: and group: are the sets of a release group", () => {
 		["g:alpha", "(e:lea)"],
 		['g:"final fantasy commander"', list(group("fic"))],
 		['g:"the hobbit"', "(e:hob or e:hoc or e:thob)"],
+		// A token set's name is its set: g:"lorwyn eclipsed tokens" is g:tecl's 764, and
+		// g:"Lorwyn Eclipsed Commander Tokens" g:tecc's 189.
+		['g:"lorwyn eclipsed tokens"', ECL],
+		["group:lorwyneclipsedtokens", ECL],
+		['g:"Lorwyn Eclipsed Commander Tokens"', "(e:ecc or e:tecc)"],
+		['g:"the hobbit tokens"', "(e:hob or e:hoc or e:thob)"],
 	])("the value is read as e: reads one: %s", async (term, expected) => {
 		const policy = await policyFor(term);
 		expect([term, policy.query, policy.warnings]).toEqual([term, expected, []]);
@@ -256,8 +262,8 @@ describe("g: and group: are the sets of a release group", () => {
 
 	test("a value that names no set is honored and matches nothing", async () => {
 		// g:zzzz, g:ec, g:" ecc ", g:e.c.c and g:ecc,hob are each a 404 with no warnings key, and
-		// g:zzzz or e:lea is e:lea's 295. A token set's name is the one value Scryfall answers and
-		// this does not (g:"lorwyn eclipsed tokens" is 764 there): setNameCode leaves them out.
+		// g:zzzz or e:lea is e:lea's 295. So is a name Scryfall itself answers nothing to:
+		// g:"kaldheim tokens" and g:"shadows of the past" are 404s there (2026-10-08).
 		for (const term of [
 			"g:zzzz",
 			"group:zzzz",
@@ -265,7 +271,8 @@ describe("g: and group: are the sets of a release group", () => {
 			'g:" ecc "',
 			"g:e.c.c",
 			"g:ecc,hob",
-			'g:"lorwyn eclipsed tokens"',
+			'g:"kaldheim tokens"',
+			'g:"shadows of the past"',
 		]) {
 			const policy = await policyFor(`${term} t:goblin`);
 			expect([term, policy.query, policy.warnings, policy.include.extras]).toEqual([term, "cmc<0 t:goblin", [], true]);

@@ -602,12 +602,13 @@ describe("block: and b: are the sets of a block", () => {
 		}
 	});
 
-	test("a token set's name is left out, and its code still answers", () => {
-		// `block:"kaldheim tokens"` is 404 on api.scryfall.com where `block:tkhm` is 328, and
-		// `block:"zendikar tokens"` is 629: eight of twelve token names answered and no rule
-		// separates them, so none is in the table.
+	test("a token set's name answers where Scryfall answers it, and its code always", () => {
+		// `block:"zendikar tokens"` is 629 on api.scryfall.com and `block:"kaldheim tokens"` a 404
+		// where `block:tkhm` is 328. All 216 token-set names were asked on 2026-10-08: 23 answer
+		// nothing, and those — with 29 names of other set types — are what the table leaves out.
+		expect(blockValueCode("zendikar tokens")).toBe("tzen");
+		expect(scryfallTermPolicy('block:"zendikar tokens"').query).toBe(scryfallTermPolicy("block:zen").query);
 		expect(blockValueCode("kaldheim tokens")).toBeNull();
-		expect(blockValueCode("zendikar tokens")).toBeNull();
 		expect(blockValueCode("tkhm")).toBe("tkhm");
 	});
 
