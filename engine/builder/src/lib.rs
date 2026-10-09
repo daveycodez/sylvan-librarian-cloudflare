@@ -11,6 +11,9 @@
 // pure transform/tags logic from this crate.
 #[cfg(not(target_arch = "wasm32"))]
 pub mod bulk;
+// is_lists (the `is:` classes copied from Scryfall's own record) is NOT gated: the table is
+// compiled in, and the wasm import tags rows from it exactly as the native build does.
+pub mod is_lists;
 // names (the per-partition lines of the autocomplete names blob, backlog n8) is NOT gated: the
 // nightly's wasm import emits the same lines the native build writes.
 pub mod names;

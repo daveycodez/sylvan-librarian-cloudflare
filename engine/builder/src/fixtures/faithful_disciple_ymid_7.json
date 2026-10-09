@@ -1,0 +1,133 @@
+{
+ "arena_id": 79912,
+ "artist": "David Robert Hovey",
+ "artist_ids": [
+  "22ab27e3-6476-48f1-a9f7-9a9e86339030"
+ ],
+ "booster": false,
+ "border_color": "black",
+ "card_back_id": "0aeebaf5-8c7d-4636-9e82-8c27447861f7",
+ "cmc": 2.0,
+ "collector_number": "7",
+ "color_identity": [
+  "W"
+ ],
+ "colors": [
+  "W"
+ ],
+ "digital": true,
+ "finishes": [
+  "nonfoil"
+ ],
+ "foil": false,
+ "frame": "2015",
+ "full_art": false,
+ "game_changer": false,
+ "games": [
+  "arena"
+ ],
+ "highres_image": false,
+ "id": "db883fa9-3490-4e91-9b4a-c89912b62113",
+ "illustration_id": "8ebeef51-1e24-4ba9-96f3-81deb563857f",
+ "image_status": "lowres",
+ "image_updated_at": "2026-07-13T06:36:03Z",
+ "image_uris": {
+  "art": "https://cards.scryfall.io/art/front/d/b/db883fa9-3490-4e91-9b4a-c89912b62113.webp?1783924563",
+  "art_crop": "https://cards.scryfall.io/art_crop/front/d/b/db883fa9-3490-4e91-9b4a-c89912b62113.jpg?1783924563",
+  "border_crop": "https://cards.scryfall.io/border_crop/front/d/b/db883fa9-3490-4e91-9b4a-c89912b62113.jpg?1783924563",
+  "crop": "https://cards.scryfall.io/crop/front/d/b/db883fa9-3490-4e91-9b4a-c89912b62113.webp?1783924563",
+  "display": "https://cards.scryfall.io/display/front/d/b/db883fa9-3490-4e91-9b4a-c89912b62113.webp?1783924563",
+  "grid": "https://cards.scryfall.io/grid/front/d/b/db883fa9-3490-4e91-9b4a-c89912b62113.webp?1783924563",
+  "large": "https://cards.scryfall.io/large/front/d/b/db883fa9-3490-4e91-9b4a-c89912b62113.jpg?1783924563",
+  "normal": "https://cards.scryfall.io/normal/front/d/b/db883fa9-3490-4e91-9b4a-c89912b62113.jpg?1783924563",
+  "png": "https://cards.scryfall.io/png/front/d/b/db883fa9-3490-4e91-9b4a-c89912b62113.png?1783924563",
+  "small": "https://cards.scryfall.io/small/front/d/b/db883fa9-3490-4e91-9b4a-c89912b62113.jpg?1783924563",
+  "thumb": "https://cards.scryfall.io/thumb/front/d/b/db883fa9-3490-4e91-9b4a-c89912b62113.webp?1783924563"
+ },
+ "keywords": [
+  "Draft from a spellbook",
+  "Vigilance"
+ ],
+ "lang": "en",
+ "layout": "normal",
+ "legalities": {
+  "alchemy": "not_legal",
+  "brawl": "legal",
+  "commander": "not_legal",
+  "competitivebrawl": "legal",
+  "duel": "not_legal",
+  "future": "not_legal",
+  "gladiator": "legal",
+  "historic": "legal",
+  "legacy": "not_legal",
+  "modern": "not_legal",
+  "oathbreaker": "not_legal",
+  "oldschool": "not_legal",
+  "pauper": "not_legal",
+  "paupercommander": "not_legal",
+  "penny": "not_legal",
+  "pioneer": "not_legal",
+  "predh": "not_legal",
+  "premodern": "not_legal",
+  "standard": "not_legal",
+  "standardbrawl": "not_legal",
+  "timeless": "legal",
+  "tlr": "not_legal",
+  "vintage": "not_legal"
+ },
+ "mana_cost": "{1}{W}",
+ "multiverse_ids": [
+  548233
+ ],
+ "name": "Faithful Disciple",
+ "nonfoil": true,
+ "object": "card",
+ "oracle_id": "e5391540-78e3-4ca8-a207-37c606722065",
+ "oracle_text": "Vigilance\nWhen Faithful Disciple dies, draft a card from Faithful Disciple's spellbook.",
+ "oversized": false,
+ "power": "2",
+ "preview": {
+  "previewed_at": "2021-12-03",
+  "source": "Amy the Amazonian",
+  "source_uri": "https://twitter.com/coL_Amazonian/status/1466870836745412612"
+ },
+ "prices": {
+  "eur": null,
+  "eur_foil": null,
+  "tix": null,
+  "usd": null,
+  "usd_etched": null,
+  "usd_foil": null
+ },
+ "prints_search_uri": "https://api.scryfall.com/cards/search?order=released&q=oracleid%3Ae5391540-78e3-4ca8-a207-37c606722065&unique=prints",
+ "promo": false,
+ "promo_types": [
+  "alchemy"
+ ],
+ "rarity": "uncommon",
+ "related_uris": {
+  "edhrec": "https://edhrec.com/route/?cc=Faithful+Disciple",
+  "gatherer": "https://gatherer.wizards.com/Pages/Card/Details.aspx?multiverseid=548233&printed=false",
+  "tcgplayer_infinite_articles": "https://partner.tcgplayer.com/c/4931599/1830156/21018?subId1=api&trafcat=tcgplayer.com%2Fsearch%2Farticles&u=https%3A%2F%2Fwww.tcgplayer.com%2Fsearch%2Farticles%3FproductLineName%3Dmagic%26q%3DFaithful%2BDisciple",
+  "tcgplayer_infinite_decks": "https://partner.tcgplayer.com/c/4931599/1830156/21018?subId1=api&trafcat=tcgplayer.com%2Fsearch%2Fdecks&u=https%3A%2F%2Fwww.tcgplayer.com%2Fsearch%2Fdecks%3FproductLineName%3Dmagic%26q%3DFaithful%2BDisciple"
+ },
+ "released_at": "2021-12-09",
+ "reprint": false,
+ "reserved": false,
+ "rulings_uri": "https://api.scryfall.com/cards/db883fa9-3490-4e91-9b4a-c89912b62113/rulings",
+ "scryfall_set_uri": "https://scryfall.com/sets/ymid?utm_source=api",
+ "scryfall_uri": "https://scryfall.com/card/ymid/7/faithful-disciple?utm_source=api",
+ "security_stamp": "arena",
+ "set": "ymid",
+ "set_id": "8a673262-8745-452d-820a-03d5c4a4f135",
+ "set_name": "Alchemy: Innistrad",
+ "set_search_uri": "https://api.scryfall.com/cards/search?order=set&q=e%3Aymid&unique=prints",
+ "set_type": "alchemy",
+ "set_uri": "https://api.scryfall.com/sets/8a673262-8745-452d-820a-03d5c4a4f135",
+ "story_spotlight": false,
+ "textless": false,
+ "toughness": "2",
+ "type_line": "Creature — Human Cleric",
+ "uri": "https://api.scryfall.com/cards/db883fa9-3490-4e91-9b4a-c89912b62113",
+ "variation": false
+}

@@ -679,18 +679,64 @@ export const VERGELAND_IS_TAG = "vergeland";
 export const TIMESHIFTED_IS_TAG = "timeshifted";
 
 /**
- * `is:gateway` and `is:lair` — values api.scryfall.com ACCEPTS and answers nothing for. Measured
- * 2026-10-09: each is a 404 with no warning, every way it was asked (by default, with extras,
- * with every language, as `has:`), and the negation is every printing. A class with no member,
- * not an unknown word — so the parser knows the two values, the builder holds the constants and
- * gives them to no row, and nothing is stored.
+ * THE LAST ELEVEN OF SCRYFALL_UNANSWERED_IS_VALUES (generation 74) — the values two sweeps found
+ * no rule for. Each was read whole on api.scryfall.com on 2026-10-09 (`unique=prints`, extras in,
+ * by default and with `lang:any`) against the same day's bulk files; counts are printings by
+ * default / rows of every language. What each is, and what was tried, is at the builder's
+ * constants of the same names.
+ *
+ *   accepted and empty — a constant, and nothing stored
+ *     `is:gateway` `is:lair`  a 404 with no warning, every way they were asked; the negation is
+ *                             every printing. A class with no member, not an unknown word.
+ *   Scryfall's own record, COPIED: `engine/builder/src/is_lists.tsv`, written by
+ *   `bun run is-lists` (scripts/generate-is-lists.ts) and dated in its first line
+ *     `is:intro`              224 / 422: two starter sets and 46 numbered printings.
+ *                             `is:beginner` is the same printings and is a synonym of it.
+ *     `is:invitational`       18 / 92: a list of rows — a printing in some languages and not others.
+ *     `is:jumpstart`          1,760 / 5,989: four sets and 81 numbered printings; not Jumpstart 2022.
+ *     `is:misprint`           155 / 455: a list of rows.
+ *     `is:spellbook`          75 / 75: 72 Alchemy cards, by oracle id.
+ *     `is:spikey`             4,727 / 14,803: 678 cards that are or were banned or restricted.
+ *   a rule, and the table for where Scryfall's record departs from it
+ *     `is:related`            22,339 / 91,272: a card some printing of which carries `all_parts`,
+ *                             and 176 cards that carry none (they had a rebalanced twin).
+ *     `is:covered`            56,079 / 479,653: a printing OUTSIDE THE DEFAULT TIER of its card's
+ *                             own order — `-is:covered` is the first run of `unique=prints
+ *                             order=name`. The rule is the builder's `print_tier`; 4,956 rows of
+ *                             every language differ from it (1,730 of them English) and are listed.
+ *
+ * The builder run over the whole 2026-10-09 `all_cards` file tags, for each of the eight, exactly
+ * the rows Scryfall answers (engine/builder/examples/is_lists_audit.rs): the same ids by default
+ * and in every language.
+ *
+ * HOW THEY GO STALE. The table is committed, so a printing Scryfall adds to a list after the
+ * measured day is missing here until `bun run is-lists` is run again — the port answers
+ * NARROWER — except where a rule answers for what the table does not name: a new card with
+ * tokens is `is:related` the night it is imported, and a new printing is `is:covered` or not by
+ * its tier, which was right for 98.5% of the default rows before any exception was listed.
  */
 export const GATEWAY_IS_TAG = "gateway";
 export const LAIR_IS_TAG = "lair";
+export const COVERED_IS_TAG = "covered";
+export const INTRO_IS_TAG = "intro";
+export const INVITATIONAL_IS_TAG = "invitational";
+export const JUMPSTART_IS_TAG = "jumpstart";
+export const MISPRINT_IS_TAG = "misprint";
+export const RELATED_IS_TAG = "related";
+export const SPELLBOOK_IS_TAG = "spellbook";
+export const SPIKEY_IS_TAG = "spikey";
 
 export const COMPUTED_IS_TAGS: ReadonlySet<string> = new Set([
 	GATEWAY_IS_TAG,
 	LAIR_IS_TAG,
+	COVERED_IS_TAG,
+	INTRO_IS_TAG,
+	INVITATIONAL_IS_TAG,
+	JUMPSTART_IS_TAG,
+	MISPRINT_IS_TAG,
+	RELATED_IS_TAG,
+	SPELLBOOK_IS_TAG,
+	SPIKEY_IS_TAG,
 	BACK_IS_TAG,
 	INDICATOR_IS_TAG,
 	ATTRACTION_LIGHTS_IS_TAG,

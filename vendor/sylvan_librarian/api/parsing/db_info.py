@@ -512,6 +512,57 @@ FORMAT_CODE_TO_NAME = {
     "h": "historic",
 }
 
+
+# LOCAL PATCH (Cloudflare port): the `is:` classes that are Scryfall's own record, read from the
+# port's measured table (engine/builder/src/is_lists.tsv, written by `bun run is-lists`; the
+# format and the measurements are at engine/builder/src/is_lists.rs). One table, so this tree and
+# the port's builder cannot name different printings. Outside the port's checkout the file is
+# absent and each value is the empty class.
+def _measured_is_list(tag: str) -> str:
+    """Build the SQL membership test for one measured `is:` list.
+
+    Args:
+        tag: The `is:` value, as the table's first column spells it.
+
+    Returns:
+        A boolean SQL expression over the row alias `cards`.
+    """
+    from pathlib import Path  # noqa: PLC0415 -- only this port-local table needs it
+
+    table = Path(__file__).resolve().parents[4] / "engine" / "builder" / "src" / "is_lists.tsv"
+    if not table.is_file():
+        return "FALSE"
+
+    def quote(value: str) -> str:
+        return "'" + value.replace("'", "''") + "'"
+
+    sets: list[str] = []
+    oracles: list[str] = []
+    included: list[str] = []
+    excluded: list[str] = []
+    for line in table.read_text(encoding="utf-8").split("\n"):
+        fields = line.split("\t")
+        if line.startswith("#") or fields[0] != tag:
+            continue
+        kind, key = fields[1], fields[2]
+        if kind == "set":
+            sets.append(quote(key))
+        elif kind == "oracle":
+            oracles.append(quote(key))
+        else:
+            numbers = ", ".join(quote(number) for number in fields[-1].split(" "))
+            test = f"(cards.card_set_code = {quote(key)} AND cards.collector_number IN ({numbers})"
+            if kind.endswith("row"):
+                test += f" AND cards.raw_card_blob->>'lang' = {quote(fields[3])}"
+            (excluded if kind.startswith("not") else included).append(test + ")")
+    if sets:
+        included.append(f"cards.card_set_code IN ({', '.join(sets)})")
+    if oracles:
+        included.append(f"cards.oracle_id::text IN ({', '.join(oracles)})")
+    sql = "(" + " OR ".join(included or ["FALSE"]) + ")"
+    return sql + (" AND NOT (" + " OR ".join(excluded) + ")" if excluded else "")
+
+
 # The `is:` values derivable from a card's own row, as {card_is_tags key: boolean SQL expression}.
 # `_sync_boolean_is_tags` rebuilds the column from these after each import -- no per-tag API sweep,
 # unlike admin_resource.CUSTOM_IS_TAGS, and no accumulation in the import loop -- and
@@ -631,10 +682,26 @@ BOOLEAN_IS_TAGS: dict[str, str] = {
         "cards.raw_card_blob->>'frame' = '1997' AND (cards.card_set_code IN ('tsb', 'tsr') "
         "OR (cards.card_set_code = 'plst' AND cards.raw_card_blob->>'rarity' = 'special'))"
     ),
-    # LOCAL PATCH (Cloudflare port): `gateway` and `lair` are accepted by Scryfall and answer
-    # nothing there (2026-10-09; see the port's db-info.ts GATEWAY_IS_TAG).
+    # LOCAL PATCH (Cloudflare port): the last values Scryfall answers that this vocabulary lacked
+    # (2026-10-09; see the port's db-info.ts GATEWAY_IS_TAG). `gateway` and `lair` are accepted
+    # there and answer nothing. Six are Scryfall's own list, copied (`_measured_is_list`).
+    # `related` is a card some printing of which carries `all_parts`, and the listed cards that
+    # carry none. `covered` -- a printing outside the default tier of its card's own order -- is
+    # not here: its rule is the port builder's `print_tier`, which no expression over one row is.
     "gateway": "FALSE",
     "lair": "FALSE",
+    "intro": _measured_is_list("intro"),
+    "invitational": _measured_is_list("invitational"),
+    "jumpstart": _measured_is_list("jumpstart"),
+    "misprint": _measured_is_list("misprint"),
+    "spellbook": _measured_is_list("spellbook"),
+    "spikey": _measured_is_list("spikey"),
+    "related": (
+        "(EXISTS (SELECT 1 FROM magic.cards AS sibling WHERE sibling.oracle_id = cards.oracle_id "
+        "AND jsonb_array_length(COALESCE(sibling.raw_card_blob->'all_parts', '[]'::jsonb)) > 0) OR "
+        + _measured_is_list("related")
+        + ")"
+    ),
     # -- single-field lookups: shapes the old {tag: blob key} table could not express -----
     # LOCAL PATCH (Cloudflare port): the SOURCE alone is not Scryfall's `is:scryfallpreview`. On
     # 2026-10-04 that answered 7 printings there; 325 carry `preview.source = 'Scryfall'`, 321 of

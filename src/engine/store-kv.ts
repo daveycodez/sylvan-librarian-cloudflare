@@ -2072,8 +2072,34 @@ export async function gzipBytes(bytes: Uint8Array): Promise<Uint8Array> {
  *      join a vocabulary that already holds the games, nothing changes shape, and neither row
  *      grows. A generation-73 store still LOADS, and would keep answering from the old union —
  *      which is why this constant moves.
+ *
+ *   75 (2026-10-09): THE LAST ELEVEN `is:` VALUES SCRYFALL ANSWERS AND THIS PORT DID NOT. The
+ *      values two sweeps found no rule for, each read whole on api.scryfall.com (`unique=prints`,
+ *      extras in, by default and in every language) against the same day's bulk files. EIGHT are
+ *      tags the importer writes with this generation, from Scryfall's own list copied as measured
+ *      data — `engine/builder/src/is_lists.tsv`, `bun run is-lists` — at the widest key that is
+ *      exact (a set, a card's oracle id, a collector number, one language's row of it):
+ *      `is:intro` (224 printings; `is:beginner` is the same list and a synonym),
+ *      `is:invitational` (18), `is:jumpstart` (1,760), `is:misprint` (155), `is:spellbook` (75),
+ *      `is:spikey` (4,727: 678 cards that are or were banned or restricted), and two that turned
+ *      out to be a rule with the list for its exceptions — `is:related` (22,339: a card some
+ *      printing of which carries `all_parts`, decided per card at finalize, and 176 listed cards
+ *      that carry none) and `is:covered` (56,079: a printing OUTSIDE THE DEFAULT TIER of its
+ *      card's own order — the tier generation 72 fitted on sequences is a value Scryfall
+ *      answers by name — with the 4,956 rows of every language where its record and
+ *      `ranks::print_tier` differ). `is:gateway` and `is:lair` are accepted there and answer
+ *      nothing: the parser knows them and no row carries them. The builder run over the whole
+ *      2026-10-09 `all_cards` file tags, for each of the eight, exactly the rows Scryfall
+ *      answers, by id, by default and in every language (examples/is_lists_audit.rs).
+ *
+ *      GENERATION-ONLY: eight more values in the `card_is_tags` collection index — 592,833 row
+ *      memberships, 479,701 of them `covered`. The same corpus built with and without them is
+ *      436,951,160 against 435,717,184 archive bytes over eleven partitions (+1,233,976, +0.28%),
+ *      the largest partition 42,960,784 against 42,842,080. No layout, no format version,
+ *      neither row touched; the rank a printing is stored with still comes from `print_tier`
+ *      alone and does not move.
  */
-export const STORE_CONTENT_GENERATION = 74;
+export const STORE_CONTENT_GENERATION = 75;
 
 /**
  * Chunk key for a store. Keyed by store_key, so publishes never collide.

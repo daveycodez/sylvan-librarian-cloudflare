@@ -2352,6 +2352,8 @@ const SCRYFALL_IS_SYNONYMS: ReadonlyMap<string, string> = new Map([
 	["augment", "is:augmentation"],
 	["bab", "is:buyabox"],
 	["battlebondland", "is:bondland"],
+	// `is:beginner -is:intro` and `is:intro -is:beginner` are both empty (2026-10-09, 224 each).
+	["beginner", "is:intro"],
 	["canopy", "is:canopyland"],
 	["chocobotrack", "is:chocobotrackfoil"],
 	["compleat", "is:stepandcompleat"],
@@ -2455,44 +2457,23 @@ const SCRYFALL_IS_SYNONYMS: ReadonlyMap<string, string> = new Map([
  * same day's bulk file — and 35 are answered now: the presence tests by the engine
  * (rewrite.ts ENGINE_IS_VALUES), nine classes as tags the importer decides (db-info.ts
  * BACK_IS_TAG and its neighbours), and the rest as another word for a term this port already
- * had (SCRYFALL_IS_SYNONYMS above). What is left, with what was measured:
+ * had (SCRYFALL_IS_SYNONYMS above).
  *
- *   a class of Scryfall's own that no field of the bulk data decides
- *     covered            55,954 printings / 22,286 cards. No rule found.
- *     jumpstart          1,760: every printing of j25, jmp, j21 and ajmp, AND 55 printings in six
- *                        other sets (mom, woe, ltr, dmu, bro, one) and 26 on The List that carry
- *                        no promo type or other mark; Jumpstart 2022 is not in it at all.
- *     spellbook          75 Alchemy cards. "spellbook" in the text is 64 of them; adding
- *                        "conjure" reaches 74 and 172 that are not.
- *     spikey             4,725 / 678 cards: every printing banned or restricted in standard,
- *                        pioneer, modern, legacy, vintage, pauper or commander is in it, and
- *                        so are 1,418 printings banned or restricted NOWHERE today — Counterspell, Icy Manipulator,
- *                        Juggernaut, Orcish Oriflamme: cards that were once restricted. A history
- *                        no bulk field holds.
- *     related            22,298. `all_parts` present is 21,467 of them and nothing else; counted
- *                        per CARD rather than per printing it is 21,747. 551 have no related
- *                        part on any printing (Mentor's Guidance, Luminarch Aspirant).
- *     misprint           133 printings in 60 sets, none marked.
- *     invitational       18 printings of 16 cards: the first printing, and for two of them a
- *                        List reprint — a list of printings, not of names.
- *     intro beginner     224: all of dpa and rqs, 32 of acr's printings and 14 of fdn's — of the
- *                        142 printings carrying the `beginnerbox` promo type it holds 14.
+ * THE LAST ELEVEN WERE ANSWERED 2026-10-09 (generation 74), and the list is EMPTY. They were the
+ * classes of Scryfall's own that no field of the bulk data decides — `covered`, `jumpstart`,
+ * `spellbook`, `spikey`, `related`, `misprint`, `invitational`, `intro` and `beginner` — and the
+ * two it accepts and answers nothing for, `gateway` and `lair`. No rule was found for six of
+ * them and none was needed: Scryfall's own list is copied as measured data
+ * (engine/builder/src/is_lists.tsv, `bun run is-lists`), the way `is:gainland` is fifteen names.
+ * `related` and `covered` turned out to be a rule each with a list of exceptions, `beginner` a
+ * synonym of `intro`, and `gateway` and `lair` values the parser knows and no row carries.
+ * db-info.ts GATEWAY_IS_TAG and its neighbours have the measurements.
  *
- * `gateway` and `lair` stood here too. Scryfall accepts both and answers nothing for either,
- * extras in or out — a class with no member — and since 2026-10-09 so does this port, without
- * its warning: db-info.ts GATEWAY_IS_TAG.
+ * The set stays, empty, for the next value a sweep finds that this port cannot answer: a name
+ * here is kept in the query and warned, where an unlisted one is dropped with Scryfall's
+ * "not supported" sentence.
  */
-export const SCRYFALL_UNANSWERED_IS_VALUES: ReadonlySet<string> = new Set([
-	"beginner",
-	"covered",
-	"intro",
-	"invitational",
-	"jumpstart",
-	"misprint",
-	"related",
-	"spellbook",
-	"spikey",
-]);
+export const SCRYFALL_UNANSWERED_IS_VALUES: ReadonlySet<string> = new Set([]);
 
 /**
  * SCRYFALL'S TWO SENTENCES FOR AN `is:` / `has:` / `not:` VALUE IT DOES NOT ANSWER, or null when

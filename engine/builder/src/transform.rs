@@ -1405,6 +1405,69 @@ pub const TIMESHIFTED_IS_TAG: &str = "timeshifted";
 pub const GATEWAY_IS_TAG: &str = "gateway";
 pub const LAIR_IS_TAG: &str = "lair";
 
+/// EIGHT CLASSES THAT ARE SCRYFALL'S OWN RECORD (generation 74). Each was read whole on
+/// api.scryfall.com on 2026-10-09 — `unique=prints`, extras in, by default and with `lang:any` —
+/// against the same day's bulk files, and rules were simulated over the bulk until one gave the
+/// list or none did. Where none did the list itself is the data (`is_lists.tsv`, see
+/// [`crate::is_lists`]); counts are printings by default / rows of every language.
+///
+/// `is:covered` — 56,079 / 479,653. A PRINTING OUTSIDE THE DEFAULT TIER OF ITS CARD'S OWN ORDER:
+/// `-is:covered` is exactly the first run of `unique=prints order=name` (Counterspell's 27 of 88:
+/// dsc/114 down to lea/54, and none of its 61 promos, Secret Lairs, List reprints or gold-bordered
+/// decks). That tier is [`crate::ranks::print_tier`], which was fitted on sequences without
+/// knowing this value names it: of the 118,503 default rows the rule is right for 116,773 — it
+/// misses 208 covered rows and calls 1,522 covered that are not, most of them the only printing
+/// of a card (an Alchemy card, an oversized plane, a Doctor Who card), which Scryfall leaves
+/// uncovered. Rows in another language are covered but for 3,226 (The Lord of the Rings, Doctor
+/// Who, 605 printings in nine sets). The rule answers, and the table holds the 4,956 rows where
+/// Scryfall's record differs.
+pub const COVERED_IS_TAG: &str = "covered";
+
+/// `is:intro` (and `is:beginner`, the same printings: both differences are empty) — 224 / 422.
+/// Every printing of `dpa` and `rqs`, Assassin's Creed's starter-kit cards (acr/274-305) and
+/// fourteen of Foundations' 142 `beginnerbox` printings. No promo type or set type is it.
+pub const INTRO_IS_TAG: &str = "intro";
+
+/// `is:invitational` — 18 / 92. The cards a tournament winner designed, in their first printing
+/// (Avalanche Riders ulg/74 … Formidable Speaker ecl/176) and two List reprints; in ROWS, not
+/// printings: 53 rows of those printings in other languages are not in it.
+pub const INVITATIONAL_IS_TAG: &str = "invitational";
+
+/// `is:jumpstart` — 1,760 / 5,989. Every printing of `jmp`, `j21`, `j25` and `ajmp`, the
+/// Jumpstart-booster cards of six expansions (mom/323-337, woe/308-322, ltr/282-286 and 824-828,
+/// bro/288-292, dmu/282-286, one/404-408) and 26 List reprints of them. Jumpstart 2022 is not
+/// in it at all, and nothing on a card object marks the booster cards.
+pub const JUMPSTART_IS_TAG: &str = "jumpstart";
+
+/// `is:misprint` — 155 / 455. A list of ROWS in 63 sets with nothing in common on the card
+/// object: 4bb/50 is the Spanish Serra Angel, and 300 rows of the same printings in other
+/// languages are out. NOT the `†` variants Scryfall numbers its misprints with: none of the 86
+/// is in it.
+pub const MISPRINT_IS_TAG: &str = "misprint";
+
+/// `is:related` — 22,339 / 91,272. A CARD with related cards: some printing of it carries
+/// `all_parts` (a token it makes, a meld pair, a combo piece). By card and not by printing —
+/// 60,635 rows in other languages carry no `all_parts` of their own and are in — so it is decided
+/// per card at finalize ([`RelatedCards`]). The rule alone reaches 21,789 of the 22,339 and
+/// nothing else; the other 550 printings are 176 cards with no `all_parts` on any printing in
+/// any language, all of them cards that had an Alchemy-rebalanced `A-` twin before Scryfall
+/// removed those, and they are the table's `oracle` lines.
+pub const RELATED_IS_TAG: &str = "related";
+
+/// `is:spellbook` — 75 / 75. 72 Alchemy cards that draft or conjure from a spellbook Scryfall
+/// records and the card object does not: the `Draft from a spellbook` keyword is 43 of the 75,
+/// "spellbook" in the text 64 (Oracle of the Alpha, Shellfish Scholar and nine more conjure by
+/// name). By card: every printing of the 72.
+pub const SPELLBOOK_IS_TAG: &str = "spellbook";
+
+/// `is:spikey` — 4,727 / 14,803. 678 cards, every printing in every language: the cards that are
+/// or WERE banned or restricted. Every printing banned or restricted today in standard, pioneer,
+/// modern, legacy, vintage, pauper, commander, oathbreaker, predh, historic, timeless, brawl,
+/// alchemy or oldschool is in it — and so are 203 cards restricted nowhere today (Counterspell,
+/// Juggernaut, the Legends legends: 1,429 printings), while a card banned only in duel,
+/// premodern, `tlr`, gladiator or pauper commander is not (274 printings). A history, by card.
+pub const SPIKEY_IS_TAG: &str = "spikey";
+
 /// Scryfall's `/catalog/keyword-actions`, lowercased (80 on 2026-10-04) — the members of a card's
 /// `keywords` that are not keyword ABILITIES, for [`FRENCH_VANILLA_IS_TAG`]. Listed as the
 /// exclusion, not the 223 abilities as the inclusion, so a keyword ability printed after this
@@ -1662,6 +1725,76 @@ fn class_tags(card: &Map<String, Value>) -> Vec<&'static str> {
         tags.push(TIMESHIFTED_IS_TAG);
     }
     tags
+}
+
+/// The values whose printings are Scryfall's own list and nothing else — see [`crate::is_lists`].
+const LISTED_IS_TAGS: [&str; 6] =
+    [INTRO_IS_TAG, INVITATIONAL_IS_TAG, JUMPSTART_IS_TAG, MISPRINT_IS_TAG, SPELLBOOK_IS_TAG, SPIKEY_IS_TAG];
+
+/// What the measured table says about a draft: its set, language and collector number, its own
+/// oracle id and any `more_oracle_ids` its card carries.
+fn list_verdicts<'a>(r: &'a RowDraft, more_oracle_ids: impl Iterator<Item = &'a str>) -> crate::is_lists::Verdicts {
+    crate::is_lists::verdicts(
+        r.card_set_code.as_deref().unwrap_or(""),
+        r.compat_blob.get("lang").and_then(Value::as_str).unwrap_or(""),
+        r.collector_number.as_deref().unwrap_or(""),
+        std::iter::once(r.oracle_id.as_str()).chain(more_oracle_ids),
+    )
+}
+
+/// The tags a printing carries from Scryfall's own record ([`crate::is_lists`]): the six plain
+/// lists, and `is:covered`, which is the print tier wherever the table does not say otherwise.
+/// Read off the finished draft, because the tier is ([`crate::ranks::print_tier`]), and off the
+/// card for its faces' oracle ids, which a reversible card carries nowhere else. `is:related` is
+/// the eighth and needs the card's other printings: see [`RelatedCards`].
+fn measured_tags(card: &Map<String, Value>, r: &RowDraft) -> Vec<&'static str> {
+    let faces = face_objects(card);
+    let verdicts = list_verdicts(r, faces.iter().filter_map(|f| f.get("oracle_id").and_then(Value::as_str)));
+    let mut tags: Vec<&'static str> = LISTED_IS_TAGS.into_iter().filter(|tag| verdicts.of(tag) == Some(true)).collect();
+    if verdicts.of(COVERED_IS_TAG).unwrap_or_else(|| crate::ranks::print_tier(r) != 0) {
+        tags.push(COVERED_IS_TAG);
+    }
+    tags
+}
+
+/// WHICH CARDS ARE RELATED — `is:related`, the per-card half no row can answer for itself.
+///
+/// Scryfall's class is by CARD: a printing with no `all_parts` of its own is in it when another
+/// printing of its card has one, which is every translated row (Scryfall puts `all_parts` on the
+/// English row and rarely on the others) and 280 English printings besides. So the cards are
+/// collected as the corpus streams — one oracle id per related card, about 6,800 — and the tag is
+/// written at finalize, the same shape and the same call sites as [`FunnyCards`]. ORACLE-LOCAL,
+/// so partition-local, for the reason given there, and the draft carries nothing new: `all_parts`
+/// is already in its compat residue.
+///
+/// The measured table ([`crate::is_lists`]) is asked first: it names the 176 cards Scryfall
+/// counts with no `all_parts` anywhere, and would name a printing Scryfall leaves out.
+#[derive(Debug, Default, Clone)]
+pub struct RelatedCards(std::collections::HashSet<String>);
+
+impl RelatedCards {
+    /// Record `r`'s card when `r` carries related parts.
+    pub fn observe(&mut self, r: &RowDraft) {
+        let has_parts = r.compat_blob.get("all_parts").and_then(Value::as_array).is_some_and(|parts| !parts.is_empty());
+        if has_parts && !self.0.contains(&r.oracle_id) {
+            self.0.insert(r.oracle_id.clone());
+        }
+    }
+
+    /// Write `r`'s `is:related` verdict onto it: the table's where it has one, else its card's.
+    pub fn tag(&self, r: &mut RowDraft) {
+        if list_verdicts(r, std::iter::empty()).of(RELATED_IS_TAG).unwrap_or_else(|| self.0.contains(&r.oracle_id)) {
+            r.set_roles(&[RELATED_IS_TAG]);
+        }
+    }
+
+    pub fn len(&self) -> usize {
+        self.0.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
 }
 
 /// The layouts that are two pieces of cardboard, for [`hybrid_cost_of`]. A split, adventure or
@@ -2782,6 +2915,8 @@ pub fn transform_row(bulk_card: &Value, is_canonical: bool) -> Result<Option<Row
         // and who can lead a deck or be cast is a question about ONE face.
         row.set_roles(&commander_role_tags(card));
         row.set_roles(&class_tags(card));
+        let measured = measured_tags(card, &row);
+        row.set_roles(&measured);
         return Ok(Some(row));
     }
 
@@ -2799,6 +2934,8 @@ pub fn transform_row(bulk_card: &Value, is_canonical: bool) -> Result<Option<Row
     row.set_hybrid(has_hybrid_cost(card, None));
     row.set_roles(&commander_role_tags(card));
     row.set_roles(&class_tags(card));
+    let measured = measured_tags(card, &row);
+    row.set_roles(&measured);
     Ok(Some(row))
 }
 
@@ -3318,9 +3455,17 @@ pub fn finalize(drafts: Vec<RowDraft>, tags: &TagData) -> impl Iterator<Item = V
         funny.observe(r);
     }
 
+    // 8. which cards have related parts, so every printing of one answers `is:related` — the
+    //    fourth per-card pass of the same shape. See `RelatedCards`.
+    let mut related = RelatedCards::default();
+    for r in &rows {
+        related.observe(r);
+    }
+
     let empty: Vec<u32> = Vec::new();
     let tags = tags.clone();
-    rows.into_iter().map(move |r| {
+    rows.into_iter().map(move |mut r| {
+        related.tag(&mut r);
         let oracle_tags = tags.resolve(tags.oracle.get(&r.oracle_id).unwrap_or(&empty));
         let art_tags = art_tags_of(&tags, &r);
         let illustration_count = r
@@ -5443,7 +5588,10 @@ mod tests {
                 "game_paper": true, "game_arena": true, "game_mtgo": true,
                 "startercollection": true, "beginnerbox": true,
                 // A creature, and so a spell: `commander_role_tags`, not a bulk key.
-                "spell": true
+                "spell": true,
+                // Its `all_parts` lists a combo piece: `RelatedCards`, written at finalize. And
+                // NOT `covered`: a plain English printing of a core set is in the default tier.
+                "related": true
             })
         );
         assert_eq!(row["card_subtypes"], json!(["Elf", "Druid"]));
@@ -5560,7 +5708,9 @@ mod tests {
     fn the_six_swept_is_tags_come_from_their_bulk_fields() {
         let tags_of = |card: &Value| -> Vec<String> {
             let mut tags = transform(card).unwrap().unwrap().card_is_tags;
-            tags.retain(|t| t != SPELL_IS_TAG && !t.starts_with("game_"));
+            // Less `covered` too: `minimal_card`'s set has no type, so its printings are outside
+            // the default tier, and that tag is pinned in tests/x74_is_lists.rs.
+            tags.retain(|t| t != SPELL_IS_TAG && t != COVERED_IS_TAG && !t.starts_with("game_"));
             tags.sort();
             tags
         };
@@ -5588,12 +5738,16 @@ mod tests {
         // blob boolean is exactly true. A missing key and a false key are the
         // same absence, and a non-boolean never counts.
         // Less `spell`: every `minimal_card` is an Instant and so carries it, and the role tags
-        // are pinned in tests/role_classes.rs rather than restated on each of these.
+        // are pinned in tests/role_classes.rs rather than restated on each of these. Less `covered`
+        // and `related` for the same reason — a set with no type is outside the default tier, and
+        // the meld cards below carry `all_parts` — both pinned in tests/x74_is_lists.rs.
         let tags_of = |card: &Value| {
             let draft = transform(card).unwrap().unwrap();
             let rows: Vec<Value> = finalize(vec![draft], &TagData::default()).collect();
             let mut tags = rows[0]["card_is_tags"].clone();
-            tags.as_object_mut().unwrap().remove(SPELL_IS_TAG);
+            for tag in [SPELL_IS_TAG, COVERED_IS_TAG, RELATED_IS_TAG] {
+                tags.as_object_mut().unwrap().remove(tag);
+            }
             tags
         };
 

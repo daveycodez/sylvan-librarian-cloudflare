@@ -316,18 +316,54 @@ describe("what Scryfall answers and this port cannot is kept, and says so", () =
 		}
 	});
 
-	test("under its separated spelling too", () => {
-		for (const term of ["is:spell_book", "is:jump-start", "is:in_tro"]) {
-			expect(scryfallTermPolicy(`${term} t:goblin`).query).toBe(`${term} t:goblin`);
-		}
+	test("the list is empty since generation 74", () => {
+		expect([...SCRYFALL_UNANSWERED_IS_VALUES]).toEqual([]);
 	});
 });
 
-describe("the values Scryfall accepts and answers nothing for", () => {
-	// `is:gateway` and `is:lair` are a 404 with no warning on api.scryfall.com (2026-10-09),
-	// `-is:gateway` is every printing, and `is:gateway or cmc=3` is `cmc=3` with nothing said: a
-	// class with no member. The parser knows the value, so it is neither dropped with the "not
-	// supported" sentence (which would answer `is:gateway t:goblin` with every goblin) nor warned.
+// ── generation 74: the last eleven, measured 2026-10-09 ──────────────────────────────────────
+//
+// `covered`, `intro`, `invitational`, `jumpstart`, `misprint`, `related`, `spellbook` and
+// `spikey` are Scryfall's own record, copied (engine/builder/src/is_lists.tsv); `beginner` is
+// `intro`; `gateway` and `lair` are accepted there and answer nothing. The stored ones are pinned
+// on real card objects by the builder's tests/x74_is_lists.rs.
+describe("the classes that are Scryfall's own record", () => {
+	test.each(["covered", "intro", "invitational", "jumpstart", "misprint", "related", "spellbook", "spikey"])(
+		"is:%s has data behind it, in every keyword and polarity",
+		(value) => {
+			expect(SUPPORTED_IS_VALUES.has(value)).toBe(true);
+			expect(rewritten(`is:${value} t:goblin`)).toBe(`is:${value} t:goblin`);
+			const tree = parsed(`is:${value} t:goblin`);
+			expect(tree.warnings).toEqual([]);
+			expect(tree.wire).toContain(`"rhs":["${value}"]`);
+			// `has:covered` is 56,079 printings and `not:covered` 62,424, as `is:` and `-is:` are.
+			expect(parsed(`has:${value} t:goblin`)).toEqual(tree);
+			expect(parsed(`not:${value} t:goblin`)).toEqual(parsed(`-is:${value} t:goblin`));
+			expect(parsed(`-is:${value} t:goblin`).warnings).toEqual([]);
+		},
+	);
+
+	test.each([
+		["spell_book", "is:spellbook"],
+		["jump-start", "is:jumpstart"],
+		["in_tro", "is:intro"],
+		["beginner", "is:intro"],
+		["BEGINNER", "is:intro"],
+		["begin_ner", "is:intro"],
+	])("is:%s is %s", (value, target) => {
+		expect(rewritten(`is:${value} t:goblin`)).toBe(`${target} t:goblin`);
+		expect(parsed(`is:${value} t:goblin`)).toEqual(parsed(`${target} t:goblin`));
+	});
+
+	test("not:beginner is -is:intro", () => {
+		expect(rewritten("not:beginner t:goblin")).toBe("-is:intro t:goblin");
+		expect(rewritten("-is:beginner t:goblin")).toBe("-is:intro t:goblin");
+	});
+
+	// `is:gateway` and `is:lair` are a 404 with no warning on api.scryfall.com, `-is:gateway` is
+	// every printing, and `is:gateway or cmc=3` is `cmc=3` with nothing said: a class with no
+	// member. The parser knows the value, so it is neither dropped with the "not supported"
+	// sentence (which would answer `is:gateway t:goblin` with every goblin) nor warned.
 	test.each(["gateway", "lair"])("is:%s is a known value no row carries", (value) => {
 		expect(SUPPORTED_IS_VALUES.has(value)).toBe(true);
 		for (const term of [`is:${value}`, `-is:${value}`, `has:${value}`, `not:${value}`]) {
@@ -339,9 +375,29 @@ describe("the values Scryfall accepts and answers nothing for", () => {
 		expect(parsed(`is:${value} t:goblin`).wire).toContain(`"rhs":["${value}"]`);
 	});
 
-	// The next_page echo of `<term> or cmc=3` sent with include_extras=false.
-	test.each(["is:gateway", "-is:gateway", "is:lair"])("%s or cmc=3 does not open extras", async (term) => {
-		expect(await opensExtras(`${term} or cmc=3`)).toBe(false);
+	// The next_page echo of `<term> or cmc=3` sent with include_extras=false, 2026-10-09, with
+	// `is:glossy` (true) and `is:foil` (false) as controls.
+	test.each([
+		["is:related", true],
+		["-is:related", true],
+		["has:related", true],
+		["not:related", true],
+		["is:covered", false],
+		["-is:covered", false],
+		["is:gateway", false],
+		["-is:gateway", false],
+		["is:lair", false],
+		["is:intro", false],
+		["is:beginner", false],
+		["is:invitational", false],
+		["is:jumpstart", false],
+		["-is:jumpstart", false],
+		["is:misprint", false],
+		["is:spellbook", false],
+		["is:spikey", false],
+		["-is:spikey", false],
+	])("%s or cmc=3", async (term, expected) => {
+		expect(await opensExtras(`${term} or cmc=3`)).toBe(expected);
 	});
 });
 

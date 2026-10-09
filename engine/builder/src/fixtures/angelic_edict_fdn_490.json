@@ -1,0 +1,140 @@
+{
+ "arena_id": 93639,
+ "artist": "Trevor Claxton",
+ "artist_ids": [
+  "35d39e75-5d6c-4318-9136-38cdfff34a05"
+ ],
+ "booster": false,
+ "border_color": "black",
+ "card_back_id": "0aeebaf5-8c7d-4636-9e82-8c27447861f7",
+ "cardmarket_id": 797815,
+ "cmc": 5.0,
+ "collector_number": "490",
+ "color_identity": [
+  "W"
+ ],
+ "colors": [
+  "W"
+ ],
+ "digital": false,
+ "edhrec_rank": 17972,
+ "finishes": [
+  "nonfoil"
+ ],
+ "flavor_text": "The Boros built a prison in the sky where Azorius statutes couldn't restrict their sense of justice.",
+ "foil": false,
+ "frame": "2015",
+ "full_art": false,
+ "game_changer": false,
+ "games": [
+  "paper",
+  "arena",
+  "mtgo"
+ ],
+ "highres_image": true,
+ "id": "c0bf349e-2974-4aea-a5c0-fdaea77325cc",
+ "illustration_id": "b4731d80-9a34-4b7e-948f-7b12e46fdd4a",
+ "image_status": "highres_scan",
+ "image_updated_at": "2026-07-13T02:16:09Z",
+ "image_uris": {
+  "art": "https://cards.scryfall.io/art/front/c/0/c0bf349e-2974-4aea-a5c0-fdaea77325cc.webp?1783908969",
+  "art_crop": "https://cards.scryfall.io/art_crop/front/c/0/c0bf349e-2974-4aea-a5c0-fdaea77325cc.jpg?1783908969",
+  "border_crop": "https://cards.scryfall.io/border_crop/front/c/0/c0bf349e-2974-4aea-a5c0-fdaea77325cc.jpg?1783908969",
+  "crop": "https://cards.scryfall.io/crop/front/c/0/c0bf349e-2974-4aea-a5c0-fdaea77325cc.webp?1783908969",
+  "display": "https://cards.scryfall.io/display/front/c/0/c0bf349e-2974-4aea-a5c0-fdaea77325cc.webp?1783908969",
+  "grid": "https://cards.scryfall.io/grid/front/c/0/c0bf349e-2974-4aea-a5c0-fdaea77325cc.webp?1783908969",
+  "large": "https://cards.scryfall.io/large/front/c/0/c0bf349e-2974-4aea-a5c0-fdaea77325cc.jpg?1783908969",
+  "normal": "https://cards.scryfall.io/normal/front/c/0/c0bf349e-2974-4aea-a5c0-fdaea77325cc.jpg?1783908969",
+  "png": "https://cards.scryfall.io/png/front/c/0/c0bf349e-2974-4aea-a5c0-fdaea77325cc.png?1783908969",
+  "small": "https://cards.scryfall.io/small/front/c/0/c0bf349e-2974-4aea-a5c0-fdaea77325cc.jpg?1783908969",
+  "thumb": "https://cards.scryfall.io/thumb/front/c/0/c0bf349e-2974-4aea-a5c0-fdaea77325cc.webp?1783908969"
+ },
+ "keywords": [],
+ "lang": "en",
+ "layout": "normal",
+ "legalities": {
+  "alchemy": "legal",
+  "brawl": "legal",
+  "commander": "legal",
+  "competitivebrawl": "legal",
+  "duel": "legal",
+  "future": "legal",
+  "gladiator": "legal",
+  "historic": "legal",
+  "legacy": "legal",
+  "modern": "legal",
+  "oathbreaker": "legal",
+  "oldschool": "not_legal",
+  "pauper": "legal",
+  "paupercommander": "legal",
+  "penny": "legal",
+  "pioneer": "legal",
+  "predh": "not_legal",
+  "premodern": "not_legal",
+  "standard": "legal",
+  "standardbrawl": "legal",
+  "timeless": "legal",
+  "tlr": "not_legal",
+  "vintage": "legal"
+ },
+ "mana_cost": "{4}{W}",
+ "mtgo_id": 134752,
+ "multiverse_ids": [
+  677929
+ ],
+ "name": "Angelic Edict",
+ "nonfoil": true,
+ "object": "card",
+ "oracle_id": "36de8401-ee4e-413f-91ad-06924e39c857",
+ "oracle_text": "Exile target creature or enchantment.",
+ "oversized": false,
+ "penny_rank": 16488,
+ "preview": {
+  "previewed_at": "2024-08-15",
+  "source": "4gamer",
+  "source_uri": "https://www.4gamer.net/games/136/G013687/20240812001/"
+ },
+ "prices": {
+  "eur": "0.05",
+  "eur_foil": null,
+  "tix": "0.03",
+  "usd": "0.12",
+  "usd_etched": null,
+  "usd_foil": null
+ },
+ "prints_search_uri": "https://api.scryfall.com/cards/search?order=released&q=oracleid%3A36de8401-ee4e-413f-91ad-06924e39c857&unique=prints",
+ "promo": false,
+ "promo_types": [
+  "beginnerbox"
+ ],
+ "purchase_uris": {
+  "cardhoarder": "https://www.cardhoarder.com/cards/134752?affiliate_id=scryfall&ref=card-profile&utm_campaign=affiliate&utm_medium=card&utm_source=scryfall",
+  "cardmarket": "https://www.cardmarket.com/en/Magic/Products?idProduct=797815&referrer=scryfall&utm_campaign=card_prices&utm_medium=text&utm_source=scryfall",
+  "tcgplayer": "https://partner.tcgplayer.com/c/4931599/1830156/21018?subId1=api&u=https%3A%2F%2Fwww.tcgplayer.com%2Fproduct%2F563867%3Fpage%3D1"
+ },
+ "rarity": "common",
+ "related_uris": {
+  "edhrec": "https://edhrec.com/route/?cc=Angelic+Edict",
+  "gatherer": "https://gatherer.wizards.com/Pages/Card/Details.aspx?multiverseid=677929&printed=false",
+  "tcgplayer_infinite_articles": "https://partner.tcgplayer.com/c/4931599/1830156/21018?subId1=api&trafcat=tcgplayer.com%2Fsearch%2Farticles&u=https%3A%2F%2Fwww.tcgplayer.com%2Fsearch%2Farticles%3FproductLineName%3Dmagic%26q%3DAngelic%2BEdict",
+  "tcgplayer_infinite_decks": "https://partner.tcgplayer.com/c/4931599/1830156/21018?subId1=api&trafcat=tcgplayer.com%2Fsearch%2Fdecks&u=https%3A%2F%2Fwww.tcgplayer.com%2Fsearch%2Fdecks%3FproductLineName%3Dmagic%26q%3DAngelic%2BEdict"
+ },
+ "released_at": "2024-11-15",
+ "reprint": true,
+ "reserved": false,
+ "rulings_uri": "https://api.scryfall.com/cards/c0bf349e-2974-4aea-a5c0-fdaea77325cc/rulings",
+ "scryfall_set_uri": "https://scryfall.com/sets/fdn?utm_source=api",
+ "scryfall_uri": "https://scryfall.com/card/fdn/490/angelic-edict?utm_source=api",
+ "set": "fdn",
+ "set_id": "a7ecb771-d1b6-4dec-8cf5-8d45179f21e0",
+ "set_name": "Foundations",
+ "set_search_uri": "https://api.scryfall.com/cards/search?order=set&q=e%3Afdn&unique=prints",
+ "set_type": "core",
+ "set_uri": "https://api.scryfall.com/sets/a7ecb771-d1b6-4dec-8cf5-8d45179f21e0",
+ "story_spotlight": false,
+ "tcgplayer_id": 563867,
+ "textless": false,
+ "type_line": "Sorcery",
+ "uri": "https://api.scryfall.com/cards/c0bf349e-2974-4aea-a5c0-fdaea77325cc",
+ "variation": false
+}

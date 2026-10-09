@@ -1,0 +1,127 @@
+{
+ "arena_id": 79383,
+ "artist": "Liiga Smilshkalne",
+ "artist_ids": [
+  "5a50ced2-b301-4195-8af4-f7e1bae07d28"
+ ],
+ "booster": true,
+ "border_color": "black",
+ "card_back_id": "0aeebaf5-8c7d-4636-9e82-8c27447861f7",
+ "cmc": 2.0,
+ "collector_number": "25",
+ "color_identity": [
+  "R"
+ ],
+ "colors": [
+  "R"
+ ],
+ "digital": true,
+ "finishes": [
+  "nonfoil"
+ ],
+ "foil": false,
+ "frame": "2015",
+ "full_art": false,
+ "game_changer": false,
+ "games": [
+  "arena"
+ ],
+ "highres_image": false,
+ "id": "352aa417-412d-4344-aaa4-e2fae627fbbd",
+ "illustration_id": "4764aaa0-7b90-4b75-8bd8-3e3358d15917",
+ "image_status": "lowres",
+ "image_updated_at": "2026-07-13T06:58:02Z",
+ "image_uris": {
+  "art": "https://cards.scryfall.io/art/front/3/5/352aa417-412d-4344-aaa4-e2fae627fbbd.webp?1783925882",
+  "art_crop": "https://cards.scryfall.io/art_crop/front/3/5/352aa417-412d-4344-aaa4-e2fae627fbbd.jpg?1783925882",
+  "border_crop": "https://cards.scryfall.io/border_crop/front/3/5/352aa417-412d-4344-aaa4-e2fae627fbbd.jpg?1783925882",
+  "crop": "https://cards.scryfall.io/crop/front/3/5/352aa417-412d-4344-aaa4-e2fae627fbbd.webp?1783925882",
+  "display": "https://cards.scryfall.io/display/front/3/5/352aa417-412d-4344-aaa4-e2fae627fbbd.webp?1783925882",
+  "grid": "https://cards.scryfall.io/grid/front/3/5/352aa417-412d-4344-aaa4-e2fae627fbbd.webp?1783925882",
+  "large": "https://cards.scryfall.io/large/front/3/5/352aa417-412d-4344-aaa4-e2fae627fbbd.jpg?1783925882",
+  "normal": "https://cards.scryfall.io/normal/front/3/5/352aa417-412d-4344-aaa4-e2fae627fbbd.jpg?1783925882",
+  "png": "https://cards.scryfall.io/png/front/3/5/352aa417-412d-4344-aaa4-e2fae627fbbd.png?1783925882",
+  "small": "https://cards.scryfall.io/small/front/3/5/352aa417-412d-4344-aaa4-e2fae627fbbd.jpg?1783925882",
+  "thumb": "https://cards.scryfall.io/thumb/front/3/5/352aa417-412d-4344-aaa4-e2fae627fbbd.webp?1783925882"
+ },
+ "keywords": [
+  "Intensity"
+ ],
+ "lang": "en",
+ "layout": "normal",
+ "legalities": {
+  "alchemy": "not_legal",
+  "brawl": "legal",
+  "commander": "not_legal",
+  "competitivebrawl": "legal",
+  "duel": "not_legal",
+  "future": "not_legal",
+  "gladiator": "legal",
+  "historic": "legal",
+  "legacy": "not_legal",
+  "modern": "not_legal",
+  "oathbreaker": "not_legal",
+  "oldschool": "not_legal",
+  "pauper": "not_legal",
+  "paupercommander": "not_legal",
+  "penny": "not_legal",
+  "pioneer": "not_legal",
+  "predh": "not_legal",
+  "premodern": "not_legal",
+  "standard": "not_legal",
+  "standardbrawl": "not_legal",
+  "timeless": "legal",
+  "tlr": "not_legal",
+  "vintage": "not_legal"
+ },
+ "mana_cost": "{1}{R}",
+ "multiverse_ids": [
+  534604
+ ],
+ "name": "Static Discharge",
+ "nonfoil": true,
+ "object": "card",
+ "oracle_id": "cdbe8211-1d52-4857-8ed8-134a46095168",
+ "oracle_text": "Starting intensity 3\nThis sorcery deals damage equal to its intensity to any target. Then cards you own named Static Discharge intensify by 1.",
+ "oversized": false,
+ "preview": {
+  "previewed_at": "2021-07-29",
+  "source": "Destructoid",
+  "source_uri": "https://www.destructoid.com/magic-arena-jumpstart-historic-horizons-set-cards-exclusive/"
+ },
+ "prices": {
+  "eur": null,
+  "eur_foil": null,
+  "tix": null,
+  "usd": null,
+  "usd_etched": null,
+  "usd_foil": null
+ },
+ "prints_search_uri": "https://api.scryfall.com/cards/search?order=released&q=oracleid%3Acdbe8211-1d52-4857-8ed8-134a46095168&unique=prints",
+ "promo": false,
+ "rarity": "uncommon",
+ "related_uris": {
+  "edhrec": "https://edhrec.com/route/?cc=Static+Discharge",
+  "gatherer": "https://gatherer.wizards.com/Pages/Card/Details.aspx?multiverseid=534604&printed=false",
+  "tcgplayer_infinite_articles": "https://partner.tcgplayer.com/c/4931599/1830156/21018?subId1=api&trafcat=tcgplayer.com%2Fsearch%2Farticles&u=https%3A%2F%2Fwww.tcgplayer.com%2Fsearch%2Farticles%3FproductLineName%3Dmagic%26q%3DStatic%2BDischarge",
+  "tcgplayer_infinite_decks": "https://partner.tcgplayer.com/c/4931599/1830156/21018?subId1=api&trafcat=tcgplayer.com%2Fsearch%2Fdecks&u=https%3A%2F%2Fwww.tcgplayer.com%2Fsearch%2Fdecks%3FproductLineName%3Dmagic%26q%3DStatic%2BDischarge"
+ },
+ "released_at": "2021-08-26",
+ "reprint": false,
+ "reserved": false,
+ "rulings_uri": "https://api.scryfall.com/cards/352aa417-412d-4344-aaa4-e2fae627fbbd/rulings",
+ "scryfall_set_uri": "https://scryfall.com/sets/j21?utm_source=api",
+ "scryfall_uri": "https://scryfall.com/card/j21/25/static-discharge?utm_source=api",
+ "security_stamp": "arena",
+ "set": "j21",
+ "set_id": "e1cc23bd-379b-4f2c-a4e0-83fc1e7be023",
+ "set_name": "Jumpstart: Historic Horizons",
+ "set_search_uri": "https://api.scryfall.com/cards/search?order=set&q=e%3Aj21&unique=prints",
+ "set_type": "draft_innovation",
+ "set_uri": "https://api.scryfall.com/sets/e1cc23bd-379b-4f2c-a4e0-83fc1e7be023",
+ "story_spotlight": false,
+ "textless": false,
+ "type_line": "Sorcery",
+ "uri": "https://api.scryfall.com/cards/352aa417-412d-4344-aaa4-e2fae627fbbd",
+ "variation": false
+}

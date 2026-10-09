@@ -1,0 +1,128 @@
+{
+ "artist": "Douglas Shuler",
+ "artist_ids": [
+  "a9ddb513-51c7-455c-ab8f-5b90aae9f75b"
+ ],
+ "booster": true,
+ "border_color": "black",
+ "card_back_id": "0aeebaf5-8c7d-4636-9e82-8c27447861f7",
+ "cmc": 5.0,
+ "collector_number": "50",
+ "color_identity": [
+  "W"
+ ],
+ "colors": [
+  "W"
+ ],
+ "digital": false,
+ "edhrec_rank": 9448,
+ "finishes": [
+  "nonfoil"
+ ],
+ "foil": false,
+ "frame": "1993",
+ "full_art": false,
+ "game_changer": false,
+ "games": [
+  "paper"
+ ],
+ "highres_image": true,
+ "id": "e255e270-cd1b-4aca-9a8e-55a465540e98",
+ "illustration_id": "6eb98f0e-e947-4efd-a84f-a4b20de70872",
+ "image_status": "highres_scan",
+ "image_updated_at": "2026-07-03T06:43:46Z",
+ "image_uris": {
+  "art": "https://cards.scryfall.io/art/front/e/2/e255e270-cd1b-4aca-9a8e-55a465540e98.webp?1783061026",
+  "art_crop": "https://cards.scryfall.io/art_crop/front/e/2/e255e270-cd1b-4aca-9a8e-55a465540e98.jpg?1783061026",
+  "border_crop": "https://cards.scryfall.io/border_crop/front/e/2/e255e270-cd1b-4aca-9a8e-55a465540e98.jpg?1783061026",
+  "crop": "https://cards.scryfall.io/crop/front/e/2/e255e270-cd1b-4aca-9a8e-55a465540e98.webp?1783061026",
+  "display": "https://cards.scryfall.io/display/front/e/2/e255e270-cd1b-4aca-9a8e-55a465540e98.webp?1783061026",
+  "grid": "https://cards.scryfall.io/grid/front/e/2/e255e270-cd1b-4aca-9a8e-55a465540e98.webp?1783061026",
+  "large": "https://cards.scryfall.io/large/front/e/2/e255e270-cd1b-4aca-9a8e-55a465540e98.jpg?1783061026",
+  "normal": "https://cards.scryfall.io/normal/front/e/2/e255e270-cd1b-4aca-9a8e-55a465540e98.jpg?1783061026",
+  "png": "https://cards.scryfall.io/png/front/e/2/e255e270-cd1b-4aca-9a8e-55a465540e98.png?1783061026",
+  "small": "https://cards.scryfall.io/small/front/e/2/e255e270-cd1b-4aca-9a8e-55a465540e98.jpg?1783061026",
+  "thumb": "https://cards.scryfall.io/thumb/front/e/2/e255e270-cd1b-4aca-9a8e-55a465540e98.webp?1783061026"
+ },
+ "keywords": [
+  "Flying",
+  "Vigilance"
+ ],
+ "lang": "ja",
+ "layout": "normal",
+ "legalities": {
+  "alchemy": "legal",
+  "brawl": "legal",
+  "commander": "legal",
+  "competitivebrawl": "legal",
+  "duel": "legal",
+  "future": "legal",
+  "gladiator": "legal",
+  "historic": "legal",
+  "legacy": "legal",
+  "modern": "legal",
+  "oathbreaker": "legal",
+  "oldschool": "not_legal",
+  "pauper": "legal",
+  "paupercommander": "legal",
+  "penny": "legal",
+  "pioneer": "legal",
+  "predh": "legal",
+  "premodern": "legal",
+  "standard": "legal",
+  "standardbrawl": "legal",
+  "timeless": "legal",
+  "tlr": "not_legal",
+  "vintage": "legal"
+ },
+ "mana_cost": "{3}{W}{W}",
+ "multiverse_ids": [],
+ "name": "Serra Angel",
+ "nonfoil": true,
+ "object": "card",
+ "oracle_id": "4b7ac066-e5c7-43e6-9e7e-2739b24a905d",
+ "oracle_text": "Flying\nVigilance (Attacking doesn't cause this creature to tap.)",
+ "oversized": false,
+ "penny_rank": 12473,
+ "power": "4",
+ "prices": {
+  "eur": null,
+  "eur_foil": null,
+  "tix": null,
+  "usd": null,
+  "usd_etched": null,
+  "usd_foil": null
+ },
+ "printed_name": "セラの天使",
+ "prints_search_uri": "https://api.scryfall.com/cards/search?order=released&q=oracleid%3A4b7ac066-e5c7-43e6-9e7e-2739b24a905d&unique=prints",
+ "promo": false,
+ "purchase_uris": {
+  "cardhoarder": "https://www.cardhoarder.com/cards?affiliate_id=scryfall&data%5Bsearch%5D=Serra+Angel&ref=card-profile&utm_campaign=affiliate&utm_medium=card&utm_source=scryfall",
+  "cardmarket": "https://www.cardmarket.com/en/Magic/Products/Search?referrer=scryfall&searchString=Serra+Angel&utm_campaign=card_prices&utm_medium=text&utm_source=scryfall",
+  "tcgplayer": "https://partner.tcgplayer.com/c/4931599/1830156/21018?subId1=api&u=https%3A%2F%2Fwww.tcgplayer.com%2Fsearch%2Fmagic%2Fproduct%3FproductLineName%3Dmagic%26q%3DSerra%2BAngel%26view%3Dgrid"
+ },
+ "rarity": "uncommon",
+ "related_uris": {
+  "edhrec": "https://edhrec.com/route/?cc=Serra+Angel",
+  "tcgplayer_infinite_articles": "https://partner.tcgplayer.com/c/4931599/1830156/21018?subId1=api&trafcat=tcgplayer.com%2Fsearch%2Farticles&u=https%3A%2F%2Fwww.tcgplayer.com%2Fsearch%2Farticles%3FproductLineName%3Dmagic%26q%3DSerra%2BAngel",
+  "tcgplayer_infinite_decks": "https://partner.tcgplayer.com/c/4931599/1830156/21018?subId1=api&trafcat=tcgplayer.com%2Fsearch%2Fdecks&u=https%3A%2F%2Fwww.tcgplayer.com%2Fsearch%2Fdecks%3FproductLineName%3Dmagic%26q%3DSerra%2BAngel"
+ },
+ "released_at": "1995-04-01",
+ "reprint": true,
+ "reserved": false,
+ "rulings_uri": "https://api.scryfall.com/cards/e255e270-cd1b-4aca-9a8e-55a465540e98/rulings",
+ "scryfall_set_uri": "https://scryfall.com/sets/4bb?utm_source=api",
+ "scryfall_uri": "https://scryfall.com/card/4bb/50/ja/%E3%82%BB%E3%83%A9%E3%81%AE%E5%A4%A9%E4%BD%BF-(serra-angel)?utm_source=api",
+ "set": "4bb",
+ "set_id": "daa633b3-2bdb-48a2-a40e-3de16b6e41a5",
+ "set_name": "Fourth Edition Foreign Black Border",
+ "set_search_uri": "https://api.scryfall.com/cards/search?order=set&q=e%3A4bb&unique=prints",
+ "set_type": "core",
+ "set_uri": "https://api.scryfall.com/sets/daa633b3-2bdb-48a2-a40e-3de16b6e41a5",
+ "story_spotlight": false,
+ "textless": false,
+ "toughness": "4",
+ "type_line": "Creature — Angel",
+ "uri": "https://api.scryfall.com/cards/e255e270-cd1b-4aca-9a8e-55a465540e98",
+ "variation": false
+}

@@ -1,0 +1,1330 @@
+# GENERATED FILE - do not edit. Built by scripts/generate-is-lists.ts from api.scryfall.com, 2026-10-09.
+#
+# The `is:` classes that are Scryfall's own record. tag <TAB> kind <TAB> key ...; see is_lists.rs.
+#   set      <set>                    every printing of the set
+#   oracle   <oracle id> <name>       every printing of the card
+#   print    <set> <numbers>          these collector numbers, in every language
+#   row      <set> <lang> <numbers>   these collector numbers, in this language alone
+#   not      <set> <numbers>          out, whatever a set, a card or the rule says
+#   not-row  <set> <lang> <numbers>   out in this language alone
+# `related` and `covered` are a rule and its exceptions: only the differences are here.
+#
+# covered: 479653 rows of every language on api.scryfall.com
+# intro: 422 rows of every language on api.scryfall.com
+# invitational: 92 rows of every language on api.scryfall.com
+# jumpstart: 5989 rows of every language on api.scryfall.com
+# misprint: 455 rows of every language on api.scryfall.com
+# related: 91272 rows of every language on api.scryfall.com
+# spellbook: 75 rows of every language on api.scryfall.com
+# spikey: 14803 rows of every language on api.scryfall.com
+# 92 rows of the bulk file no search returns were not counted either way.
+# print_tiers.tsv 86d265edf6ec6f10
+covered	row	bot	en	1 2 3 4 5 6 7 8 9 10 11 12 13 14 15
+covered	row	cp1	en	1 2 3 4 5 6
+covered	row	cp2	en	1 2 3 4 5 6
+covered	row	fdn	en	273 277 490 493 495 497 498 499 500 501 516 518 522 524 525 529 530 531 532 564
+covered	row	gvl	en	1 32
+covered	row	l17	en	1
+covered	row	lcc	en	317
+covered	row	ltr	en	262 263 264 265 266 267 268 269 270 271 291 295 332 333 334 335 336 337 338 339
+covered	row	m3c	en	1 2 3 4 5 6 7 8 92 93 94 95 96 97 99 100 101 104 106 107 108 110 111 112 113 114 116 117 118 119 121 122 123 124 125 126 127 128 129 130 131 132 133 134 135
+covered	row	msc	en	276 277 278 279 280 281 282 283 284 285 286 287 288 289 290
+covered	row	ph17	en	1 2 3
+covered	row	ph18	en	1 2 3 4
+covered	row	ph19	en	1 2 3 4 5 6 7
+covered	row	ph20	en	1 2
+covered	row	ph21	en	1 2 3 4
+covered	row	phtr	en	1 2 3
+covered	row	t40k	en	1 1★ 2 2★ 3 3★ 4 4★ 5 6 7 8 9 10 11 12 13 14 14★ 15 15★ 16 16★ 17 17★ 18 19 20 21 22 23
+covered	row	tmc	en	48 52 53 54 56
+covered	row	tnau	en	10
+covered	row	ttle	en	1
+covered	row	tust	en	1 3 6 8 9 11 13 14 17 18
+covered	row	und	en	87 89 91 93 95
+covered	row	ust	en	93
+covered	not-row	2x2	en	332
+covered	not-row	acr	en	5
+covered	not-row	blc	en	29
+covered	not-row	brc	en	1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28
+covered	not-row	brc	fr	3 4 5 6 7 9 10 11 12 13 14 15 16 17 18 19 20
+covered	not-row	clb	en	931 932 933 934
+covered	not-row	cmm	en	1 779 780 781 782
+covered	not-row	dmc	en	49 50
+covered	not-row	dmr	en	298 299 300 301 302 303 304 305 306 307 308 309 310 311 312 313 314 315 335
+covered	not-row	dsc	en	328 329 330 331 332 333 334 335 336 337 338 339 340 341 342 343 344 345 346 347 348 349 350 351 352 353 354 355 356 357 358 359 360 361 362 363 364 365 366 367
+covered	not-row	eld	de	303
+covered	not-row	eld	en	303
+covered	not-row	eld	es	303
+covered	not-row	eld	fr	303
+covered	not-row	eld	it	303
+covered	not-row	eld	ja	303
+covered	not-row	eld	ko	303
+covered	not-row	eld	pt	303
+covered	not-row	eld	ru	303
+covered	not-row	eld	zhs	303
+covered	not-row	eld	zht	303
+covered	not-row	fic	de	30 38 65 76 79 81 82 87 89 97
+covered	not-row	fic	en	30 38 65 76 79 81 82 87 89 97
+covered	not-row	fic	es	30 38 65 76 79 81 82 87 89 97
+covered	not-row	fic	fr	30 38 65 76 79 81 82 87 89 97
+covered	not-row	fic	it	30 38 65 76 79 81 82 87 89 97
+covered	not-row	fic	ja	30 38 65 76 79 81 82 87 89 97
+covered	not-row	inv	en	124★ 134★
+covered	not-row	j22	en	6 19 38 114
+covered	not-row	khm	en	374 375 376 377 378 379 380 381 382 383 384 385 386 387 388 389 390 391 392 393 394 395 396 397 398
+covered	not-row	lcc	en	121 122 123 124
+covered	not-row	ltc	de	1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33 34 35 36 37 38 39 40 41 42 43 44 45 46 47 48 49 50 51 52 53 54 55 56 57 58 59 60 61 62 63 64 65 67 68 69 70 71 72 73 74 75 76 77 78 79 80
+covered	not-row	ltc	en	1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33 34 35 36 37 38 39 40 41 42 43 44 45 46 47 48 49 50 51 52 53 54 55 56 57 58 59 60 61 62 63 64 65 66 67 68 69 70 71 72 73 74 75 76 77 78 79 80 491 492 493 494 495 496 497 498 499 500 501 502 503 504 505 506 507 508 509 510 511 512 513 514
+covered	not-row	ltc	es	1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33 34 35 36 37 38 39 40 41 42 43 44 45 46 47 48 49 50 51 52 53 54 55 56 57 58 59 60 61 62 63 64 65 67 68 69 70 71 72 73 74 75 76 77 78 79 80
+covered	not-row	ltc	fr	1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33 34 35 36 37 38 39 40 41 42 43 44 45 46 47 48 49 50 51 52 53 54 55 56 57 58 59 60 61 62 63 64 65 67 68 69 70 71 72 73 74 75 76 77 78 79 80
+covered	not-row	ltc	it	1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33 34 35 36 37 38 39 40 41 42 43 44 45 46 47 48 49 50 51 52 53 54 55 56 57 58 59 60 61 62 63 64 65 67 68 69 70 71 72 73 74 75 76 77 78 79 80
+covered	not-row	ltc	ja	1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33 34 35 36 37 38 39 40 41 42 43 44 45 46 47 48 49 50 51 52 53 54 55 56 57 58 59 60 61 62 63 64 65 67 68 69 70 71 72 73 74 75 76 77 78 79 80
+covered	not-row	ltc	pt	1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33 34 35 36 37 38 39 40 41 42 43 44 45 46 47 48 49 50 51 52 53 54 55 56 57 58 59 60 61 62 63 64 65 67 68 69 70 71 72 73 74 75 76 77 78 79 80
+covered	not-row	ltc	zhs	1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33 34 35 36 37 38 39 40 41 42 43 44 45 46 47 48 49 50 51 52 53 54 55 56 57 58 59 60 61 62 63 64 65 67 68 69 70 71 72 73 74 75 76 77 78 79 80
+covered	not-row	ltr	de	1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 33 34 35 36 37 38 39 40 41 42 43 44 45 47 48 49 50 51 52 53 54 55 56 57 58 59 60 61 62 63 64 65 66 67 68 69 70 71 72 73 74 75 76 77 78 79 80 81 82 83 84 85 86 87 88 89 90 91 92 93 94 95 96 97 98 99 100 101 102 103 104 105 106 107 108 109 110 111 112 113 114 115 116 117 118 119 120 121 122 123 124 125 126 127 128 129 130 131 132 133 134 135 136 137 138 139 140 141 142 143 144 145 146 147 148 149 150 151 152 153 154 155 156 157 158 159 160 161 162 163 164 165 166 167 168 169 170 171 172 173 174 175 176 177 178 179 180 181 182 183 184 185 186 187 188 189 190 191 192 193 194 195 196 197 198 199 200 201 202 203 204 205 206 207 208 209 210 211 212 213 214 215 216 217 218 219 220 221 222 223 224 225 226 227 228 229 230 231 232 233 234 235 236 237 238 239 240 241 242 243 244 245 246 247 248 249 250 251 252 253 254 255 256 257 258 259 260 261 282 283 284 285 286 287 288 289 290 292 293 294 296 297 298
+covered	not-row	ltr	es	1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 33 34 35 36 37 38 39 40 41 42 43 44 45 47 48 49 50 51 52 53 54 55 56 57 58 59 60 61 62 63 64 65 66 67 68 69 70 71 72 73 74 75 76 77 78 79 80 81 82 83 84 85 86 87 88 89 90 91 92 93 94 95 96 97 98 99 100 101 102 103 104 105 106 107 108 109 110 111 112 113 114 115 116 117 118 119 120 121 122 123 124 125 126 127 128 129 130 131 132 133 134 135 136 137 138 139 140 141 142 143 144 145 146 147 148 149 150 151 152 153 154 155 156 157 158 159 160 161 162 163 164 165 166 167 168 169 170 171 172 173 174 175 176 177 178 179 180 181 182 183 184 185 186 187 188 189 190 191 192 193 194 195 196 197 198 199 200 201 202 203 204 205 206 207 208 209 210 211 212 213 214 215 216 217 218 219 220 221 222 223 224 225 226 227 228 229 230 231 232 233 234 235 236 237 238 239 240 241 242 243 244 245 246 247 248 249 250 251 252 253 254 255 256 257 258 259 260 261 282 283 284 285 286 287 288 289 290 292 293 294 296 297 298
+covered	not-row	ltr	fr	1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 33 34 35 36 37 38 39 40 41 42 43 44 45 47 48 49 50 51 52 53 54 55 56 57 58 59 60 61 62 63 64 65 66 67 68 69 70 71 72 73 74 75 76 77 78 79 80 81 82 83 84 85 86 87 88 89 90 91 92 93 94 95 96 97 98 99 100 101 102 103 104 105 106 107 108 109 110 111 112 113 114 115 116 117 118 119 120 121 122 123 124 125 126 127 128 129 130 131 132 133 134 135 136 137 138 139 140 141 142 143 144 145 146 147 148 149 150 151 152 153 154 155 156 157 158 159 160 161 162 163 164 165 166 167 168 169 170 171 172 173 174 175 176 177 178 179 180 181 182 183 184 185 186 187 188 189 190 191 192 193 194 195 196 197 198 199 200 201 202 203 204 205 206 207 208 209 210 211 212 213 214 215 216 217 218 219 220 221 222 223 224 225 226 227 228 229 230 231 232 233 234 235 236 237 238 239 240 241 242 243 244 245 246 247 248 249 250 251 252 253 254 255 256 257 258 259 260 261 282 283 284 285 286 287 288 289 290 292 293 294 296 297 298
+covered	not-row	ltr	it	1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 33 34 35 36 37 38 39 40 41 42 43 44 45 47 48 49 50 51 52 53 54 55 56 57 58 59 60 61 62 63 64 65 66 67 68 69 70 71 72 73 74 75 76 77 78 79 80 81 82 83 84 85 86 87 88 89 90 91 92 93 94 95 96 97 98 99 100 101 102 103 104 105 106 107 108 109 110 111 112 113 114 115 116 117 118 119 120 121 122 123 124 125 126 127 128 129 130 131 132 133 134 135 136 137 138 139 140 141 142 143 144 145 146 147 148 149 150 151 152 153 154 155 156 157 158 159 160 161 162 163 164 165 166 167 168 169 170 171 172 173 174 175 176 177 178 179 180 181 182 183 184 185 186 187 188 189 190 191 192 193 194 195 196 197 198 199 200 201 202 203 204 205 206 207 208 209 210 211 212 213 214 215 216 217 218 219 220 221 222 223 224 225 226 227 228 229 230 231 232 233 234 235 236 237 238 239 240 241 242 243 244 245 246 247 248 249 250 251 252 253 254 255 256 257 258 259 260 261 282 283 284 285 286 287 288 289 290 292 293 294 296 297 298
+covered	not-row	ltr	ja	1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 33 34 35 36 37 38 39 40 41 42 43 44 45 47 48 49 50 51 52 53 54 55 56 57 58 59 60 61 62 63 64 65 66 67 68 69 70 71 72 73 74 75 76 77 78 79 80 81 82 83 84 85 86 87 88 89 90 91 92 93 94 95 96 97 98 99 100 101 102 103 104 105 106 107 108 109 110 111 112 113 114 115 116 117 118 119 120 121 122 123 124 125 126 127 128 129 130 131 132 133 134 135 136 137 138 139 140 141 142 143 144 145 146 147 148 149 150 151 152 153 154 155 156 157 158 159 160 161 162 163 164 165 166 167 168 169 170 171 172 173 174 175 176 177 178 179 180 181 182 183 184 185 186 187 188 189 190 191 192 193 194 195 196 197 198 199 200 201 202 203 204 205 206 207 208 209 210 211 212 213 214 215 216 217 218 219 220 221 222 223 224 225 226 227 228 229 230 231 232 233 234 235 236 237 238 239 240 241 242 243 244 245 246 247 248 249 250 251 252 253 254 255 256 257 258 259 260 261 282 283 284 285 286 287 288 289 290 292 293 294 296 297 298
+covered	not-row	ltr	pt	1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 33 34 35 36 37 38 39 40 41 42 43 44 45 47 48 49 50 51 52 53 54 55 56 57 58 59 60 61 62 63 64 65 66 67 68 69 70 71 72 73 74 75 76 77 78 79 80 81 82 83 84 85 86 87 88 89 90 91 92 93 94 95 96 97 98 99 100 101 102 103 104 105 106 107 108 109 110 111 112 113 114 115 116 117 118 119 120 121 122 123 124 125 126 127 128 129 130 131 132 133 134 135 136 137 138 139 140 141 142 143 144 145 146 147 148 149 150 151 152 153 154 155 156 157 158 159 160 161 162 163 164 165 166 167 168 169 170 171 172 173 174 175 176 177 178 179 180 181 182 183 184 185 186 187 188 189 190 191 192 193 194 195 196 197 198 199 200 201 202 203 204 205 206 207 208 209 210 211 212 213 214 215 216 217 218 219 220 221 222 223 224 225 226 227 228 229 230 231 232 233 234 235 236 237 238 239 240 241 242 243 244 245 246 247 248 249 250 251 252 253 254 255 256 257 258 259 260 261 282 283 284 285 286 287 288 289 290 292 293 294 296 297 298
+covered	not-row	ltr	zhs	1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 33 34 35 36 37 38 39 40 41 42 43 44 45 47 48 49 50 51 52 53 54 55 56 57 58 59 60 61 62 63 64 65 66 67 68 69 70 71 72 73 74 75 76 77 78 79 80 81 82 83 84 85 86 87 88 89 90 91 92 93 94 95 96 97 98 99 100 101 102 103 104 105 106 107 108 109 110 111 112 113 114 115 116 117 118 119 120 121 122 123 124 125 126 127 128 129 130 131 132 133 134 135 136 137 138 139 140 141 142 143 144 145 146 147 148 149 150 151 152 153 154 155 156 157 158 159 160 161 162 163 164 165 166 167 168 169 170 171 172 173 174 175 176 177 178 179 180 181 182 183 184 185 186 187 188 189 190 191 192 193 194 195 196 197 198 199 200 201 202 203 204 205 206 207 208 209 210 211 212 213 214 215 216 217 218 219 220 221 222 223 224 225 226 227 228 229 230 231 232 233 234 235 236 237 238 239 240 241 242 243 244 245 246 247 248 249 250 251 252 253 254 255 256 257 258 259 260 261 282 283 284 285 286 287 288 289 290 292 293 294 296 297 298
+covered	not-row	m19	en	306
+covered	not-row	m21	de	278
+covered	not-row	m21	en	278
+covered	not-row	m21	es	278
+covered	not-row	m21	fr	278
+covered	not-row	m21	it	278
+covered	not-row	m21	ja	278
+covered	not-row	m21	pt	278
+covered	not-row	m21	zhs	278
+covered	not-row	m3c	en	315
+covered	not-row	macr	en	1 2 3
+covered	not-row	mb2	en	258 259 260 261 262 263 264
+covered	not-row	mbc	en	62 64 66
+covered	not-row	mbro	en	1 2 3
+covered	not-row	mclb	en	1 2 3
+covered	not-row	mdmu	en	1 2 3
+covered	not-row	mh2	en	481 482 483 484 485 486 487 488 489 490
+covered	not-row	mh3	de	2
+covered	not-row	mh3	en	310 311 312 313 314 315 316 317 318 319 517 518 519 520 521
+covered	not-row	mh3	es	2
+covered	not-row	mh3	fr	2
+covered	not-row	mh3	it	2
+covered	not-row	mh3	ja	2
+covered	not-row	mh3	pt	2
+covered	not-row	mh3	zhs	2
+covered	not-row	mkc	en	49 50 51 52
+covered	not-row	mkm	en	318z 319z 320z 321z 322z 323z 432
+covered	not-row	mltr	en	4
+covered	not-row	mmid	en	1 2 3
+covered	not-row	mneo	en	1 2 3
+covered	not-row	moc	en	47 48 49 50 51 52 53 54 55 56 57 58 59 60 61 62 63 64 65 66 67 68 69 70 71 134 135 136 137 138 139 140 141 142 143 144 145 146 147 148 149 150 151 152 153 154 155 156 157 158 159 160 161 162 163
+covered	not-row	mone	en	1 2 3 4 5
+covered	not-row	msnc	en	1 2 3
+covered	not-row	ncc	en	186 187 188 189 190
+covered	not-row	oana	en	1 3 4 5 8 9 10 11 12 19 23 43 46 48
+covered	not-row	oarc	en	1★ 2★ 3★ 4★ 5★ 6★ 7★ 8★ 9★ 10★ 11★ 12★ 13★ 14★ 15★ 16★ 17★ 18★ 19★ 20★ 21★ 22★ 23★ 24★ 25★ 26★ 27★ 28★ 29★ 30★ 31★ 32★ 33★ 34★ 35★ 36★ 37★ 38★ 39★ 40★ 41★ 42★ 43★ 44★ 45★
+covered	not-row	oe01	en	1★ 2★ 3★ 4★ 5★ 6★ 7★ 8★ 9★ 10★ 11★ 12★ 13★ 14★ 15★ 16★ 17★ 18★ 19★ 20★
+covered	not-row	ohop	en	1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33 34 35 36 37 38 39 40
+covered	not-row	onc	en	10
+covered	not-row	one	en	272 273 274 275 276
+covered	not-row	opc2	en	1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33 34 35 36 37 38 39 40
+covered	not-row	opca	en	1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33 34 35 36 37 38 39 40 41 42 43 44 45 46 47 48 49 50 51 52 53 54 55 56 57 58 59 60 61 62 63 64 65 66 67 68 69 70 71 72 73 74 75 76 77 78 79 80 81 82 83 84 85 86
+covered	not-row	phpr	es	5
+covered	not-row	plst	en	DMR-116 DMR-118 DMR-122 DMR-123 DMR-131 DMR-136 DMR-153 DMR-160 DMR-170 DMR-202 DMR-24 DMR-257 DMR-4 DMR-64 DMR-78 ELD-303 M19-306 M3C-102 RVR-111 RVR-15 RVR-176 RVR-228 RVR-26 RVR-267 RVR-75
+covered	not-row	pmoa	en	1 2 5 6 7 8 9 14 17 18 27 28 29 30 31 33 34 36 37 38 39 40 41 42 43 44 45 46 47 48 49 50 51 52 53 54 55 56 57 58 59 60 61 61a 62 63 64 65 66 67 68 69 70 71 72 73 74 75 76 77 78 79 80 81 82 83 84 85 86 87 88 89 90 91 92 93 94 95 96 97 104 105 106 107 108
+covered	not-row	punk	en	PLA001 PLA001a PLA002 PLA002a PLA003 PLA003a PLA004 PLA004a PLA005 PLA005a PLA006 PLA007 PLA008 PLA009 PLA009a PLA010 PLA011 PLA012 PLA013 PLA014 PLA015 PLA016 PLA017 PLA018 PLA019 PLA020 PLA021 PLA022 PLA023 PLA024 PLA025 PLA026 PLA027 PLA028 PLA029 PLA030 PLA031 PLA032 PLA033 PLA034 PLA035 PLA036 PLA037 PLA038 PLA039 PLA040 PLA041 PLA042 PLA043 PLA044 PLA045 PLA046
+covered	not-row	pvan	en	101 102 103 104 105 106 107 108 201 202 203 204 205 206 207 208 301 302 303 304 305 306 307 308 401 402 403 404 405 406 407 408
+covered	not-row	sld	en	1753
+covered	not-row	tclb	en	20
+covered	not-row	tdm	en	419
+covered	not-row	tgk2	en	6
+covered	not-row	thb	en	269 288 289 290 291 292 293 294 295 296 297
+covered	not-row	thob	en	12
+covered	not-row	unf	en	345
+covered	not-row	vow	en	398 399 400 401 402
+covered	not-row	war	en	275
+covered	not-row	who	de	1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33 34 35 36 37 38 39 40 41 42 43 44 45 46 47 48 49 50 51 52 53 54 55 56 57 58 59 60 61 62 63 64 65 66 67 68 69 70 71 72 73 74 75 76 78 79 80 81 82 83 84 85 86 87 88 89 90 91 92 93 94 95 96 97 98 99 100 101 102 103 104 105 106 107 108 109 110 111 112 113 114 115 116 117 118 119 120 121 122 123 124 125 126 127 128 129 130 132 133 134 135 136 137 138 139 140 141 142 143 144 145 146 147 148 149 150 151 152 153 154 155 156 157 158 159 160 161 162 163 164 165 166 167 168 169 170 171 172 173 174 175 176 177 178 179 180 181 182 183 184 187 188 189 190 191 566 567 568 569 570 571 572 573 574 575 576 577 578 579 580 581 582 583 584 586 587 588 589 590 591 592 593 594 595 596 597 598 599 600
+covered	not-row	who	en	1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33 34 35 36 37 38 39 40 41 42 43 44 45 46 47 48 49 50 51 52 53 54 55 56 57 58 59 60 61 62 63 64 65 66 67 68 69 70 71 72 73 74 75 76 77 78 79 80 81 82 83 84 85 86 87 88 89 90 91 92 93 94 95 96 97 98 99 100 101 102 103 104 105 106 107 108 109 110 111 112 113 114 115 116 117 118 119 120 121 122 123 124 125 126 127 128 129 130 131 132 133 134 135 136 137 138 139 140 141 142 143 144 145 146 147 148 149 150 151 152 153 154 155 156 157 158 159 160 161 162 163 164 165 166 167 168 169 170 171 172 173 174 175 176 177 178 179 180 181 182 183 184 187 188 189 190 191 566 567 568 569 570 571 572 573 574 575 576 577 578 579 580 581 582 583 584 585 586 587 588 589 590 591 592 593 594 595 596 597 598 599 600 601 602 603 604 605
+covered	not-row	who	fr	1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33 34 35 36 37 38 39 40 41 42 43 44 45 46 47 48 49 50 51 52 53 54 55 56 57 58 59 60 61 62 63 64 65 66 67 68 69 70 71 72 73 74 75 76 78 79 80 81 82 83 84 85 86 87 88 89 90 91 92 93 94 95 96 97 98 99 100 101 102 103 104 105 106 107 108 109 110 111 112 113 114 115 116 117 118 119 120 121 122 123 124 125 126 127 128 129 130 132 133 134 135 136 137 138 139 140 141 142 143 144 145 146 147 148 149 150 151 152 153 154 155 156 157 158 159 160 161 162 163 164 165 166 167 168 169 170 171 172 173 174 175 176 177 178 179 180 181 182 183 184 187 188 189 190 191 566 567 568 569 570 571 572 573 574 575 576 577 578 579 580 581 582 583 584 586 587 588 589 590 591 592 593 594 595 596 597 598 599 600
+covered	not-row	who	ja	1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33 34 35 36 37 38 39 40 41 42 43 44 45 46 47 48 49 50 51 52 53 54 55 56 57 58 59 60 61 62 63 64 65 66 67 68 69 70 71 72 73 74 75 76 78 79 80 81 82 83 84 85 86 87 88 89 90 91 92 93 94 95 96 97 98 99 100 101 102 103 104 105 106 107 108 109 110 111 112 113 114 115 116 117 118 119 120 121 122 123 124 125 126 127 128 129 130 132 133 134 135 136 137 138 139 140 141 142 143 144 145 146 147 148 149 150 151 152 153 154 155 156 157 158 159 160 161 162 163 164 165 166 167 168 169 170 171 172 173 174 175 176 177 178 179 180 181 182 183 184 187 188 189 190 191 566 567 568 569 570 571 572 573 574 575 576 577 578 579 580 581 582 583 584 586 587 588 589 590 591 592 593 594 595 596 597 598 599 600
+covered	not-row	yblb	en	1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30
+covered	not-row	ybro	en	1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31
+covered	not-row	ydft	en	1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31
+covered	not-row	ydmu	en	1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 32 33 34 35 36 37 38 39 40
+covered	not-row	ydsk	en	1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30
+covered	not-row	yecl	en	1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33
+covered	not-row	yeoe	en	1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 41
+covered	not-row	ymid	en	1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33 34 35 36 37 38 39 40 41 42 43 44 45 46 47 48 49 50 51 52 53 54 55 56 57 58 59 60 61 62 63
+covered	not-row	ymkm	en	1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30
+covered	not-row	yneo	en	1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30
+covered	not-row	yotj	en	1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30
+covered	not-row	ysnc	en	1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30
+covered	not-row	ytdm	en	1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30
+intro	set	dpa
+intro	set	rqs
+intro	print	acr	274 275 276 277 278 279 280 281 282 283 284 285 286 287 288 289 290 291 292 293 294 295 296 297 298 299 300 301 302 303 304 305
+intro	print	fdn	490 493 495 497 499 500 501 516 524 525 529 530 531 564
+invitational	print	ecl	176
+invitational	print	eld	124
+invitational	print	mom	58
+invitational	print	plst	ALA-21 ISD-78
+invitational	print	rav	81
+invitational	print	stx	17
+invitational	row	ala	en	21
+invitational	row	dis	en	127
+invitational	row	dis	es	127
+invitational	row	dis	fr	127
+invitational	row	isd	en	78
+invitational	row	jud	de	133
+invitational	row	jud	en	133
+invitational	row	jud	fr	133
+invitational	row	jud	it	133
+invitational	row	jud	ja	133
+invitational	row	jud	zhs	133
+invitational	row	jud	zht	133
+invitational	row	mrd	en	245
+invitational	row	mrd	es	245
+invitational	row	mrd	fr	245
+invitational	row	mrd	ja	245
+invitational	row	mrd	pt	245
+invitational	row	nem	de	40
+invitational	row	nem	en	40
+invitational	row	nem	fr	40
+invitational	row	nem	it	40
+invitational	row	nem	ja	40
+invitational	row	ody	de	294
+invitational	row	ody	en	294
+invitational	row	ody	it	294
+invitational	row	ody	ja	294
+invitational	row	ody	zhs	294
+invitational	row	ody	zht	294
+invitational	row	ons	de	120
+invitational	row	ons	en	120
+invitational	row	ons	ja	120
+invitational	row	ons	zht	120
+invitational	row	otj	en	45
+invitational	row	pls	en	116
+invitational	row	pls	es	116
+invitational	row	pls	ja	116
+invitational	row	pls	pt	116
+invitational	row	pls	zhs	116
+invitational	row	pls	zht	116
+invitational	row	ulg	de	74
+invitational	row	ulg	en	74
+invitational	row	ulg	es	74
+invitational	row	ulg	it	74
+invitational	row	ulg	ja	74
+invitational	row	ulg	pt	74
+jumpstart	set	ajmp
+jumpstart	set	j21
+jumpstart	set	j25
+jumpstart	set	jmp
+jumpstart	print	bro	288 289 290 291 292
+jumpstart	print	dmu	282 283 284 285 286
+jumpstart	print	ltr	282 283 284 285 286 824 825 826 827 828
+jumpstart	print	mom	323 324 325 326 327 328 329 330 331 332 333 334 335 336 337
+jumpstart	print	one	404 405 406 407 408
+jumpstart	print	plst	J25-140 J25-15 J25-270 J25-37 J25-45 J25-48 J25-49 J25-533 J25-54 J25-556 J25-590 JMP-15 JMP-154 JMP-24 JMP-26 JMP-278 JMP-304 JMP-46 JMP-62 JMP-7 JMP-78 MOM-327 MOM-329 MOM-333 MOM-334 MOM-337
+jumpstart	print	woe	308 309 310 311 312 313 314 315 316 317 318 319 320 321 322
+jumpstart	not-row	j21	en	25 763
+jumpstart	not-row	jmp	ph	58
+misprint	print	admu	39
+misprint	print	altr	9
+misprint	print	ath	2 14 17 33 46 49 53 60
+misprint	print	atq	12
+misprint	print	btd	69
+misprint	print	chr	41
+misprint	print	dmc	65
+misprint	print	dsc	371
+misprint	print	eoe	299
+misprint	print	fbb	306a
+misprint	print	j16	1
+misprint	print	lea	67 86 103 105 165 166 171 186 191 194 240
+misprint	print	me4	76
+misprint	print	oc21	4
+misprint	print	olep	80
+misprint	print	one	356
+misprint	print	plst	C15-231 DD2-6 DPA-40 EMA-203 EXO-14 M19-314 MH1-91 MIR-14 P02-26 POR-39 STH-127 STH-2 TWOE-17 USG-305
+misprint	print	pneo	59p 59s
+misprint	print	prm	44340 44342 44344 44346 44348 44350
+misprint	print	rvr	31
+misprint	print	s99	103 112 143
+misprint	print	sld	734 741 741★ 1032 1108 1292 1519 1519★ 1765 2305
+misprint	print	spe	7
+misprint	print	sum	202
+misprint	print	tcn2	1
+misprint	print	tdm	99
+misprint	print	thb	347
+misprint	print	tor	1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21
+misprint	print	ttsr	9
+misprint	print	twoe	17
+misprint	print	unf	90 226d 376
+misprint	print	who	641
+misprint	row	10e	en	51
+misprint	row	2xm	fr	324 328
+misprint	row	3ed	de	165
+misprint	row	3ed	en	79 267
+misprint	row	4bb	es	50 180
+misprint	row	4ed	en	247
+misprint	row	5ed	it	148
+misprint	row	acr	en	248
+misprint	row	afr	pt	229
+misprint	row	akh	en	71
+misprint	row	akh	fr	44
+misprint	row	ala	en	137 138
+misprint	row	arb	fr	133
+misprint	row	bfz	ja	4
+misprint	row	bro	en	169 295
+misprint	row	bro	pt	201
+misprint	row	c13	fr	187
+misprint	row	c16	fr	200 284
+misprint	row	c21	en	4 331
+misprint	row	chk	es	74
+misprint	row	clb	de	296
+misprint	row	clb	es	296
+misprint	row	clb	fr	296
+misprint	row	clb	it	296
+misprint	row	clb	ja	296
+misprint	row	clb	ko	296
+misprint	row	clb	pt	296
+misprint	row	clb	ru	296
+misprint	row	clb	zhs	296
+misprint	row	clb	zht	296
+misprint	row	cmd	es	119
+misprint	row	cmd	fr	200
+misprint	row	cmr	en	371
+misprint	row	con	it	142
+misprint	row	cst	de	374
+misprint	row	cst	en	374
+misprint	row	cst	fr	374
+misprint	row	dgm	es	99
+misprint	row	dgm	pt	113
+misprint	row	dmu	en	153 415
+misprint	row	dmu	fr	76
+misprint	row	dsc	en	130
+misprint	row	dst	es	153
+misprint	row	dtk	pt	208
+misprint	row	eoe	en	292
+misprint	row	fra	en	245
+misprint	row	fra	it	43
+misprint	row	frf	de	1
+misprint	row	frf	es	153
+misprint	row	fut	fr	85
+misprint	row	gpt	en	67
+misprint	row	gpt	fr	67
+misprint	row	gpt	it	67
+misprint	row	gpt	zhs	67
+misprint	row	gtc	ja	224
+misprint	row	hou	pt	40
+misprint	row	ice	en	59 203 250
+misprint	row	inv	de	41 78
+misprint	row	j22	en	554
+misprint	row	jou	de	145 151
+misprint	row	lci	zhs	22
+misprint	row	leg	en	22 59 131 135
+misprint	row	lrw	es	239
+misprint	row	lrw	pt	73
+misprint	row	ltr	en	428
+misprint	row	m10	es	143
+misprint	row	m11	es	94
+misprint	row	m13	en	117
+misprint	row	m13	ru	150
+misprint	row	m14	it	226
+misprint	row	m19	en	314
+misprint	row	mat	en	131 187
+misprint	row	mbs	ja	63
+misprint	row	mh1	en	91
+misprint	row	mh2	fr	77 133 169 198
+misprint	row	mir	de	120
+misprint	row	mmq	de	134
+misprint	row	mom	fr	239
+misprint	row	mor	de	102
+misprint	row	mor	es	118
+misprint	row	mor	it	108
+misprint	row	mrd	fr	186
+misprint	row	nem	de	142
+misprint	row	neo	en	59 77
+misprint	row	neo	es	77
+misprint	row	neo	fr	77
+misprint	row	neo	it	77
+misprint	row	neo	ja	77
+misprint	row	neo	pt	77
+misprint	row	neo	ru	77
+misprint	row	neo	zhs	77
+misprint	row	nph	zhs	6
+misprint	row	one	en	44 107
+misprint	row	ons	pt	190
+misprint	row	otj	pt	22
+misprint	row	p02	de	38
+misprint	row	p02	en	38
+misprint	row	p02	ja	38
+misprint	row	pls	de	16
+misprint	row	psal	es	B51 D5
+misprint	row	ptk	en	154 156
+misprint	row	rav	ru	252
+misprint	row	roe	en	6 7
+misprint	row	rtr	es	183
+misprint	row	rvr	en	168
+misprint	row	shm	en	278★
+misprint	row	shm	ja	147
+misprint	row	sld	en	2245
+misprint	row	soi	fr	13
+misprint	row	sok	pt	48
+misprint	row	som	pt	46
+misprint	row	sta	es	16
+misprint	row	thb	pt	187
+misprint	row	ths	fr	43 188
+misprint	row	ths	ko	188
+misprint	row	tmp	de	80
+misprint	row	tsr	fr	289
+misprint	row	tsr	pt	377
+misprint	row	ugin	de	1
+misprint	row	usg	en	305
+misprint	row	usg	es	305
+misprint	row	usg	fr	305
+misprint	row	usg	it	305
+misprint	row	usg	ja	305
+misprint	row	usg	ko	223
+misprint	row	vow	de	98
+misprint	row	vow	es	98
+misprint	row	vow	fr	98
+misprint	row	vow	it	98
+misprint	row	vow	ja	98
+misprint	row	vow	ko	98
+misprint	row	vow	pt	98
+misprint	row	vow	ru	98
+misprint	row	vow	zhs	98
+misprint	row	vow	zht	98
+misprint	row	war	pt	197
+misprint	row	who	en	36
+misprint	row	wwk	en	131
+misprint	row	xln	de	151
+misprint	row	zen	pt	201
+misprint	row	znr	en	1
+related	oracle	4b4c76e1-c480-4d10-93d4-483ef2debc4b	Akki Ronin
+related	oracle	0a69c3dd-52a3-4ef6-b53f-b0780e0dc5f8	Alrund, God of the Cosmos // Hakka, Whispering Raven
+related	oracle	13a9b9fd-20fa-4734-9d95-3ab41ab9c7a0	Ancestral Katana
+related	oracle	370974e7-d242-4f24-a031-cba71c935306	Ardent Dustspeaker
+related	oracle	2b51bbb3-1514-4a79-861f-b9cec9f0ec1b	Armory Veteran
+related	oracle	32e7385e-525e-4925-8cfd-bfea21fcd1bf	Asari Captain
+related	oracle	13c97cb2-fc77-4d4b-8cfb-747f4d448151	Assemble from Parts
+related	oracle	d6cd4aa1-ff3a-4453-8735-e5ace5cbe386	Baba Lysaga, Night Witch
+related	oracle	e7645ac4-6e05-426a-a62d-a33b30c33102	Baleful Beholder
+related	oracle	41fbf835-baee-4530-9155-e2c1b9045567	Base Camp
+related	oracle	5e1bd17d-3825-45c0-9e7c-6887b7e2cb5c	Binding Geist // Spectral Binding
+related	oracle	310f141c-7f37-4729-aed6-dd9c09db448d	Blood Artist
+related	oracle	fde9e060-68ae-469f-9ab4-25fccac78568	Bloodrage Alpha
+related	oracle	c792229b-4a0f-48d5-93e5-60bd4cae9c42	Bretagard Stronghold
+related	oracle	caaedd67-e074-47c4-a956-da88a01f8996	Briar Hydra
+related	oracle	ea7de96f-db69-421d-a951-ffaeac140379	Bruenor Battlehammer
+related	oracle	8b20d6f4-6322-4435-92d5-acaae74774f4	Canopy Tactician
+related	oracle	568432d1-c7fb-4da6-922a-22d4fa26284e	Capenna Express
+related	oracle	651c967c-8f71-4eb5-b22f-545e55ea050e	Carnelian Orb of Dragonkind
+related	oracle	575d067a-83a0-49e7-8a74-e3e46a946c8c	Case the Joint
+related	oracle	a7dc2e62-1c50-4ed7-b71f-2d782a447a5e	Cauldron Familiar
+related	oracle	39f7e59e-28dd-477e-be38-3fa515838ca4	Celebrity Fencer
+related	oracle	3ee68758-9431-4446-8539-f42f545f3bd0	Celestial Regulator
+related	oracle	b6cc351e-6afd-4427-998d-e06e430cd0e6	Circle of the Land Druid
+related	oracle	1665ca9f-176d-40f1-a4e9-42da4f1236e9	Circuit Mender
+related	oracle	232e16f4-32ae-4f42-a377-6bdebc9a06c7	Civil Servant
+related	oracle	200bbf1d-835d-4d61-a6ab-a0b2abfbed79	Cobbled Lancer
+related	oracle	ed7300f4-831a-4ba4-b5e6-ceba8d079eaa	Cosmos Elixir
+related	oracle	0146f430-da82-48d3-a576-c2b05101797f	Dawnbringer Cleric
+related	oracle	e9ede348-f1dc-45ba-9e31-3129ccc182d1	Deal Gone Bad
+related	oracle	eeb50bfc-8443-482b-bfc1-ea96b37809cd	Demilich
+related	oracle	bf65a5f5-5536-4616-a09e-2416439c7bc6	Demon's Due
+related	oracle	0a154fb2-9f23-4c22-baee-728492385d6d	Devoted Grafkeeper // Departed Soulkeeper
+related	oracle	7b1c1a0c-f443-4eb5-a430-9eea886361ca	Divide by Zero
+related	oracle	d377b28f-c887-4937-9f14-74484b612551	Dokuchi Silencer
+related	oracle	0c016ccc-a341-4b76-87ba-69c639d2746d	Dragon's Rage Channeler
+related	oracle	3367fe73-1472-47c8-b5f4-c34164bb397c	Dragonborn Immolator
+related	oracle	f74e53e1-e575-4386-a128-5c87124987d4	Dragonborn Looter
+related	oracle	aa40d270-63d7-4022-ade9-67c1ab65ef70	Dreamshackle Geist
+related	oracle	dcbcbf42-4654-487a-acad-21f2606d229b	Druid Class
+related	oracle	79edf527-2de1-433a-9cac-c91f461b1ebf	Druidic Ritual
+related	oracle	aae4dd38-3b35-4c92-a0d4-5d37cfd93df8	Dueling Coach
+related	oracle	3db19689-73bb-48b2-a464-63615eb6bba0	Dwarfhold Champion
+related	oracle	1903200d-0350-48a9-ac7c-b851f7df647f	Earthquake Dragon
+related	oracle	8e0f4e22-0677-4246-a4c5-6fcc74cb54a3	Eiganjo Exemplar
+related	oracle	29c1f80e-f7e2-425e-a225-e88351fcbaab	Elderfang Ritualist
+related	oracle	8869df0c-fe84-4964-8d38-a8ecefa9c252	Experimental Lab // Staff Room
+related	oracle	0fae0474-25ec-474f-8c7f-9e9061835030	Eyes of the Beholder
+related	oracle	f74107d5-fb4a-464b-9251-42b84d91775d	Faceless Haven
+related	oracle	54deeeef-be90-4975-9213-8355ddf3ce0c	Fall of the Impostor
+related	oracle	87a6c8f4-505e-4e5e-831a-5fb02dffd005	Fearsome Whelp
+related	oracle	27e27681-9221-4e64-8c78-e153a86bc6e0	Fires of Invention
+related	oracle	c234d2ab-21d5-41a9-9ab8-47a8bd53a686	Forge Boss
+related	oracle	9f53aac8-f21f-4928-af8f-65b40cb9149c	Futurist Operative
+related	oracle	a0a1cd2b-ed7c-4cce-8497-4873e1e5e3df	Geological Appraiser
+related	oracle	cd4f7912-81c0-44dd-87c2-a98e955fe5a8	Glamorous Outlaw
+related	oracle	e5481431-c952-4ad9-94fe-355076ef632b	Gnarlid Colony
+related	oracle	af27761d-88df-4d4f-a366-d55ed62d1d33	Goggles of Night
+related	oracle	74027d31-6efb-471d-9499-cdb1cefc9eae	Goma Fada Vanguard
+related	oracle	da8a93c6-66e2-492d-8894-397ba9ec5a87	Graveyard Shift
+related	oracle	72e2aa4f-b4b4-42ab-adc0-d0ac09cd5f92	Guildsworn Prowler
+related	oracle	d2d753d4-3bb7-4503-8cc0-8f948b7a461e	Gutter Skulker // Gutter Shortcut
+related	oracle	3282c7fb-b43d-4dd6-b5a3-cc7d93e01f19	Hagra Constrictor
+related	oracle	749d2994-44e7-40d3-8630-7bebed239e9e	Haywire Mite
+related	oracle	49e1e202-37bf-46ed-93d1-1adb13726039	Heartfire Hero
+related	oracle	0049438b-e37e-4c57-820e-f2ddf3322170	High-Rise Sawjack
+related	oracle	d4a84e78-d9b9-4c67-8a4b-4329e65f0f15	Hullbreaker Horror
+related	oracle	bedf1dd5-b133-455b-bc3d-c7b1f469d91f	Imperial Subduer
+related	oracle	d8b59cc3-766f-4350-971f-edf721fcc5be	Incriminate
+related	oracle	203fcca2-943c-4ea1-a5e0-88b42c24ae6d	Inquisitor Captain
+related	oracle	f73d89ec-05c9-4998-a24b-bc675b04ec16	Jackhammer
+related	oracle	5eef3d70-ef16-4722-8c3d-21a0311597bd	Jade Orb of Dragonkind
+related	oracle	045bf1fd-f375-47a0-9983-7e2ebfed7854	Kargan Intimidator
+related	oracle	63324e72-e580-456a-91be-766c9f07b7b3	Kargan Warleader
+related	oracle	e262b226-9463-40a9-95b2-fe2c3eafc043	Kenku Artificer
+related	oracle	7068637c-b025-41a5-be31-df1850f33b68	Knockout Blow
+related	oracle	76372327-41ec-4516-abff-3b612e073629	Kona, Rescue Beastie
+related	oracle	77212081-0b49-4d92-9c5a-1f21e6907fce	Krydle of Baldur's Gate
+related	oracle	535916f8-b51a-4414-8ab0-fdccdefd9433	Kumano Faces Kakkazan // Etching of Kumano
+related	oracle	67a025eb-6e65-435c-becb-b51085175292	Lantern Bearer // Lanterns' Lift
+related	oracle	00e25126-b807-4753-ba63-9a533755e5ce	Lantern of Revealing
+related	oracle	c61ab8e1-ef23-465d-bcd3-f771434988b2	Lapis Orb of Dragonkind
+related	oracle	f69574dd-097f-4908-9cab-344b0eb39c62	Leyline of Resonance
+related	oracle	f224db3d-cdd2-43f2-b625-4b861efa6449	Lier, Disciple of the Drowned
+related	oracle	23391456-5dfd-4402-88fa-3b08f5e23864	Llanowar Greenwidow
+related	oracle	08377424-619e-48ae-bc3c-fb199cd77cf9	Llanowar Loamspeaker
+related	oracle	cb9994b9-924b-4e10-9075-9cfbec88f2bf	Luminarch Aspirant
+related	oracle	30b03dda-409f-4615-b392-477d66eb49f4	Maelstrom Muse
+related	oracle	fe35b55e-52ae-428e-b27e-817ee78b5d8c	Manticore
+related	oracle	84ac3096-098a-477a-8907-fc30ac15f00f	Masked Bandits
+related	oracle	7accdc91-3140-4096-a71f-0cee38d29e96	Master of Winds
+related	oracle	ba961e01-315a-4195-a6d5-694a97a70b5a	Mentor's Guidance
+related	oracle	6ae9aa10-38f5-4b10-8b44-1164b85acd7f	Meria's Outrider
+related	oracle	c29b592c-7115-4464-beba-e79f62691593	Metropolis Angel
+related	oracle	f394d2bf-89aa-44c1-b473-8c7a8874a9a3	Midnight Assassin
+related	oracle	de68a69a-0c4e-43b9-821d-2fe2269b5e48	Mightstone's Animation
+related	oracle	4d0a0027-53b3-45a1-8736-f0ac86b19342	Mischievous Catgeist // Catlike Curiosity
+related	oracle	4eba0e29-985b-4763-9a70-0946ba044b43	Mishra, Excavation Prodigy
+related	oracle	7cd8b017-8d59-4b55-bb9a-8d8e492ef1ac	Moon-Circuit Hacker
+related	oracle	edf0e7c0-d9a1-4d29-9cee-5267d3a3978f	Moss-Pit Skeleton
+related	oracle	58447f16-1df9-4e9a-bb22-b9aad042055a	Mr. Orfeo, the Boulder
+related	oracle	13a4d0a2-211b-41a9-809f-30025326ac51	Murgish Cemetery
+related	oracle	0ff11a61-6fe3-4c70-aba8-417023a5e54e	Nadu, Winged Wisdom
+related	oracle	6044696a-0f64-474a-840e-8ed4dbd30221	Nael, Avizoa Aeronaut
+related	oracle	18beb8eb-6f67-482f-9a7d-282f1e7ecbc1	Narfi, Betrayer King
+related	oracle	d04b6c2c-50fc-464d-9991-230efec70d2b	Nashi, Moon Sage's Scion
+related	oracle	ba7a46f1-c2a5-42d3-93eb-4dcea7186e5e	Navigation Orb
+related	oracle	a93b5956-c11e-434e-bed5-94af9de55382	Nezumi Prowler
+related	oracle	be3c138b-045b-4b08-a12f-a5679d972051	Ominous Parcel
+related	oracle	cd133d30-51ff-4114-a7d7-029345f0f0d7	Omnath, Locus of Creation
+related	oracle	94a7dcef-d1c1-4ffa-869e-b911e84ed66c	Oran-Rief Ooze
+related	oracle	c1c62704-1f20-48cf-8588-47e7fca85f7b	Paragon of Modernity
+related	oracle	1f65c853-5262-4b75-b324-1fe0c165170d	Patrician Geist
+related	oracle	fe3b0393-dc50-4fa6-9b3f-1175a6a825e4	Peerless Samurai
+related	oracle	d95e7282-b298-4410-baac-01766d6852e3	Phantom Carriage
+related	oracle	36082b5e-760b-4245-af59-00d308470d1a	Plate Armor
+related	oracle	de9cee6e-d95b-4e8b-99e4-3b43a0a542aa	Pseudodragon Familiar
+related	oracle	a4e8d2ad-cce2-45de-b9a2-7ba3b1546efb	Psionic Snoop
+related	oracle	c5f360dc-fe4e-4796-b5c1-468cbd0f6d24	Public Enemy
+related	oracle	e15e9024-0f84-4200-8105-c0863b2bfd45	Puppet Raiser
+related	oracle	7f42a05c-9e6d-4cbc-92f1-4433cd22f149	Pyre-Sledge Arsonist
+related	oracle	c983338d-ae6b-4a15-9931-daa20fca8269	Queza, Augur of Agonies
+related	oracle	0d6d5509-41e5-4099-98a0-18ae7531df7d	Radha's Firebrand
+related	oracle	fbf0bde7-cb13-402b-b3ab-81c787ce4827	Radha, Coalition Warlord
+related	oracle	9028f726-50c7-49f3-8386-e584415dcba2	Raiyuu, Storm's Edge
+related	oracle	04dd9395-847b-46f7-a669-9b0df89d01ff	Ready to Rumble
+related	oracle	adfb28ca-2ba6-4104-b731-f8fd9367f7ec	Revel Ruiner
+related	oracle	c756d786-9aff-4d2e-9c06-6ae01d5fca2e	Riveteers Initiate
+related	oracle	d8b7b78e-91b2-4ad5-aeb8-6ebdca363e71	Rockslide Sorcerer
+related	oracle	ed1d21ba-ddfe-4f82-9e37-93f9e2c7ba33	Satoru Umezawa
+related	oracle	dffc6785-31b0-487c-b9a0-980bca39753d	Security Rhox
+related	oracle	04936cc9-c915-4182-b84a-3491d26be548	Sepulcher Ghoul
+related	oracle	b01e9ff2-865a-401e-a839-568cd4a0451d	Sewer Crocodile
+related	oracle	92eae6af-b915-4eb8-93c4-527f732bb712	Shattered Seraph
+related	oracle	fb29737c-2dfa-4139-988b-29dc8b829c08	Shessra, Death's Whisper
+related	oracle	d70ee6f1-541b-43b4-897c-68a231beb894	Shipwreck Sifters
+related	oracle	472756f7-7fb8-4630-be14-d78bb9c99157	Sigardian Paladin
+related	oracle	ae7e14cf-a275-4260-8d78-324429a042b7	Sigil of Myrkul
+related	oracle	60ec735d-c9be-4776-beb7-f603ae22edbf	Silver-Fur Master
+related	oracle	f8975d81-d373-49b1-be00-9513b92877d9	Sizzling Soloist
+related	oracle	47c67df1-52f5-459f-b83e-6b971be9b294	Skemfar Avenger
+related	oracle	043ded41-2506-4dab-91c4-142d9287e7d7	Skyclave Shadowcat
+related	oracle	70af9a03-20d6-44e3-a181-b60e80bff643	Social Climber
+related	oracle	19ba0f2d-4de3-49a0-be7d-da0aa220cd8a	Sorcerer Class
+related	oracle	fee680c6-afe2-4321-9d8a-8f81a612a53b	Sorin, Imperious Bloodlord
+related	oracle	2d73a3bd-f052-4f48-9a72-12db03e27249	Soul of Windgrace
+related	oracle	02718076-4c71-4bf5-988f-e6f94fbf0aef	Spara's Adjudicators
+related	oracle	4e08e07f-ca30-4e34-b207-d8fe62c03777	Speakeasy Server
+related	oracle	912c5e71-554c-4e31-8831-018760752eb1	Spell Satchel
+related	oracle	48ad5bd6-9568-4813-be29-99aef8b9327a	Split the Spoils
+related	oracle	b0871e12-b156-4fa6-b01c-acaae222b3a5	Sprouting Goblin
+related	oracle	c823d38c-e73c-4e09-ab20-c5e7de1f1c64	Steadfast Unicorn
+related	oracle	eedbc164-032c-420f-ac59-bd2675ff1b69	Stitched Assistant
+related	oracle	c47ae79c-4e07-47f2-8920-2ab62b471e4f	Sunbathing Rootwalla
+related	oracle	16cb916d-bb19-42ec-9a01-969e9d067b40	Symmetry Sage
+related	oracle	0d6be8a4-b05b-40fb-a653-5aabf71809e0	Syndicate Infiltrator
+related	oracle	73c44cf5-a601-4625-9550-e722fba2ec0b	Tanazir Quandrix
+related	oracle	7d5e734f-3efc-4124-b1d8-4fe3e9d3db28	Tatyova, Steward of Tides
+related	oracle	ae7604bb-4818-45a3-960c-cf3d83f15964	Teferi, Time Raveler
+related	oracle	780536da-2923-48e7-916a-61c701382d28	Tenured Inkcaster
+related	oracle	127de52b-df75-4342-95a0-20d84c5bf916	The Meathook Massacre
+related	oracle	3aa83ed2-f48b-4ce6-a614-2c54ddf50538	The One Ring
+related	oracle	39f17e13-018c-4a00-ab25-1ac5a904de63	Thornmantle Striker
+related	oracle	926ce6a2-7bdd-4380-ac65-bc902ba0c284	Thran Portal
+related	oracle	b145952b-52e3-4a66-b47e-f08a489f9443	Tome Shredder
+related	oracle	9696bb23-06f5-47d6-bc67-bff5f483379b	Town-Razer Tyrant
+related	oracle	e1c33cfe-1d48-463d-83bb-111374505194	Umara Mystic
+related	oracle	b23cba46-6ed2-442d-bc39-7c4933f6b083	Unholy Heat
+related	oracle	0191a93a-f304-4c20-9af4-7cdea82c07cf	Uurg, Spawn of Turg
+related	oracle	a945710e-fab6-4b54-ba40-586f2e54baf4	Vampire Scrivener
+related	oracle	95e66851-7aff-4559-91b4-6b8a95c6e1f8	Vega, the Watcher
+related	oracle	0452be2a-e97a-4269-a9e3-b616265ecb2e	Vivi Ornitier
+related	oracle	02598a35-1b11-4abe-89cd-fc44c8c36c15	Winota, Joiner of Forces
+related	oracle	36f68aa3-9955-46f1-bc87-497f16ef5222	Wizard Class
+related	oracle	9913da11-07f0-494a-8c47-11629dcb5be2	You Come to a River
+related	oracle	1402c792-6e2f-4a85-8a0c-8db3c8ce5f1f	Zar Ojanen, Scion of Efrava
+spellbook	oracle	2c4a0410-0dfc-461f-8dd5-2a91cf85ffef	Adaptive Armorer
+spellbook	oracle	6c6abebe-1b42-49af-befd-02c29f71e5e2	Archival Whorl
+spellbook	oracle	9a884415-caa2-40bc-b935-b00e5ab6779e	Arms Scavenger
+spellbook	oracle	86a9954a-ff82-4194-a192-e13cb88b93d0	Big Spender
+spellbook	oracle	d93fef14-c821-4a65-9e84-f268f777737f	Bind to Secrecy
+spellbook	oracle	36b86a7c-fcd3-4636-9118-0d07da210fdd	Bladehold Cleaver
+spellbook	oracle	1d7c3f12-3c8f-4e54-beb2-481247a6a750	Blood Age Muster
+spellbook	oracle	92add7ef-7083-42f4-a4e7-c8648806b809	Boseiju Pathlighter
+spellbook	oracle	d42922ba-73e2-459d-8d4e-02ca5759b108	Brave Meadowguard
+spellbook	oracle	123d002c-0004-4e0e-80f3-f0f9555201ac	Brazen Boarding
+spellbook	oracle	4d778e20-2c68-4bdf-8a87-d210c66716d2	Break Expectations
+spellbook	oracle	7a56bdd4-f70e-4abf-9cb7-1624be3288ce	Brood Astronomer
+spellbook	oracle	2ec81b8c-5b9b-4fa6-8bcb-122624b444a3	Celestial Vault
+spellbook	oracle	c235c226-815d-491b-8cfb-d2053349a5cb	Charged Conjuration
+spellbook	oracle	d66af7be-8d59-4e4a-985a-e6d6ee078587	Contagion Dispenser
+spellbook	oracle	263d9b81-22ac-443a-a43a-3363652d554d	Cursebound Witch
+spellbook	oracle	c10723bf-e007-4ae9-9db1-a9fc6a824a26	Darigaaz, Shivan Champion
+spellbook	oracle	109b2fba-6477-4fc6-8e25-4aff574ae6bd	Dazzling Flameweaver
+spellbook	oracle	db79b170-743d-4c86-87bb-e1e7e90b63fa	Dragon Typhoon
+spellbook	oracle	471d5eea-5c20-4d7e-92b3-7c6fde69fa69	Dragonweave Tapestry
+spellbook	oracle	b46b282a-5cb1-4ef2-8a07-6af922cf09c2	Drover of the Swine
+spellbook	oracle	257191d7-6216-4353-bb34-0587c91bae2a	Emmara, Voice of the Conclave
+spellbook	oracle	8b1a28aa-cb07-4fe0-976b-c8d267c1c56d	Eumidian Lifeseed
+spellbook	oracle	b01657ad-120f-4d00-a367-fd112d403700	Euru, Acorn Scrounger
+spellbook	oracle	2b7422a2-badf-4ef2-80ff-c28e20d5387b	Experimental Pilot
+spellbook	oracle	e5391540-78e3-4ca8-a207-37c606722065	Faithful Disciple
+spellbook	oracle	f1c260ea-5b9a-4925-b352-312762fba32f	Follow the Tracks
+spellbook	oracle	5967ced4-fd2b-4434-8747-7335c2bec201	Garruk, Wrath of the Wilds
+spellbook	oracle	a7536283-e209-4add-a640-e52b072b2cd7	Glimmer Hoarder
+spellbook	oracle	ac50acc1-b1dd-45a0-905b-785562488d38	Goblin Influx Array
+spellbook	oracle	b4616040-d450-40c6-b1ca-0fa9ed6a00a7	Hinterland Chef
+spellbook	oracle	af33a600-f014-4388-b7c4-3773dcfeda2f	Imperial Blademaster
+spellbook	oracle	d14f7256-dfe3-47ce-bd1f-1e126dd00808	Indris, the Hydrostatic Surge
+spellbook	oracle	c9be8101-899a-495c-8130-ccfef072455e	Ishkanah, Broodmother
+spellbook	oracle	86795a55-0a22-435b-9d40-a468fddc1768	Kayla's Kindling
+spellbook	oracle	16cdfb7f-43af-4561-bfff-1c8477c73990	Key to the Archive
+spellbook	oracle	5c944bd7-0478-4002-a8dd-f9f03bd56ee7	Loose in the Park
+spellbook	oracle	f1761d24-a19e-43ea-bbb3-a987b5a2941b	March Toward Perfection
+spellbook	oracle	4d057a7d-1c66-4e39-acd5-91d68ef1ceae	Masterpiece Vault
+spellbook	oracle	52c768a0-0ac6-48df-95f5-1b6e5308caa4	Ominous Traveler
+spellbook	oracle	b77dcee1-f42e-4c9d-b6b7-6d5885826060	Oracle of the Alpha
+spellbook	oracle	acd99f6d-31af-44d6-b176-235117227cae	Oyaminartok, Polar Werebear
+spellbook	oracle	21fdc935-a7e7-4f86-a530-dce41b684448	Paradigm Shifter
+spellbook	oracle	1e85ed89-da61-4ab2-8616-eb2456724268	Porcine Portent // Lend a Ham
+spellbook	oracle	b9e5f1dc-359f-4767-9d71-90766d2420b4	Protean War Engine
+spellbook	oracle	260ddd54-715f-4bbe-8065-466d1f825a76	Raddic, Tal Zealot
+spellbook	oracle	5bacbb8c-80d2-4127-93fe-e4d71e27a21d	Razor Demon
+spellbook	oracle	48bd3ae8-02b8-48d5-8d68-2689e595d0ef	Recruit Instructor
+spellbook	oracle	015dd954-f82f-40e9-9dcc-f9efa8c6ec9a	Relics of the Rubblebelt
+spellbook	oracle	8aad5f6d-45f8-4e03-adab-6b8edbfafd95	Saint Elenda
+spellbook	oracle	eb2a99ea-057f-45db-a711-e1de64f501b8	Sandcloud Harbinger
+spellbook	oracle	2d9a20d6-6e41-49ed-a9ef-e0d91710d7f0	Sanguine Soothsayer
+spellbook	oracle	f05ded1d-23f1-4451-b62f-5a19a2b9c75e	Scalespeaker Shepherd
+spellbook	oracle	97d573c9-e91d-438e-98e0-e0918f8d430c	Shellfish Scholar
+spellbook	oracle	873f362b-1307-4464-980d-8f064b9382f0	Skywriter Djinn
+spellbook	oracle	8936390b-fd33-4ef0-a044-fd1bbcce82c7	Slayer's Bounty
+spellbook	oracle	71186adb-cb2a-489d-aef8-b4e60942b9fe	Slimefoot, Thallid Transplant
+spellbook	oracle	2313b5f6-c6e0-4a99-acf6-62b227449bfc	Sliver Weftwinder
+spellbook	oracle	fa642294-f654-461a-834e-1d654365cb6c	Stormkeld Curator // Giant Secrets
+spellbook	oracle	8f2edf05-2783-450b-9a64-1f012de200b1	Support Skyforge
+spellbook	oracle	39e84302-785f-40d4-8ac7-8bb0ee6857cb	Swine Rebellion
+spellbook	oracle	da9c8b15-cfa1-443f-857e-06ce50c7b3b1	Tajic, Legion's Valor
+spellbook	oracle	f40def64-c010-4267-a1ab-de60323d912d	The Hourglass Coven
+spellbook	oracle	195f0d16-691c-4a0c-979b-7c23add615cc	The Mystical Archive
+spellbook	oracle	62d11a21-849c-46f4-9cdb-d92be00082a9	Thoughtsteal Sprites
+spellbook	oracle	91fbc00a-0a2b-4351-8717-5228c72fd825	Tibalt, Wicked Tormentor
+spellbook	oracle	bbcd0ff4-c3bf-462c-8334-da9c1786bdf2	Tireless Angler
+spellbook	oracle	4ea06221-47aa-4e16-8630-7b8039608436	Tome of Gadwick
+spellbook	oracle	a8455d49-867d-4282-92d4-34c2bc7f69e4	Tome of the Infinite
+spellbook	oracle	171166dd-a2c5-4219-b6b8-fa3c9efdbece	Volatile Orbit
+spellbook	oracle	eef3d87e-82b6-4f3c-af1a-38e67133baa1	Vv'viza, Orbital Overseer
+spellbook	oracle	a085fea3-ea32-4c84-9276-eab164c03cc5	Xander's Wake
+spikey	oracle	7bf6f13a-3c90-4bda-bc84-e026828bf4d1	"Lifetime" Pass Holder
+spikey	oracle	acee1d16-1651-4e2c-8138-cc6456c4ee71	"Name Sticker" Goblin
+spikey	oracle	c1882cb4-f69e-441e-8871-743ed636cad0	Aarakocra Sneak
+spikey	oracle	2b22cf44-7b03-4919-9812-6796bf193484	Abuelo's Awakening
+spikey	oracle	981b0e21-e5e6-4a1e-bfde-679d56623f7f	Ad Nauseam
+spikey	oracle	512a9ab9-ddd4-4872-b4f4-dee56f9f5575	Adriana's Valor
+spikey	oracle	aefd49a4-ecec-42cb-b882-e5db7f81eff8	Adun Oakenshield
+spikey	oracle	86373537-7424-416a-8d89-cc38f6538458	Advantageous Proclamation
+spikey	oracle	20046568-b067-49fb-93b4-2ee86421f14b	Aerialephant
+spikey	oracle	fc148e1e-dff0-448e-9f16-625341754356	Aether Vial
+spikey	oracle	470ec98e-120c-446d-ade6-7d80aa836b55	Aetherworks Marvel
+spikey	oracle	4cd82c7a-86df-4d29-b578-c009208c0d4b	Agent of Treachery
+spikey	oracle	2588f348-d7a3-46c8-9ace-dca53ed5ef99	Ajani, Nacatl Pariah // Ajani, Nacatl Avenger
+spikey	oracle	6517edb3-30e2-40ba-b6e4-4554b4bbb342	Ali from Cairo
+spikey	oracle	a4d751e0-41c1-4e90-853d-512f385acd81	All That Glitters
+spikey	oracle	bc842838-1993-4480-b8fe-f9d9f2dee7a4	Alrund's Epiphany
+spikey	oracle	85eefda9-4aab-467d-a08c-be026cb8ff42	Amalia Benavides Aguirre
+spikey	oracle	183a9488-e21f-448b-8b69-e53b56fa0a56	Ambassador Blorpityblorpboop
+spikey	oracle	3ed14ea7-ee62-4604-af3b-deafb00108c3	Amped Raptor
+spikey	oracle	a06f8476-0a23-413a-bc28-8dc2427fdc2a	Amulet of Quoz
+spikey	oracle	481c3bfe-2293-447d-aa03-3ea6ed9321aa	Ancestral Hot Dog Minotaur
+spikey	oracle	550c74d4-1fcb-406a-b02a-639a760a4380	Ancestral Recall
+spikey	oracle	9728dec9-d482-4c7a-8cdc-44d010dc878d	Ancestral Vision
+spikey	oracle	02f16726-f2f6-4943-b71a-93f8e26251d3	Ancient Den
+spikey	oracle	23467047-6dba-4498-b783-1ebc4f74b8c2	Ancient Tomb
+spikey	oracle	d5e6ac6b-5786-4d98-8037-0867e365fc93	Angus Mackenzie
+spikey	oracle	8ead94c5-8447-4f20-87ec-efdccde689fc	Arcades Sabboth
+spikey	oracle	62e7e7b1-9887-4d15-b0e5-a8ddc711bd88	Arcbound Ravager
+spikey	oracle	0fdfe986-0216-468b-aac8-bbcf588fd894	Arcum Dagsson
+spikey	oracle	ec463bde-dadf-4044-8e41-71338fd4d62f	Arcum's Astrolabe
+spikey	oracle	c5acf2a5-40f4-433d-a74d-1cb56c521464	Arid Mesa
+spikey	oracle	c9ed8b01-959a-47d6-891e-0abbdccf6e4f	Armageddon
+spikey	oracle	4d4b7108-5287-4d52-94a1-a0f99c14c969	Ashnod's Coupon
+spikey	oracle	8c912b1f-4584-4945-9931-f6850e5ebfa4	Assemble the Rank and Vile
+spikey	oracle	3095f2cf-05c3-4381-929f-c526b6fc30a7	Atog
+spikey	oracle	b337c241-f2c4-48e3-a303-371b172fcd18	Attune with Aether
+spikey	oracle	c8c868f8-19a5-4cc5-b769-aa382f7b97ad	Autumn Willow
+spikey	oracle	c640350b-16a5-4227-87fa-8b24fdb367c7	Axelrod Gunnarson
+spikey	oracle	35e4ed0e-8ce2-4729-a009-0d6be8f47663	Ayesha Tanaka
+spikey	oracle	3bf3e503-0628-4550-84a9-7c1dd0a97457	Baaallerina
+spikey	oracle	05c2dec2-d2f7-4036-b91f-4fccba10a8bb	Back to Basics
+spikey	oracle	6f14f61f-e533-4541-b861-4dbaf0d88833	Backup Plan
+spikey	oracle	2b0afb89-0944-4861-b9c3-e909e2ac215e	Badgermole Cub
+spikey	oracle	17fa98cd-ed8f-483f-9525-7e989a82ebb2	Balance
+spikey	oracle	abb6f51b-2a14-44ac-8c19-e135c9deb1ea	Balloon Stand
+spikey	oracle	39b4a47a-df51-4bd9-9a20-43ac80a5d352	Balustrade Spy
+spikey	oracle	baf80db7-2ca8-4bfc-b5b6-25ed51878dd7	Baral, Chief of Compliance
+spikey	oracle	4a221518-c850-4e8a-a697-765c0a0e76e7	Barktooth Warbeard
+spikey	oracle	fc728cd7-2b5b-45f3-896a-a45648bcb61d	Baron Sengir
+spikey	oracle	9beccf09-c024-408b-9f84-fe2c7462babb	Bartel Runeaxe
+spikey	oracle	a7c69802-99c4-4778-934e-cc09ba58c267	Basking Broodscale
+spikey	oracle	54022a10-c9f0-458d-a0ed-228843cd9a40	Bazaar of Baghdad
+spikey	oracle	8b67d192-9a05-4a47-82ae-5fc4b7834d88	Berserk
+spikey	oracle	fb8b8c58-7bdc-4daa-b48b-728a26e174dd	Bioluminary
+spikey	oracle	447de961-106c-4189-83ce-ca63d487e1cd	Biorhythm
+spikey	oracle	f8b9dd54-0837-47f4-ad14-7a0322d46d5f	Birthing Pod
+spikey	oracle	fb868840-09fa-49b1-85cb-b08ad065e972	Bitterblossom
+spikey	oracle	5089ec1a-f881-4d55-af14-5d996171203b	Black Lotus
+spikey	oracle	de7839fb-7040-48ab-a6d4-d1952972943d	Black Vise
+spikey	oracle	ccba143d-ed9b-4044-bdad-f010a0e38e47	Blazing Shoal
+spikey	oracle	94fac5fe-97d5-4c12-a80c-8efff9d853ae	Blood Moon
+spikey	oracle	3f0c9466-5ab9-4205-a84f-b4b27b5a678e	Bloodbraid Elf
+spikey	oracle	fc0707c7-d504-4ccf-a0d2-3eb6e26e7a57	Bloodstained Mire
+spikey	oracle	634a61a1-47a4-4a23-b138-fb487e6a7cba	Bonder's Ornament
+spikey	oracle	913aed6d-60c3-4d08-baf8-359e2c41a797	Boris Devilboon
+spikey	oracle	b0b9d116-6776-40eb-8191-50fa570419eb	Bounce Chamber
+spikey	oracle	395b312b-8fe6-4c28-b91d-620b5fcb9e6d	Brago's Favor
+spikey	oracle	d85aa59b-c6aa-4b2f-885c-59d6e5e6e8b9	Braids, Cabal Minion
+spikey	oracle	9908e597-9470-4c13-8387-39431b380138	Braingeyser
+spikey	oracle	36cd2364-d113-47d1-b2c4-b088d9eb88dd	Brainstorm
+spikey	oracle	0f071f64-b69b-4fa0-999c-5028429e3cfb	Bridge from Below
+spikey	oracle	e0c00a74-bdf8-4fee-8042-42c5878e9e3c	Broadside Bombardiers
+spikey	oracle	a1ab033f-9605-4ca2-a98b-c0b2e1599609	Bronze Tablet
+spikey	oracle	f2fe3d93-77f0-400f-85f1-dc6e84111bff	Bumper Cars
+spikey	oracle	13a884b5-8970-4d71-9082-a8b6c8db9a01	Burning Wish
+spikey	oracle	327d9679-0049-4401-8dab-e0fb362306bd	Burning-Tree Emissary
+spikey	oracle	c7c7bffa-442d-4ba5-b778-ad394c192f27	Candelabra of Tawnos
+spikey	oracle	ba5bc14b-db2c-4561-a6a4-a02443791260	Carnival Carnivore
+spikey	oracle	7e06b7b4-22c1-4e5b-81ee-54ab5ac756eb	Carnival Elephant Meteor
+spikey	oracle	a7dc2e62-1c50-4ed7-b71f-2d782a447a5e	Cauldron Familiar
+spikey	oracle	74027ba4-a6ba-4696-baf1-60ef0b27ee0a	Chalice of the Void
+spikey	oracle	520abf49-7631-4e7f-889e-547ccc8c3b95	Chandler
+spikey	oracle	d1b815d1-2848-40d4-a555-66822d1becbc	Channel
+spikey	oracle	edb455f4-8dc9-4b7c-b25c-cb51b7dfbb41	Chaos Orb
+spikey	oracle	7e6c7b57-bd6a-4ac8-bcab-c3a879f479c2	Chatterstorm
+spikey	oracle	68982532-c0c8-477b-9dd4-180c6d22731e	Chicken Troupe
+spikey	oracle	ec3d4466-547c-4e02-b1b5-a156ec4637e9	Chrome Mox
+spikey	oracle	7c91ae5d-0320-46a7-98d2-df0918202478	Chromium
+spikey	oracle	c31801e6-2444-4158-8e19-2afe751d7cff	Circle of Flame
+spikey	oracle	886e00ab-c694-4839-b3fb-7a72048db4b2	Clandestine Chameleon
+spikey	oracle	a610c77c-fe31-4465-a1c1-392db4ce4ed1	Cleanse
+spikey	oracle	adc1f3b4-cce7-42c9-a208-dbab1d1924f5	Cloud of Faeries
+spikey	oracle	f705c0eb-9c6c-4315-a860-208ed0c5d93e	Cloudpost
+spikey	oracle	71da6074-227a-4561-be1f-13477266f2be	Clown Extruder
+spikey	oracle	e9e25800-9ee7-40c9-b22d-611c7281c125	Coalition Victory
+spikey	oracle	5d9c7ca4-f735-4bee-b03f-4c0c76ee48ed	Coming Attraction
+spikey	oracle	f6c079cd-69c2-4da4-ba41-91844a4d2f06	Command Performance
+spikey	oracle	ad7d854b-d303-40eb-acd6-03a8023e05e7	Commandeer
+spikey	oracle	018627e1-ba32-4452-b3d1-6c2a39759aff	Complaints Clerk
+spikey	oracle	2559fe2d-92b9-43c8-b538-d424df25eae8	Concession Stand
+spikey	oracle	67624a72-aa18-4b0c-a2cb-77e56499944a	Contortionist Otter Storm
+spikey	oracle	9e0ed4b0-28b5-44be-ab83-f1e8eb07138d	Contract from Below
+spikey	oracle	ba2bb276-b7ef-46ec-9618-2cf4d60c70a6	Cool Fluffy Loxodon
+spikey	oracle	80bc56a9-40e0-48da-ae86-190e39c8a4a3	Copy Artifact
+spikey	oracle	46b1a169-bc32-47bf-b379-fa0c3d13878f	Cori-Steel Cutter
+spikey	oracle	24c52448-03f2-43cd-9172-487384baeb18	Costume Shop
+spikey	oracle	cc187110-1148-4090-bbb8-e205694a39f5	Counterspell
+spikey	oracle	75564721-e4e9-463a-b49e-f0c7cd6f53a7	Cranial Plating
+spikey	oracle	e958b3c5-0666-4a99-a933-e5cb8b0da9da	Cranial Ram
+spikey	oracle	28b46183-c62f-47b1-9fee-3ba148202cab	Crop Rotation
+spikey	oracle	33c722cf-b4bf-431f-aefd-ee96241a7fbf	Crucible of Worlds
+spikey	oracle	4692740f-be90-459f-8d90-c4ae71771595	Crusade
+spikey	oracle	bdf80a55-b524-4d17-9be8-a0005403a0e7	Cunning Wish
+spikey	oracle	535fd365-19f4-4861-8f86-d814650355e9	Cursed Firebreathing Yogurt
+spikey	oracle	514752ea-d453-41d4-97cf-b1dcdb4b4a08	Cursed Scroll
+spikey	oracle	1aa78e3b-bf7e-4645-9521-4b3537c93f46	Dakkon Blackblade
+spikey	oracle	c9b82110-7dfd-4617-9399-9510be449043	Dark Depths
+spikey	oracle	53f7c868-b03e-4fc2-8dcf-a75bbfa3272b	Dark Ritual
+spikey	oracle	74f10b9a-a286-49b2-bfa1-a427ff041bd4	Darkpact
+spikey	oracle	8dc067bf-f78f-4ac4-b6e7-b305c42cf0bc	Darksteel Citadel
+spikey	oracle	45f3b9f2-3fce-4f91-bcbd-de069e5f9e4c	Daughter of Autumn
+spikey	oracle	5b4215b2-d473-4521-846d-6d63e93faebe	Davriel's Withering
+spikey	oracle	22b5721d-c187-4e0f-b752-52c2a26f3505	Davriel, Soul Broker
+spikey	oracle	70486bee-6ee7-41ea-b834-8caf4699302b	Daze
+spikey	oracle	ae4b00ab-25ad-4177-8b86-af8b84d67ef3	Deadbeat Attendant
+spikey	oracle	457af74a-02b3-4659-846d-63e482667f34	Deadly Dispute
+spikey	oracle	0456ec64-2c81-4763-a352-8ff64a4c3d6b	Deadly Rollick
+spikey	oracle	ff0ca1a4-da67-407c-a5c0-998a35eb7d8d	Death Wish
+spikey	oracle	22f1a4a4-c423-4d1c-8775-0ed604a9fa51	Deathrite Shaman
+spikey	oracle	e4a338d5-8cd5-4583-893b-ebbede2280c6	Dee Kay, Finder of the Lost
+spikey	oracle	43f5ce56-6ad1-4a42-b1d7-26f1c7933693	Deep-Fried Plague Myr
+spikey	oracle	ae120613-97d6-4393-b39d-c3e6c076f5d6	Deflecting Swat
+spikey	oracle	65a9f643-063f-406a-8d5a-5ebbe0f04c3d	Demonic Attorney
+spikey	oracle	9a1412db-45ad-46ea-8f12-a85d203113d8	Demonic Consultation
+spikey	oracle	13d9822f-0398-4915-818b-b9fbaf63b93c	Demonic Tourist Laser
+spikey	oracle	82004860-e589-4e38-8d61-8c0210e4ea39	Demonic Tutor
+spikey	oracle	afa49a09-146f-4439-850e-dd1938c93cef	Derevi, Empyrial Tactician
+spikey	oracle	cb814e16-acf7-41d5-a357-1323dcc369f3	Devoted Druid
+spikey	oracle	f8b17b89-26ce-4208-874a-9e1d66514640	Dig Through Time
+spikey	oracle	1973f1e9-aa14-49dc-bafe-be17b30ba288	Dingus Egg
+spikey	oracle	c8625113-0ce4-4454-83a1-25c31b8bfb9a	Disciple of the Vault
+spikey	oracle	0aafaef7-4827-4c80-87db-060f5be803f9	Discourtesy Clerk
+spikey	oracle	d6c46906-1339-4440-8cd0-2bb9890d4975	Disruptor Flute
+spikey	oracle	7b1c1a0c-f443-4eb5-a430-9eea886361ca	Divide by Zero
+spikey	oracle	0158a440-6573-4f12-958b-a5f0cf190d5b	Divine Intervention
+spikey	oracle	697bcfe1-ecbf-42a1-bfc7-0766d48ca56b	Dockside Extortionist
+spikey	oracle	2a248d6a-aa83-4e59-848b-46de8204b538	Done for the Day
+spikey	oracle	721eb5a2-d7cf-4db0-8013-ef3f596c52a5	Doomsday
+spikey	oracle	e25ab152-e166-44df-8f92-668bab0e9619	Double Stroke
+spikey	oracle	f73ba6ae-87c1-4e5d-ae52-59d11d7d6ba6	Draconian Gate-Bot
+spikey	oracle	aadd10d0-6dd0-4bdc-8d93-ff08e29a5863	Drannith Magistrate
+spikey	oracle	352b64d2-2ae5-44ee-a64f-94932ef545d3	Dread Return
+spikey	oracle	4c05b382-58ab-4a2d-a81c-408ea273b6b6	Dreadhorde Arcanist
+spikey	oracle	d901e17f-a5f4-49d9-8a6d-ab771949af24	Dream Halls
+spikey	oracle	54c4fd18-adf5-408b-a529-019ebc24ca8d	Drop Tower
+spikey	oracle	50aa7aff-1f01-4224-9a83-01f74d703ec2	Earthcraft
+spikey	oracle	22e89c6d-2304-4def-8a74-e53a6271e9b9	Echoing Boon
+spikey	oracle	41e2790d-49f5-4e98-b8d9-04179f47f13a	Edgar Markov
+spikey	oracle	9a1de7e4-9930-4db3-a8f3-d146d0abf38b	Edric, Spymaster of Trest
+spikey	oracle	6614c21f-080e-441c-9ebb-c7369c1f52e1	Eldrazi Guacamole Tightrope
+spikey	oracle	7fab8d65-af51-47d3-8f10-2676bf6e8ba3	Eldrazi Temple
+spikey	oracle	5829ac8e-bd1c-4065-b30a-5307ab11ae79	Elemental Time Flamingo
+spikey	oracle	88e936c3-cab9-430f-baa1-930ff557cbf6	Emissary's Ploy
+spikey	oracle	3a59c882-8bb8-49ba-862f-125020dd5bec	Empty the Warrens
+spikey	oracle	900ca697-ad38-4b2b-bc74-2ff7eb6ea951	Emrakul, the Aeons Torn
+spikey	oracle	4e7a8817-1a66-45c3-ade9-eac79b40b89f	Emrakul, the Promised End
+spikey	oracle	c85d824b-c190-4d04-ab99-918ad0e6516c	Endurance
+spikey	oracle	c5229c17-b7be-4b05-b683-f2277edc4849	Enlightened Tutor
+spikey	oracle	299fc083-0834-4064-8344-f895aff68867	Entomb
+spikey	oracle	d83bb32d-f409-421a-9d93-bd7ea3240b47	Erayo, Soratami Ascendant // Erayo's Essence
+spikey	oracle	cabcc2b7-0cdb-4ec2-b6a3-47644335abff	Eron the Relentless
+spikey	oracle	45a8c126-5396-4736-a37e-460a50706a98	Escape to the Wilds
+spikey	oracle	60a69ddc-3289-4786-944d-27a82c5f0dc8	Eternal Acrobat Toast
+spikey	oracle	8fcf50cd-e6d0-4516-850f-d42ee75dcc3a	Expedition Map
+spikey	oracle	c7aecca5-2f67-4245-ab2d-e723d8b23a67	Expressive Iteration
+spikey	oracle	a69265b2-0e37-4d86-866e-e4a923233b4d	Expropriate
+spikey	oracle	10d13ff6-c4d0-4753-8939-a8a90f0e92bb	Eye of Ugin
+spikey	oracle	c0957e5e-c71b-439c-931c-9f55d2f76ace	Fable of the Mirror-Breaker // Reflection of Kiki-Jiki
+spikey	oracle	f74107d5-fb4a-464b-9251-42b84d91775d	Faceless Haven
+spikey	oracle	437b2dab-15e0-4b9a-a204-58622d37a3b3	Fact or Fiction
+spikey	oracle	3d6fa57a-aa53-4b5c-b8af-a7612c823117	Faithless Looting
+spikey	oracle	e89e1fae-bac3-4cc0-a233-24b9e08a5290	Fall from Favor
+spikey	oracle	f5ca7b13-8003-4361-b827-7095c89f2750	Falling Star
+spikey	oracle	41c0e1f1-8ebe-4cd2-96fe-e4bb625fe6ee	Familiar Beeble Mascot
+spikey	oracle	e27193b7-1a47-4555-865d-b1fd4c6d597f	Fastbond
+spikey	oracle	9b884dfd-59f4-45c0-bf1e-6ad9f5b58895	Feldon's Cane
+spikey	oracle	33869ba6-13e5-4e48-8963-92f7965648fb	Felidar Guardian
+spikey	oracle	9a41a4ad-944f-4326-b53b-1176f98bcce4	Ferris Wheel
+spikey	oracle	aa959340-c869-4caa-92c7-572bd8d23eef	Field of the Dead
+spikey	oracle	d09c9cba-fdd2-479b-ad5d-d05181c3e3f9	Fierce Guardianship
+spikey	oracle	5f589a11-1601-4a17-92d6-58e9dd9b00f2	Fight the _____ Fight
+spikey	oracle	d41dc3a5-58e4-444a-b388-5a32ccbed0eb	Finishing Move
+spikey	oracle	9dd7f27a-e862-47d7-9158-034cf4d353b8	Fireblast
+spikey	oracle	27e27681-9221-4e64-8c78-e153a86bc6e0	Fires of Invention
+spikey	oracle	1766f1f4-0924-4436-8379-94030adcccc5	Flare of Cultivation
+spikey	oracle	437cfd16-94bc-43ba-afd8-e9e9d028a4ca	Flare of Denial
+spikey	oracle	f586ecb8-310c-4f40-a766-6a7ca46a254d	Flare of Duplication
+spikey	oracle	4ff07b7c-e97a-4b57-bcf1-2f22c37a8bd6	Flare of Fortitude
+spikey	oracle	4ce156f8-6b0b-41ce-9e8f-b2735c757406	Flare of Malice
+spikey	oracle	3e057471-e415-4105-9064-8236a0a5047d	Flash
+spikey	oracle	4e183439-17d2-47ff-9d99-5e22821d91e3	Flawless Maneuver
+spikey	oracle	f3c7af78-a77d-4134-82a2-a5ce84285a84	Flooded Strand
+spikey	oracle	5ed0c7cc-9969-4387-90f8-3084dd18026b	Fluctuator
+spikey	oracle	91da3f60-733f-42f9-9614-547ce53c0d7e	Foam Weapons Kiosk
+spikey	oracle	5c8e5092-962e-49ef-ab82-8434e475e4e7	Food Chain
+spikey	oracle	ac2173f9-f223-440a-9231-fd98762bdc6f	Force of Negation
+spikey	oracle	5f627e45-deee-4a4f-8128-57b0d8ebc553	Force of Vigor
+spikey	oracle	956381ba-6d37-4a8a-846c-bad79222dbee	Force of Will
+spikey	oracle	50c53ae0-51ba-4046-ac74-87c65e688032	Fork
+spikey	oracle	a837fe34-ae85-4bb6-af5a-4dec30b18f52	Fortune Teller
+spikey	oracle	16e015b2-f8a3-4b1a-80be-58a8f5fb5e8c	Frantic Search
+spikey	oracle	fbf9f8c5-849f-45d5-8129-5fc683c21a04	Fury
+spikey	oracle	e8521fdf-0896-4747-8c66-ea3bb69eb876	Gabriel Angelfire
+spikey	oracle	7c427c3d-ecd8-45ef-bebd-8f10f4a311db	Gaea's Cradle
+spikey	oracle	ef0f06f1-3991-4897-bf62-d4cab7ec79a0	Galvanic Discharge
+spikey	oracle	973c684c-a396-4e40-8aaa-365bc64a6f9a	Galvanic Relay
+spikey	oracle	d38ad188-515e-4865-a0ed-5d0fd4c7b453	Gauntlet of Might
+spikey	oracle	c0a448ee-e5f9-4e57-85b0-f6d401018170	Geek Lotus Warrior
+spikey	oracle	64df77f6-4f7e-442a-971c-8ad3f7d1c979	General Jarkeld
+spikey	oracle	a0a1cd2b-ed7c-4cce-8497-4873e1e5e3df	Geological Appraiser
+spikey	oracle	26f6170a-34dc-41c8-b3b1-20377f131e6e	Giant Mana Cake
+spikey	oracle	02fe8ed4-3c5d-4875-b584-b33b819c47be	Gideon's Intervention
+spikey	oracle	58aec411-167d-4709-8560-793eaaed62c5	Gifts Ungiven
+spikey	oracle	1d67f5ff-1fce-45e5-b6a1-416c569351e2	Gitaxian Probe
+spikey	oracle	5fae52ed-1b84-406e-951d-b0d329dc48a7	Glimpse of Nature
+spikey	oracle	3786047e-f136-49f8-81d6-08beb3f9bcfd	Glitterflitter
+spikey	oracle	7cad08c1-4bd9-4d9f-85d2-fb3ab718fbb8	Goblin Coward Parade
+spikey	oracle	213fbbdd-f1bc-4bba-9124-7b26e9a706c8	Goblin Lackey
+spikey	oracle	792e1072-00bf-4f63-b956-5f20cdf09f11	Goblin Recruiter
+spikey	oracle	e5f25cbd-39e4-4806-8dba-9a552356696d	Golden Wish
+spikey	oracle	686f4a37-b5e4-46d4-9e0e-11794b2d12cd	Golgari Grave-Troll
+spikey	oracle	efe9c3e0-7315-408e-9903-9d25a681039b	Golos, Tireless Pilgrim
+spikey	oracle	fb966147-1d60-4150-b4e7-acf301b2d067	Gosta Dirk
+spikey	oracle	0259a9ed-0558-4183-b737-871ed5573c32	Gran-Gran
+spikey	oracle	4f92804f-a231-4406-9a16-f4e102517b06	Grandmother Sengir
+spikey	oracle	ebd2d760-5ad8-4027-b124-171822f3edfe	Grapeshot
+spikey	oracle	f4819061-b0b5-48ab-af7b-6525c3d2eab7	Great Furnace
+spikey	oracle	0d96b60b-a060-48ee-bb83-93f1c4a10669	Green Sun's Zenith
+spikey	oracle	0d6b89dc-23fb-48e9-a54b-cea2838ae7c8	Grief
+spikey	oracle	229d6627-1292-4ae1-8849-b0f956fa6540	Grim Monolith
+spikey	oracle	97560adc-814e-450c-9ca7-f9364e910a0b	Grindstone
+spikey	oracle	eca27964-accc-46cc-8aff-a06183e61e9c	Grinning Ignus
+spikey	oracle	f759d112-76db-4091-a22b-b9f19ab6fa5f	Griselbrand
+spikey	oracle	34bcc217-dd91-45a0-90d7-a94d02f1f317	Growth Spiral
+spikey	oracle	b304ac72-7f40-40de-b8d6-6392909b6029	Guide of Souls
+spikey	oracle	16d8ee99-8ec8-429f-9ba7-818a74b6f910	Gush
+spikey	oracle	60e7130a-d321-4e50-93a4-999013c76054	Gut, True Soul Zealot
+spikey	oracle	de44e7c8-01f9-44f9-9716-9e8a5b82b1ff	Gwendlyn Di Corci
+spikey	oracle	e9ad9df4-2fd6-4a22-b861-0a8d28f2fe10	Hada Freeblade
+spikey	oracle	2ee13155-a3b8-4cad-8e68-5d2c5aba3bb4	Halfdane
+spikey	oracle	327b89dd-2ec5-4498-9ddb-c097851e69a3	Hall of Mirrors
+spikey	oracle	c7476beb-7923-4994-8476-bc69187ecb72	Hammerheim
+spikey	oracle	c3e5d355-fbfb-4489-aeea-8b0ea5de6fcd	Happy Dead Squirrel
+spikey	oracle	84910453-e5dc-4bff-8554-86a5f4ab2746	Harbinger of the Seas
+spikey	oracle	fcd0ef3b-46dc-4a1c-8163-8c2319769419	Haunted House
+spikey	oracle	35844d8b-8f68-4248-b921-e766757a9e26	Hazduhr the Abbot
+spikey	oracle	d298df4e-7b60-4495-9773-cc81954b7dd9	Hazezon Tamar
+spikey	oracle	49e1e202-37bf-46ed-93d1-1adb13726039	Heartfire Hero
+spikey	oracle	b68e965a-96f4-447a-99be-35dbd27846e9	Heartless Hidetsugu
+spikey	oracle	16f6438d-2a29-41cb-bf0c-4d02bd66112b	Hermit Druid
+spikey	oracle	dc671205-f2fa-454f-9957-921a6069ad53	High Tide
+spikey	oracle	b0d84455-dc35-45d3-901e-8d28363142f4	Hired Heist
+spikey	oracle	97acd977-164d-49d5-b3a1-72e0d75c9016	Hogaak, Arisen Necropolis
+spikey	oracle	20f7f33d-0c49-49f7-80fa-aed86e33a528	Hold the Perimeter
+spikey	oracle	5e63b69c-d901-4a01-8dfa-88e044856239	Hopeless Nightmare
+spikey	oracle	2f533667-e29b-4bec-897a-e7a9eee08314	Hullbreacher
+spikey	oracle	ed7bdb3e-5c51-4547-9266-76a791e0b2b0	Humility
+spikey	oracle	dd4f3a78-3167-42d0-8334-5ac36750a253	Hunding Gjornersen
+spikey	oracle	ed1e5d24-c8a8-48fe-a88f-1003ad432477	Hurkyl's Recall
+spikey	oracle	dfa62414-48c6-4e5c-8609-1ce507b41505	Hymn of the Wilds
+spikey	oracle	992d9a72-d34d-47d7-96fb-37f0efb515ef	Hymn to Tourach
+spikey	oracle	cf288b0a-a343-4ef7-ba02-4f83a6dabeaf	Hypergenesis
+spikey	oracle	759af941-f6a3-4726-91f2-9b1e4e55ea71	Hypnotic Specter
+spikey	oracle	3608f1f7-8dc5-4dd1-ae91-c830e1de9529	Icy Manipulator
+spikey	oracle	5eb29367-4ec3-4bd2-887e-13eeeecae8fa	Ihsan's Shade
+spikey	oracle	05ac866d-0405-4d25-986a-c10fcfc097e6	Illusionary Mask
+spikey	oracle	5a9c1c2d-d4d7-4df3-a853-f1b81c67b3e3	Immediate Action
+spikey	oracle	16cd0b90-f70c-4efa-b252-8de8784ef9a3	Imperial Seal
+spikey	oracle	632de66b-2314-4299-847c-16a84bf9121f	Imprison
+spikey	oracle	70caaa64-9623-4d05-9843-18460fea963b	Incendiary Dissent
+spikey	oracle	2155f3d8-c876-42bc-b546-a476425a4133	Information Booth
+spikey	oracle	d21c3c8f-d105-4ba9-bf69-e5f26f0f8ec5	Intangible Virtue
+spikey	oracle	1e943e04-e213-4781-b1a7-935aad8790e1	Intruder Alarm
+spikey	oracle	941350ba-30e2-4549-865f-ca1bd7626782	Inverter of Truth
+spikey	oracle	9264c198-76c7-4ac0-9334-37c691de1b54	Invigorate
+spikey	oracle	f9ee4c80-20fb-4322-be02-1c78d37d7a99	Invoke Despair
+spikey	oracle	854ad486-0c59-4c57-9a76-ab1dff0ff37c	Invoke Prejudice
+spikey	oracle	5e816472-561d-43d1-ad28-80a829e2a91a	Iona, Shield of Emeria
+spikey	oracle	2727a7ec-1cf7-4cd7-b5d4-955db940ddd9	Irini Sengir
+spikey	oracle	79172853-240c-4924-8b20-edf469946df4	Iterative Analysis
+spikey	oracle	d416a4ed-9f16-4a8b-8aee-03c630e1eb6c	Ivory Tower
+spikey	oracle	7f77a84e-5a4b-4834-aefa-3cecc175ae8e	Jace, the Mind Sculptor
+spikey	oracle	c030ca14-33cb-40b3-a1f5-b6d0cb0efd49	Jacques le Vert
+spikey	oracle	942407bf-862a-4a0b-b19d-b9f8ee833026	Jasmine Boreal
+spikey	oracle	523cca7d-7d21-45de-b82d-58e777bf7f72	Jedit Ojanen
+spikey	oracle	f0587c55-06c1-4930-a62e-668f37464ce9	Jegantha, the Wellspring
+spikey	oracle	fd20576d-4abe-4af8-ac53-ab9356593fe7	Jerrard of the Closed Fist
+spikey	oracle	fe37c718-b3fb-4e95-a547-dd741b70421c	Jetpack Death Seltzer
+spikey	oracle	89f5b21c-18da-4071-bc42-9cdc433734bf	Jeweled Bird
+spikey	oracle	23216e59-f147-4bb7-a698-12777c2f8584	Jeweled Lotus
+spikey	oracle	b18b9869-8490-4875-a5bb-484c3299f2c5	Jihad
+spikey	oracle	ad33ada7-4f89-4cab-88db-1f4d024baa36	Johan
+spikey	oracle	9e767d44-feff-449a-bed9-0866c7bce846	Joven
+spikey	oracle	4ac9116f-36bc-4d71-b696-d6ee064e1d58	Juggernaut
+spikey	oracle	59119143-c0fa-49dd-adf0-e2fd3029c48b	Karakas
+spikey	oracle	a20dd48d-d344-4db1-b0e9-a2b71c3cc9d1	Karn, the Great Creator
+spikey	oracle	64b1a2a2-d3ff-41c6-8d92-987ef29bb776	Kasimir the Lone Wolf
+spikey	oracle	f3229980-994e-4492-be98-267b781614c1	Kei Takahashi
+spikey	oracle	1bf08ba0-4235-4dea-9722-ed991a3b6044	Kethis, the Hidden Hand
+spikey	oracle	c99ce798-e332-4672-8fba-6da74ab14582	Kiddie Coaster
+spikey	oracle	fbbc3acb-c917-44ff-ac6f-9dd6ebe3f4ad	Kird Ape
+spikey	oracle	cf631c93-b7fb-4e4f-b405-3778c15b1117	Kokusho, the Evening Star
+spikey	oracle	68e1f7e0-a9b3-437f-8086-0c0cb85f2880	Krark-Clan Ironworks
+spikey	oracle	f3e28778-0149-4dbd-badb-ba5aeacacd76	Kuldotha Rebirth
+spikey	oracle	74284bbc-b011-4e16-b8d5-7ddacc77f9d7	Lady Caleria
+spikey	oracle	8800d672-424b-4a7b-886f-7eb9d7a56cfe	Lady Evangela
+spikey	oracle	fcae9e87-50af-46b4-ab48-42ed92985e10	Lady Orca
+spikey	oracle	d2d9ecea-7925-420e-98b9-2f87f41f387c	Land Tax
+spikey	oracle	54ddf766-b528-488d-9b98-8a101bdb5de9	Last Voyage of the _____
+spikey	oracle	d5d91377-fd66-4dbe-a092-07f2ea379ca7	Leovold, Emissary of Trest
+spikey	oracle	1197a595-3afc-4f18-b868-bbb096771922	Leyline of Abundance
+spikey	oracle	f69574dd-097f-4908-9cab-344b0eb39c62	Leyline of Resonance
+spikey	oracle	2111588d-9af5-4a33-989e-b074d83f0463	Library of Alexandria
+spikey	oracle	4457ed35-7c10-48c8-9776-456485fdf070	Lightning Bolt
+spikey	oracle	5b287dcc-f853-4df1-8ddf-5b8b2adc2873	Limited Resources
+spikey	oracle	6c3847b6-9bfb-49b5-8f1a-bdb40e6900f1	Lin Sivvi, Defiant Hero
+spikey	oracle	a43d9793-b2ee-427c-95ca-285611aa1a4d	Line Cutter
+spikey	oracle	71433aef-5a06-449e-93b1-9565cb0afd93	Lineprancers
+spikey	oracle	0b8c3337-04dd-4798-8203-6d8b8cfb936b	Lingering Souls
+spikey	oracle	ee6099b0-fb1f-42f1-b862-7708c6e36d05	Lion's Eye Diamond
+spikey	oracle	b9d186f5-1c92-4539-a5b5-e7fbd4b726fe	Living Wish
+spikey	oracle	57f2aa02-f5f3-42a5-939d-5cc94200951e	Livonya Silone
+spikey	oracle	a698c9f5-325a-49f6-8902-eef09f4260c5	Lodestone Golem
+spikey	oracle	59258149-1c18-421b-b940-d0aa29da572a	Lord Magnus
+spikey	oracle	134d5b82-7940-4b33-a922-7f9d1f403e50	Lotus Field
+spikey	oracle	32e5339e-9e4f-46f8-b305-f9d6d3ba8bb5	Lotus Petal
+spikey	oracle	370d67f6-8d43-46ca-ae6c-00799bb0bd0c	Lucky Clover
+spikey	oracle	3bc757c1-3adb-4321-8832-8e1cc9e687f7	Lurrus of the Dream-Den
+spikey	oracle	158a6225-a246-4fd6-aa57-0df8067b4383	Lutri, the Spellchaser
+spikey	oracle	6800d01c-345d-4932-a2a4-8df0fb1902f2	Magus of the Moon
+spikey	oracle	fe2601a4-cbd5-4866-92a2-5586f737c9af	Make a _____ Splash
+spikey	oracle	2c63e4e1-89d2-4bc6-a232-94e75c4b1c8a	Mana Crypt
+spikey	oracle	74d3277a-38e5-4732-afed-084a56148f20	Mana Drain
+spikey	oracle	a8dba58b-2956-492e-ae30-49db2ae68e53	Mana Geyser
+spikey	oracle	736892cb-a34b-4bb9-b56c-e26e3db207a2	Mana Vault
+spikey	oracle	c202f124-4283-48f6-aef1-470ad9ded22b	Marhault Elsdragon
+spikey	oracle	dab520d0-20b4-4273-ba6b-eb07f85ea433	Marsh Flats
+spikey	oracle	38a12bd7-4394-44a8-91a0-6a4ff7fa4f71	Maze of Ith
+spikey	oracle	a5d02339-9f6d-486e-87d8-5ec2274cf680	Meddling Mage
+spikey	oracle	eb9c9a34-88a8-4afe-a053-806f6b29834f	Memory Jar
+spikey	oracle	bbfb3e4a-b389-4391-8141-13b68c0ef2e0	Memory Lapse
+spikey	oracle	1a0770e6-b093-4439-baff-6889a50ba12e	Mental Misstep
+spikey	oracle	86cebe2a-95e7-4f22-99cc-e805aeaf347e	Merchant Scroll
+spikey	oracle	288fdfbb-1236-4732-afd7-e7eaba860007	Merieke Ri Berit
+spikey	oracle	fab271da-bc9b-44fa-b3db-fb2dfd2724b0	Merry-Go-Round
+spikey	oracle	9ed9accb-9f0c-40fa-aeea-2d1e1c9d1bd1	Metalworker
+spikey	oracle	656afde2-cdf3-4907-a0fc-7ac93f5d3e03	Mind Over Matter
+spikey	oracle	78f9c223-9982-4282-a496-a6f892f0a5bf	Mind Twist
+spikey	oracle	b3739b5a-5731-4c64-a244-815a363b0d5c	Mind's Desire
+spikey	oracle	67151297-3d25-4882-b562-56025ee81f48	Minotaur de Force
+spikey	oracle	8d231d2f-5274-4b55-8262-9eb95654d183	Mirror Universe
+spikey	oracle	63afc3d1-7653-476e-838f-fc18d4a62a21	Mishra's Bauble
+spikey	oracle	ba284fe6-bb29-455c-8321-9714a0cdc05e	Mishra's Workshop
+spikey	oracle	09dd85aa-47bc-4713-a9b9-8b52ff2285ed	Misty Rainforest
+spikey	oracle	658252ed-7f52-4a31-834b-c39cee1d5e00	Misunderstood Trapeze Elf
+spikey	oracle	42208fea-8c24-451f-861d-6d70c0a7a502	Moat
+spikey	oracle	3979067a-9c68-443d-a85f-d9f07be880b9	Monastery Mentor
+spikey	oracle	dafd2713-d1bc-474b-b390-d2ff20b5375e	Monastery Swiftspear
+spikey	oracle	f59fe075-f507-4a2c-a65c-725ff3084bd0	Monitor Monitor
+spikey	oracle	646a2371-54c0-4492-ac2f-20f109d6108c	Monstrous Rage
+spikey	oracle	f3c5978a-70fa-431f-933b-b954bd0db0ea	Mox Diamond
+spikey	oracle	376ee366-e082-402f-b4db-6592fcfcacd2	Mox Emerald
+spikey	oracle	0677f49e-f8bf-4349-af52-2ccde9287c2e	Mox Jet
+spikey	oracle	de2440de-e948-4811-903c-0bbe376ff64d	Mox Opal
+spikey	oracle	824597b8-c89a-47ec-8526-7efc6e24ef0e	Mox Pearl
+spikey	oracle	ed85fa82-e4fa-434b-92a8-36b6075708d1	Mox Ruby
+spikey	oracle	d5ed1233-df87-4b90-8918-13922ec95249	Mox Sapphire
+spikey	oracle	0e505699-8388-4862-93e0-059cef91cdd4	Muzzio's Preparations
+spikey	oracle	ae1f2ab5-c6a5-4d49-a746-3cb4668bf805	Mycosynth Lattice
+spikey	oracle	4f0c3154-1917-4bb5-9ba2-446943a88808	Myra the Magnificent
+spikey	oracle	c490157a-cff5-417b-8f83-15f84398e34f	Mystic Doom Sandwich
+spikey	oracle	994bc16d-fdc6-475c-96df-beeb4d5aa03e	Mystic Forge
+spikey	oracle	17b60106-a4c7-410a-8ac3-ec8e74e29a7c	Mystic Sanctuary
+spikey	oracle	fb81f95c-70f8-4eb7-8d15-15d0ae23ec03	Mystical Tutor
+spikey	oracle	8364cf93-c323-46f4-854f-ae872e484438	Márton Stromgald
+spikey	oracle	0ff11a61-6fe3-4c70-aba8-417023a5e54e	Nadu, Winged Wisdom
+spikey	oracle	dc65bb62-4ba2-4ec1-b3b9-9c51e64cbfc8	Narcomoeba
+spikey	oracle	366e0a62-ff95-48d1-bc63-7995a393bc34	Narrow-Minded Baloney Fireworks
+spikey	oracle	ab26fbe2-e808-48b9-8d0d-3fbb6c3d554f	Narset, Parter of Veils
+spikey	oracle	8c1fe337-375a-4add-93b6-0ac39ed72b4f	Natural Order
+spikey	oracle	3deb19f6-c1a3-4bca-a6ae-df5d0b42a66e	Natural Unity
+spikey	oracle	7c48448e-4e13-4cda-999e-e06ae0f7dcea	Nebuchadnezzar
+spikey	oracle	94a844d2-0574-45a7-b347-e0e329767c42	Necropotence
+spikey	oracle	6c1d22d4-f28e-4041-a9b6-1575e8929b61	Nexus of Fate
+spikey	oracle	e26bf6a9-b31c-4bc0-b55b-c01f2f69be6b	Nicol Bolas
+spikey	oracle	1436370f-baf0-4659-804e-90aad871b05b	Night Brushwagg Ringmaster
+spikey	oracle	959acb66-84ca-4535-bca2-ad591895735e	Niv-Mizzet, the Firemind
+spikey	oracle	06f8efdd-4e8e-4524-859b-71f2f1732ad5	Notorious Sliver War
+spikey	oracle	cf0dcb27-f02e-4065-81dc-75fbbb09ea3f	Oath of Druids
+spikey	oracle	c4efdbab-711d-4269-9b24-b05d36f7e5c7	Oath of Nissa
+spikey	oracle	d0a31db0-69db-405c-99a3-945617900c54	Obscuring Haze
+spikey	oracle	60c60923-ff1b-43f7-8768-731499fcffc9	Oko, Thief of Crowns
+spikey	oracle	1d85eec2-80db-466c-bd48-d2a12866e8bd	Old Stickfingers
+spikey	oracle	cd133d30-51ff-4114-a7d7-029345f0f0d7	Omnath, Locus of Creation
+spikey	oracle	d00ade82-caab-43c6-9756-6e9e6edfc519	Once Upon a Time
+spikey	oracle	0b16a650-68b0-44dc-a9e1-15b7966e0b18	Orcish Oriflamme
+spikey	oracle	baf93873-35e6-4bf2-bdcc-78a5206422fb	Painter's Servant
+spikey	oracle	d7121ac7-e425-46cd-b006-1af391d97f87	Palladia-Mors
+spikey	oracle	505cb78d-b292-4d16-b3f2-110164b4cc93	Panoptic Mirror
+spikey	oracle	d38937a6-ab1c-4de8-a278-d81a6ce0d921	Paradox Engine
+spikey	oracle	02f31e00-646d-4971-8704-1583bbfcddd6	Park Bleater
+spikey	oracle	41026872-3c7b-40c7-8d0b-9d2f9b6c3e91	Pavel Maliki
+spikey	oracle	f70e72e1-9abe-485b-9fea-e8b35352f5b3	Pendelhaven
+spikey	oracle	0bd67481-6bd9-48d6-92bd-8933b5ea1eae	Peregrine Drake
+spikey	oracle	90f54959-2c9b-4b8a-84c9-d6893eb43553	Personal Tutor
+spikey	oracle	ad6dd363-e1b7-4df4-b9b6-4f5c1fae3bc6	Petting Zookeeper
+spikey	oracle	3407eb6e-b74d-4159-a801-d7163937953c	Phlage, Titan of Fire's Fury
+spikey	oracle	dde09abb-e3d3-4c76-b7e8-812949dd67f3	Phyrexian Midway Bamboozle
+spikey	oracle	786b3657-b595-4b38-83f2-d40915e51e2b	Phyrexian Revoker
+spikey	oracle	43ce339e-c595-4215-bdb3-d93d0808417e	Pick-a-Beeble
+spikey	oracle	69fedfbb-5d88-4fe0-81e1-1e97a56c6aca	Pin Collection
+spikey	oracle	a188fe7e-68de-4c7c-806c-bfe8fc7b44bf	Pithing Needle
+spikey	oracle	065cdf8d-6874-4ab6-a08e-79bd88b245bd	Playable Delusionary Hydra
+spikey	oracle	ef86989d-ce80-4e55-aece-7d11710eeffa	Polluted Delta
+spikey	oracle	02090581-61aa-4348-ad57-451be8ee91c2	Ponder
+spikey	oracle	15710c57-369a-442b-b7ea-175f3d9d164d	Power Play
+spikey	oracle	37c49483-bef6-47c6-9354-ead8560d48da	Pradesh Gypsies
+spikey	oracle	ac641490-ca14-48d7-8cc4-b69ce984befa	Preordain
+spikey	oracle	e9da499c-fa43-4e94-8395-5c030ff39502	Price of Progress
+spikey	oracle	a7a00246-54e7-4213-b95b-907ab9015e53	Primal Elder Kitty
+spikey	oracle	44b12ccc-81cb-4ec1-891e-4bf706e53aa4	Primal Surge
+spikey	oracle	ae83ef2c-960f-4c5b-97cc-52465c687c18	Primeval Titan
+spikey	oracle	dd1d21f5-f5cd-43e4-8155-3cca85da80a9	Princess Lucrezia
+spikey	oracle	41b05346-8531-4086-96a5-e973aff150cb	Prize Wall
+spikey	oracle	ddd3f530-1ea4-4b1e-9f9b-5d34fa626529	Proficient Pyrodancer
+spikey	oracle	b749e9e4-0f2a-4157-8cca-facd6b48157f	Proft's Eidetic Memory
+spikey	oracle	372351fd-58f7-4cb8-8644-5fbc94ccb145	Prophet of Kruphix
+spikey	oracle	134a9877-5cfb-4a2a-a0f0-930dce45f58b	Prophetic Prism
+spikey	oracle	10180e2f-90c5-4d41-ba44-16b14948f923	Protean Hulk
+spikey	oracle	e157ad1e-be35-47f3-92db-01799f8fb6a5	Psychic Frog
+spikey	oracle	1890ef1b-38e5-432d-b040-f33cea7814e7	Punishing Fire
+spikey	oracle	d001febc-d511-4e65-a631-91dc9415056b	Pyrokinesis
+spikey	oracle	a4f50771-4a10-4d5d-a7c4-0e24c873a0ae	Quick Fixer
+spikey	oracle	66d4a218-5404-4389-b495-eaeda9a34401	Rad Rascal
+spikey	oracle	37108cd4-bbab-4ce3-9ed6-f60e8422e703	Ragavan, Nimble Pilferer
+spikey	oracle	6d474413-e72f-414e-872f-aa00d38b7da4	Ragnar
+spikey	oracle	48b9c510-03ed-41cb-8c17-16110d447490	Ramirez DePietro
+spikey	oracle	3e5ca524-8dd1-4f7f-a467-5210d768b8a1	Rampaging Ferocidon
+spikey	oracle	6c9a9071-8159-4607-9465-de796f1dc2cc	Ramses Overdark
+spikey	oracle	d0d35864-1edc-4af1-9b89-3d7e94908011	Ramunap Ruins
+spikey	oracle	8e1e477a-192a-4e5c-a18b-7e25d9bd47f3	Rashka the Slayer
+spikey	oracle	fef452ee-9018-4175-bb79-476544e48433	Rasputin Dreamweaver
+spikey	oracle	a044474a-cd72-4e9d-bd8d-a08f2de9cdc0	Reanimate
+spikey	oracle	d17576b2-4a47-4848-8908-3152c8b4afe2	Rebirth
+spikey	oracle	4158f397-4ee4-4f53-90f2-3b64bfe4f9b8	Recall
+spikey	oracle	b6be94dc-7162-4887-b959-3bda709724eb	Reckoner Bankbuster // Reckoner Bankbuster
+spikey	oracle	a6708b11-1bcd-4208-a967-fe91f2e3313c	Recurring Nightmare
+spikey	oracle	5398362d-c45e-4d56-a622-8be1124730b9	Reflector Mage
+spikey	oracle	e6e4a8bd-5c40-4654-8de1-0da9afed90fd	Regrowth
+spikey	oracle	523ae937-5535-490d-96ea-07f331b5e5ad	Replenish
+spikey	oracle	7085d5c6-da96-465e-90cf-8469fcacb474	Reveka, Wizard Savant
+spikey	oracle	8772e5cc-d3f3-4d68-86e7-6c105f39930a	Ride Guide
+spikey	oracle	1ba0dce5-e767-47cc-9967-174e52bce120	Riftsweeper
+spikey	oracle	f3e8dc56-2810-474e-a6a7-9c3555f94ae9	Rishadan Port
+spikey	oracle	8a2e53f9-8100-488f-8504-b59e9bd1cc29	Rite of Flame
+spikey	oracle	2742d506-897f-4d30-ba43-ce0374984849	Riven Turnbull
+spikey	oracle	9ce17fde-71ec-482a-b9f9-78681bc894d8	Robo-Piñata
+spikey	oracle	3015882b-4897-4d2c-8e33-6731c85a0d03	Rofellos, Llanowar Emissary
+spikey	oracle	b2f09e41-0a91-4fb6-8804-874b3a5166b0	Rogue Refiner
+spikey	oracle	44412804-aa69-4e62-b118-123741d91914	Rohgahh of Kher Keep
+spikey	oracle	6efcf15a-2204-486f-9cff-7311054dcee0	Roller Coaster
+spikey	oracle	5e24a352-7c90-458b-9bb2-bd4bc22bc748	Roxi, Publicist to the Stars
+spikey	oracle	bd3eeaba-964b-49ea-bb11-5875a78b8a4c	Rubinia Soulsinger
+spikey	oracle	98116aec-2ab1-4bee-b727-9feff6274825	Rukh Egg
+spikey	oracle	14cefb15-d833-4c70-80c9-f2d34b6c846b	Runed Halo
+spikey	oracle	ccb456a0-3abd-4bde-a453-20d2da210e05	Rusko, Clockmaker
+spikey	oracle	0e084342-31ff-47a5-9fd8-5b385add7a1a	Saheeli, the Gifted
+spikey	oracle	16663933-c8e2-4411-8eed-673c52fa3ecb	Sassy Gremlin Blood
+spikey	oracle	cb027150-848c-4a66-88ad-e20222304dd8	Scalding Tarn
+spikey	oracle	64dbed80-b3a2-4a0f-afe4-c3d968173e50	Scampire
+spikey	oracle	5f1e9098-f554-4505-974b-cef4b4b7b23d	Scholar of the Lost Trove
+spikey	oracle	fcb7c93c-46ab-49b5-a6e0-35d73f3be8f0	Screaming Nemesis
+spikey	oracle	6048a682-f218-4039-8d5e-3e5156817fb2	Seasoned Buttoneer
+spikey	oracle	39451b4d-cd7a-40da-b457-cb51b609173f	Seat of the Synod
+spikey	oracle	15cef63b-903e-4f1b-a128-e59157e07c36	Second Sunrise
+spikey	oracle	1342ee23-c3a0-4578-833a-e30a9fc9141c	Secret Summoning
+spikey	oracle	f309fe9f-0732-4b81-a342-a394225cbbb1	Secrets of Paradise
+spikey	oracle	704723f3-0490-4d96-930a-aacc6d19ba8d	Seeker of Skybreak
+spikey	oracle	64bf8929-f5f2-4d50-8667-13b1d007bcfc	Seething Song
+spikey	oracle	13575cf9-65c1-4861-b21e-eb2155e07766	Sensei's Divining Top
+spikey	oracle	7df49476-7b6c-4b5d-bede-463a7d2e0a58	Sentinel Dispatch
+spikey	oracle	dd520d83-297a-487f-b8f3-4997bbc056e0	Serendib Efreet
+spikey	oracle	27ad3e00-6ffb-48f7-8469-8868d066d1e2	Serra Ascendant
+spikey	oracle	34187c71-6033-4058-aadc-2bc266f762be	Serra's Sanctum
+spikey	oracle	25c83d45-581f-48ba-b6bb-feb66e8a65c7	Sewer-veillance Cam
+spikey	oracle	fc04f621-338b-4d4c-bf57-5e5a00d990f0	Shahrazad
+spikey	oracle	b83a3ba0-249e-4c39-bbf0-cb005413f7d2	Show and Tell
+spikey	oracle	44e0ffa3-8915-4c1f-8f1a-4aeea1365f07	Simian Spirit Guide
+spikey	oracle	5a46ad2a-35b1-4dd5-b7c3-fec36b7c67ab	Sinkhole
+spikey	oracle	7a9942cd-32ac-4cc9-8840-3fe6b092d0b8	Sir Shandlar of Eberyn
+spikey	oracle	333cc91b-01ab-4491-a993-d8304fc382c6	Sivitri Scarzam
+spikey	oracle	8c85887d-5935-46ec-a075-dc9f5133bb96	Skeleton Ship
+spikey	oracle	65986c1b-8e51-4604-b685-d82fa7d1263a	Skullclamp
+spikey	oracle	2d13d399-7198-4cab-b564-dfe0e09425a3	Slimy Burrito Illusion
+spikey	oracle	49136bdc-bc50-49a2-999a-1ef9c16ea130	Smuggler's Copter // Smuggler's Copter
+spikey	oracle	3e5ac76b-08bd-4232-9290-49742b0ff603	Snazzy Aether Homunculus
+spikey	oracle	e7aee670-e6ac-4b3a-b3d1-7b7013db8f3d	Sneak Attack
+spikey	oracle	1cbfe1f2-776b-429d-9a60-8da32058a927	Sojourner's Companion
+spikey	oracle	6ad8011d-3471-4369-9d68-b264cc027487	Sol Ring // Sol Ring
+spikey	oracle	b8aac8e8-4588-4cb9-8b95-5c4abab1c48b	Sol'kanar the Swamp King
+spikey	oracle	dcb9c2a7-ae54-4ddc-a567-640bf4bf4366	Solitude
+spikey	oracle	0f1c14c5-7a28-47b0-a603-33cc592b00ad	Soraya the Falconer
+spikey	oracle	b2187f45-80ae-4ac4-9f83-5eb7a00978e2	Sorcerous Spyglass
+spikey	oracle	fee680c6-afe2-4321-9d8a-8f81a612a53b	Sorin, Imperious Bloodlord
+spikey	oracle	52d90fc8-bd72-432b-a6f8-d4bf6398c50d	Soul Swindler
+spikey	oracle	c100a597-8186-4b07-b34a-e1eca2146838	Sovereign's Realm
+spikey	oracle	63a19c7c-49d7-4b75-aac8-d0ff36c45fb8	Sowing Mycospawn
+spikey	oracle	fd29fdbd-b4c5-4d23-9388-df0a798fbbba	Space Fungus Snickerdoodle
+spikey	oracle	7346337e-ac12-4dd2-826d-77ec0013e74f	Spatial Contortion
+spikey	oracle	9372f286-5ea6-4abb-b695-1ad5f46efe34	Spinnerette, Arachnobat
+spikey	oracle	cf2cc44e-8134-4b37-bc10-694abb8808f0	Spinny Ride
+spikey	oracle	2df3187b-4b91-4de9-9b26-d48a30700cec	Splinter Twin
+spikey	oracle	785e6563-51c4-4063-9ad9-0392954e135e	Spooky Clown Mox
+spikey	oracle	af32757c-9d3c-4f6c-a6fa-d5729a440382	Spreading Seas
+spikey	oracle	620d0572-6d22-43e2-83a9-000e605c8a2b	Squandered Resources
+spikey	oracle	5bd19c93-4b1b-45d7-9764-1327fffe94ca	Squid Fire Knight
+spikey	oracle	7af6b952-9e53-4f5d-ba6f-d31b42e91bbe	Squirrel Squatters
+spikey	oracle	d198b39d-2c5f-4150-8c54-a00d33d74a28	Squishy Sphinx Ninja
+spikey	oracle	d7888719-647d-4022-a211-822fa09f0791	Staff of Domination
+spikey	oracle	739eac91-3029-4ce7-9885-0af3ddea472e	Stangg
+spikey	oracle	aaf6b3ed-2396-46d7-a32d-7d24cc2eb449	Step Right Up
+spikey	oracle	3def54bf-2640-47de-84e8-7a9406df007e	Sticky Kavu Daredevil
+spikey	oracle	9c0d7d7d-5513-4e2b-b834-1ff999ab24f5	Stiltstrider
+spikey	oracle	2583836d-7fd3-47b3-9b69-6814efe54a90	Stirring Bard
+spikey	oracle	124c8663-21f3-4cd8-a060-9d04be35c43f	Stone-Throwing Devils
+spikey	oracle	358789f9-7d87-411d-919e-d597da665cbd	Stoneforge Mystic
+spikey	oracle	00c1788d-c52f-4839-9cd8-11fb86c418b6	Stormchaser's Talent
+spikey	oracle	53032819-917e-4777-b37f-7cc1ac196940	Storybook Ride
+spikey	oracle	d21a89eb-7c5b-459a-acc7-12b20b13bf79	Strip Mine
+spikey	oracle	0cc6d683-366f-4ae4-be60-20ad9621fdaf	Stroke of Genius
+spikey	oracle	377179d5-ac83-4d34-b5b1-f3d8caa60f79	Subtlety
+spikey	oracle	e5df4597-1647-4ac2-bdb3-a517598d1431	Summer Bloom
+spikey	oracle	07b6326a-b73d-422b-bcb5-c508aa3fc558	Summoner's Bond
+spikey	oracle	3d6314b5-3ace-4793-9549-7b17db2a735d	Sunastian Falconer
+spikey	oracle	d17d071d-dbee-4d65-8435-137f35cd89ca	Sundering Titan
+spikey	oracle	119d719d-e965-45b4-9bc9-ac03211b10c2	Survival of the Fittest
+spikey	oracle	c4fccdd5-5b51-46b9-9937-9167c108743d	Sway of the Stars
+spikey	oracle	65215f0d-d664-44ac-8c27-c4b5a1a01c11	Swinging Ship
+spikey	oracle	201f2434-96b3-408c-a5ce-74d0675920ed	Sword of the Ages
+spikey	oracle	215c287d-56a5-46da-b49e-8524b6d320a4	Sword of the Meek
+spikey	oracle	01efde9a-a20d-4972-b17f-c2d9eb024b0b	Sword-Swallowing Seraph
+spikey	oracle	b1544f21-7e98-461b-aed5-e748b0168c52	Swords to Plowshares
+spikey	oracle	92eed395-62ca-4293-882b-8565c40daab5	Sylvan Library
+spikey	oracle	52b88034-bf0f-4d29-b776-40ce421f1107	Sylvan Primordial
+spikey	oracle	935e0cac-51ee-4cb7-a209-f085e0f099ed	Sylvan Tutor
+spikey	oracle	1a85ba2b-ae10-4917-954a-7709b75a9740	Tainted Pact
+spikey	oracle	da9c8b15-cfa1-443f-857e-06ce50c7b3b1	Tajic, Legion's Valor
+spikey	oracle	1ed9e351-0000-4b75-8ecb-d15bd88df68a	Tamiyo, Inquisitive Student // Tamiyo, Seasoned Scholar
+spikey	oracle	ae7604bb-4818-45a3-960c-cf3d83f15964	Teferi, Time Raveler
+spikey	oracle	272016e1-df1e-4376-9851-af8b1ecba2f4	Tempest Efreet
+spikey	oracle	8a9525f4-74a6-44f0-a1b1-d57937d7783b	Temporal Fissure
+spikey	oracle	6b6ac99a-7548-4cad-9fe5-ea611618ab9e	Temporal Manipulation
+spikey	oracle	ffdad8fb-69ee-40d3-b2eb-b0aee0a5becc	Test of Endurance
+spikey	oracle	ff132d04-c3a9-4949-83ba-d80bcbcd7b9b	Tetsuo Umezawa
+spikey	oracle	1de1b591-a73f-4974-b507-8c63e07a0868	Thassa's Oracle
+spikey	oracle	c6792d9f-8b74-43c4-814f-ba4adab2fdea	Thawing Glaciers
+spikey	oracle	9b0abb58-4e2c-45dc-99b1-61a4cb79354b	The Fantasticar
+spikey	oracle	3ef03975-0f46-43aa-b461-bd3b6f5d4613	The Lady of the Mountain
+spikey	oracle	127de52b-df75-4342-95a0-20d84c5bf916	The Meathook Massacre
+spikey	oracle	dcb9337b-d5fd-4cd2-a41f-900d170a5ded	The Most Dangerous Gamer
+spikey	oracle	3aa83ed2-f48b-4ce6-a614-2c54ddf50538	The One Ring
+spikey	oracle	69b409b3-fa16-4c79-8b46-215a7036ed46	The Tabernacle at Pendrell Vale
+spikey	oracle	939e6f71-185e-41f2-9d54-72cce06f1dce	Thirst for Knowledge
+spikey	oracle	2550c2ae-834d-46e7-9ab4-d7bf7bfa6a78	This Town Ain't Big Enough
+spikey	oracle	0c6c5336-9233-4ab1-9d55-79f20be7ea57	Thorn of Amethyst
+spikey	oracle	6623cb85-fb1e-4561-8b21-0977c25096c2	Tibalt's Trickery
+spikey	oracle	dc8290d7-83b0-49ef-b0de-7ebb3633a149	Ticketomaton
+spikey	oracle	cac55e46-b730-4569-b92c-a4b5922fc20c	Time Spiral
+spikey	oracle	99d4d99d-cf56-45aa-aa39-a250695612f2	Time Vault
+spikey	oracle	d0209d3f-3f7e-4fd5-bce5-10bce6f29c86	Time Walk
+spikey	oracle	dbd6a94b-62ff-4a10-9d52-bdd90b26e425	Time Warp
+spikey	oracle	c823e687-6311-4c99-974b-fd77d204141a	Timetwister
+spikey	oracle	2d2fab27-8793-4212-a512-c4f0c8c55eeb	Timmerian Fiends
+spikey	oracle	254878f0-be90-4653-a395-0c41258fceaf	Tinker
+spikey	oracle	55dfe722-7487-4d25-b90c-e6ad2c82a671	Tobias Andrion
+spikey	oracle	9879a4f3-3b9c-45cf-af03-7f2ae4c689b4	Tolaria
+spikey	oracle	dba4fd31-8931-42dd-bd86-45479c2abf74	Tolarian Academy
+spikey	oracle	382b7873-e78d-473b-8346-d92d16e8f634	Tooth and Nail
+spikey	oracle	9439dfa0-daf8-4dac-af32-755fc2984126	Tor Wauki
+spikey	oracle	633b8f22-0384-4f60-ba78-b52c2d82dfde	Torsten Von Ursus
+spikey	oracle	50885640-cdf1-4c62-b3bc-f37db6ab38b5	Trade Secrets
+spikey	oracle	7a1ff7f3-0b3e-47fe-9e89-522c04f53869	Trained Blessed Mind
+spikey	oracle	f104a6a2-1d98-48c7-90f8-eed94eab0ca0	Trash Bin
+spikey	oracle	8ed57194-7508-4aef-9373-64f7e80612d8	Treachery
+spikey	oracle	5b6bdf5a-2742-4851-92cd-a857a3852836	Treasure Cruise
+spikey	oracle	8b4aa971-b919-4750-8388-33d4f42c9280	Tree of Tales
+spikey	oracle	eb980d94-2860-4fe5-85e0-2757985721f1	Trendy Circus Pirate
+spikey	oracle	69d994f2-b8f6-425f-9655-977c2144d40c	Trinisphere
+spikey	oracle	222fd9fc-7af4-4269-bbb9-cd7b8ac029bd	Troll of Khazad-dûm
+spikey	oracle	0b6fa658-a344-4202-866b-e19997e32ff2	Tuknir Deathlock
+spikey	oracle	e6dd25bd-8017-4691-86ba-466c68d9fd8a	Tunnel of Love
+spikey	oracle	de45de7e-5bba-4612-8bb7-755710d93ecf	Tusk and Whiskers
+spikey	oracle	d565cd3d-68d4-4039-9e45-7e69e31d0ffb	Ugin's Labyrinth
+spikey	oracle	eecb3047-a563-441a-9175-200421981ac3	Ugin, the Spirit Dragon
+spikey	oracle	1da10d5c-36a8-473f-a5d4-782ad61d8057	Umezawa's Jitte
+spikey	oracle	6ad4d181-21ce-47f3-9c00-2aa8c307e7fe	Unassuming Gelatinous Serpent
+spikey	oracle	ccf5a0d4-69e8-4607-a76c-cfca336899e4	Undercity Informer
+spikey	oracle	7647682d-d491-4cb1-add7-b4d745994e62	Underdark Explorer
+spikey	oracle	27e0948b-9916-473b-8d8c-a51bdfbc7457	Underworld Breach
+spikey	oracle	967cf377-ae26-464d-85ac-8448b5a911f7	Underworld Dreams
+spikey	oracle	1acbbf61-edf7-4f67-968b-6832c2dd54d1	Unexpected Potential
+spikey	oracle	eb1c4f0a-b993-4aa1-8b13-1695b5f63653	Unglued Pea-Brained Dinosaur
+spikey	oracle	ea1fb0c3-d52c-4435-af2c-4b74f31189f7	Unhinged Beast Hunt
+spikey	oracle	989346e5-3e76-40ce-8295-d267929d4fd5	Unique Charmed Pants
+spikey	oracle	4413cb03-d6e9-4e6c-b5fe-9240ca0ebd13	Unsanctioned Ancient Juggler
+spikey	oracle	676de97a-299b-42ac-aa93-bb12dc9c4460	Unstable Robot Dragon
+spikey	oracle	050f5733-7c0b-4991-9a6c-7ea12ccf0ca9	Up the Beanstalk
+spikey	oracle	7cafc972-a6f5-4cac-a3d3-8a3ae36ffb1e	Upheaval
+spikey	oracle	537162d5-a2c2-4ad4-9fae-d2ec7a269dcc	Ur-Drago
+spikey	oracle	b6114962-035e-4e7f-9009-4739bf83a05a	Urborg
+spikey	oracle	ee302659-59ed-4eef-babe-451b9ccf7f14	Uro, Titan of Nature's Wrath
+spikey	oracle	7abe9119-cc5d-4004-8a46-4a3153ead570	Urza's Dark Cannonball
+spikey	oracle	4c6a0c30-b547-4eff-8ff4-0ca25803c076	Urza's Saga
+spikey	oracle	4d2cc2a8-e08a-420a-8922-c63e39129e23	Vaevictis Asmadi
+spikey	oracle	1bc44216-4e06-4f66-89b7-5c327004604e	Valakut, the Molten Pinnacle
+spikey	oracle	be19d5ef-15ed-422d-8799-63eabfdbaae3	Vampire Champion Fury
+spikey	oracle	ededbdae-d9dc-4206-9335-d7158f2d7700	Vampiric Tutor
+spikey	oracle	09496421-74e4-466a-9546-56f2a0c8eef4	Vault of Whispers
+spikey	oracle	002965be-a36f-4a09-9ce0-c6535bca1703	Veil of Summer
+spikey	oracle	39322103-c40e-4d05-8e87-a92d1cbc7b68	Veldrane of Sengir
+spikey	oracle	67d60b24-d429-4ded-90d9-06e49f28c396	Verdant Catacombs
+spikey	oracle	4514777d-0589-4631-978b-ff244167c176	Vexing Bauble
+spikey	oracle	1b355139-4891-436c-9079-0ce17ecc2d65	Vial Smasher the Fierce
+spikey	oracle	b8942c72-16ce-4f2f-875f-97a56e85a03e	Vicious Battlerager
+spikey	oracle	c0f69063-9079-4e7a-98dc-c29da8171d33	Violent Outburst
+spikey	oracle	0452be2a-e97a-4269-a9e3-b616265ecb2e	Vivi Ornitier
+spikey	oracle	09aeea91-b1dc-443f-a509-4758f052c0a7	Voltaic Key
+spikey	oracle	4b515bb0-f275-4400-8032-3173b799ab40	Walking Ballista
+spikey	oracle	a4630da0-fe9b-4ead-9621-eac4b7825c35	Wash Away
+spikey	oracle	42bede0a-de6d-4de3-90ea-9d92b0fe8c64	Weight Advantage
+spikey	oracle	2c925531-63f8-4a6b-bfe0-bb8cd5d0d63d	Weird Angel Flame
+spikey	oracle	a72927dc-b633-4830-be39-40674ed74ef3	Werewolf Lightning Mage
+spikey	oracle	a8abd966-de7b-46a3-8ac7-8747ab35653a	Wheel of Fortune
+spikey	oracle	51f091a7-9b0b-4362-8e9c-c174752f369b	White Plume Adventurer
+spikey	oracle	15a71d11-da00-4c1a-bf64-ec3f627ed6a3	Wicker Picker
+spikey	oracle	35d3d96a-d303-4bf5-b972-f311331ec07a	Wild Nacatl
+spikey	oracle	578c23d2-225f-4488-be7f-4abe38297bde	Wild Ogre Bupkis
+spikey	oracle	6f856f99-4cb4-479d-958d-964220965ed6	Wilderness Reclamation
+spikey	oracle	08becc07-28bc-4a2f-a6b0-28a2998d2f50	Windfall
+spikey	oracle	29737a60-3ebd-40d9-b935-c4f54b90d45d	Windswept Heath
+spikey	oracle	02598a35-1b11-4abe-89cd-fc44c8c36c15	Winota, Joiner of Forces
+spikey	oracle	b922f057-1c91-43eb-b74a-8a933b1be2d2	Winter Moon
+spikey	oracle	1dcbd583-3388-4b34-a7cd-131648aa6abd	Winter Orb
+spikey	oracle	786b0b50-adc7-4d58-b578-1e80680b89bd	Wizards of the _____
+spikey	oracle	58c9454b-7027-48f4-9e17-310e27b916d1	Wolf in _____ Clothing
+spikey	oracle	6587a463-a108-4854-b6d1-944e89b8c8a4	Wooded Foothills
+spikey	oracle	ae0b8c13-0a71-4a60-bf9f-6e2da9503e9c	Worldfire
+spikey	oracle	a628186d-b7d9-40a5-9ae2-fbc9d2a14c7c	Worldgorger Dragon
+spikey	oracle	652f6d90-b158-4f9b-a15e-3e677905331d	Worldknit
+spikey	oracle	e8863518-0bfa-49c3-8c6e-6c9116a81051	Worldly Tutor
+spikey	oracle	108ae90a-50fa-4cfd-b751-d630e41425fe	Wrenn and Six
+spikey	oracle	f7016cec-bb17-4f56-bf8e-3d8c83e6e41b	Wrinkly Monkey Shenanigans
+spikey	oracle	4a6e367c-7bc9-44a3-8ede-f2d0651abad3	Xira Arien
+spikey	oracle	4c02ee30-8681-45ed-adb5-edf06409eee4	Yawgmoth Merfolk Soul
+spikey	oracle	f7f76f39-a0de-4bda-86b6-0f291892fcec	Yawgmoth's Bargain
+spikey	oracle	322f0459-f394-44f0-977b-55fd0cbe0712	Yawgmoth's Will
+spikey	oracle	7f4b0233-a2b0-41a2-8448-2df1f845148c	Yisan, the Wanderer Bard
+spikey	oracle	e15504a7-2b67-4185-b916-172145f10b19	Yorion, Sky Nomad
+spikey	oracle	7b515c56-7b1e-42a8-82b0-1b30201fb162	Zirda, the Dawnwaker
+spikey	oracle	786bdf20-b1f1-40f7-acd0-8dcb46da2bb0	Zombie Cheese Magician
+spikey	oracle	d7950018-d744-48a8-81aa-0d8384703f48	Zur the Enchanter
+spikey	oracle	08cb8a30-9cb4-4517-bee5-8848aa60d1a2	Zuran Orb
+spikey	oracle	82c2a58b-0ee2-454b-9ddd-670c1e788166	_____ Balls of Fire
+spikey	oracle	2ce375c8-7c37-40b3-95cf-e0aa958bb317	_____ Bird Gets the Worm
+spikey	oracle	88222fd2-8316-426c-8218-64f6be5ca0f8	_____ Goblin
+spikey	oracle	1009f979-b1fa-4427-bf9e-2a533a4ca19b	_____ _____ Rocketship
+spikey	oracle	75854e14-5f15-443d-b342-b27fc3ab4b6e	_____ _____ _____ Trespasser
+spikey	oracle	32921952-8846-418d-8689-c42dbc24a7b8	_____-o-saurus

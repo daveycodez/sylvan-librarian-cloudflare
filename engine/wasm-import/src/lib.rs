@@ -117,7 +117,8 @@ use sylvan_store_builder::ranks::PrintingRanks;
 use sylvan_store_builder::tags::{TagAccumulator, TagData, TagKind};
 use sylvan_store_builder::transform::{
     art_tags_of, finalize_row, illust_count_qualifies, illustration_ids, is_name_routing_key, is_pinned, transform_row,
-    ArtistSpellings, CorpusPassDraft, CorpusTables, FunnyCards, PinnedPrintings, RowDraft, NAME_KEYS_STAMP, ORACLE_PAIR_BYTES,
+    ArtistSpellings, CorpusPassDraft, CorpusTables, FunnyCards, PinnedPrintings, RelatedCards, RowDraft, NAME_KEYS_STAMP,
+    ORACLE_PAIR_BYTES,
 };
 
 // ─── counting allocator (observability; OOM shows as a trap regardless) ──────
@@ -339,6 +340,10 @@ struct AggState {
     /// signal of its own carry `is:funny` for its card (transform::FunnyCards). Partition-local
     /// like the two above: the key is the oracle id.
     funny: FunnyCards,
+    /// Which of this partition's cards have a printing with related parts — what puts every
+    /// printing of one in `is:related` (transform::RelatedCards). Partition-local like the three
+    /// above: the key is the oracle id.
+    related: RelatedCards,
     sealed: bool,
     positions_seen: u32,
     /// The partition's card names and illustration ids, gathered as its drafts go past — the keys
@@ -1154,6 +1159,7 @@ pub extern "C" fn agg_drafts(ptr: *mut u8, len: usize) -> i64 {
             s.agg.pins.observe(&draft, &s.tags.labels);
             s.agg.ranks.observe(&draft);
             s.agg.funny.observe(&draft);
+            s.agg.related.observe(&draft);
             // Every key finalize will look this draft up by, other than its oracle id (which the
             // partition rule already decides): its name for the cubecobra score and the
             // illustration count, and every illustration it shows for the art tags.
@@ -1197,6 +1203,7 @@ pub extern "C" fn agg_finish() -> i64 {
             "pinned_slots": s.agg.pins.len(),
             "ranked_slots": s.agg.ranks.len(),
             "funny_cards": s.agg.funny.len(),
+            "related_cards": s.agg.related.len(),
         }));
         s.agg.by_id.len() as i64
     })
@@ -1257,7 +1264,7 @@ pub extern "C" fn finalize_drafts(ptr: *mut u8, len: usize) -> i64 {
         for blob in blobs {
             let pos = s.finalize_pos;
             s.finalize_pos += 1;
-            let draft: RowDraft = match serde_json::from_slice(blob) {
+            let mut draft: RowDraft = match serde_json::from_slice(blob) {
                 Ok(d) => d,
                 Err(e) => {
                     log(&format!("finalize_drafts: draft parse: {e}"));
@@ -1267,6 +1274,8 @@ pub extern "C" fn finalize_drafts(ptr: *mut u8, len: usize) -> i64 {
             if s.agg.winner_pos.get(&draft.scryfall_id) != Some(&pos) {
                 continue; // a duplicated scryfall_id's non-winning occurrence
             }
+            // The fourth per-card fact, written onto the draft before it is finalized.
+            s.agg.related.tag(&mut draft);
             let oracle_tags = s.tags.resolve(s.tags.oracle.get(&draft.oracle_id).unwrap_or(&empty));
             let art_tags = art_tags_of(&s.tags, &draft);
             // BOTH GLOBAL, from the scores phase — not from this partition's aggregation, which

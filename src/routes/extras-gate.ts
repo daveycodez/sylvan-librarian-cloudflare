@@ -115,6 +115,12 @@ const UNCONDITIONAL_EXTRAS_IS_TAGS: ReadonlySet<string> = new Set([
 	"cardmarket",
 	"image",
 	"flavorname",
+	// THE TEN VALUES OF GENERATION 74, 2026-10-09, probed the same way (controls `is:glossy` true,
+	// `is:foil` false). ONE fires, in both polarities: `is:related or cmc=3` and `-is:related or
+	// cmc=3` both echo true, and `is:related` is 22,339 printings with the flag or without it.
+	// The others echo false either way: covered, gateway, lair, intro, beginner, invitational,
+	// jumpstart, misprint, spellbook, spikey.
+	"related",
 	// A STORED tag since 2026-09-08 — it was `is:funny -> st:funny` in the rewrite and fired from
 	// `EXTRAS_DERIVED_TRIGGERS` as a derived term; now the builder writes it per printing
 	// (`FUNNY_IS_TAG`) and it reaches this walk as a leaf like the others. Same verdict either way:
@@ -180,6 +186,7 @@ const NEGATION_SUPPRESSED_IS_TAGS: ReadonlySet<string> = new Set([FUNNY_IS_TAG])
  */
 const EXTRAS_DERIVED_TRIGGERS: ReadonlySet<string> = new Set([
 	"has:glossy", // == is:glossy, and it fires there too
+	"has:related", // == is:related, measured 2026-10-09: `has:related or cmc=3` echoes true
 	"has:watermark", // == is:watermark; `wm:` is an unconditional trigger and this agrees with it
 	"is:artseries",
 	"is:augmentation",
