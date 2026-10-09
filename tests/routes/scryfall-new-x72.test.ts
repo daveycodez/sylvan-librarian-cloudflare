@@ -122,6 +122,13 @@ describe("the new: values the store's new_flags answer are the engine's is:new<v
 		// `new:astral e:khm t:god` is a 404 with no warning: honored, and empty there.
 		["new:astral", "is:newastral"],
 		["-new:astral", "-is:newastral"],
+		// `new:microprose` and `new:micro` are 404s on the anchor with no warning too, and past/1-12
+		// with extras in, as `new:astral`. `new:microp` takes the sentence: a table, not a prefix.
+		["new:microprose", "is:newastral"],
+		["new:micro", "is:newastral"],
+		["new:MicroProse", "is:newastral"],
+		["-new:microprose", "-is:newastral"],
+		["-new:micro", "-is:newastral"],
 		// `new:sega e:khm t:god` is a 404 with no warning: honored, and empty there.
 		["new:sega", "is:newsega"],
 		["-new:sega", "-is:newsega"],
@@ -200,6 +207,7 @@ describe("a value Scryfall does not know is ignored with its sentence", () => {
 		["new:print", "new:print", "print"],
 		["new:printing", "new:printing", "printing"],
 		["new:reprint", "new:reprint", "reprint"],
+		["new:microp", "new:microp", "microp"],
 	])("%s", (term, echo, value) => {
 		const policy = scryfallTermPolicy(`${term} e:khm t:god`);
 		expect(policy.query).toBe("e:khm t:god");

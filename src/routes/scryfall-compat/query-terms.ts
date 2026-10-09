@@ -2119,8 +2119,10 @@ const NEW_KEYWORDS: ReadonlySet<string> = new Set(["new"]);
  *                    gained `mtgo`). `new:magiconline` is 31,262 too, and `new:mtgo
  *                    -new:magiconline` and its reverse are each a 404: one list.
  *   arena, mtga      the card's first printing whose `games` hold `arena`. 16,284 of 16,284.
- *   astral           the card's first printing whose `games` hold `astral`: the twelve Astral
- *                    cards, past/1-12. 12 of 12 (extras in; a 404 without, as `game:astral` is).
+ *   astral, microprose, micro   the card's first printing whose `games` hold `astral`: the
+ *                    twelve Astral cards, past/1-12. 12 of 12 (extras in; a 404 without, as
+ *                    `game:astral` is). `new:microprose` and `new:micro` are the same twelve, id
+ *                    for id, and `new:astral -new:micro` and its reverse are each a 404.
  *   sega             the card's first printing whose `games` hold `sega`: the ten Dreamcast
  *                    cards, psdg/1-10, Japanese. 10 of 10 (extras in; a 404 without).
  *   game, games      the card's first printing in ANY game it lists: the union of the five lists
@@ -2157,6 +2159,8 @@ const NEW_VALUE_IS_TAGS: ReadonlyMap<string, string> = new Map([
 	["arena", "newarena"],
 	["mtga", "newarena"],
 	["astral", "newastral"],
+	["microprose", "newastral"],
+	["micro", "newastral"],
 	["sega", "newsega"],
 	["game", "newgame"],
 	["games", "newgame"],

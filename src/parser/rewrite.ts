@@ -383,7 +383,7 @@ export const NEW_RARITY_IS_VALUE = "newrarity";
  *   newframe  `new:frame` — the card's first printing in each frame; 45,058 of 45,058
  *   newmtgo   `new:mtgo`, `new:modo`, `new:magiconline` — the card's first printing on Magic Online; 31,261 of 31,262
  *   newarena  `new:arena`, `new:mtga` — the card's first printing on Arena; 16,284 of 16,284
- *   newastral `new:astral` — the card's first printing in Astral; 12 of 12
+ *   newastral `new:astral`, `new:microprose`, `new:micro` — the card's first printing in Astral; 12 of 12
  *   newsega   `new:sega` — the card's first printing in the Sega Dreamcast game; 10 of 10
  *   newgame   `new:game`, `new:games` — first in any game: the union of the five game values;
  *             all 42,122 read, and one over, `new:mtgo`'s

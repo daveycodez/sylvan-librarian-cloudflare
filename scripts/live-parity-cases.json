@@ -4367,6 +4367,30 @@
 			"method": "GET",
 			"path": "/cards/search?q=-new%3Amagiconline+e%3Akhm+t%3Agod&unique=prints",
 			"note": "2026-10-09. The other 13 of the 25 (87,241 corpus-wide, as -new:mtgo)."
+		},
+		{
+			"name": "new-microprose-is-new-astral",
+			"method": "GET",
+			"path": "/cards/search?q=new%3Amicroprose&unique=prints&include_extras=true",
+			"note": "2026-10-09. past/1-12, the twelve of new:astral id for id (`new:astral -new:microprose` and its reverse are each a 404). The port ignored the value with a sentence Scryfall does not say."
+		},
+		{
+			"name": "new-micro-is-new-astral",
+			"method": "GET",
+			"path": "/cards/search?q=new%3Amicro&unique=prints&include_extras=true",
+			"note": "2026-10-09. past/1-12 again: `micro` is a third name of the game."
+		},
+		{
+			"name": "new-microprose-is-honored-and-empty-without-extras",
+			"method": "GET",
+			"path": "/cards/search?q=new%3Amicroprose+e%3Akhm+t%3Agod&unique=prints",
+			"note": "2026-10-09. 404 with no warning, as new:astral."
+		},
+		{
+			"name": "new-microp-is-not-a-value",
+			"method": "GET",
+			"path": "/cards/search?q=new%3Amicrop+e%3Akhm+t%3Agod&unique=prints",
+			"note": "2026-10-09. All 25 with `Checking if cards have a new “microp” is not supported`: the names are a table, not a prefix match."
 		}
 	]
 }
