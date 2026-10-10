@@ -863,13 +863,17 @@ struct PartitionCorpus {
     new_art: PartitionNewArt,
 }
 
-/// `transform::NewArt` as it is snapshotted, its entries filtered on the card name inside each key.
+/// `transform::NewArt` as it is snapshotted, its entries filtered on the card name inside each key
+/// — and the artworks two cards share whole: sealed, they are a few hundred, and a partition's
+/// rows ask by a key no name is part of. Absent from a snapshot older than the table.
 #[derive(Default, serde::Deserialize)]
 struct PartitionNewArt {
     #[serde(default, deserialize_with = "filtered_new_art")]
     leads: HashMap<String, String>,
     #[serde(default)]
     sealed: bool,
+    #[serde(default)]
+    artworks: HashMap<String, String>,
 }
 
 /// A TagData snapshot's `corpus` field alone: where the tables lived before they had a snapshot of
@@ -936,7 +940,7 @@ pub extern "C" fn partition_tables_restore_pull(which: u32) -> i64 {
         match part {
             Some(PartitionCorpus { scores: Some(scores), illust, artists, new_art }) => with_state(|s| {
                 let n = scores.len() as i64;
-                let new_art = NewArt::from_parts(new_art.leads, new_art.sealed);
+                let new_art = NewArt::from_parts(new_art.leads, new_art.sealed, new_art.artworks);
                 s.tags.corpus = CorpusTables::sealed_from_parts(scores, illust, artists, new_art);
                 n
             }),
@@ -1154,6 +1158,9 @@ pub extern "C" fn scores_add_drafts(ptr: *mut u8, len: usize, partition_count: u
             // `new:art`, the fourth corpus-wide fact: an artwork's first printing may sit in any
             // partition, and this is the one pass that sees them all. See `transform::NewArt`.
             s.tags.corpus.observe_new_art(&draft.new_art_facts());
+            // ...and the fifth: which artworks two cards carry, for the same reason — the two cards
+            // are two oracle ids, wherever the partition hash put them.
+            s.tags.corpus.observe_artwork(draft.artwork_key(), &draft.oracle_id);
             if partition_count > 0 {
                 keys.clear();
                 draft.routing_keys(&mut keys);
@@ -1368,6 +1375,7 @@ pub extern "C" fn finalize_drafts(ptr: *mut u8, len: usize) -> i64 {
             let is_funny = s.agg.funny.is_funny(&draft);
             // Corpus-wide, like the two scores above — see `transform::NewArt`.
             let art_standing = s.tags.corpus.art_standing(&draft.new_art_facts());
+            let art_shared = s.tags.corpus.art_shared(draft.artwork_key().as_deref());
             let row = finalize_row(
                 draft,
                 &oracle_tags,
@@ -1378,6 +1386,7 @@ pub extern "C" fn finalize_drafts(ptr: *mut u8, len: usize) -> i64 {
                 rank,
                 is_funny,
                 art_standing,
+                art_shared,
             );
             let row_json = row.to_string();
             let builder = s.staging.as_mut().expect("checked above");

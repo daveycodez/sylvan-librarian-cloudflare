@@ -1417,6 +1417,19 @@ pub const KEY_PACKET_FLAG_WIDENED: u32 = 1;
 /// produce, confined to the queries whose answer actually changed.
 pub const KEY_PACKET_FLAG_ARTLESS: u32 = 2;
 
+/// `flags` bit 2: a SHARED-ARTWORK TRAILER follows the inline rows (and the art-less trailer, when
+/// there is one) — this partition's candidate for each artwork two cards share that the query
+/// matches a printing of here (`card_engine::SharedKey`): `count: u16`, then `count` of
+/// `art: 16 bytes, ranklen: u16, rank, keylen: u16, key, vpid: u32`, ordered by `art`. None of
+/// them is among the packet's entries or in its `total`, and all of them are sent whatever
+/// `limit` asked for: the gather keeps one an artwork and counts it.
+///
+/// A flag on version 3 for the reason the art-less flag is one: a packet without a candidate —
+/// every query but a `unique=art` one that matches a printing of a shared artwork — is byte for
+/// byte what it was, so two builds either side of this serve side by side through a rolling
+/// deploy, and a packet with one is refused, loudly, by a build that cannot merge it.
+pub const KEY_PACKET_FLAG_SHARED: u32 = 4;
+
 /// The shape every framed row takes on the wire, named by the caller of [`query_keys`] and
 /// [`fetch_rows`]: the engine row's own JSON, or the Scryfall card object built from it.
 ///
@@ -1486,10 +1499,12 @@ fn write_framed_row(
 ///
 /// ```text
 /// version: u32 (= KEY_PACKET_VERSION)
-/// total: u32, n: u32, inline: u32, flags: u32 (KEY_PACKET_FLAG_WIDENED | KEY_PACKET_FLAG_ARTLESS)
+/// total: u32, n: u32, inline: u32, flags: u32 (KEY_PACKET_FLAG_WIDENED | _ARTLESS | _SHARED)
 /// n      of: keylen: u16, key: keylen bytes, vpid: u32
 /// inline of: rowlen: u32, row bytes in `shape`
 /// with KEY_PACKET_FLAG_ARTLESS: ranklen: u16, rank bytes, keylen: u16, key bytes, vpid: u32
+/// with KEY_PACKET_FLAG_SHARED:  count: u16, then count of
+///                               art: 16 bytes, ranklen: u16, rank bytes, keylen: u16, key bytes, vpid: u32
 /// ```
 ///
 /// `total` is the partition's exact match count; the keys are its top `offset + limit` in page
@@ -1527,7 +1542,8 @@ pub fn query_keys(
         buf.extend_from_slice(&(out.keys.len() as u32).to_le_bytes());
         buf.extend_from_slice(&(out.rows.len() as u32).to_le_bytes());
         let flags = (if out.widened { KEY_PACKET_FLAG_WIDENED } else { 0 })
-            | (if out.artless.is_some() { KEY_PACKET_FLAG_ARTLESS } else { 0 });
+            | (if out.artless.is_some() { KEY_PACKET_FLAG_ARTLESS } else { 0 })
+            | (if out.shared.is_empty() { 0 } else { KEY_PACKET_FLAG_SHARED });
         buf.extend_from_slice(&flags.to_le_bytes());
         let short = |bytes: &[u8]| u16::try_from(bytes.len()).map_err(|_| JsError::new("sort key exceeds u16 length"));
         for (key, vpid) in &out.keys {
@@ -1538,12 +1554,25 @@ pub fn query_keys(
         for row in &out.rows {
             write_framed_row(&mut buf, row, shape, base_url)?;
         }
+        let candidate = |buf: &mut Vec<u8>, c: &card_engine::ArtlessKey| -> Result<(), JsError> {
+            buf.extend_from_slice(&short(&c.rank)?.to_le_bytes());
+            buf.extend_from_slice(&c.rank);
+            buf.extend_from_slice(&short(&c.key)?.to_le_bytes());
+            buf.extend_from_slice(&c.key);
+            buf.extend_from_slice(&c.vpid.to_le_bytes());
+            Ok(())
+        };
         if let Some(artless) = &out.artless {
-            buf.extend_from_slice(&short(&artless.rank)?.to_le_bytes());
-            buf.extend_from_slice(&artless.rank);
-            buf.extend_from_slice(&short(&artless.key)?.to_le_bytes());
-            buf.extend_from_slice(&artless.key);
-            buf.extend_from_slice(&artless.vpid.to_le_bytes());
+            candidate(&mut buf, artless)?;
+        }
+        if !out.shared.is_empty() {
+            let count = u16::try_from(out.shared.len())
+                .map_err(|_| JsError::new("more shared-artwork candidates than a packet can count"))?;
+            buf.extend_from_slice(&count.to_le_bytes());
+            for shared in &out.shared {
+                buf.extend_from_slice(&shared.art);
+                candidate(&mut buf, &shared.candidate)?;
+            }
         }
         Ok(buf)
     })
@@ -2848,6 +2877,45 @@ mod tests {
         load_wire_store_with(false);
     }
 
+    /// The three-card variant whose `unique=artwork` packet carries a shared-artwork trailer: Wire
+    /// Alpha and Wire Beta are two cards with ONE illustration, each marked as the builder marks
+    /// a printing whose artwork another card carries (`card_engine::ART_SHARED_TAG`), and Wire
+    /// Gamma has an artwork of its own.
+    fn load_shared_wire_store() {
+        let mk = |name: &str, n: u8, illustration: u8, shared: bool| {
+            let mut tags = serde_json::Map::new();
+            if shared {
+                tags.insert(card_engine::ART_SHARED_TAG.to_owned(), serde_json::json!(true));
+            }
+            serde_json::json!({
+                "card_name": name,
+                "card_name_folded": name.to_lowercase(),
+                "oracle_id": format!("77777777-7777-4777-8777-77777777777{n}"),
+                "scryfall_id": format!("88888888-8888-4888-8888-88888888888{n}"),
+                "illustration_id": format!("99999999-9999-4999-8999-99999999999{illustration}"),
+                "card_set_code": "tst",
+                "set_name": "Test Set",
+                "collector_number": "1",
+                "oracle_text": "Do the thing.",
+                "type_line": "Instant",
+                "card_types": ["Instant"],
+                "card_legalities": {"vintage": "legal"},
+                "card_colors": {"R": true},
+                "card_color_identity": {"R": true},
+                "card_is_tags": tags,
+                "edhrec_rank": 10 * u32::from(n),
+                "prefer_score": 100.0,
+            })
+        };
+        let mut builder = card_engine::StoreBuilder::new();
+        builder.add_card(&mk("Wire Alpha", 1, 1, true)).expect("add");
+        builder.add_card(&mk("Wire Beta", 2, 1, true)).expect("add");
+        builder.add_card(&mk("Wire Gamma", 3, 2, false)).expect("add");
+        let mut bytes = Vec::new();
+        builder.finish_to_writer(&mut bytes).expect("finish");
+        init_store(&bytes).expect("load");
+    }
+
     /// `artless`: the three-card variant whose `unique=artwork` packet carries an art-less trailer.
     fn load_wire_store_with(artless: bool) {
         let mk = |name: &str, oracle: &str, scry: &str, edhrec: u32| {
@@ -2975,6 +3043,28 @@ mod tests {
         assert_eq!(u32_at(&artless_packed, 16), KEY_PACKET_FLAG_ARTLESS);
         let artless_hex: String = artless_packed.iter().map(|b| format!("{b:02x}")).collect();
 
+        // And the SHARED-ARTWORK TRAILER (KEY_PACKET_FLAG_SHARED): Wire Gamma's own artwork in the
+        // entries and the total, and one candidate after the inline rows for the artwork Wire
+        // Alpha and Wire Beta share.
+        load_shared_wire_store();
+        let shared_packed = query_keys(
+            r#"{"node_type": "TrueNode"}"#,
+            r#"{"orderby": "name", "unique": "artwork", "limit": 10, "fields": ["name"]}"#,
+            1,
+            "rows",
+            "",
+        )
+        .expect("query_keys");
+        // The other two modes send no candidate and say so: the packet is what it always was.
+        let cards_packed = query_keys(r#"{"node_type": "TrueNode"}"#, r#"{"orderby": "name", "limit": 10}"#, 0, "rows", "")
+            .expect("query_keys");
+        unload_store().expect("unload");
+        assert_eq!(u32_at(&shared_packed, 4), 1, "the total leaves the shared artwork out");
+        assert_eq!(u32_at(&shared_packed, 8), 1, "and so do the entries");
+        assert_eq!(u32_at(&shared_packed, 16), KEY_PACKET_FLAG_SHARED);
+        assert_eq!((u32_at(&cards_packed, 4), u32_at(&cards_packed, 16)), (3, 0));
+        let shared_hex: String = shared_packed.iter().map(|b| format!("{b:02x}")).collect();
+
         // Base16, dependency-free both sides.
         let hex: String = packed.iter().map(|b| format!("{b:02x}")).collect();
         let rows_hex: String = rows_packed.iter().map(|b| format!("{b:02x}")).collect();
@@ -3000,6 +3090,13 @@ mod tests {
                              inline row) and the art-less trailer — rank, sort key and vpid of Wire \
                              Beta, which represents the two cards without an illustration id.",
             "artless_packed_hex": artless_hex,
+            "shared_note": "query_keys with unique=artwork off a three-card store where Wire Alpha \
+                            and Wire Beta carry ONE illustration (each marked art_shared) and Wire \
+                            Gamma its own: ONE entry (Wire Gamma, total 1, one inline row) and the \
+                            shared-artwork trailer — a count of 1, then the artwork's 16-byte \
+                            identity and the rank, sort key and vpid of Wire Alpha, which \
+                            represents it.",
+            "shared_packed_hex": shared_hex,
         });
         if std::env::var("SYLVAN_WRITE_WIRE_FIXTURE").is_ok() {
             // Tab-indented, matching the repo's biome formatting, so a regenerated fixture is
@@ -3035,6 +3132,12 @@ mod tests {
             committed["artless_packed_hex"].as_str().expect("art-less hex"),
             artless_hex,
             "the art-less trailer moved — if deliberate, regenerate the fixture AND update gather.ts's \
+             decodeKeyPacket + its bun test together"
+        );
+        assert_eq!(
+            committed["shared_packed_hex"].as_str().expect("shared-artwork hex"),
+            shared_hex,
+            "the shared-artwork trailer moved — if deliberate, regenerate the fixture AND update gather.ts's \
              decodeKeyPacket + its bun test together"
         );
         assert_eq!(committed["sort_key_version"], serde_json::json!(card_engine::SORT_KEY_VERSION));

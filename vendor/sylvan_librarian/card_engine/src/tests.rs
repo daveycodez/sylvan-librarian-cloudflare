@@ -7184,6 +7184,7 @@ fn bench_checked_vs_unchecked_access() {
         arith_tuple:    build_arith_tuple_index(&cards),
         printing_by_scryfall_id: build_printing_by_scryfall_id(&printings),
         printing_by_illustration_id: crate::build_printing_by_illustration_id(&printings),
+        shared_art_printings: crate::build_shared_art_printings(&printings),
         oracle_by_oracle_id:     build_oracle_by_oracle_id(&cards),
         external_id_index: build_external_id_index(&printings),
         langs: HybridTagIndex::default(),
@@ -20642,4 +20643,54 @@ fn the_per_card_counts_follow_scryfalls_rules() {
     let artists: Vec<u16> = printings.iter().map(|p| (p.compat.flags & super::COMPAT_ARTISTS_MASK) >> super::COMPAT_ARTISTS_SHIFT).collect();
     assert_eq!(artists, [1, 2, 0, 3, 0]);
     assert!(printings.iter().all(|p| (p.compat.flags & !super::COMPAT_ARTISTS_MASK) == (super::COMPAT_FOIL | super::COMPAT_VARIATION)), "the other flags stand");
+}
+
+#[test]
+fn a_shared_artwork_marks_every_row_of_its_group_and_no_other() {
+    // One card, three artworks: (10, 20) on two printings — one of them the signed art card that
+    // carries it as (10, absent) — then (10, 30), then an art-less printing. The builder marked
+    // only the complete (10, 20) printing: its twin follows the group, in the annex too, and the
+    // artwork that merely shares the front, and the art-less one, do not.
+    let mut printings =
+        vec![faced_printing(1, &[10, 20]), faced_printing(2, &[10, 0]), faced_printing(3, &[10, 30]), faced_printing(4, &[0, 0])];
+    printings[0].new_flags = super::ART_SHARED;
+    let offsets = vec![0u32, 4];
+    assert_eq!(assign_artwork_groups(&mut printings, &offsets), vec![3]);
+    let mut foreign = vec![faced_printing(5, &[10, 20]), faced_printing(6, &[10, 30])];
+    let foreign_offsets = vec![0u32, 2];
+    super::assign_foreign_artwork_groups(&mut foreign, &foreign_offsets, &printings, &offsets);
+    super::spread_shared_artworks(&mut printings, &offsets, &mut foreign, &foreign_offsets);
+    let marked = |rows: &[Printing]| rows.iter().map(|p| p.new_flags & super::ART_SHARED != 0).collect::<Vec<_>>();
+    assert_eq!(marked(&printings), [true, true, false, false]);
+    assert_eq!(marked(&foreign), [true, false]);
+    assert_eq!(super::build_shared_art_printings(&printings), [0, 1]);
+    // A card none of whose rows is marked is left alone.
+    let mut plain = vec![faced_printing(7, &[10, 20])];
+    super::spread_shared_artworks(&mut plain, &[0, 1], &mut [], &[0, 0]);
+    assert_eq!(plain[0].new_flags, 0);
+}
+
+#[test]
+fn an_artworks_identity_is_its_whole_tuple_and_its_arity() {
+    let id = super::artwork_identity;
+    assert_eq!(id(&[10, 20]), id(&[10, 20]));
+    // The back is part of it, and so is the order of the faces.
+    assert_ne!(id(&[10, 20]), id(&[10, 30]));
+    assert_ne!(id(&[10, 20]), id(&[20, 10]));
+    // A one-faced printing is not the front half of a two-faced one, absent back or not.
+    assert_ne!(id(&[10]), id(&[10, 0]));
+    assert_ne!(id(&[10]), id(&[10, 20]));
+}
+
+#[test]
+fn the_best_ranked_candidate_of_each_shared_artwork_represents_it() {
+    use crate::{merge_shared, ArtlessKey, SharedKey};
+    let c = |art: u8, rank: &[u8]| SharedKey { art: [art; 16], candidate: ArtlessKey { rank: rank.to_vec(), key: vec![1], vpid: 0 } };
+    assert!(merge_shared(&[]).is_empty());
+    assert!(merge_shared(&[vec![], vec![]]).is_empty());
+    // Artwork 1 in three partitions, 2 in two with one rank (the lower partition), 3 in one.
+    let sent = vec![vec![c(1, &[5]), c(2, &[1])], vec![], vec![c(1, &[3, 9]), c(3, &[7])], vec![c(1, &[4]), c(2, &[1])]];
+    assert_eq!(merge_shared(&sent), [(2, 0), (0, 1), (2, 1)]);
+    // A prefix ranks first, as the bytes compare.
+    assert_eq!(merge_shared(&[vec![c(1, &[3, 0])], vec![c(1, &[3])]]), [(1, 0)]);
 }

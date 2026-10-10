@@ -70,6 +70,7 @@ import {
 import { checkOracleIndex, type OracleIndexCheck } from "./oracle-index-check";
 import { checkPrintedNames } from "./printed-names-check";
 import { checkRoutingFilter } from "./routing-filter-check";
+import { checkSharedArt, type SharedArtCheck } from "./shared-art-check";
 import { FakeKV, MeteredStorage } from "./storage";
 
 interface Options {
@@ -479,6 +480,7 @@ async function main(): Promise<number> {
 	let oracle: OracleIndexCheck | null = null;
 	let isLists: IsListsCheck | null = null;
 	let laterNights: IsListsCheck | null = null;
+	let sharedArt: SharedArtCheck | null = null;
 	if (!failure && runState() === "done") {
 		const runTable = writeRunTable(storage, opts.corpusDir);
 		oracle = await checkOracleIndex(
@@ -491,6 +493,8 @@ async function main(): Promise<number> {
 			runTable,
 		);
 		if (oracle.ok) {
+			// The artworks two cards share: marked by the nightly's corpus-wide pass, as the native builder marks them.
+			sharedArt = await checkSharedArt(kv, oracle.nativeDir ?? null);
 			isLists = await checkIsLists(kv, storage, world, isListsLogged, oracle.nativeDir ?? null);
 			if (isLists.ok && runTable !== null) {
 				laterNights = await checkLaterNights(
@@ -623,6 +627,14 @@ async function main(): Promise<number> {
 	for (const line of [...(isLists?.lines ?? []), ...(laterNights?.lines ?? [])]) console.log(line);
 	if (!isLists?.ok || laterNights?.ok === false) {
 		console.error("\nFAILED: the is: lists check (above)");
+		return 1;
+	}
+
+	// ── the artworks two cards share (shared-art-check.ts) ──
+	console.log("");
+	for (const line of sharedArt?.lines ?? []) console.log(line);
+	if (!sharedArt?.ok) {
+		console.error("\nFAILED: the shared artworks check (above)");
 		return 1;
 	}
 

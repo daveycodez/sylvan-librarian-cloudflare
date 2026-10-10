@@ -1,0 +1,174 @@
+{
+ "all_parts": [
+  {
+   "component": "combo_piece",
+   "id": "a9167bcc-e0cd-4320-911f-3fa33fd561da",
+   "name": "Alora, Cheerful Swashbuckler",
+   "object": "related_card",
+   "type_line": "Legendary Creature — Halfling Rogue",
+   "uri": "https://api.scryfall.com/cards/a9167bcc-e0cd-4320-911f-3fa33fd561da"
+  },
+  {
+   "component": "combo_piece",
+   "id": "f7057698-98bc-4eff-822c-7a0fc6e91036",
+   "name": "Alora, Cheerful Scout",
+   "object": "related_card",
+   "type_line": "Legendary Creature — Halfling Rogue Scout",
+   "uri": "https://api.scryfall.com/cards/f7057698-98bc-4eff-822c-7a0fc6e91036"
+  },
+  {
+   "component": "combo_piece",
+   "id": "f7b9912d-f21d-4442-8878-16743fbc0fc0",
+   "name": "Alora, Cheerful Assassin",
+   "object": "related_card",
+   "type_line": "Legendary Creature — Halfling Rogue Assassin",
+   "uri": "https://api.scryfall.com/cards/f7b9912d-f21d-4442-8878-16743fbc0fc0"
+  },
+  {
+   "component": "combo_piece",
+   "id": "85746149-1119-4238-a8ca-3cc6873cf6e3",
+   "name": "Alora, Rogue Companion",
+   "object": "related_card",
+   "type_line": "Legendary Creature — Halfling Rogue",
+   "uri": "https://api.scryfall.com/cards/85746149-1119-4238-a8ca-3cc6873cf6e3"
+  },
+  {
+   "component": "combo_piece",
+   "id": "96a934fb-3a10-4d1c-984a-02df58e0fb2a",
+   "name": "Alora, Cheerful Mastermind",
+   "object": "related_card",
+   "type_line": "Legendary Creature — Halfling Rogue",
+   "uri": "https://api.scryfall.com/cards/96a934fb-3a10-4d1c-984a-02df58e0fb2a"
+  },
+  {
+   "component": "combo_piece",
+   "id": "e01b93ba-77f2-44d8-8eea-00b39c1fd7f9",
+   "name": "Alora, Cheerful Thief",
+   "object": "related_card",
+   "type_line": "Legendary Creature — Halfling Rogue",
+   "uri": "https://api.scryfall.com/cards/e01b93ba-77f2-44d8-8eea-00b39c1fd7f9"
+  }
+ ],
+ "arena_id": 81519,
+ "artist": "Aaron Miller",
+ "artist_ids": [
+  "fc021f3d-773a-4706-bbe7-f602324f511f"
+ ],
+ "booster": true,
+ "border_color": "black",
+ "card_back_id": "0aeebaf5-8c7d-4636-9e82-8c27447861f7",
+ "cmc": 4.0,
+ "collector_number": "5",
+ "color_identity": [
+  "U"
+ ],
+ "colors": [
+  "U"
+ ],
+ "digital": true,
+ "finishes": [
+  "nonfoil"
+ ],
+ "foil": false,
+ "frame": "2015",
+ "frame_effects": [
+  "legendary"
+ ],
+ "full_art": false,
+ "game_changer": false,
+ "games": [
+  "arena"
+ ],
+ "highres_image": false,
+ "id": "85746149-1119-4238-a8ca-3cc6873cf6e3",
+ "illustration_id": "276e4d1b-f903-43f5-aa18-607a56e1bf28",
+ "image_status": "lowres",
+ "image_updated_at": "2026-07-13T05:56:18Z",
+ "image_uris": {
+  "art": "https://cards.scryfall.io/art/front/8/5/85746149-1119-4238-a8ca-3cc6873cf6e3.webp?1783922178",
+  "art_crop": "https://cards.scryfall.io/art_crop/front/8/5/85746149-1119-4238-a8ca-3cc6873cf6e3.jpg?1783922178",
+  "border_crop": "https://cards.scryfall.io/border_crop/front/8/5/85746149-1119-4238-a8ca-3cc6873cf6e3.jpg?1783922178",
+  "crop": "https://cards.scryfall.io/crop/front/8/5/85746149-1119-4238-a8ca-3cc6873cf6e3.webp?1783922178",
+  "display": "https://cards.scryfall.io/display/front/8/5/85746149-1119-4238-a8ca-3cc6873cf6e3.webp?1783922178",
+  "grid": "https://cards.scryfall.io/grid/front/8/5/85746149-1119-4238-a8ca-3cc6873cf6e3.webp?1783922178",
+  "large": "https://cards.scryfall.io/large/front/8/5/85746149-1119-4238-a8ca-3cc6873cf6e3.jpg?1783922178",
+  "normal": "https://cards.scryfall.io/normal/front/8/5/85746149-1119-4238-a8ca-3cc6873cf6e3.jpg?1783922178",
+  "png": "https://cards.scryfall.io/png/front/8/5/85746149-1119-4238-a8ca-3cc6873cf6e3.png?1783922178",
+  "small": "https://cards.scryfall.io/small/front/8/5/85746149-1119-4238-a8ca-3cc6873cf6e3.jpg?1783922178",
+  "thumb": "https://cards.scryfall.io/thumb/front/8/5/85746149-1119-4238-a8ca-3cc6873cf6e3.webp?1783922178"
+ },
+ "keywords": [
+  "Specialize"
+ ],
+ "lang": "en",
+ "layout": "normal",
+ "legalities": {
+  "alchemy": "not_legal",
+  "brawl": "legal",
+  "commander": "not_legal",
+  "competitivebrawl": "legal",
+  "duel": "not_legal",
+  "future": "not_legal",
+  "gladiator": "legal",
+  "historic": "legal",
+  "legacy": "not_legal",
+  "modern": "not_legal",
+  "oathbreaker": "not_legal",
+  "oldschool": "not_legal",
+  "pauper": "not_legal",
+  "paupercommander": "not_legal",
+  "penny": "not_legal",
+  "pioneer": "not_legal",
+  "predh": "not_legal",
+  "premodern": "not_legal",
+  "standard": "not_legal",
+  "standardbrawl": "not_legal",
+  "timeless": "legal",
+  "tlr": "not_legal",
+  "vintage": "not_legal"
+ },
+ "mana_cost": "{3}{U}",
+ "multiverse_ids": [],
+ "name": "Alora, Rogue Companion",
+ "nonfoil": true,
+ "object": "card",
+ "oracle_id": "85e2a2e7-2627-4634-a003-443268e000b3",
+ "oracle_text": "Specialize {2}\nWhenever you attack, up to one target attacking creature can't be blocked this turn. At the beginning of the next end step, return that creature to its owner's hand.",
+ "oversized": false,
+ "power": "3",
+ "prices": {
+  "eur": null,
+  "eur_foil": null,
+  "tix": null,
+  "usd": null,
+  "usd_etched": null,
+  "usd_foil": null
+ },
+ "prints_search_uri": "https://api.scryfall.com/cards/search?order=released&q=oracleid%3A85e2a2e7-2627-4634-a003-443268e000b3&unique=prints",
+ "promo": false,
+ "rarity": "uncommon",
+ "related_uris": {
+  "edhrec": "https://edhrec.com/route/?cc=Alora%2C+Rogue+Companion",
+  "tcgplayer_infinite_articles": "https://partner.tcgplayer.com/c/4931599/1830156/21018?subId1=api&trafcat=tcgplayer.com%2Fsearch%2Farticles&u=https%3A%2F%2Fwww.tcgplayer.com%2Fsearch%2Farticles%3FproductLineName%3Dmagic%26q%3DAlora%252C%2BRogue%2BCompanion",
+  "tcgplayer_infinite_decks": "https://partner.tcgplayer.com/c/4931599/1830156/21018?subId1=api&trafcat=tcgplayer.com%2Fsearch%2Fdecks&u=https%3A%2F%2Fwww.tcgplayer.com%2Fsearch%2Fdecks%3FproductLineName%3Dmagic%26q%3DAlora%252C%2BRogue%2BCompanion"
+ },
+ "released_at": "2022-07-07",
+ "reprint": false,
+ "reserved": false,
+ "rulings_uri": "https://api.scryfall.com/cards/85746149-1119-4238-a8ca-3cc6873cf6e3/rulings",
+ "scryfall_set_uri": "https://scryfall.com/sets/hbg?utm_source=api",
+ "scryfall_uri": "https://scryfall.com/card/hbg/5/alora-rogue-companion?utm_source=api",
+ "security_stamp": "arena",
+ "set": "hbg",
+ "set_id": "35528ede-7870-4598-a2ee-7f3d6464a74b",
+ "set_name": "Alchemy Horizons: Baldur's Gate",
+ "set_search_uri": "https://api.scryfall.com/cards/search?order=set&q=e%3Ahbg&unique=prints",
+ "set_type": "alchemy",
+ "set_uri": "https://api.scryfall.com/sets/35528ede-7870-4598-a2ee-7f3d6464a74b",
+ "story_spotlight": false,
+ "textless": false,
+ "toughness": "3",
+ "type_line": "Legendary Creature — Halfling Rogue",
+ "uri": "https://api.scryfall.com/cards/85746149-1119-4238-a8ca-3cc6873cf6e3",
+ "variation": false
+}

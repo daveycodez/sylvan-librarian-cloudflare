@@ -112,7 +112,8 @@ mod core_api;
 mod partition;
 pub use core_api::{
     ArtlessKey, BufferStore, EngineError, EngineErrorKind, FuzzyCandidate, QueryKeysOutput, QueryOptions, QueryOutput, RowMeta,
-    SpillingStoreBuilder, StoreBuilder, StoreStats, build_partition_from_standalone, merge_artless, store_format_version,
+    SharedKey, SpillingStoreBuilder, StoreBuilder, StoreStats, build_partition_from_standalone, merge_artless, merge_shared,
+    store_format_version,
 };
 // LOCAL PATCH (sylvan-librarian-cloudflare, backlog n15): the corpus-wide names index.
 pub use core_api::{
@@ -5723,6 +5724,25 @@ pub const ART_DEBUT_TAG: &str = "art_debut";
 /// that day holds one, and 3,111 of the 3,700 over all.
 pub(crate) const ART_DEBUT: u32 = 1 << 11;
 
+/// The `card_is_tags` word the builder marks a printing with when ANOTHER CARD carries its
+/// artwork — see `ART_SHARED`. Never stored: `assign_new_flags` turns it into the bit and removes
+/// it, as it removes `NEW_ART_TAG`.
+pub const ART_SHARED_TAG: &str = "art_shared";
+
+/// `Printing::new_flags`: the printing's ARTWORK — its whole face tuple, `push_artwork_key` — is
+/// carried by a printing of another card too. No `new:` value reads it; `unique=art` does, because
+/// Scryfall answers such an artwork with ONE row across the cards (the section beside
+/// `artless_rank_key` carries the measurement), and this bit is what lets a query find those
+/// printings without touching any other.
+///
+/// Decided by the builder's corpus-wide pass (engine/builder `NewArt`), which is the one place
+/// that sees two cards at once: a card's printings hash to one partition and an artwork's do
+/// not. It marks the rows whose own tuple is complete; `spread_shared_artworks` then gives the
+/// bit to every row of the same artwork group of the card, so a printing that carries the
+/// artwork with an absent slot (an art card's signed twin) and a translated row follow their
+/// group.
+pub(crate) const ART_SHARED: u32 = 1 << 13;
+
 /// The `card_is_tags` word the builder marks a printing with when Scryfall's record says its
 /// artist is NOT new — see `NEW_ARTIST`. Never stored: `assign_new_flags` turns its ABSENCE into
 /// the bit and removes it, as it removes `NEW_ART_TAG`.
@@ -5995,7 +6015,8 @@ fn assign_new_flags(
     // the leading row with `NEW_ART_TAG`. The tag is taken off again here — the bit is the answer,
     // and a tag left on 52,000 rows would be stored and indexed for nothing.
     // `ART_DEBUT_TAG` beside it, the same way: the rows dated the day that leading row is.
-    let marks = [(vid(NEW_ART_TAG), NEW_ART), (vid(ART_DEBUT_TAG), ART_DEBUT)];
+    // ...and `ART_SHARED_TAG`: the rows whose artwork another card carries.
+    let marks = [(vid(NEW_ART_TAG), NEW_ART), (vid(ART_DEBUT_TAG), ART_DEBUT), (vid(ART_SHARED_TAG), ART_SHARED)];
     // `new:artist` arrives decided too, and the other way round: the builder marks the rows
     // Scryfall's record leaves OUT of it (`OLD_ARTIST_TAG`) and every other row of every language
     // is new — so a store none of whose rows is marked answers every row.
@@ -8178,6 +8199,15 @@ fn artwork_key_matches(keys: &[u128], off: usize, len: usize, key: &[u128]) -> b
 /// the gather. See the `unique=art` note in `src/engine/store-kv.ts`. This function is the key
 /// half: whatever scope the id ends up having, THIS is what an artwork is.
 ///
+/// CLOSED 2026-10-10, AND THE GROUPS HERE DID NOT HAVE TO CHANGE. The scope is widened at the
+/// answer, not in this table: the builder marks the printings whose artwork another card
+/// carries (`ART_SHARED`), a `unique=art` query takes exactly those out of its run and answers
+/// one row an artwork for them, by the same resolved tuple this function groups on, inside one
+/// archive and across partitions (`shared_representatives`, the section beside it). No dense
+/// corpus-wide id was needed — the identity is a hash of the tuple, computed for the few
+/// printings a query actually matches — and every per-card count the plans short-circuit on
+/// still means what it meant.
+///
 /// AND THE SCOPE IS THE ONLY THING THAT HAS TO CHANGE. Replayed over the 2026-08-16 bulk this
 /// grouping reproduces at 55,076; the same key with `offsets` ignored — one scope for the whole
 /// corpus — gives 54,710 and lands both open differentials exactly (`e:khm t:god` 26 -> 25,
@@ -8272,6 +8302,42 @@ fn assign_artwork_groups(printings: &mut [Printing], offsets: &[u32]) -> Vec<u16
         counts.push(spans.len() as u16);
     }
     counts
+}
+
+/// LOCAL PATCH (Cloudflare port): give `ART_SHARED` to every row of an artwork group that has a
+/// row carrying it — canonical rows and the annex alike.
+///
+/// The builder marks a row when its OWN face tuple is complete and another card carries the same
+/// one. A row of the same artwork with an absent slot (`astx/66s` beside `astx/66`) is the same
+/// artwork by `artwork_key_matches` and was not marked, and neither is anything the builder's
+/// pass did not see as complete; the group is the unit `unique=art` answers, so the group
+/// carries the bit. After both grouping passes, which is the only order it can run in.
+fn spread_shared_artworks(printings: &mut [Printing], offsets: &[u32], foreign: &mut [Printing], foreign_offsets: &[u32]) {
+    debug_assert_eq!(foreign_offsets.len(), offsets.len());
+    let mut shared: Vec<u16> = Vec::new();
+    for cid in 0..offsets.len().saturating_sub(1) {
+        let canonical = offsets[cid] as usize..offsets[cid + 1] as usize;
+        let annex = foreign_offsets[cid] as usize..foreign_offsets[cid + 1] as usize;
+        shared.clear();
+        for p in printings[canonical.clone()].iter().chain(foreign[annex.clone()].iter()) {
+            if p.new_flags & ART_SHARED != 0 && !shared.contains(&p.artwork_group_id) {
+                shared.push(p.artwork_group_id);
+            }
+        }
+        if shared.is_empty() {
+            continue;
+        }
+        for p in printings[canonical].iter_mut().chain(foreign[annex].iter_mut()) {
+            if shared.contains(&p.artwork_group_id) {
+                p.new_flags |= ART_SHARED;
+            }
+        }
+    }
+}
+
+/// The canonical printings carrying `ART_SHARED`, ascending — `CardIndexes::shared_art_printings`.
+fn build_shared_art_printings(printings: &[Printing]) -> Vec<u32> {
+    (0..printings.len() as u32).filter(|&pid| printings[pid as usize].new_flags & ART_SHARED != 0).collect()
 }
 
 /// Extend each card's artwork grouping over its annex printings: a foreign printing sharing a
@@ -9651,6 +9717,11 @@ struct CardIndexes {
     // still scanning: a u128 compare against every printing, measured at 391 us worst of 200
     // sampled ids against a 49 us mean. 380 KB buys the same O(log n) the other two ids have.
     printing_by_illustration_id: Vec<u32>,
+    // LOCAL PATCH (Cloudflare port). Printing space, ascending: the canonical printings whose
+    // artwork another card carries (`ART_SHARED`). ~250 of a partition's ~12,000, and what lets a
+    // `unique=art` query ask its filter of those printings alone instead of reading a bit off
+    // every row to learn there is nothing to merge — see `SharedArtIndex`.
+    shared_art_printings: Vec<u32>,
     oracle_by_oracle_id:     Vec<u32>,        // card space, ordered by oracle_id
     /// (namespace, external id) -> printing index, sorted. Answers
     /// /cards/multiverse|mtgo|arena|tcgplayer|cardmarket/:id.
@@ -13411,6 +13482,30 @@ pub(crate) fn artless_representative<'a>(
     index: &ArtlessIndex,
     foreign: Option<&[u32]>,
 ) -> Option<ArtlessRep<'a>> {
+    let mut best: Option<ArtlessRep<'a>> = None;
+    apart_matches(data, full, index, foreign.unwrap_or(&[]), |_, vpid, cid| {
+        let (card, p) = (&data.cards[cid as usize], printing_at(data, vpid));
+        let rank = artless_rank_key(data, card, p, cid, vpid, params);
+        if best.as_ref().is_none_or(|b| rank < b.rank) {
+            best = Some(ArtlessRep { card, printing: p, cid, vpid, rank });
+        }
+    });
+    best
+}
+
+/// The printings a `unique=art` query keeps APART from its run that `full` matches: of `index`'s
+/// canonical rows and of `foreign` (virtual pids of the annex). Each is handed to `found` as
+/// (its place in `index.rows`, or None for an annex row; its virtual pid; its card).
+///
+/// Shared by the art-less group and the artworks two cards share (`shared_representatives`): the
+/// same question — which of a few known printings does this filter match — asked of two lists.
+fn apart_matches(
+    data: &Archived<CardData>,
+    full: &FilterExpr,
+    index: &ArtlessIndex,
+    foreign: &[u32],
+    mut found: impl FnMut(Option<usize>, u32, u32),
+) {
     // The filter's conjuncts in the order that makes a failing row cheap. Order cannot change the
     // answer (a top-level `And` matches iff every child is True), only what a row that fails costs —
     // and nearly every row fails. The LAST written first, because the routes append their gates
@@ -13437,13 +13532,12 @@ pub(crate) fn artless_representative<'a>(
             Some(rows) => rows.into_iter().filter(|i| pass.binary_search(i).is_ok()).collect(),
         });
     }
-    let canonical: Vec<(u32, u32)> = match live {
-        Some(rows) => rows.into_iter().map(|i| index.rows[i as usize]).collect(),
-        None => index.rows.clone(),
+    let canonical: Vec<u32> = match live {
+        Some(rows) => rows,
+        None => (0..index.rows.len() as u32).collect(),
     };
 
-    let mut best: Option<ArtlessRep<'a>> = None;
-    let mut consider = |vpid: u32, cid: u32, conjuncts: &mut Vec<&FilterExpr>| {
+    let mut consider = |at: Option<usize>, vpid: u32, cid: u32, conjuncts: &mut Vec<&FilterExpr>| {
         let p = printing_at(data, vpid);
         let card = &data.cards[cid as usize];
         let rejected = conjuncts
@@ -13453,19 +13547,16 @@ pub(crate) fn artless_representative<'a>(
             conjuncts[..=by].rotate_right(1);
             return;
         }
-        let rank = artless_rank_key(data, card, p, cid, vpid, params);
-        if best.as_ref().is_none_or(|b| rank < b.rank) {
-            best = Some(ArtlessRep { card, printing: p, cid, vpid, rank });
-        }
+        found(at, vpid, cid);
     };
-    for (vpid, cid) in canonical {
-        consider(vpid, cid, &mut asked);
+    for at in canonical {
+        let (vpid, cid) = index.rows[at as usize];
+        consider(Some(at as usize), vpid, cid, &mut asked);
     }
     // The annex rows answer every conjunct themselves: the gates' lists are the canonical rows'.
-    for &vpid in foreign.unwrap_or(&[]) {
-        consider(vpid, card_of_vpid(data, vpid), &mut conjuncts);
+    for &vpid in foreign {
+        consider(None, vpid, card_of_vpid(data, vpid), &mut conjuncts);
     }
-    best
 }
 
 /// `full AND is:illustration`: the query with the art-less printings taken out, for the run whose
@@ -13501,6 +13592,242 @@ pub(crate) fn insert_artless_rep<'a>(
         page_cmp(&key_of(card, p, card_of_vpid(data, vpid), vpid), &mine) == std::cmp::Ordering::Less
     });
     page.insert(at, (rep.card, rep.printing));
+}
+
+// ─── `unique=art`: AN ARTWORK TWO CARDS SHARE IS ONE ROW (LOCAL PATCH, Cloudflare port) ─────────
+//
+// MEASURED on api.scryfall.com 2026-10-10. `unique=art` is one row an ARTWORK, and an artwork is
+// its face tuple (`push_artwork_key`) whichever card prints it: a Jumpstart front card and the
+// card whose painting it borrows, an Alchemy card and its paper original, a token under two
+// oracle ids, an emblem and its planeswalker, five halves of Very Cryptic Command. 410 artworks
+// are carried by 859 cards (4,984 rows of every language), and this engine answered each once a
+// CARD: `e:unf unique=art` 303 rows where Scryfall has 297, `(e:hbg or e:clb)` 1,022 against 972.
+//
+// WHICH PRINTING, AND WHERE:
+//
+// ```text
+// no prefer, any order but a price   the artwork's representative (`ART_DEBUT`, Scryfall's record
+//                                    of it) where the query holds it — 36 of 36 shared artworks
+//                                    of 25 kinds asked with both cards whole — and with that row
+//                                    filtered away the FIRST OF THE QUERY'S `order=name
+//                                    unique=prints`, across the cards: 36 of 36, 25 of them
+//                                    scopes left holding printings of both cards (the front card
+//                                    fj25/32 `Goblins` before Volley Veteran's fdn/550, the
+//                                    card's pio/261 before `Landfall`'s fj25/44)
+// a prefer, or a price order         as the art-less group's: the oldest (fjmp/28 over m21/214),
+//                                    the newest, the cheapest across the cards (m21/214 $0.19
+//                                    over fdn/236 $0.20; a tie to the newest date), the dearest,
+//                                    a promo then the name order — eight artworks, nine requests
+//                                    each (`artless_rank_key`)
+// its place, and the count           by its own keys like any row — the `unique=art` answer is a
+//                                    subsequence of the same query's `unique=prints`, and
+//                                    `total_cards` counts the artwork once
+// ```
+//
+// and whole scopes, id for id, every page: `e:unf` 297 of 297, `e:hbg` 398, `(e:hbg or e:clb)`
+// 972 (41 artworks of two cards in scope), `(e:jmp or e:fjmp or e:m21)` 811 (46), four token sets
+// 100.
+//
+// HOW, WITHOUT COSTING ANYONE ELSE — the art-less group's mechanism, a row per artwork instead of
+// one row. The builder marks the printings of a shared artwork (`ART_SHARED`) and the store lists
+// the canonical ones (`shared_art_printings`, ~250 of a partition's ~12,000). A `unique=art`
+// query asks its filter of those rows alone (`shared_representatives`, through the same gate
+// lists the art-less rows use — many are extras a default search hides). With no match, which is
+// nearly every query, it runs as it always did: no row carries a test it did not carry. With
+// one, THE RUN IS STILL THE QUERY'S OWN — a conjunct `NOT shared` would be a printing-level test
+// on every card and cost a query matching every card its whole fast path (375 us against 206 on
+// the gate's 12,000-printing store) — asked for as many more rows as it holds rows of those
+// artworks, one a (card, artwork) the probe matched: those rows are dropped from its page by
+// their bit and that many from its count (`BufferStore::run_page_parts`). Each matched artwork's
+// best printing here then comes back beside it, ranked: put into the page by its sort key
+// inside one archive, and across partitions sent as a candidate with the artwork's identity
+// (`SharedKey`), where the gather keeps the best-ranked candidate of each identity, merges its
+// key in and counts it once. The other two modes never reach any of it.
+
+/// Whether another card carries this printing's artwork — see `ART_SHARED`.
+pub(crate) fn printing_is_shared_art(p: &APrinting) -> bool {
+    printing_new_flags(p) & ART_SHARED != 0
+}
+
+/// An artwork's identity ACROSS archives: 128-bit FNV-1a of its face tuple, the face count first
+/// (a one-faced printing is not the front half of a two-faced one — `artwork_key_matches`).
+/// Equal tuples give equal identities in every partition, which is all a gather compares.
+fn artwork_identity(tuple: &[u128]) -> u128 {
+    const OFFSET: u128 = 0x6c62_272e_07bb_0142_62b8_2175_6295_c58d;
+    const PRIME: u128 = 0x0000_0000_0100_0000_0000_0000_0000_013b;
+    let mut hash = OFFSET;
+    let mut eat = |byte: u8| hash = (hash ^ u128::from(byte)).wrapping_mul(PRIME);
+    eat(tuple.len() as u8);
+    for id in tuple {
+        for byte in id.to_be_bytes() {
+            eat(byte);
+        }
+    }
+    hash
+}
+
+/// The identity of artwork group `gid` of card `cid`: the group's face tuple with every absent
+/// slot filled from whichever row of the group carries it (the canonical rows and the annex),
+/// which is the tuple another card's complete printing of the same artwork has.
+fn shared_artwork_identity(data: &Archived<CardData>, cid: usize, gid: u16, tuple: &mut Vec<u128>) -> u128 {
+    tuple.clear();
+    for (_, p) in widened_rows(data, cid) {
+        if u16::from(p.artwork_group_id) != gid {
+            continue;
+        }
+        if tuple.is_empty() {
+            if p.faces.is_empty() {
+                tuple.push(u128::from(p.illustration_id));
+            } else {
+                tuple.extend(p.faces.iter().map(|f| u128::from(f.illustration_id)));
+            }
+        } else if p.faces.len() == tuple.len() {
+            for (slot, face) in tuple.iter_mut().zip(p.faces.iter()) {
+                if *slot == 0 {
+                    *slot = u128::from(face.illustration_id);
+                }
+            }
+        }
+    }
+    artwork_identity(tuple)
+}
+
+/// A store's CANONICAL printings whose artwork another card carries (`shared_art_printings`),
+/// each with its artwork's identity, built on the first `unique=art` query — and the gates'
+/// answers about them, exactly as `ArtlessIndex` keeps them for the art-less rows.
+pub(crate) struct SharedArtIndex {
+    rows: ArtlessIndex,
+    /// `arts[i]` is the artwork of `rows.rows[i]`.
+    arts: Vec<u128>,
+}
+
+impl SharedArtIndex {
+    pub(crate) fn build(data: &Archived<CardData>) -> Self {
+        let listed = &data.indexes.shared_art_printings;
+        let mut rows: Vec<(u32, u32)> = Vec::with_capacity(listed.len());
+        let mut arts: Vec<u128> = Vec::with_capacity(listed.len());
+        // The list ascends, so a card's printings are together: its groups are resolved once.
+        let mut known: Vec<(u16, u128)> = Vec::new();
+        let mut of_card = u32::MAX;
+        let mut tuple: Vec<u128> = Vec::new();
+        for pid in listed.iter().map(|pid| u32::from(*pid)) {
+            let cid = u32::from(data.indexes.printing_to_card[pid as usize]);
+            if cid != of_card {
+                known.clear();
+                of_card = cid;
+            }
+            let gid = u16::from(data.printings[pid as usize].artwork_group_id);
+            let art = match known.iter().find(|(g, _)| *g == gid) {
+                Some((_, art)) => *art,
+                None => {
+                    let art = shared_artwork_identity(data, cid as usize, gid, &mut tuple);
+                    known.push((gid, art));
+                    art
+                }
+            };
+            rows.push((pid, cid));
+            arts.push(art);
+        }
+        SharedArtIndex { rows: ArtlessIndex { rows, gates: std::sync::Mutex::new(Vec::new()) }, arts }
+    }
+
+    /// No canonical printing of this store shares its artwork with another card.
+    pub(crate) fn is_empty(&self) -> bool {
+        self.arts.is_empty()
+    }
+}
+
+/// The annex's printings whose artwork another card carries, as virtual pids (ascending) beside
+/// each one's artwork — a scan of the annex, so the store keeps the answer
+/// (`BufferStore::foreign_shared`). Only the widened driver ever asks.
+pub(crate) fn foreign_shared_art(data: &Archived<CardData>) -> (Vec<u32>, Vec<u128>) {
+    let n = data.printings.len() as u32;
+    let (mut vpids, mut arts) = (Vec::new(), Vec::new());
+    let mut tuple: Vec<u128> = Vec::new();
+    for (i, p) in data.foreign.iter().enumerate() {
+        if !printing_is_shared_art(p) {
+            continue;
+        }
+        let cid = u32::from(data.indexes.foreign_to_card[i]) as usize;
+        vpids.push(n + i as u32);
+        arts.push(shared_artwork_identity(data, cid, u16::from(p.artwork_group_id), &mut tuple));
+    }
+    (vpids, arts)
+}
+
+/// One shared artwork's representative in THIS archive: the artwork, the row, and the row's rank
+/// among every archive's candidates for the same artwork (smaller wins).
+pub(crate) struct SharedRep<'a> {
+    pub(crate) art: u128,
+    pub(crate) rep: ArtlessRep<'a>,
+}
+
+/// Where one printing of a shared artwork ranks as the artwork's row under this request — see the
+/// section header for the measurements. With no prefer, the representative Scryfall keeps for the
+/// artwork (the bit `artwork_prefer_key` reads, a promo after a plain row where a set the
+/// builder's table does not name marks several) and then the request's `order=name
+/// unique=prints`; under a prefer or a price order, the art-less group's own keys.
+pub(crate) fn shared_rank_key(
+    data: &Archived<CardData>,
+    card: &AOracleCard,
+    p: &APrinting,
+    cid: u32,
+    vpid: u32,
+    params: &QueryParams,
+) -> Vec<u8> {
+    match params.prefer {
+        Prefer::Default | Prefer::ArtworkDefault => {
+            let mut key = Vec::with_capacity(96);
+            key.push(0);
+            key.push(2 - artwork_prefer_key(p) as u8);
+            key.extend_from_slice(&encode_sort_key(data, card, p, vpid, SortCol::Name, false));
+            key
+        }
+        _ => artless_rank_key(data, card, p, cid, vpid, params),
+    }
+}
+
+/// The shared artworks `full` matches a printing of in this archive, each reduced to the printing
+/// that represents it here — empty for nearly every query — and HOW MANY ROWS THE QUERY'S OWN RUN
+/// HOLDS FOR THEM: one for each (card, artwork group) with a matching printing, which is what
+/// that run counts and pages an artwork as. In the order the artworks were first met, which
+/// nothing reads: a page places each by its key, a gather by its identity.
+///
+/// `foreign` is `foreign_shared_art`'s answer when the query runs the widened driver, and None
+/// when it runs the routed one, which never reads the annex.
+pub(crate) fn shared_representatives<'a>(
+    data: &'a Archived<CardData>,
+    params: &QueryParams,
+    full: &FilterExpr,
+    index: &SharedArtIndex,
+    foreign: Option<&(Vec<u32>, Vec<u128>)>,
+) -> (Vec<SharedRep<'a>>, usize) {
+    let mut reps: Vec<SharedRep<'a>> = Vec::new();
+    let mut slot_of: HashMap<u128, usize> = HashMap::new();
+    let mut groups: std::collections::HashSet<(u32, u16)> = std::collections::HashSet::new();
+    let foreign_vpids: &[u32] = foreign.map_or(&[], |(vpids, _)| vpids.as_slice());
+    apart_matches(data, full, &index.rows, foreign_vpids, |at, vpid, cid| {
+        let art = match (at, foreign) {
+            (Some(at), _) => index.arts[at],
+            (None, Some((vpids, arts))) => arts[vpids.binary_search(&vpid).expect("an annex row of the list")],
+            (None, None) => unreachable!("an annex row with no annex list"),
+        };
+        let (card, p) = (&data.cards[cid as usize], printing_at(data, vpid));
+        groups.insert((cid, u16::from(p.artwork_group_id)));
+        let rank = shared_rank_key(data, card, p, cid, vpid, params);
+        match slot_of.get(&art) {
+            Some(&slot) => {
+                if rank < reps[slot].rep.rank {
+                    reps[slot].rep = ArtlessRep { card, printing: p, cid, vpid, rank };
+                }
+            }
+            None => {
+                slot_of.insert(art, reps.len());
+                reps.push(SharedRep { art, rep: ArtlessRep { card, printing: p, cid, vpid, rank } });
+            }
+        }
+    });
+    (reps, groups.len())
 }
 
 /// Number of matches the gather buffer may grow *past* the page (`offset+limit`)
@@ -22313,7 +22640,16 @@ const ARCHIVE_MAGIC: [u8; 8] = *b"ATCARDS\0";
 //                `OLD_ARTIST_TAG`. No layout moves and neither row grows; the version moves because
 //                this code reading a 2026101002 store would answer `new:artist` with nothing and
 //                its negation with every row. Paired with STORE_CONTENT_GENERATION 94.
-const ARCHIVE_FORMAT_VERSION: u32 = 2026101003;
+//   2026101004 — AN ARTWORK TWO CARDS SHARE (LOCAL PATCH). Bit 13 of `Printing::new_flags`, clear
+//                in every older store, set from the builder's `ART_SHARED_TAG` and spread over
+//                the artwork group; and `CardIndexes` gains `shared_art_printings`, the canonical
+//                printings that carry it, which IS a layout change — an older reader would take
+//                the next index for it. Neither row grows (card 288 bytes, printing 304).
+//                `unique=art` keeps those printings apart and answers one row an artwork across
+//                cards (`shared_representatives`); this code reading a 2026101003 store would
+//                read an index that is not there. Paired with STORE_CONTENT_GENERATION 96 and
+//                the key packet's shared-artwork flag (no SORT_KEY_VERSION: no key changes).
+const ARCHIVE_FORMAT_VERSION: u32 = 2026101004;
 const ARCHIVE_HEADER_LEN: usize = 16;
 
 fn archive_header() -> [u8; ARCHIVE_HEADER_LEN] {
@@ -23265,6 +23601,8 @@ fn build_card_data_sorted(
     // Annex rows join the same per-card group-id space (shared artwork shares the id); the
     // canonical counts above are NOT extended — see assign_foreign_artwork_groups.
     assign_foreign_artwork_groups(&mut foreign, &foreign_offsets, &printings, &offsets);
+    // ...and an artwork another card carries is marked on every row of its group.
+    spread_shared_artworks(&mut printings, &offsets, &mut foreign, &foreign_offsets);
     // Before the counts are moved into the struct below.
     let artwork_base = build_artwork_base_from(&artwork_group_counts);
     // The range indexes and their exact card-count tables come out here rather than inside the
@@ -23455,6 +23793,7 @@ fn build_card_data_sorted(
         // grouping — which is where they are.
         printing_by_scryfall_id: build_printing_by_scryfall_id(&printings),
         printing_by_illustration_id: build_printing_by_illustration_id(&printings),
+        shared_art_printings: build_shared_art_printings(&printings),
         oracle_by_oracle_id:     build_oracle_by_oracle_id(&cards),
         external_id_index: build_external_id_index(&printings),
         langs: langs_idx,

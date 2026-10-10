@@ -479,8 +479,9 @@ export async function checkIsLists(
 	const groups = new Map<string, CorpusRow[]>();
 	for (const r of world.rows) {
 		if (r.lang !== "en" || r.illustration === null || r.oracles.length === 0) continue;
-		const key = `${r.oracles[0]}\t${r.illustration}`;
-		groups.set(key, [...(groups.get(key) ?? []), r]);
+		// By the illustration alone, whichever cards carry it: an artwork two cards share is one
+		// artwork, and its named printing answers in the partition that holds it.
+		groups.set(r.illustration, [...(groups.get(r.illustration) ?? []), r]);
 	}
 	const answered = await publishedArtworks(kv, manifest);
 	let [asked, wrong] = [0, 0];

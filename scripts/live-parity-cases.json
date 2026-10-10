@@ -4769,6 +4769,42 @@
 			"method": "GET",
 			"path": "/cards/search?q=%21%22Overgrown+Tomb%22+e%3Atrk&unique=art&include_extras=true",
 			"note": "2026-10-10. trk/289 and trk/399: the same set, day and pair of treatments, and here the plain showcase printing is kept, not the surge foil trk/494."
+		},
+		{
+			"name": "unique-art-shared-a-set-of-attractions",
+			"method": "GET",
+			"path": "/cards/search?q=e%3Aunf&unique=art&include_extras=true",
+			"note": "2026-10-10. 297 rows, two pages: an artwork two cards carry is one row. The port answered 303, one a (card, artwork)."
+		},
+		{
+			"name": "unique-art-shared-alchemy-in-a-default-search",
+			"method": "GET",
+			"path": "/cards/search?q=%28%21%22Alora%2C+Merry+Thief%22+or+%21%22Alora%2C+Rogue+Companion%22%29&unique=art",
+			"note": "2026-10-10. clb/55 and clb/381: Alchemy's Alora, Rogue Companion (hbg/5) carries clb/55's painting and is not a row of its own — in a default search, extras hidden. The artwork's representative answers."
+		},
+		{
+			"name": "unique-art-shared-without-the-representative",
+			"method": "GET",
+			"path": "/cards/search?q=%28%21%22Volley+Veteran%22+or+%21%22Goblins%22+e%3Afj25%29+-%28e%3Aj25+cn%3A142%29&unique=art&include_extras=true",
+			"note": "2026-10-10. fj25/32 and m19/168: with j25/142, the artwork's representative, filtered away, the row is the first of the query's order=name unique=prints ACROSS the two cards — the front card `Goblins`, not Volley Veteran's own fdn/550."
+		},
+		{
+			"name": "unique-art-shared-token-under-two-oracle-ids",
+			"method": "GET",
+			"path": "/cards/search?q=%21%22Wolf%22+%28e%3Ateld+or+e%3Atblc+or+e%3At2xm%29&unique=art&include_extras=true",
+			"note": "2026-10-10. teld/14 and tblc/32: two Wolf token cards share teld/14's painting (tblc/35, t2xm/19), one row."
+		},
+		{
+			"name": "unique-art-shared-prefer-oldest-across-cards",
+			"method": "GET",
+			"path": "/cards/search?q=%28%21%22Wildwood+Scourge%22+or+%21%22Plus+One%22%29+prefer%3Aoldest&unique=art&include_extras=true",
+			"note": "2026-10-10. fjmp/28 alone: the front card `Plus One` is the oldest printing of the painting, two weeks before Wildwood Scourge's own m21/214 (which is the row with no prefer)."
+		},
+		{
+			"name": "unique-art-shared-pages",
+			"method": "GET",
+			"path": "/cards/search?q=%28e%3Ahbg+or+e%3Aclb%29&unique=art&include_extras=true&include_variations=true&page=3",
+			"note": "2026-10-10. 972 rows over six pages where the port had 1,022: 41 artworks of two cards in scope, each in its own key's place. Page 3."
 		}
 	]
 }

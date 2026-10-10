@@ -2445,8 +2445,64 @@ export async function gzipBytes(bytes: Uint8Array): Promise<Uint8Array> {
  *      same; the builder's answer for a printing released since the day changes. No format
  *      version, no layout, neither row grows. The importer gains one wasm export,
  *      `art_reps_written`; a blob without it is handed no such line and builds as before.
+ *
+ * 96 — `unique=art` ANSWERS AN ARTWORK TWO CARDS SHARE AS ONE ROW. Scryfall's `unique=art` is one
+ *      row an ARTWORK — the face tuple, whichever card prints it — and this port answered one a
+ *      card: `e:unf unique=art` 303 rows against 297, `(e:hbg or e:clb)` 1,022 against 972 (a
+ *      DEFAULT search: Alchemy's rebalanced cards carry their paper originals' paintings),
+ *      `(e:jmp or e:fjmp or e:m21)` 857 against 811. 410 artworks are carried by 859 cards: a
+ *      Jumpstart front card and the card whose painting it borrows (300 of them), an Alchemy
+ *      card and its original, a token under two oracle ids, an emblem and its planeswalker,
+ *      the halves of Very Cryptic Command.
+ *
+ *      THE RULE, measured 2026-10-10. Which printing: the artwork's representative — Scryfall's
+ *      record of it, the bit generation 93 stores — where the query holds it, 36 of 36 shared
+ *      artworks of 25 kinds asked with both cards whole; with that row filtered away, the first
+ *      of the query's own `order=name unique=prints` ACROSS the cards, 36 of 36 (`Goblins`'
+ *      front card fj25/32 before Volley Veteran's fdn/550; the card's pio/261 before
+ *      `Landfall`'s fj25/44). Under a prefer or a price order, the art-less group's keys: the
+ *      oldest, the newest, the cheapest and the dearest across the cards, a promo then the name
+ *      order (eight artworks, nine requests each). The row sorts by its own keys and
+ *      `total_cards` counts the artwork once. Whole scopes, id for id over every page: `e:unf`
+ *      297 of 297, `e:hbg` 398, `(e:hbg or e:clb)` 972, `(e:jmp or e:fjmp or e:m21)` 811, four
+ *      token sets 100.
+ *
+ *      HOW. Two cards are two oracle ids, and the store is cut by oracle id, so no partition can
+ *      know another card carries one of its artworks. The builder's corpus-wide pass does
+ *      (`NewArt::observe_artwork`, riding the tables `new:art` rides: a 48-bit key an artwork
+ *      and the card that carries it, a few hundred shared ones once sealed) and marks the rows
+ *      with a tag card_engine turns into bit 13 of `new_flags`, spreads over the artwork group
+ *      and lists (`CardIndexes::shared_art_printings`, ~250 of a partition's ~12,000 canonical
+ *      printings). A `unique=art` query asks its filter of those printings alone — the art-less
+ *      group's mechanism, through the same remembered gates, since nearly all are extras a
+ *      default search hides. With no match the query runs exactly as it did. With one, the run
+ *      is still the query's own (a `NOT shared` conjunct would cost a query matching every card
+ *      its fast path), asked for as many more rows as it holds for those artworks, which are
+ *      then dropped from its page and its count; and each matched artwork's best printing in
+ *      the partition rides the key packet as a candidate with the artwork's identity (a hash of its resolved
+ *      face tuple; a trailer under a new flag bit, like the art-less one). The gather keeps the
+ *      best-ranked candidate of each identity, merges its key in and counts it once
+ *      (gather.ts `mergeApart`).
+ *
+ *      WHAT IT COSTS. `unique=cards` and `unique=prints` never reach any of it. A `unique=art`
+ *      query that matches no shared artwork pays one walk of the store's listed printings
+ *      through the gates — the cost the art-less rows already have, a fraction of a microsecond
+ *      on a default search — and sends the packet it always sent, byte for byte. One that
+ *      matches some sends a candidate each (about 100 bytes), all of them whatever the page,
+ *      because the count is theirs to give. The nightly's scores phase carries ~55,000 more
+ *      table entries until it seals (26 bytes each as JSON).
+ *
+ *      Paired with ARCHIVE_FORMAT_VERSION 2026101003 -> 2026101004 (bit 13, and the new index
+ *      array — a layout change of the index section; neither row grows: card 288 bytes,
+ *      printing 304). No SORT_KEY_VERSION: no key's content or shape changes. The key packet
+ *      stays version 3 with a new flag (KEY_PACKET_FLAG_SHARED): a packet without a candidate
+ *      is byte for byte what it was, so two builds serve side by side through a rolling
+ *      deploy — and since only a store of the new format carries the bit, a build that cannot
+ *      read the trailer is never sent one by a partition serving the store it reads; where a
+ *      coordinator of the old build asks a partition of the new one, the packet is refused
+ *      loudly (trailing bytes), for those `unique=art` queries alone.
  */
-export const STORE_CONTENT_GENERATION = 95;
+export const STORE_CONTENT_GENERATION = 96;
 
 /**
  * Chunk key for a store. Keyed by store_key, so publishes never collide.

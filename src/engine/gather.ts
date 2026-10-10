@@ -52,6 +52,16 @@ export const KEY_PACKET_FLAG_WIDENED = 1;
  * confined to the queries whose answer changed.
  */
 export const KEY_PACKET_FLAG_ARTLESS = 2;
+/**
+ * `flags` bit 2: a shared-artwork trailer follows the inline rows and the art-less trailer (see
+ * {@link SharedCandidate}).
+ *
+ * A flag on version 3 for the reason the art-less one is: a packet without a candidate is byte for
+ * byte what it was, so two builds serve side by side through a rolling deploy, and a packet with
+ * one is refused by a build that cannot merge it — trailing bytes to its decoder — which confines
+ * the loud failure to the `unique=art` queries whose answer changed.
+ */
+export const KEY_PACKET_FLAG_SHARED = 4;
 
 /**
  * One partition's candidate for the ONE row every art-less printing collapses into under
@@ -77,6 +87,28 @@ export interface ArtlessCandidate {
 	vpid: number;
 }
 
+/**
+ * One partition's candidate for the ONE row an artwork two cards share comes to under
+ * `unique=art`.
+ *
+ * Scryfall answers an artwork once, whichever cards print it — a Jumpstart front card and the card
+ * whose painting it borrows, an Alchemy card and its paper original, one token under two oracle
+ * ids (410 artworks on 859 cards, measured 2026-10-10) — and two cards are two oracle ids, which
+ * the store's cut puts in any two partitions. So a partition answers such an artwork as it answers
+ * the art-less group: its `total` and its entries leave the artwork's printings out, and its best
+ * one comes beside them, with the artwork's identity.
+ *
+ * The coordinator keeps, for each identity, the candidate whose `rank` is bytewise smallest
+ * ({@link pickShared}), merges those keys into the streams by memcmp and adds one to the total for
+ * each. `art` is 16 opaque bytes: equal in every partition that holds a printing of the artwork,
+ * and never interpreted. A partition sends EVERY candidate it has, whatever `limit` asked for —
+ * an artwork whose row lies past the page still counts, and this is where it is counted.
+ */
+export interface SharedCandidate extends ArtlessCandidate {
+	/** The artwork's identity; candidates with equal bytes are one row. */
+	art: Uint8Array;
+}
+
 /** A partition's phase-1 reply, decoded. */
 export interface KeyPacket {
 	/** The partition's UNPAGINATED match count (total_cards sums these). */
@@ -93,6 +125,8 @@ export interface KeyPacket {
 	widened: boolean;
 	/** This partition's candidate for the art-less group's row — in neither `total` nor `entries`. */
 	artless?: ArtlessCandidate;
+	/** Its candidates for the artworks two cards share, one an artwork — in neither, likewise. */
+	shared?: SharedCandidate[];
 }
 
 /**
@@ -103,6 +137,8 @@ export interface KeyPacket {
  * n      of: keylen: u16, key bytes, vpid: u32
  * inline of: rowlen: u32, row bytes (row JSON or a card object — the reply says which)
  * with KEY_PACKET_FLAG_ARTLESS: ranklen: u16, rank bytes, keylen: u16, key bytes, vpid: u32
+ * with KEY_PACKET_FLAG_SHARED:  count: u16, then count of
+ *                               art: 16 bytes, ranklen: u16, rank bytes, keylen: u16, key bytes, vpid: u32
  * ```
  *
  * The layout mirrors the `query_keys` export in engine/wasm (plan A4), and
@@ -141,24 +177,42 @@ export function decodeKeyPacket(packed: Uint8Array): KeyPacket {
 		inlineRows.push(packed.subarray(at, at + rowlen));
 		at += rowlen;
 	}
-	let artless: ArtlessCandidate | undefined;
-	if ((flags & KEY_PACKET_FLAG_ARTLESS) !== 0) {
+	/** One candidate's `ranklen, rank, keylen, key, vpid`, read at the cursor. */
+	const candidate = (group: string): ArtlessCandidate => {
 		const bytes = (what: string): Uint8Array => {
-			if (at + 2 > packed.byteLength) throw new Error(`key packet truncated in the art-less ${what} length`);
+			if (at + 2 > packed.byteLength) throw new Error(`key packet truncated in the ${group} ${what} length`);
 			const len = view.getUint16(at, true);
 			at += 2;
-			if (at + len > packed.byteLength) throw new Error(`key packet truncated in the art-less ${what}`);
+			if (at + len > packed.byteLength) throw new Error(`key packet truncated in the ${group} ${what}`);
 			at += len;
 			return packed.subarray(at - len, at);
 		};
 		const rank = bytes("rank");
 		const key = bytes("key");
-		if (at + 4 > packed.byteLength) throw new Error("key packet truncated in the art-less vpid");
-		artless = { rank, key, vpid: view.getUint32(at, true) };
+		if (at + 4 > packed.byteLength) throw new Error(`key packet truncated in the ${group} vpid`);
 		at += 4;
+		return { rank, key, vpid: view.getUint32(at - 4, true) };
+	};
+	const artless = (flags & KEY_PACKET_FLAG_ARTLESS) !== 0 ? candidate("art-less") : undefined;
+	let shared: SharedCandidate[] | undefined;
+	if ((flags & KEY_PACKET_FLAG_SHARED) !== 0) {
+		if (at + 2 > packed.byteLength) throw new Error("key packet truncated in the shared-artwork count");
+		const count = view.getUint16(at, true);
+		at += 2;
+		if (count === 0) throw new Error("key packet flags a shared-artwork trailer and counts no candidate");
+		shared = [];
+		for (let i = 0; i < count; i++) {
+			if (at + 16 > packed.byteLength) throw new Error(`key packet truncated in shared artwork ${i}'s identity`);
+			const art = packed.subarray(at, at + 16);
+			at += 16;
+			shared.push({ art, ...candidate(`shared artwork ${i}'s`) });
+		}
 	}
 	if (at !== packed.byteLength) throw new Error(`key packet has ${packed.byteLength - at} trailing bytes`);
-	return artless ? { total, entries, inlineRows, widened, artless } : { total, entries, inlineRows, widened };
+	const packet: KeyPacket = { total, entries, inlineRows, widened };
+	if (artless) packet.artless = artless;
+	if (shared) packet.shared = shared;
+	return packet;
 }
 
 /** Encode a packet in the same layout — the test fixtures' generator, and the
@@ -169,21 +223,31 @@ export function encodeKeyPacket(packet: {
 	inlineRows?: Uint8Array[];
 	widened?: boolean;
 	artless?: ArtlessCandidate;
+	shared?: SharedCandidate[];
 }): Uint8Array {
 	const inlineRows = packet.inlineRows ?? [];
 	const artless = packet.artless;
+	const shared = packet.shared ?? [];
+	const candidateSize = (c: ArtlessCandidate) => 2 + c.rank.byteLength + 2 + c.key.byteLength + 4;
 	const size =
 		20 +
 		packet.entries.reduce((s, e) => s + 2 + e.key.byteLength + 4, 0) +
 		inlineRows.reduce((s, r) => s + 4 + r.byteLength, 0) +
-		(artless ? 2 + artless.rank.byteLength + 2 + artless.key.byteLength + 4 : 0);
+		(artless ? candidateSize(artless) : 0) +
+		(shared.length > 0 ? 2 + shared.reduce((s, c) => s + 16 + candidateSize(c), 0) : 0);
 	const out = new Uint8Array(size);
 	const view = new DataView(out.buffer);
 	view.setUint32(0, KEY_PACKET_VERSION, true);
 	view.setUint32(4, packet.total, true);
 	view.setUint32(8, packet.entries.length, true);
 	view.setUint32(12, inlineRows.length, true);
-	view.setUint32(16, (packet.widened ? KEY_PACKET_FLAG_WIDENED : 0) | (artless ? KEY_PACKET_FLAG_ARTLESS : 0), true);
+	view.setUint32(
+		16,
+		(packet.widened ? KEY_PACKET_FLAG_WIDENED : 0) |
+			(artless ? KEY_PACKET_FLAG_ARTLESS : 0) |
+			(shared.length > 0 ? KEY_PACKET_FLAG_SHARED : 0),
+		true,
+	);
 	let at = 20;
 	for (const e of packet.entries) {
 		view.setUint16(at, e.key.byteLength, true);
@@ -196,13 +260,25 @@ export function encodeKeyPacket(packet: {
 		out.set(row, at + 4);
 		at += 4 + row.byteLength;
 	}
-	if (artless) {
-		for (const bytes of [artless.rank, artless.key]) {
+	const put = (c: ArtlessCandidate) => {
+		for (const bytes of [c.rank, c.key]) {
 			view.setUint16(at, bytes.byteLength, true);
 			out.set(bytes, at + 2);
 			at += 2 + bytes.byteLength;
 		}
-		view.setUint32(at, artless.vpid, true);
+		view.setUint32(at, c.vpid, true);
+		at += 4;
+	};
+	if (artless) put(artless);
+	if (shared.length > 0) {
+		view.setUint16(at, shared.length, true);
+		at += 2;
+		for (const c of shared) {
+			if (c.art.byteLength !== 16) throw new Error(`a shared artwork's identity is 16 bytes, not ${c.art.byteLength}`);
+			out.set(c.art, at);
+			at += 16;
+			put(c);
+		}
 	}
 	return out;
 }
@@ -399,6 +475,63 @@ export function mergeWithArtless(
 		}
 	}
 	return { merged, artless: 1 };
+}
+
+/**
+ * Which candidate represents each artwork two cards share: for every identity any partition sent,
+ * the bytewise smallest `rank`, the lower partition on a tie (unreachable for real ranks, which
+ * end in a Scryfall id). In first-seen order, which nothing reads — each row is placed by its key.
+ * Empty when no partition sent one: every query but a `unique=art` one matching such a printing.
+ */
+export function pickShared(
+	candidates: readonly (readonly SharedCandidate[] | undefined)[],
+): { partition: number; candidate: SharedCandidate }[] {
+	const best = new Map<string, { partition: number; candidate: SharedCandidate }>();
+	for (let p = 0; p < candidates.length; p++) {
+		for (const candidate of candidates[p] ?? []) {
+			// The identity as a map key: 16 bytes, one char each.
+			const art = String.fromCharCode(...candidate.art);
+			const held = best.get(art);
+			if (held === undefined || compareKeys(candidate.rank, held.candidate.rank) < 0) {
+				best.set(art, { partition: p, candidate });
+			}
+		}
+	}
+	return [...best.values()];
+}
+
+/**
+ * {@link mergeKeyStreams}, with every row a `unique=art` answer keeps apart merged in by its own
+ * key: the art-less group's one, and one for each artwork two cards share. `apart` is how many
+ * there are, which is what the gather adds to the summed total.
+ *
+ * The chosen candidates join the merge as ONE more stream, sorted by key — however many there are
+ * (a query matching every card with extras has a few hundred), the merge stays one comparison a
+ * head — and each comes out owned by the partition that sent it, at {@link NOT_INLINE}. The page
+ * is exact for the reason {@link mergeWithArtless} gives, once a candidate: the streams leave
+ * these printings out, so a candidate among the first `offset + limit` is in its true place and
+ * one after them is past the window.
+ */
+export function mergeApart(
+	streams: KeyEntry[][],
+	artless: readonly (ArtlessCandidate | undefined)[],
+	shared: readonly (readonly SharedCandidate[] | undefined)[],
+): { merged: MergedRef[]; apart: number } {
+	const chosen: { partition: number; candidate: ArtlessCandidate }[] = pickShared(shared);
+	const owner = pickArtless(artless);
+	if (owner !== undefined) chosen.push({ partition: owner, candidate: artless[owner] as ArtlessCandidate });
+	if (chosen.length === 0) return { merged: mergeKeyStreams(streams), apart: 0 };
+	chosen.sort((a, b) => compareKeys(a.candidate.key, b.candidate.key) || a.partition - b.partition);
+	// The extra stream's "vpid" is the candidate's place in `chosen`, so the merge's tiebreak on
+	// equal keys is that order and each ref leads back to its candidate.
+	const merged = mergeKeyStreams([...streams, chosen.map((c, i) => ({ key: c.candidate.key, vpid: i }))]);
+	for (let i = 0; i < merged.length; i++) {
+		const ref = merged[i] as MergedRef;
+		if (ref.partition !== streams.length) continue;
+		const { partition, candidate } = chosen[ref.vpid] as (typeof chosen)[number];
+		merged[i] = { partition, vpid: candidate.vpid, index: NOT_INLINE };
+	}
+	return { merged, apart: chosen.length };
 }
 
 /**
@@ -812,9 +945,12 @@ export async function runTwoPhase(
 		const probe = await askKeys(clients, { ...opts, offset: 0, limit: 1 }, 0, shaping, sleep);
 		acquireMs = probe.reduce((max, r) => Math.max(max, r.acquireMs ?? 0), 0);
 		const probed = probe.map((r) => decodeKeyPacket(r.packed));
-		// The art-less group's row is in no partition's total — see ArtlessCandidate.
+		// The art-less group's row is in no partition's total, and neither is the row of an
+		// artwork two cards share — see ArtlessCandidate and SharedCandidate.
 		const total =
-			probed.reduce((sum, p) => sum + p.total, 0) + (pickArtless(probed.map((p) => p.artless)) === undefined ? 0 : 1);
+			probed.reduce((sum, p) => sum + p.total, 0) +
+			(pickArtless(probed.map((p) => p.artless)) === undefined ? 0 : 1) +
+			pickShared(probed.map((p) => p.shared)).length;
 		if (opts.offset >= total) {
 			return { total, slots: [], acquireMs, widened: probed[0]?.widened ?? false, builtAt: pinnedBuild(probe) };
 		}
@@ -871,13 +1007,15 @@ export async function runTwoPhase(
 	// The widening decision is a pure function of the options and the bound filter, so every
 	// partition answers the same; the first packet speaks for the fleet.
 	const widened = packets[0]?.widened ?? false;
-	// `unique=art` only, and only when the query matches a printing with no illustration id: one
-	// row for all of them, chosen among the partitions' candidates, merged in and counted once.
-	const { merged, artless } = mergeWithArtless(
+	// `unique=art` only, and only when the query matches a printing with no illustration id or
+	// one whose artwork another card carries: one row for all the former, one for each such
+	// artwork, chosen among the partitions' candidates, merged in and counted once each.
+	const { merged, apart } = mergeApart(
 		packets.map((p) => p.entries),
 		packets.map((p) => p.artless),
+		packets.map((p) => p.shared),
 	);
-	const total = packets.reduce((s, p) => s + p.total, 0) + artless;
+	const total = packets.reduce((s, p) => s + p.total, 0) + apart;
 	const carried = packets.map((p) => p.inlineRows.length);
 	const { page, byPartition } = selectPage(merged, opts.offset, opts.limit, carried);
 	const builtAt = pinnedBuild(replies);

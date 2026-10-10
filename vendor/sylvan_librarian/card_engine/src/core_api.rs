@@ -1683,6 +1683,13 @@ pub struct BufferStore {
     /// The canonical art-less printings and the gates' answers about them, built on the first
     /// `unique=art` query — see `crate::ArtlessIndex`. LOCAL PATCH (Cloudflare port).
     artless: std::sync::OnceLock<crate::ArtlessIndex>,
+    /// The canonical printings whose artwork another card carries, with each artwork's identity
+    /// — see `crate::SharedArtIndex`. Built on the first `unique=art` query, from a list the
+    /// archive holds. LOCAL PATCH (Cloudflare port).
+    shared_art: std::sync::OnceLock<crate::SharedArtIndex>,
+    /// The annex's, scanned on the first widened `unique=art` query of a store that has any —
+    /// see `crate::foreign_shared_art`. LOCAL PATCH (Cloudflare port).
+    foreign_shared_art: std::sync::OnceLock<(Vec<u32>, Vec<u128>)>,
 }
 
 impl BufferStore {
@@ -1714,6 +1721,8 @@ impl BufferStore {
             face_flavors: crate::FaceFlavorCache::default(),
             foreign_artless: std::sync::OnceLock::new(),
             artless: std::sync::OnceLock::new(),
+            shared_art: std::sync::OnceLock::new(),
+            foreign_shared_art: std::sync::OnceLock::new(),
         };
         // Adopt the archive's legality shifts HERE, at load, rather than leaving it to the first
         // filter query. `legality_bits_to_json` decodes against the process-global FORMAT_SHIFTS
@@ -1843,32 +1852,39 @@ impl BufferStore {
         filter_tree: &Value,
         opts: &QueryOptions,
     ) -> Result<(QueryParams, usize, Vec<(&'a AOracleCard, &'a APrinting)>, bool), EngineError> {
-        let (params, total, mut page, widened, artless) = self.run_page_parts(filter_tree, opts, true)?;
-        // The art-less group's one row, put where its sort key says — `page` is then the query's
-        // best `offset + limit` rows from zero, and the caller's window is cut from the result.
-        let Some(rep) = artless else { return Ok((params, total, page, widened)) };
-        super::insert_artless_rep(self.data(), &params, &mut page, &rep);
+        let (params, total, mut page, widened, apart) = self.run_page_parts(filter_tree, opts, true)?;
+        // The rows kept apart — the art-less group's one, and one for each artwork two cards share
+        // — put where their sort keys say: `page` is then the query's best `offset + limit` rows
+        // from zero, and the caller's window is cut from the result.
+        if apart.is_empty() {
+            return Ok((params, total, page, widened));
+        }
+        for rep in apart.artless.iter().chain(apart.shared.iter().map(|shared| &shared.rep)) {
+            super::insert_artless_rep(self.data(), &params, &mut page, rep);
+        }
         page.truncate(opts.offset.saturating_add(opts.limit));
         page.drain(..opts.offset.min(page.len()));
-        Ok((params, total + 1, page, widened))
+        Ok((params, total + apart.len(), page, widened))
     }
 
-    /// The query, run — and, under `unique=art`, the art-less group's representative kept APART
-    /// from it (LOCAL PATCH, Cloudflare port; see the art-less section beside `encode_sort_key`).
+    /// The query, run — and, under `unique=art`, the rows that are ONE ARTWORK ACROSS CARDS kept
+    /// APART from it: the art-less group's representative, and the representative of each
+    /// artwork two cards share (LOCAL PATCH, Cloudflare port; see the two sections beside
+    /// `artless_rank_key`).
     ///
-    /// With no representative (every other mode, and every `unique=art` query no art-less printing
-    /// matches) this is the run as it always was, bit for bit. With one, `total` and the page are
-    /// those of the query WITHOUT the art-less printings: `from_zero` asks for its best
-    /// `offset + limit` rows from zero, which is what `run_page` needs to place the row inside one
-    /// archive, and without it the page is the caller's own window, which is what `query_keys`
-    /// hands a gather that places the row across archives.
+    /// With none (every other mode, and every `unique=art` query that matches no such printing)
+    /// this is the run as it always was, bit for bit. With any, `total` and the page are those of
+    /// the query WITHOUT those printings: `from_zero` asks for its best `offset + limit` rows from
+    /// zero, which is what `run_page` needs to place the rows inside one archive, and without it
+    /// the page is the caller's own window, which is what `query_keys` hands a gather that places
+    /// them across archives.
     #[allow(clippy::type_complexity)]
     fn run_page_parts<'a>(
         &'a self,
         filter_tree: &Value,
         opts: &QueryOptions,
         from_zero: bool,
-    ) -> Result<(QueryParams, usize, Vec<(&'a AOracleCard, &'a APrinting)>, bool, Option<super::ArtlessRep<'a>>), EngineError> {
+    ) -> Result<(QueryParams, usize, Vec<(&'a AOracleCard, &'a APrinting)>, bool, ApartReps<'a>), EngineError> {
         let data = self.data();
         let params = QueryParams::from_strs(
             &opts.unique,
@@ -1903,13 +1919,38 @@ impl BufferStore {
         } else {
             None
         };
-        let (total, mut page) = if artless.is_some() {
-            let full = super::without_artless(&unsplit);
-            let mut run = params.with_sort_bound(super::sort_col_bound(&full, params.sort_col));
-            if from_zero {
-                run.limit = opts.offset.saturating_add(opts.limit);
+        // ...and does it match a printing whose artwork ANOTHER CARD carries? Each such artwork is
+        // one row across the cards, so its printings leave the query too and its best one here
+        // comes back beside it. A store none of whose printings shares its artwork — and the
+        // routed driver over a store whose canonical ones do not — asks nothing.
+        let shared = if matches!(params.mode, super::Mode::Artwork) {
+            let index = self.shared_art.get_or_init(|| super::SharedArtIndex::build(data));
+            let foreign = widened.then(|| self.foreign_shared_art.get_or_init(|| super::foreign_shared_art(data)));
+            if index.is_empty() && foreign.is_none_or(|(vpids, _)| vpids.is_empty()) {
+                (Vec::new(), 0)
+            } else {
+                super::shared_representatives(data, &params, &unsplit, index, foreign)
+            }
+        } else {
+            (Vec::new(), 0)
+        };
+        let (shared, shared_rows) = shared;
+        let apart = ApartReps { artless, shared };
+        // The run. The art-less printings leave it by a conjunct. The shared artworks' printings
+        // do NOT — the filter is the query's own, so every plan it had it still has — and the run
+        // is asked for as many more rows as it holds for them (`shared_rows`), from zero, since
+        // which of its rows they are is only known once it has run.
+        let from_top = !apart.shared.is_empty() || (from_zero && apart.artless.is_some());
+        let window = |mut run: QueryParams| {
+            if from_top {
+                run.limit = opts.offset.saturating_add(opts.limit).saturating_add(shared_rows);
                 run.page_offset = 0;
             }
+            run
+        };
+        let (mut total, mut page) = if apart.artless.is_some() {
+            let full = super::without_artless(&unsplit);
+            let run = window(params.with_sort_bound(super::sort_col_bound(&full, params.sort_col)));
             let (total, mut page) = if widened {
                 run_query_widened(data, &run, &full)
             } else {
@@ -1922,12 +1963,12 @@ impl BufferStore {
             }
             (total, page)
         } else if widened {
-            run_query_widened(data, &params.with_sort_bound(sort_bound), &unsplit)
+            run_query_widened(data, &window(params.with_sort_bound(sort_bound)), &unsplit)
         } else {
             let ctx = QueryCtx::from(data);
             run_query_routed(
                 &ctx,
-                &params.with_sort_bound(sort_bound),
+                &window(params.with_sort_bound(sort_bound)),
                 &mut filter_expr,
                 Some(&unsplit),
                 plane_expr.as_ref(),
@@ -1935,11 +1976,21 @@ impl BufferStore {
         };
         // A plain printing over a bonus (`unique=art`) or a reversible (`unique=cards`) one — see the
         // function.
-        if !widened && artless.is_none() {
+        if !widened && apart.artless.is_none() {
             super::prefer_plain_sibling_rep(data, &unsplit, &params, &mut page);
         }
+        if !apart.shared.is_empty() {
+            // The run answered each shared artwork once a card: those rows go — the whole group
+            // carries the bit, so whichever printing represents it does — and so does their count.
+            page.retain(|(_, p)| !super::printing_is_shared_art(p));
+            total = total.saturating_sub(shared_rows);
+            page.truncate(opts.offset.saturating_add(opts.limit));
+            if !from_zero {
+                page.drain(..opts.offset.min(page.len()));
+            }
+        }
         regex_budget_held()?;
-        Ok((params, total, page, widened, artless))
+        Ok((params, total, page, widened, apart))
     }
 
     /// [`Self::query`] over an already parsed filter tree.
@@ -2006,12 +2057,17 @@ impl BufferStore {
     ) -> Result<QueryKeysOutput, EngineError> {
         let resolved_fields = resolve_fields_json(opts.fields.clone())?;
         let data = self.data();
-        let (params, total, page, widened, artless) = self.run_page_parts(filter_tree, opts, false)?;
-        let artless = artless.map(|rep| ArtlessKey {
+        let (params, total, page, widened, apart) = self.run_page_parts(filter_tree, opts, false)?;
+        let candidate = |rep: super::ArtlessRep<'_>| ArtlessKey {
             key: super::encode_sort_key(data, rep.card, rep.printing, rep.vpid, params.sort_col, params.descending),
             rank: rep.rank,
             vpid: rep.vpid,
-        });
+        };
+        let artless = apart.artless.map(candidate);
+        // By artwork, so a partition's candidates are in one order whatever order its rows matched in.
+        let mut shared: Vec<SharedKey> =
+            apart.shared.into_iter().map(|s| SharedKey { art: s.art.to_be_bytes(), candidate: candidate(s.rep) }).collect();
+        shared.sort_unstable_by_key(|a| a.art);
         let inline = inline_rows.min(page.len());
         let rows = page[..inline]
             .iter()
@@ -2024,7 +2080,7 @@ impl BufferStore {
                 (super::encode_sort_key(data, c, p, vpid, params.sort_col, params.descending), vpid)
             })
             .collect();
-        Ok(QueryKeysOutput { total, keys, rows, widened, artless })
+        Ok(QueryKeysOutput { total, keys, rows, widened, artless, shared })
     }
 
     /// LOCAL PATCH (Cloudflare port): phase 2 of the partitioned two-phase gather — the rows for
@@ -3520,6 +3576,30 @@ pub struct QueryKeysOutput {
     /// (and always under the other modes). It is NOT in `keys` and NOT counted in `total` — see
     /// [`ArtlessKey`] for what a gather does with it.
     pub artless: Option<ArtlessKey>,
+    /// LOCAL PATCH (Cloudflare port): this partition's candidate for each ARTWORK TWO CARDS SHARE
+    /// that the query matches a printing of here, ordered by the artwork's identity — empty for
+    /// nearly every query, and always under the other modes. NOT in `keys` and NOT counted in
+    /// `total`, and ALL of them whatever `limit` asked for, because the count is theirs to give —
+    /// see [`SharedKey`].
+    pub shared: Vec<SharedKey>,
+}
+
+/// LOCAL PATCH (Cloudflare port): the rows a `unique=art` answer keeps apart from its run — see
+/// `BufferStore::run_page_parts`.
+struct ApartReps<'a> {
+    artless: Option<super::ArtlessRep<'a>>,
+    shared: Vec<super::SharedRep<'a>>,
+}
+
+impl ApartReps<'_> {
+    fn is_empty(&self) -> bool {
+        self.artless.is_none() && self.shared.is_empty()
+    }
+
+    /// The rows they come to in ONE archive: a row for the art-less group, a row an artwork.
+    fn len(&self) -> usize {
+        usize::from(self.artless.is_some()) + self.shared.len()
+    }
 }
 
 /// LOCAL PATCH (Cloudflare port): one partition's representative of the art-less group — every
@@ -3539,6 +3619,49 @@ pub struct ArtlessKey {
     /// Its sort key, in the same encoding and order as [`QueryKeysOutput::keys`].
     pub key: Vec<u8>,
     pub vpid: u32,
+}
+
+/// LOCAL PATCH (Cloudflare port): one partition's representative of ONE ARTWORK TWO CARDS SHARE.
+///
+/// `unique=art` is a row an artwork, whichever cards print it (the section beside
+/// `shared_rank_key` carries the measurements), and two cards are two oracle ids, which the
+/// partition hash puts wherever it puts them. So a partition answers such an artwork as it
+/// answers the art-less group: its stream and its total leave the artwork's printings out, and
+/// its best one comes beside them with the artwork's identity.
+///
+/// A gather keeps, for each identity, the candidate with the SMALLEST `rank` (bytewise; the
+/// lower partition on a tie, which a rank ending in a Scryfall id does not have), merges that
+/// one `key` into the key streams, counts it once and fetches the row by `vpid` from the
+/// partition that sent it — [`merge_shared`]. A partition sends every candidate it has, not a
+/// page of them: an artwork past the page still counts, and it is counted here.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SharedKey {
+    /// The artwork, the same bytes in every partition that holds a printing of it.
+    pub art: [u8; 16],
+    /// The row: its rank among the artwork's candidates, its sort key, where to fetch it.
+    pub candidate: ArtlessKey,
+}
+
+/// The shared artworks' rows for a gather: for each artwork any partition sent a candidate for,
+/// which candidate represents it — `(partition, index into that partition's candidates)`, in the
+/// order of the artworks' identities.
+pub fn merge_shared(candidates: &[Vec<SharedKey>]) -> Vec<(usize, usize)> {
+    let mut best: std::collections::BTreeMap<[u8; 16], (usize, usize)> = std::collections::BTreeMap::new();
+    for (part, sent) in candidates.iter().enumerate() {
+        for (at, key) in sent.iter().enumerate() {
+            match best.get_mut(&key.art) {
+                Some(held) => {
+                    if key.candidate.rank < candidates[held.0][held.1].candidate.rank {
+                        *held = (part, at);
+                    }
+                }
+                None => {
+                    best.insert(key.art, (part, at));
+                }
+            }
+        }
+    }
+    best.into_values().collect()
 }
 
 /// The art-less group's row for a gather: which of the partitions' candidates represents it, as
@@ -4712,6 +4835,7 @@ mod tests {
             ("arith_tuple", sz!(ix.arith_tuple)),
             ("printing_by_scryfall_id", sz!(ix.printing_by_scryfall_id)),
             ("printing_by_illustration_id", sz!(ix.printing_by_illustration_id)),
+            ("shared_art_printings", sz!(ix.shared_art_printings)),
             ("oracle_by_oracle_id", sz!(ix.oracle_by_oracle_id)),
             ("external_id_index", sz!(ix.external_id_index)),
             ("langs", sz!(ix.langs)),
@@ -8066,6 +8190,7 @@ mod tests {
         let mut merged: Vec<(Vec<u8>, usize, u32, usize)> = Vec::new();
         let mut carried: Vec<Vec<Value>> = Vec::with_capacity(partitions.len());
         let mut artless: Vec<Option<ArtlessKey>> = Vec::with_capacity(partitions.len());
+        let mut shared: Vec<Vec<SharedKey>> = Vec::with_capacity(partitions.len());
         for (part, store) in partitions.iter().enumerate() {
             let out = store.query_keys(tree, &phase1, inline).expect("phase 1 keys");
             total += out.total;
@@ -8075,6 +8200,14 @@ mod tests {
             }
             carried.push(out.rows);
             artless.push(out.artless);
+            shared.push(out.shared);
+        }
+        // An artwork two cards share: ONE row for every partition's candidate of it, the same
+        // way (see SharedKey).
+        for (part, at) in merge_shared(&shared) {
+            let rep = shared[part][at].candidate.clone();
+            total += 1;
+            merged.push((rep.key, part, rep.vpid, usize::MAX));
         }
         // `unique=art`'s art-less group: ONE row for every partition's candidate, merged by its
         // own key and counted once (see ArtlessKey). Never carried inline, hence the local index

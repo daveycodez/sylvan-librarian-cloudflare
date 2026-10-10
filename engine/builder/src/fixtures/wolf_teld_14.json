@@ -1,0 +1,145 @@
+{
+ "all_parts": [
+  {
+   "component": "token",
+   "id": "88452ed7-1065-41c3-94a6-dc41108c45c1",
+   "name": "Wolf",
+   "object": "related_card",
+   "type_line": "Token Creature — Wolf",
+   "uri": "https://api.scryfall.com/cards/88452ed7-1065-41c3-94a6-dc41108c45c1"
+  },
+  {
+   "component": "combo_piece",
+   "id": "68d3ec62-f33e-473f-bb65-da8166544b81",
+   "name": "Garruk, Cursed Huntsman",
+   "object": "related_card",
+   "type_line": "Legendary Planeswalker — Garruk",
+   "uri": "https://api.scryfall.com/cards/68d3ec62-f33e-473f-bb65-da8166544b81"
+  }
+ ],
+ "artist": "David Gaillet",
+ "artist_ids": [
+  "3496c5b4-57bf-4e5e-8bac-a1e05a911a2d"
+ ],
+ "booster": false,
+ "border_color": "black",
+ "card_back_id": "0aeebaf5-8c7d-4636-9e82-8c27447861f7",
+ "cardmarket_id": 402034,
+ "cmc": 0.0,
+ "collector_number": "14",
+ "color_identity": [
+  "B",
+  "G"
+ ],
+ "colors": [
+  "B",
+  "G"
+ ],
+ "digital": false,
+ "finishes": [
+  "nonfoil",
+  "foil"
+ ],
+ "foil": true,
+ "frame": "2015",
+ "full_art": false,
+ "game_changer": false,
+ "games": [
+  "paper"
+ ],
+ "highres_image": true,
+ "id": "88452ed7-1065-41c3-94a6-dc41108c45c1",
+ "illustration_id": "938777fc-d79f-4177-bfad-c5050d65f191",
+ "image_status": "highres_scan",
+ "image_updated_at": "2026-07-13T08:47:59Z",
+ "image_uris": {
+  "art": "https://cards.scryfall.io/art/front/8/8/88452ed7-1065-41c3-94a6-dc41108c45c1.webp?1783932479",
+  "art_crop": "https://cards.scryfall.io/art_crop/front/8/8/88452ed7-1065-41c3-94a6-dc41108c45c1.jpg?1783932479",
+  "border_crop": "https://cards.scryfall.io/border_crop/front/8/8/88452ed7-1065-41c3-94a6-dc41108c45c1.jpg?1783932479",
+  "crop": "https://cards.scryfall.io/crop/front/8/8/88452ed7-1065-41c3-94a6-dc41108c45c1.webp?1783932479",
+  "display": "https://cards.scryfall.io/display/front/8/8/88452ed7-1065-41c3-94a6-dc41108c45c1.webp?1783932479",
+  "grid": "https://cards.scryfall.io/grid/front/8/8/88452ed7-1065-41c3-94a6-dc41108c45c1.webp?1783932479",
+  "large": "https://cards.scryfall.io/large/front/8/8/88452ed7-1065-41c3-94a6-dc41108c45c1.jpg?1783932479",
+  "normal": "https://cards.scryfall.io/normal/front/8/8/88452ed7-1065-41c3-94a6-dc41108c45c1.jpg?1783932479",
+  "png": "https://cards.scryfall.io/png/front/8/8/88452ed7-1065-41c3-94a6-dc41108c45c1.png?1783932479",
+  "small": "https://cards.scryfall.io/small/front/8/8/88452ed7-1065-41c3-94a6-dc41108c45c1.jpg?1783932479",
+  "thumb": "https://cards.scryfall.io/thumb/front/8/8/88452ed7-1065-41c3-94a6-dc41108c45c1.webp?1783932479"
+ },
+ "keywords": [],
+ "lang": "en",
+ "layout": "token",
+ "legalities": {
+  "alchemy": "not_legal",
+  "brawl": "not_legal",
+  "commander": "not_legal",
+  "competitivebrawl": "not_legal",
+  "duel": "not_legal",
+  "future": "not_legal",
+  "gladiator": "not_legal",
+  "historic": "not_legal",
+  "legacy": "not_legal",
+  "modern": "not_legal",
+  "oathbreaker": "not_legal",
+  "oldschool": "not_legal",
+  "pauper": "not_legal",
+  "paupercommander": "not_legal",
+  "penny": "not_legal",
+  "pioneer": "not_legal",
+  "predh": "not_legal",
+  "premodern": "not_legal",
+  "standard": "not_legal",
+  "standardbrawl": "not_legal",
+  "timeless": "not_legal",
+  "tlr": "not_legal",
+  "vintage": "not_legal"
+ },
+ "mana_cost": "",
+ "multiverse_ids": [],
+ "name": "Wolf",
+ "nonfoil": true,
+ "object": "card",
+ "oracle_id": "21c3b763-b6a2-4e9e-8621-d2ab62e448f2",
+ "oracle_text": "When this creature dies, put a loyalty counter on each Garruk you control.",
+ "oversized": false,
+ "power": "2",
+ "prices": {
+  "eur": "0.48",
+  "eur_foil": "0.40",
+  "tix": null,
+  "usd": "0.75",
+  "usd_etched": null,
+  "usd_foil": null
+ },
+ "prints_search_uri": "https://api.scryfall.com/cards/search?order=released&q=oracleid%3A21c3b763-b6a2-4e9e-8621-d2ab62e448f2&unique=prints",
+ "promo": false,
+ "purchase_uris": {
+  "cardhoarder": "https://www.cardhoarder.com/cards?affiliate_id=scryfall&data%5Bsearch%5D=Wolf&ref=card-profile&utm_campaign=affiliate&utm_medium=card&utm_source=scryfall",
+  "cardmarket": "https://www.cardmarket.com/en/Magic/Products?idProduct=402034&referrer=scryfall&utm_campaign=card_prices&utm_medium=text&utm_source=scryfall",
+  "tcgplayer": "https://partner.tcgplayer.com/c/4931599/1830156/21018?subId1=api&u=https%3A%2F%2Fwww.tcgplayer.com%2Fproduct%2F199468%3Fpage%3D1"
+ },
+ "rarity": "common",
+ "related_uris": {
+  "edhrec": "https://edhrec.com/route/?cc=Wolf",
+  "tcgplayer_infinite_articles": "https://partner.tcgplayer.com/c/4931599/1830156/21018?subId1=api&trafcat=tcgplayer.com%2Fsearch%2Farticles&u=https%3A%2F%2Fwww.tcgplayer.com%2Fsearch%2Farticles%3FproductLineName%3Dmagic%26q%3DWolf",
+  "tcgplayer_infinite_decks": "https://partner.tcgplayer.com/c/4931599/1830156/21018?subId1=api&trafcat=tcgplayer.com%2Fsearch%2Fdecks&u=https%3A%2F%2Fwww.tcgplayer.com%2Fsearch%2Fdecks%3FproductLineName%3Dmagic%26q%3DWolf"
+ },
+ "released_at": "2019-10-04",
+ "reprint": false,
+ "reserved": false,
+ "rulings_uri": "https://api.scryfall.com/cards/88452ed7-1065-41c3-94a6-dc41108c45c1/rulings",
+ "scryfall_set_uri": "https://scryfall.com/sets/teld?utm_source=api",
+ "scryfall_uri": "https://scryfall.com/card/teld/14/wolf?utm_source=api",
+ "set": "teld",
+ "set_id": "53a599cf-9e16-4bc1-91b9-95e541e0848d",
+ "set_name": "Throne of Eldraine Tokens",
+ "set_search_uri": "https://api.scryfall.com/cards/search?order=set&q=e%3Ateld&unique=prints",
+ "set_type": "token",
+ "set_uri": "https://api.scryfall.com/sets/53a599cf-9e16-4bc1-91b9-95e541e0848d",
+ "story_spotlight": false,
+ "tcgplayer_id": 199468,
+ "textless": false,
+ "toughness": "2",
+ "type_line": "Token Creature — Wolf",
+ "uri": "https://api.scryfall.com/cards/88452ed7-1065-41c3-94a6-dc41108c45c1",
+ "variation": false
+}

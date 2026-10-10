@@ -340,7 +340,7 @@ const DELVER: &str = include_str!("../src/fixtures/delver_of_secrets.json");
 /// fit measurement in the run is read off it. The `-ml` suffix was added by hand for exactly this
 /// reason once already (a pre-multilingual corpus serving a multilingual gate); a constant the
 /// generator itself publishes is the version of that fix that cannot be forgotten.
-const CORPUS_SHAPE: &str = "ml-v4-artless";
+const CORPUS_SHAPE: &str = "ml-v5-shared";
 
 /// The oracle-level VALUE SPREAD, and why it exists.
 ///
@@ -784,7 +784,7 @@ fn printing(
 
     set_str(obj, "id", scryfall_id);
     set_str(obj, "oracle_id", oracle.oracle_id.clone());
-    set_str(obj, "illustration_id", illustration_id);
+    set_str(obj, "illustration_id", illustration_id.clone());
     set_str(obj, "name", oracle.name.clone());
     set_str(obj, "oracle_text", oracle.oracle_text.clone());
     // Sets are ZIPFIAN, not uniform. Real sets differ in size by three orders of magnitude, and
@@ -848,6 +848,14 @@ fn printing(
             if let Some(f) = face.as_object_mut() {
                 set_str(f, "name", format!("{} {}", oracle.name, i));
                 set_str(f, "oracle_text", format!("{} {}", oracle.oracle_text, i));
+                // THE FACES' OWN ILLUSTRATIONS, as a real two-faced card has them: the front is the
+                // printing's, the back another id of its own. The template's two were on every
+                // printing of every two-faced card — one face tuple for ~210 cards — which nothing
+                // saw while an artwork was counted once a CARD; counted once an ARTWORK, as
+                // Scryfall counts it, they would all have been a single row.
+                if f.contains_key("illustration_id") {
+                    set_str(f, "illustration_id", face_illustration(&illustration_id, i));
+                }
             }
         }
         set_str(obj, "name", format!("{} 0 // {} 1", oracle.name, oracle.name));
@@ -877,6 +885,30 @@ fn printing(
     card
 }
 
+/// Face `i`'s illustration for a printing whose own is `front`: `front` itself for the front, and
+/// for a later face the same id with its last hex digit moved on by `i` — another id, the same one
+/// wherever the same artwork is printed again, and drawn from no random stream.
+fn face_illustration(front: &str, i: usize) -> String {
+    if i == 0 || front.is_empty() {
+        return front.to_owned();
+    }
+    let (head, last) = front.split_at(front.len() - 1);
+    let digit = (u32::from_str_radix(last, 16).unwrap_or(0) + i as u32) % 16;
+    format!("{head}{digit:x}")
+}
+
+/// One oracle card in this many borrows the first artwork of an earlier card of its own template.
+///
+/// AN ARTWORK TWO CARDS SHARE — a Jumpstart front card and the card whose painting it borrows, an
+/// Alchemy card and its paper original, one token under two oracle ids: 410 artworks on 859 cards
+/// of the real corpus, 2.4% of its cards. `unique=art` answers such an artwork as ONE row, and
+/// the two cards are two oracle ids, which the cut puts in any two partitions — so, like the
+/// art-less group's, that row is chosen, placed and counted by the gather, from a candidate each
+/// partition sends (card_engine::SharedKey). Every card here used to draw artworks of its own,
+/// which left the envelope grid's `unique=artwork` third unable to see that merge. One card in 29
+/// is ~145 cards over ten partitions: several pairs split across partitions at any N, several not.
+const SHARED_ARTWORK_EVERY: usize = 29;
+
 fn cmd_gen(printings: usize, foreign_ratio: f64, bulk_path: &Path, tags_path: &Path) {
     let templates: Vec<Value> = [BOLT, ELVES, JACE, DELVER]
         .iter()
@@ -888,7 +920,10 @@ fn cmd_gen(printings: usize, foreign_ratio: f64, bulk_path: &Path, tags_path: &P
     let oracle_count = printings * 35 / 100;
     let mut oracles = Vec::with_capacity(oracle_count);
     let mut illustration_ids: Vec<String> = Vec::new();
-    for _ in 0..oracle_count {
+    // The latest card of each template, for the cards that borrow an artwork (same template, so
+    // the two cards' face tuples are the same length).
+    let mut latest: [Option<String>; 4] = [None, None, None, None];
+    for index in 0..oracle_count {
         // Template mix: mostly simple spells/creatures, ~5% multi-face.
         let template = match rng.below(100) {
             0..=44 => 0,
@@ -896,7 +931,13 @@ fn cmd_gen(printings: usize, foreign_ratio: f64, bulk_path: &Path, tags_path: &P
             75..=94 => 2,
             _ => 3,
         };
-        let first_illustration = uuid(&mut rng);
+        // Drawn whether or not it is used, so every other value of the corpus is what it was.
+        let own_illustration = uuid(&mut rng);
+        let first_illustration = match &latest[template] {
+            Some(borrowed) if index % SHARED_ARTWORK_EVERY == 7 => borrowed.clone(),
+            _ => own_illustration,
+        };
+        latest[template] = Some(first_illustration.clone());
         illustration_ids.push(first_illustration.clone());
         let name_words = 2 + rng.below(2) as usize;
         let text_len = 140 + rng.below(160) as usize;
@@ -1965,6 +2006,28 @@ fn cmd_compare_parts(rows_path: &Path, work_dir: &Path, n_a: u32, n_b: u32) {
         "ART-LESS GROUP: one row from {held_a} candidates at N={n_a} and from {held_b} at N={n_b} \
          (a per-partition row would have answered {held_a} and {held_b})"
     );
+
+    // AND THE SAME FOR THE ARTWORKS TWO CARDS SHARE: one row an artwork, from a candidate every
+    // partition holding a printing of it sends (card_engine::SharedKey). The premise is that some
+    // of those artworks have their two cards in DIFFERENT partitions, in both cuts and not the same
+    // ones — more candidates than artworks, a different number in each cut — and the control is
+    // again the count: a gather that kept every candidate would answer one row a candidate.
+    let candidates = |parts: &[card_engine::BufferStore]| -> (usize, usize) {
+        let sent: Vec<Vec<card_engine::SharedKey>> =
+            parts.iter().map(|p| p.query_keys(&true_node, &art, 0).expect("keys").shared).collect();
+        (card_engine::merge_shared(&sent).len(), sent.iter().map(Vec::len).sum())
+    };
+    let ((rows_a, sent_a), (rows_b, sent_b)) = (candidates(&a), candidates(&b));
+    assert!(
+        rows_a == rows_b && rows_a >= 20 && sent_a > rows_a && sent_b > rows_b && sent_a != sent_b,
+        "{rows_a} shared artworks from {sent_a} candidates at N={n_a} and {rows_b} from {sent_b} at N={n_b}: \
+         the same artworks have to be split across partitions in both cuts, and differently in each, \
+         for the `unique=artwork` cases above to have compared their merge at all"
+    );
+    println!(
+        "SHARED ARTWORKS: {rows_a} rows from {sent_a} candidates at N={n_a} and from {sent_b} at N={n_b} \
+         (a row a candidate would have answered {sent_a} and {sent_b})"
+    );
 }
 
 /// THE SAME DIFFERENTIAL OVER TWO BUILDS ALREADY ON DISK: `<dir>/p0.store`, `p1.store`, ... as the
@@ -2076,10 +2139,12 @@ fn gather(
     let mut total = 0usize;
     let mut merged: Vec<(Vec<u8>, usize, u32)> = Vec::new();
     let mut artless: Vec<Option<card_engine::ArtlessKey>> = Vec::with_capacity(parts.len());
+    let mut shared: Vec<Vec<card_engine::SharedKey>> = Vec::with_capacity(parts.len());
     for (part, store) in parts.iter().enumerate() {
         let out = store.query_keys(tree, &phase1, 0).expect("phase 1 keys");
         total += out.total;
         artless.push(out.artless);
+        shared.push(out.shared);
         let mut keys = out.keys;
         // ONLY the three string-primary orderings. The numeric columns encode a VALUE
         // (`perm_primary_key` over the f32), not a rank, so there is no archive-local variant of
@@ -2099,6 +2164,13 @@ fn gather(
         let rep = artless[part].take().expect("merge_artless names a partition with a candidate");
         total += 1;
         merged.push((rep.key, part, rep.vpid));
+    }
+    // ...and an artwork two cards share: ONE row for every partition's candidate of it, the same
+    // way (see card_engine::SharedKey).
+    for (part, at) in card_engine::merge_shared(&shared) {
+        let rep = &shared[part][at].candidate;
+        total += 1;
+        merged.push((rep.key.clone(), part, rep.vpid));
     }
     merged.sort_unstable_by(|x, y| x.0.cmp(&y.0));
 

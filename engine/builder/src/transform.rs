@@ -2611,6 +2611,24 @@ impl RowDraft {
         }
     }
 
+    /// Mark a printing whose artwork ANOTHER CARD carries with `card_engine::ART_SHARED_TAG` —
+    /// the word the engine's build turns into the bit `unique=art` finds such printings by, and
+    /// removes ([`NewArt::is_shared`]).
+    fn set_art_shared(&mut self, shared: bool) {
+        self.card_is_tags.retain(|t| t != card_engine::ART_SHARED_TAG);
+        if shared {
+            self.card_is_tags.push(card_engine::ART_SHARED_TAG.to_owned());
+        }
+    }
+
+    /// This printing's ARTWORK as [`NewArt`] keys it — see [`artwork_key`].
+    pub fn artwork_key(&self) -> Option<String> {
+        artwork_key(
+            self.illustration_id.as_deref(),
+            self.card_faces.iter().map(|face| face.get("illustration_id").and_then(Value::as_str)),
+        )
+    }
+
     /// What [`NewArt`] reads of this draft.
     pub fn new_art_facts(&self) -> NewArtFacts<'_> {
         NewArtFacts {
@@ -3366,6 +3384,22 @@ impl CorpusTables {
         self.new_art.standing(r)
     }
 
+    /// Observe one draft's artwork and card for the artworks two cards share — see
+    /// [`NewArt::observe_artwork`].
+    pub fn observe_artwork(&mut self, artwork: Option<String>, oracle_id: &str) {
+        self.new_art.observe_artwork(artwork, oracle_id);
+    }
+
+    /// Does another card carry this artwork? False until sealed — see [`NewArt::is_shared`].
+    pub fn art_shared(&self, artwork: Option<&str>) -> bool {
+        self.new_art.is_shared(artwork)
+    }
+
+    /// Artworks two or more cards carry (once sealed; every artwork seen, before).
+    pub fn shared_artworks(&self) -> usize {
+        self.new_art.artworks()
+    }
+
     /// (illustration, name) entries in the `new:art` table.
     pub fn new_art_entries(&self) -> usize {
         self.new_art.len()
@@ -3555,9 +3589,89 @@ pub struct NewArt {
     leads: HashMap<String, String>,
     #[serde(default)]
     sealed: bool,
+    /// THE ARTWORKS TWO CARDS SHARE — the fifth corpus-wide fact, and the same pass's.
+    ///
+    /// `unique=art` is one row an ARTWORK on api.scryfall.com, whichever cards print it
+    /// (card_engine's section beside `shared_rank_key` carries the measurement: 410 artworks on
+    /// 859 cards, a Jumpstart front card and the card whose painting it borrows, an Alchemy card
+    /// and its paper original, one token under two oracle ids). The store is cut by oracle id, so
+    /// no partition can know that another card carries one of its artworks; this pass sees every
+    /// card. [`artwork_key`] → the card that carries it (a hash of its oracle id) while the corpus
+    /// streams past, or `*` once a second card has. Sealed, only the `*` entries are left — a
+    /// few hundred — so a partition restores the whole of it and asks about its own rows.
+    ///
+    /// The artwork is the engine's (`push_artwork_key`): every face's illustration id in turn, or
+    /// the printing's own. A printing with an absent slot is not asked about here; the engine's
+    /// build gives it its artwork group's answer.
+    #[serde(default)]
+    artworks: HashMap<String, String>,
+}
+
+/// 64-bit FNV-1a: the hash [`artwork_key`] and [`NewArt::observe_artwork`] cut their keys from.
+fn fnv1a64(bytes: impl IntoIterator<Item = u8>) -> u64 {
+    bytes.into_iter().fold(0xcbf2_9ce4_8422_2325_u64, |hash, byte| (hash ^ u64::from(byte)).wrapping_mul(0x0000_0100_0000_01b3))
+}
+
+/// A printing's ARTWORK as the corpus-wide table keys it: its face tuple — each face's
+/// illustration id in turn, or the printing's own where it has no faces, exactly card_engine's
+/// `push_artwork_key` — hashed to twelve hex digits, or `None` where any slot is absent (the
+/// art-less printings, which are one artwork answered apart, and the signed art cards, which
+/// follow their group).
+///
+/// 48 bits, because the table is carried through the nightly's scores phase as JSON, rewritten
+/// every slice, with an entry for every artwork there is (~55,000) until it is sealed. Two
+/// artworks that collide would both be marked shared and then answered apart all the same, since
+/// the engine compares the tuples themselves — a wasted lookup, about once in a thousand builds.
+pub fn artwork_key<'a>(illustration_id: Option<&'a str>, faces: impl Iterator<Item = Option<&'a str>>) -> Option<String> {
+    let mut hash_input: Vec<u8> = Vec::with_capacity(80);
+    let mut slots = 0usize;
+    for face in faces {
+        let id = face.filter(|id| !id.is_empty())?;
+        hash_input.extend_from_slice(id.to_ascii_lowercase().as_bytes());
+        hash_input.push(b'+');
+        slots += 1;
+    }
+    if slots == 0 {
+        let id = illustration_id.filter(|id| !id.is_empty())?;
+        hash_input.extend_from_slice(id.to_ascii_lowercase().as_bytes());
+        hash_input.push(b'+');
+    }
+    Some(format!("{:012x}", fnv1a64(hash_input) >> 16))
 }
 
 impl NewArt {
+    /// Record that the card `oracle_id` carries `artwork` ([`artwork_key`]; `None` is a printing
+    /// with no complete tuple, which is not recorded).
+    pub fn observe_artwork(&mut self, artwork: Option<String>, oracle_id: &str) {
+        const SHARED: &str = "*";
+        let Some(artwork) = artwork else { return };
+        if oracle_id.is_empty() {
+            return;
+        }
+        let card = format!("{:08x}", fnv1a64(oracle_id.bytes()) as u32);
+        match self.artworks.entry(artwork) {
+            std::collections::hash_map::Entry::Occupied(mut seen) => {
+                if *seen.get() != card && seen.get() != SHARED {
+                    seen.insert(SHARED.to_owned());
+                }
+            }
+            std::collections::hash_map::Entry::Vacant(slot) => {
+                slot.insert(card);
+            }
+        }
+    }
+
+    /// Does a second card carry `artwork`? False until sealed, and for a printing with no
+    /// complete tuple.
+    pub fn is_shared(&self, artwork: Option<&str>) -> bool {
+        self.sealed && artwork.is_some_and(|key| self.artworks.get(key).is_some_and(|card| card == "*"))
+    }
+
+    /// Entries in the artwork table: every artwork seen before sealing, the shared ones after.
+    pub fn artworks(&self) -> usize {
+        self.artworks.len()
+    }
+
     pub fn observe(&mut self, r: &NewArtFacts) {
         if !r.eligible() {
             return;
@@ -3599,6 +3713,8 @@ impl NewArt {
                 order.clone_from(lead);
             }
         }
+        // Only the artworks a second card carries are ever asked about again.
+        self.artworks.retain(|_, card| card == "*");
         self.sealed = true;
     }
 
@@ -3635,9 +3751,10 @@ impl NewArt {
         }
     }
 
-    /// A table from parts read elsewhere — the nightly's partition-scoped restore.
-    pub fn from_parts(leads: HashMap<String, String>, sealed: bool) -> Self {
-        NewArt { leads, sealed }
+    /// A table from parts read elsewhere — the nightly's partition-scoped restore: the leads of
+    /// the partition's own names, and the shared artworks whole.
+    pub fn from_parts(leads: HashMap<String, String>, sealed: bool, artworks: HashMap<String, String>) -> Self {
+        NewArt { leads, sealed, artworks }
     }
 
     /// (illustration, name) entries held.
@@ -3774,6 +3891,7 @@ pub fn finalize(drafts: Vec<RowDraft>, tags: &TagData) -> impl Iterator<Item = V
     let mut new_art = NewArt::default();
     for r in &rows {
         new_art.observe(&r.new_art_facts());
+        new_art.observe_artwork(r.artwork_key(), &r.oracle_id);
     }
     new_art.seal();
 
@@ -3794,7 +3912,19 @@ pub fn finalize(drafts: Vec<RowDraft>, tags: &TagData) -> impl Iterator<Item = V
         let rank = ranks.rank_of(&r);
         let is_funny = funny.is_funny(&r);
         let art_standing = new_art.standing(&r.new_art_facts());
-        finalize_row(r, &oracle_tags, &art_tags, illustration_count, cubecobra_score, pinned, rank, is_funny, art_standing)
+        let art_shared = new_art.is_shared(r.artwork_key().as_deref());
+        finalize_row(
+            r,
+            &oracle_tags,
+            &art_tags,
+            illustration_count,
+            cubecobra_score,
+            pinned,
+            rank,
+            is_funny,
+            art_standing,
+            art_shared,
+        )
     })
 }
 
@@ -4019,10 +4149,14 @@ pub fn finalize_row(
     // anywhere, one of the same day, or a later one — the one corpus-wide fact among these, the
     // caller's because no single card's rows can answer it.
     art_standing: ArtStanding,
+    // Whether ANOTHER CARD carries this printing's artwork ([`NewArt::is_shared`]) — corpus-wide
+    // too, and the caller's for the same reason.
+    art_shared: bool,
 ) -> Value {
     let mut r = r;
     r.set_funny(is_funny);
     r.set_art_standing(art_standing);
+    r.set_art_shared(art_shared);
     {
         // The rank leads by construction: one rank step outweighs the ordinary score and the pin
         // bonus together, so the card's order is the measured rule and everything underneath only
@@ -4503,14 +4637,22 @@ pub struct CorpusPassDraft {
     pub card_artist: Option<String>,
 }
 
-/// The one field of a staged draft's `card_faces` entry the corpus-wide pass reads.
+/// The two fields of a staged draft's `card_faces` entry the corpus-wide pass reads.
 #[derive(Debug, serde::Deserialize)]
 pub struct CorpusPassFace {
     #[serde(default)]
     pub flavor_name: Option<String>,
+    /// The face's own illustration — a slot of the printing's artwork ([`artwork_key`]).
+    #[serde(default)]
+    pub illustration_id: Option<String>,
 }
 
 impl CorpusPassDraft {
+    /// This draft's ARTWORK as [`NewArt`] keys it — `RowDraft::artwork_key` off the same blob.
+    pub fn artwork_key(&self) -> Option<String> {
+        artwork_key(self.illustration_id.as_deref(), self.card_faces.iter().map(|face| face.illustration_id.as_deref()))
+    }
+
     /// What [`NewArt`] reads of this draft — the same nine fields `RowDraft::new_art_facts` hands
     /// over, parsed off the same staged blob.
     pub fn new_art_facts(&self) -> NewArtFacts<'_> {
@@ -4626,7 +4768,7 @@ mod tests {
             HashMap::new(),
             HashMap::new(),
             ArtistSpellings::new(),
-            NewArt::from_parts(kept, true),
+            NewArt::from_parts(kept, true, HashMap::new()),
         );
         assert!(!part.is_new_art(&manorborn.new_art_facts()));
         assert_eq!(part.art_standing(&manorborn.new_art_facts()), ArtStanding::Later);

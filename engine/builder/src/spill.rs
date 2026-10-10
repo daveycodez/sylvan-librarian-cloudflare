@@ -189,6 +189,7 @@ impl<'a> CorpusAggregator<'a> {
         self.funny.observe(draft);
         self.related.observe(draft);
         self.new_art.observe(&draft.new_art_facts());
+        self.new_art.observe_artwork(draft.artwork_key(), &draft.oracle_id);
         crate::transform::observe_artist_spellings(&mut self.artist_spellings, draft.card_artist.as_deref(), &draft.compat_blob);
         let info = Winner {
             record,
@@ -337,7 +338,19 @@ impl Aggregates {
         let rank = self.ranks.rank_of(&draft);
         let is_funny = self.funny.is_funny(&draft);
         let art_standing = self.new_art.standing(&draft.new_art_facts());
-        finalize_row(draft, &oracle_tags, &art_tags, illustration_count, cubecobra_score, pinned, rank, is_funny, art_standing)
+        let art_shared = self.new_art.is_shared(draft.artwork_key().as_deref());
+        finalize_row(
+            draft,
+            &oracle_tags,
+            &art_tags,
+            illustration_count,
+            cubecobra_score,
+            pinned,
+            rank,
+            is_funny,
+            art_standing,
+            art_shared,
+        )
     }
 }
 

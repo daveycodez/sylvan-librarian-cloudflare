@@ -18,6 +18,7 @@ const fixture = JSON.parse(readFileSync(`${import.meta.dir}/gather-wire-fixture.
 	packed_hex: string;
 	rows_packed_hex: string;
 	artless_packed_hex: string;
+	shared_packed_hex: string;
 };
 
 function hexBytes(hex: string): Uint8Array {
@@ -109,5 +110,32 @@ describe("query_keys wire fixture (Rust packer ↔ gather.ts codec)", () => {
 		// Cut anywhere inside the trailer, the packet is refused.
 		const bytes = hexBytes(fixture.artless_packed_hex);
 		expect(() => decodeKeyPacket(bytes.subarray(0, bytes.length - 3))).toThrow();
+	});
+
+	test("the shared-artwork trailer the Rust packer writes is the one this codec reads", () => {
+		// `unique=artwork` over three cards, two of them carrying ONE illustration: the third is
+		// the packet's only entry and its whole total, and the shared artwork's one row rides
+		// after the inline rows as a candidate with the artwork's identity (KEY_PACKET_FLAG_SHARED).
+		const packet = decodeKeyPacket(hexBytes(fixture.shared_packed_hex));
+		expect(packet.total).toBe(1);
+		expect(packet.entries.length).toBe(1);
+		expect(packet.inlineRows.map((r) => JSON.parse(new TextDecoder().decode(r)))).toEqual([{ name: "Wire Gamma" }]);
+		expect(packet.artless).toBeUndefined();
+		const shared = packet.shared;
+		if (shared === undefined) throw new Error("the fixture's third packet must carry a shared-artwork candidate");
+		expect(shared.length).toBe(1);
+		const [candidate] = shared as [NonNullable<typeof shared>[number]];
+		expect(candidate.art.byteLength).toBe(16);
+		// Wire Alpha represents the artwork: a sort key like any entry's, sorting before Wire Gamma's.
+		expect(candidate.key[0]).toBe(fixture.sort_key_version);
+		expect(compareKeys(candidate.key, (packet.entries[0] as { key: Uint8Array }).key)).toBeLessThan(0);
+		// With no prefer: rule 0, then whether the row is the artwork's recorded representative
+		// (neither card's is, here: 2), then the name-order key.
+		expect([...candidate.rank.subarray(0, 2)]).toEqual([0, 2]);
+		expect([...candidate.rank.subarray(2)]).toEqual([...candidate.key]);
+		expect(candidate.vpid).not.toBe((packet.entries[0] as { vpid: number }).vpid);
+		// Cut anywhere inside the trailer, the packet is refused.
+		const bytes = hexBytes(fixture.shared_packed_hex);
+		for (const cut of [1, 3, 5, 40]) expect(() => decodeKeyPacket(bytes.subarray(0, bytes.length - cut))).toThrow();
 	});
 });

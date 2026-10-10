@@ -1,0 +1,471 @@
+{
+ "all_parts": [
+  {
+   "component": "combo_piece",
+   "id": "77d2a543-d94f-4814-a60f-72c224e5768a",
+   "name": "Head of the Hunt",
+   "object": "related_card",
+   "type_line": "Creature — Wolf",
+   "uri": "https://api.scryfall.com/cards/77d2a543-d94f-4814-a60f-72c224e5768a"
+  },
+  {
+   "component": "combo_piece",
+   "id": "fdb5f1c9-109e-430e-a68e-f277a0825334",
+   "name": "Hollowhenge Overlord",
+   "object": "related_card",
+   "type_line": "Creature — Wolf",
+   "uri": "https://api.scryfall.com/cards/fdb5f1c9-109e-430e-a68e-f277a0825334"
+  },
+  {
+   "component": "combo_piece",
+   "id": "1ca94ebc-057a-4541-b8c0-e0ddb22c9f5b",
+   "name": "Tovolar's Huntmaster // Tovolar's Packleader",
+   "object": "related_card",
+   "type_line": "Creature — Human Werewolf // Creature — Werewolf",
+   "uri": "https://api.scryfall.com/cards/1ca94ebc-057a-4541-b8c0-e0ddb22c9f5b"
+  },
+  {
+   "component": "combo_piece",
+   "id": "be364b69-aa59-420c-a613-b1d0b303a4e5",
+   "name": "Fable of Wolf and Owl",
+   "object": "related_card",
+   "type_line": "Enchantment",
+   "uri": "https://api.scryfall.com/cards/be364b69-aa59-420c-a613-b1d0b303a4e5"
+  },
+  {
+   "component": "combo_piece",
+   "id": "f6898737-957f-44a6-bef7-fb196658176f",
+   "name": "Elturgard Ranger",
+   "object": "related_card",
+   "type_line": "Creature — Human Elf Ranger",
+   "uri": "https://api.scryfall.com/cards/f6898737-957f-44a6-bef7-fb196658176f"
+  },
+  {
+   "component": "combo_piece",
+   "id": "60da801e-c47c-4aac-928c-2e7eab2d24c6",
+   "name": "Wolfbriar Elemental",
+   "object": "related_card",
+   "type_line": "Creature — Elemental",
+   "uri": "https://api.scryfall.com/cards/60da801e-c47c-4aac-928c-2e7eab2d24c6"
+  },
+  {
+   "component": "combo_piece",
+   "id": "0dd7b2d8-ca9d-4125-b57e-9b14deae8d9b",
+   "name": "Chief Warg's Company",
+   "object": "related_card",
+   "type_line": "Creature — Wolf",
+   "uri": "https://api.scryfall.com/cards/0dd7b2d8-ca9d-4125-b57e-9b14deae8d9b"
+  },
+  {
+   "component": "combo_piece",
+   "id": "a24bba56-3256-489b-82a2-22748388e110",
+   "name": "Turntimber Ranger",
+   "object": "related_card",
+   "type_line": "Creature — Elf Scout Ranger Ally",
+   "uri": "https://api.scryfall.com/cards/a24bba56-3256-489b-82a2-22748388e110"
+  },
+  {
+   "component": "combo_piece",
+   "id": "81df4f6c-fa65-43cd-bad1-4f255d75d1aa",
+   "name": "Feed the Pack",
+   "object": "related_card",
+   "type_line": "Enchantment",
+   "uri": "https://api.scryfall.com/cards/81df4f6c-fa65-43cd-bad1-4f255d75d1aa"
+  },
+  {
+   "component": "combo_piece",
+   "id": "d8bb1b11-bf65-46a1-acb4-c7708a75e041",
+   "name": "Wolfkin Bond",
+   "object": "related_card",
+   "type_line": "Enchantment — Aura",
+   "uri": "https://api.scryfall.com/cards/d8bb1b11-bf65-46a1-acb4-c7708a75e041"
+  },
+  {
+   "component": "combo_piece",
+   "id": "4cd67241-6ff1-41bc-9bda-4a87fd4f6bdd",
+   "name": "Nightpack Ambusher",
+   "object": "related_card",
+   "type_line": "Creature — Wolf",
+   "uri": "https://api.scryfall.com/cards/4cd67241-6ff1-41bc-9bda-4a87fd4f6bdd"
+  },
+  {
+   "component": "combo_piece",
+   "id": "3ee31c45-4e39-4b74-a249-2a80cb485c44",
+   "name": "Cult of the Waxing Moon",
+   "object": "related_card",
+   "type_line": "Creature — Human Shaman",
+   "uri": "https://api.scryfall.com/cards/3ee31c45-4e39-4b74-a249-2a80cb485c44"
+  },
+  {
+   "component": "combo_piece",
+   "id": "64b5818e-7d5d-42ac-8d81-e3ad625eb11d",
+   "name": "Huntmaster of the Fells // Ravager of the Fells",
+   "object": "related_card",
+   "type_line": "Creature — Human Werewolf // Creature — Werewolf",
+   "uri": "https://api.scryfall.com/cards/64b5818e-7d5d-42ac-8d81-e3ad625eb11d"
+  },
+  {
+   "component": "combo_piece",
+   "id": "7a40a06d-83ad-47d8-81ff-fbeafd92eafe",
+   "name": "Pack Guardian",
+   "object": "related_card",
+   "type_line": "Creature — Wolf Spirit",
+   "uri": "https://api.scryfall.com/cards/7a40a06d-83ad-47d8-81ff-fbeafd92eafe"
+  },
+  {
+   "component": "combo_piece",
+   "id": "49825631-2498-41fe-a1df-f152ec05d1a8",
+   "name": "Arlinn Kord // Arlinn, Embraced by the Moon",
+   "object": "related_card",
+   "type_line": "Legendary Planeswalker — Arlinn // Legendary Planeswalker — Arlinn",
+   "uri": "https://api.scryfall.com/cards/49825631-2498-41fe-a1df-f152ec05d1a8"
+  },
+  {
+   "component": "combo_piece",
+   "id": "ef84540b-a132-4169-b3c0-b0edeb395c9b",
+   "name": "Mayor of Avabruck // Howlpack Alpha",
+   "object": "related_card",
+   "type_line": "Creature — Human Advisor Werewolf // Creature — Werewolf",
+   "uri": "https://api.scryfall.com/cards/ef84540b-a132-4169-b3c0-b0edeb395c9b"
+  },
+  {
+   "component": "combo_piece",
+   "id": "8506e3eb-07c1-4f5c-a2a7-c210acf6be16",
+   "name": "Wolfwillow Haven",
+   "object": "related_card",
+   "type_line": "Enchantment — Aura",
+   "uri": "https://api.scryfall.com/cards/8506e3eb-07c1-4f5c-a2a7-c210acf6be16"
+  },
+  {
+   "component": "combo_piece",
+   "id": "9c60d186-5c1e-4a74-80b7-0c60a6e5e79f",
+   "name": "Garruk Relentless // Garruk, the Veil-Cursed",
+   "object": "related_card",
+   "type_line": "Legendary Planeswalker — Garruk // Legendary Planeswalker — Garruk",
+   "uri": "https://api.scryfall.com/cards/9c60d186-5c1e-4a74-80b7-0c60a6e5e79f"
+  },
+  {
+   "component": "combo_piece",
+   "id": "f7f60ebd-4f6b-4562-8dec-d4b4e124cb73",
+   "name": "Howl of the Night Pack",
+   "object": "related_card",
+   "type_line": "Sorcery",
+   "uri": "https://api.scryfall.com/cards/f7f60ebd-4f6b-4562-8dec-d4b4e124cb73"
+  },
+  {
+   "component": "combo_piece",
+   "id": "eee53763-7344-4627-93c3-b4a5b26b1f16",
+   "name": "Ferocious Pup",
+   "object": "related_card",
+   "type_line": "Creature — Wolf",
+   "uri": "https://api.scryfall.com/cards/eee53763-7344-4627-93c3-b4a5b26b1f16"
+  },
+  {
+   "component": "combo_piece",
+   "id": "76710dcf-a8dd-4025-9c67-8bc4046edf5c",
+   "name": "Predator's Howl",
+   "object": "related_card",
+   "type_line": "Instant",
+   "uri": "https://api.scryfall.com/cards/76710dcf-a8dd-4025-9c67-8bc4046edf5c"
+  },
+  {
+   "component": "combo_piece",
+   "id": "98bee15d-6868-4dfc-9dd9-b437c5f3d6db",
+   "name": "Arlinn, Voice of the Pack",
+   "object": "related_card",
+   "type_line": "Legendary Planeswalker — Arlinn",
+   "uri": "https://api.scryfall.com/cards/98bee15d-6868-4dfc-9dd9-b437c5f3d6db"
+  },
+  {
+   "component": "combo_piece",
+   "id": "967b19ce-062d-470c-8716-425a8dec0e18",
+   "name": "Journey to the Lost City",
+   "object": "related_card",
+   "type_line": "Enchantment",
+   "uri": "https://api.scryfall.com/cards/967b19ce-062d-470c-8716-425a8dec0e18"
+  },
+  {
+   "component": "combo_piece",
+   "id": "a4e63463-1121-4095-9747-228df48df143",
+   "name": "Howling Moon",
+   "object": "related_card",
+   "type_line": "Enchantment",
+   "uri": "https://api.scryfall.com/cards/a4e63463-1121-4095-9747-228df48df143"
+  },
+  {
+   "component": "combo_piece",
+   "id": "79fbd424-8668-4e36-8e2f-780362c9915e",
+   "name": "Child of the Pack // Savage Packmate",
+   "object": "related_card",
+   "type_line": "Creature — Human Werewolf // Creature — Werewolf",
+   "uri": "https://api.scryfall.com/cards/79fbd424-8668-4e36-8e2f-780362c9915e"
+  },
+  {
+   "component": "combo_piece",
+   "id": "bcfaace7-86e2-427e-97b1-b09dfdd30fee",
+   "name": "Raised by Wolves",
+   "object": "related_card",
+   "type_line": "Enchantment — Aura",
+   "uri": "https://api.scryfall.com/cards/bcfaace7-86e2-427e-97b1-b09dfdd30fee"
+  },
+  {
+   "component": "token",
+   "id": "cf371056-43dd-41ab-8d05-b16a8bdc8d28",
+   "name": "Wolf",
+   "object": "related_card",
+   "type_line": "Token Creature — Wolf",
+   "uri": "https://api.scryfall.com/cards/cf371056-43dd-41ab-8d05-b16a8bdc8d28"
+  },
+  {
+   "component": "combo_piece",
+   "id": "8f1e37e1-b32d-4beb-a18d-f4c319eb221e",
+   "name": "Varis, Silverymoon Ranger",
+   "object": "related_card",
+   "type_line": "Legendary Creature — Human Elf Ranger",
+   "uri": "https://api.scryfall.com/cards/8f1e37e1-b32d-4beb-a18d-f4c319eb221e"
+  },
+  {
+   "component": "combo_piece",
+   "id": "804ef999-0d44-420e-ad0c-a6dcf8e9c392",
+   "name": "Wolf-Skull Shaman",
+   "object": "related_card",
+   "type_line": "Creature — Elf Shaman",
+   "uri": "https://api.scryfall.com/cards/804ef999-0d44-420e-ad0c-a6dcf8e9c392"
+  },
+  {
+   "component": "combo_piece",
+   "id": "eb8434fd-5ee5-4be9-a28d-9e04b1b94327",
+   "name": "Howling Giant",
+   "object": "related_card",
+   "type_line": "Creature — Giant Druid",
+   "uri": "https://api.scryfall.com/cards/eb8434fd-5ee5-4be9-a28d-9e04b1b94327"
+  },
+  {
+   "component": "combo_piece",
+   "id": "7f9a49da-9822-4e15-8dd8-e2c0323ed1fb",
+   "name": "Mantle of the Wolf",
+   "object": "related_card",
+   "type_line": "Enchantment — Aura",
+   "uri": "https://api.scryfall.com/cards/7f9a49da-9822-4e15-8dd8-e2c0323ed1fb"
+  },
+  {
+   "component": "combo_piece",
+   "id": "b66e1b92-194b-4efc-9bac-f15d7ee648a6",
+   "name": "Wolfrider's Saddle",
+   "object": "related_card",
+   "type_line": "Artifact — Equipment",
+   "uri": "https://api.scryfall.com/cards/b66e1b92-194b-4efc-9bac-f15d7ee648a6"
+  },
+  {
+   "component": "combo_piece",
+   "id": "a07b06a6-b7ef-45da-beb3-5479dc7fdb0a",
+   "name": "Ranger Class",
+   "object": "related_card",
+   "type_line": "Enchantment — Class",
+   "uri": "https://api.scryfall.com/cards/a07b06a6-b7ef-45da-beb3-5479dc7fdb0a"
+  },
+  {
+   "component": "combo_piece",
+   "id": "a44a2d69-df93-475b-8233-f73d8402594a",
+   "name": "Wren's Run Packmaster",
+   "object": "related_card",
+   "type_line": "Creature — Elf Warrior",
+   "uri": "https://api.scryfall.com/cards/a44a2d69-df93-475b-8233-f73d8402594a"
+  },
+  {
+   "component": "combo_piece",
+   "id": "3d305e7c-81b2-460e-8f56-63cfbb018f15",
+   "name": "Kessig Cagebreakers",
+   "object": "related_card",
+   "type_line": "Creature — Human Rogue",
+   "uri": "https://api.scryfall.com/cards/3d305e7c-81b2-460e-8f56-63cfbb018f15"
+  },
+  {
+   "component": "combo_piece",
+   "id": "24dfa8eb-df44-4dcb-ad4f-4d548474eda6",
+   "name": "Faldorn, Dread Wolf Herald",
+   "object": "related_card",
+   "type_line": "Legendary Creature — Human Druid",
+   "uri": "https://api.scryfall.com/cards/24dfa8eb-df44-4dcb-ad4f-4d548474eda6"
+  },
+  {
+   "component": "combo_piece",
+   "id": "fb4dcc14-0f3b-46b0-a37e-31d0c3e70732",
+   "name": "Master of the Wild Hunt",
+   "object": "related_card",
+   "type_line": "Creature — Human Shaman",
+   "uri": "https://api.scryfall.com/cards/fb4dcc14-0f3b-46b0-a37e-31d0c3e70732"
+  },
+  {
+   "component": "combo_piece",
+   "id": "167eac91-56a8-4bfe-ac95-bb460e0206fa",
+   "name": "Somberwald Beastmaster",
+   "object": "related_card",
+   "type_line": "Creature — Human Ranger",
+   "uri": "https://api.scryfall.com/cards/167eac91-56a8-4bfe-ac95-bb460e0206fa"
+  },
+  {
+   "component": "combo_piece",
+   "id": "fea35789-e7ff-4d41-b442-376dae336d59",
+   "name": "Silverfur Partisan",
+   "object": "related_card",
+   "type_line": "Creature — Wolf Warrior",
+   "uri": "https://api.scryfall.com/cards/fea35789-e7ff-4d41-b442-376dae336d59"
+  },
+  {
+   "component": "combo_piece",
+   "id": "f4bf2855-f5bf-4216-8123-576d6c5e1628",
+   "name": "Wolfcaller's Howl",
+   "object": "related_card",
+   "type_line": "Enchantment",
+   "uri": "https://api.scryfall.com/cards/f4bf2855-f5bf-4216-8123-576d6c5e1628"
+  },
+  {
+   "component": "combo_piece",
+   "id": "14003109-ec2c-40ad-b005-67218ec75cbd",
+   "name": "Bestial Menace",
+   "object": "related_card",
+   "type_line": "Sorcery",
+   "uri": "https://api.scryfall.com/cards/14003109-ec2c-40ad-b005-67218ec75cbd"
+  },
+  {
+   "component": "combo_piece",
+   "id": "b9379918-e39f-406a-b65a-bb74c2d7862d",
+   "name": "Arlinn, the Pack's Hope // Arlinn, the Moon's Fury",
+   "object": "related_card",
+   "type_line": "Legendary Planeswalker — Arlinn // Legendary Planeswalker — Arlinn",
+   "uri": "https://api.scryfall.com/cards/b9379918-e39f-406a-b65a-bb74c2d7862d"
+  },
+  {
+   "component": "combo_piece",
+   "id": "5cc0b4eb-8ee9-4213-8194-02e7d63428d3",
+   "name": "Sword of Body and Mind",
+   "object": "related_card",
+   "type_line": "Artifact — Equipment",
+   "uri": "https://api.scryfall.com/cards/5cc0b4eb-8ee9-4213-8194-02e7d63428d3"
+  }
+ ],
+ "artist": "David Gaillet",
+ "artist_ids": [
+  "3496c5b4-57bf-4e5e-8bac-a1e05a911a2d"
+ ],
+ "booster": false,
+ "border_color": "black",
+ "card_back_id": "0aeebaf5-8c7d-4636-9e82-8c27447861f7",
+ "cardmarket_id": 487379,
+ "cmc": 0.0,
+ "collector_number": "19",
+ "color_identity": [
+  "G"
+ ],
+ "colors": [
+  "G"
+ ],
+ "digital": false,
+ "finishes": [
+  "nonfoil",
+  "foil"
+ ],
+ "foil": true,
+ "frame": "2015",
+ "full_art": true,
+ "game_changer": false,
+ "games": [
+  "paper"
+ ],
+ "highres_image": true,
+ "id": "cf371056-43dd-41ab-8d05-b16a8bdc8d28",
+ "illustration_id": "938777fc-d79f-4177-bfad-c5050d65f191",
+ "image_status": "highres_scan",
+ "image_updated_at": "2026-07-13T08:10:28Z",
+ "image_uris": {
+  "art": "https://cards.scryfall.io/art/front/c/f/cf371056-43dd-41ab-8d05-b16a8bdc8d28.webp?1783930228",
+  "art_crop": "https://cards.scryfall.io/art_crop/front/c/f/cf371056-43dd-41ab-8d05-b16a8bdc8d28.jpg?1783930228",
+  "border_crop": "https://cards.scryfall.io/border_crop/front/c/f/cf371056-43dd-41ab-8d05-b16a8bdc8d28.jpg?1783930228",
+  "crop": "https://cards.scryfall.io/crop/front/c/f/cf371056-43dd-41ab-8d05-b16a8bdc8d28.webp?1783930228",
+  "display": "https://cards.scryfall.io/display/front/c/f/cf371056-43dd-41ab-8d05-b16a8bdc8d28.webp?1783930228",
+  "grid": "https://cards.scryfall.io/grid/front/c/f/cf371056-43dd-41ab-8d05-b16a8bdc8d28.webp?1783930228",
+  "large": "https://cards.scryfall.io/large/front/c/f/cf371056-43dd-41ab-8d05-b16a8bdc8d28.jpg?1783930228",
+  "normal": "https://cards.scryfall.io/normal/front/c/f/cf371056-43dd-41ab-8d05-b16a8bdc8d28.jpg?1783930228",
+  "png": "https://cards.scryfall.io/png/front/c/f/cf371056-43dd-41ab-8d05-b16a8bdc8d28.png?1783930228",
+  "small": "https://cards.scryfall.io/small/front/c/f/cf371056-43dd-41ab-8d05-b16a8bdc8d28.jpg?1783930228",
+  "thumb": "https://cards.scryfall.io/thumb/front/c/f/cf371056-43dd-41ab-8d05-b16a8bdc8d28.webp?1783930228"
+ },
+ "keywords": [],
+ "lang": "en",
+ "layout": "token",
+ "legalities": {
+  "alchemy": "not_legal",
+  "brawl": "not_legal",
+  "commander": "not_legal",
+  "competitivebrawl": "not_legal",
+  "duel": "not_legal",
+  "future": "not_legal",
+  "gladiator": "not_legal",
+  "historic": "not_legal",
+  "legacy": "not_legal",
+  "modern": "not_legal",
+  "oathbreaker": "not_legal",
+  "oldschool": "not_legal",
+  "pauper": "not_legal",
+  "paupercommander": "not_legal",
+  "penny": "not_legal",
+  "pioneer": "not_legal",
+  "predh": "not_legal",
+  "premodern": "not_legal",
+  "standard": "not_legal",
+  "standardbrawl": "not_legal",
+  "timeless": "not_legal",
+  "tlr": "not_legal",
+  "vintage": "not_legal"
+ },
+ "mana_cost": "",
+ "multiverse_ids": [],
+ "name": "Wolf",
+ "nonfoil": true,
+ "object": "card",
+ "oracle_id": "b2224843-8274-4872-a7ca-2adf69cc066b",
+ "oracle_text": "",
+ "oversized": false,
+ "power": "2",
+ "prices": {
+  "eur": "0.16",
+  "eur_foil": null,
+  "tix": null,
+  "usd": "0.46",
+  "usd_etched": null,
+  "usd_foil": null
+ },
+ "prints_search_uri": "https://api.scryfall.com/cards/search?order=released&q=oracleid%3Ab2224843-8274-4872-a7ca-2adf69cc066b&unique=prints",
+ "promo": false,
+ "purchase_uris": {
+  "cardhoarder": "https://www.cardhoarder.com/cards?affiliate_id=scryfall&data%5Bsearch%5D=Wolf&ref=card-profile&utm_campaign=affiliate&utm_medium=card&utm_source=scryfall",
+  "cardmarket": "https://www.cardmarket.com/en/Magic/Products?idProduct=487379&referrer=scryfall&utm_campaign=card_prices&utm_medium=text&utm_source=scryfall",
+  "tcgplayer": "https://partner.tcgplayer.com/c/4931599/1830156/21018?subId1=api&u=https%3A%2F%2Fwww.tcgplayer.com%2Fproduct%2F220062%3Fpage%3D1"
+ },
+ "rarity": "common",
+ "related_uris": {
+  "edhrec": "https://edhrec.com/route/?cc=Wolf",
+  "tcgplayer_infinite_articles": "https://partner.tcgplayer.com/c/4931599/1830156/21018?subId1=api&trafcat=tcgplayer.com%2Fsearch%2Farticles&u=https%3A%2F%2Fwww.tcgplayer.com%2Fsearch%2Farticles%3FproductLineName%3Dmagic%26q%3DWolf",
+  "tcgplayer_infinite_decks": "https://partner.tcgplayer.com/c/4931599/1830156/21018?subId1=api&trafcat=tcgplayer.com%2Fsearch%2Fdecks&u=https%3A%2F%2Fwww.tcgplayer.com%2Fsearch%2Fdecks%3FproductLineName%3Dmagic%26q%3DWolf"
+ },
+ "released_at": "2020-08-07",
+ "reprint": true,
+ "reserved": false,
+ "rulings_uri": "https://api.scryfall.com/cards/cf371056-43dd-41ab-8d05-b16a8bdc8d28/rulings",
+ "scryfall_set_uri": "https://scryfall.com/sets/t2xm?utm_source=api",
+ "scryfall_uri": "https://scryfall.com/card/t2xm/19/wolf?utm_source=api",
+ "set": "t2xm",
+ "set_id": "b4027d72-f717-4bfc-81f6-12a3fcc3866b",
+ "set_name": "Double Masters Tokens",
+ "set_search_uri": "https://api.scryfall.com/cards/search?order=set&q=e%3At2xm&unique=prints",
+ "set_type": "token",
+ "set_uri": "https://api.scryfall.com/sets/b4027d72-f717-4bfc-81f6-12a3fcc3866b",
+ "story_spotlight": false,
+ "tcgplayer_id": 220062,
+ "textless": false,
+ "toughness": "2",
+ "type_line": "Token Creature — Wolf",
+ "uri": "https://api.scryfall.com/cards/cf371056-43dd-41ab-8d05-b16a8bdc8d28",
+ "variation": false
+}
