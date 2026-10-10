@@ -1,0 +1,118 @@
+{
+ "artist": "Quinton Hoover",
+ "artist_ids": [
+  "1a2db619-92a5-431a-822b-101cdcc5bd5d"
+ ],
+ "booster": true,
+ "border_color": "black",
+ "card_back_id": "0aeebaf5-8c7d-4636-9e82-8c27447861f7",
+ "cmc": 3.0,
+ "collector_number": "197",
+ "color_identity": [
+  "G"
+ ],
+ "colors": [
+  "G"
+ ],
+ "content_warning": true,
+ "digital": false,
+ "finishes": [
+  "nonfoil"
+ ],
+ "foil": false,
+ "frame": "1993",
+ "full_art": false,
+ "game_changer": false,
+ "games": [
+  "paper"
+ ],
+ "highres_image": true,
+ "id": "0370330d-83d9-44d2-a1ed-c4827edc60fd",
+ "illustration_id": "07121780-50b2-457f-b744-21d24c3383f2",
+ "image_status": "highres_scan",
+ "image_updated_at": "2026-07-13T13:07:26Z",
+ "image_uris": {
+  "art": "https://cards.scryfall.io/art/front/0/3/0370330d-83d9-44d2-a1ed-c4827edc60fd.webp?1783948046",
+  "art_crop": "https://cards.scryfall.io/art_crop/front/0/3/0370330d-83d9-44d2-a1ed-c4827edc60fd.jpg?1783948046",
+  "border_crop": "https://cards.scryfall.io/border_crop/front/0/3/0370330d-83d9-44d2-a1ed-c4827edc60fd.jpg?1783948046",
+  "crop": "https://cards.scryfall.io/crop/front/0/3/0370330d-83d9-44d2-a1ed-c4827edc60fd.webp?1783948046",
+  "display": "https://cards.scryfall.io/display/front/0/3/0370330d-83d9-44d2-a1ed-c4827edc60fd.webp?1783948046",
+  "grid": "https://cards.scryfall.io/grid/front/0/3/0370330d-83d9-44d2-a1ed-c4827edc60fd.webp?1783948046",
+  "large": "https://cards.scryfall.io/large/front/0/3/0370330d-83d9-44d2-a1ed-c4827edc60fd.jpg?1783948046",
+  "normal": "https://cards.scryfall.io/normal/front/0/3/0370330d-83d9-44d2-a1ed-c4827edc60fd.jpg?1783948046",
+  "png": "https://cards.scryfall.io/png/front/0/3/0370330d-83d9-44d2-a1ed-c4827edc60fd.png?1783948046",
+  "small": "https://cards.scryfall.io/small/front/0/3/0370330d-83d9-44d2-a1ed-c4827edc60fd.jpg?1783948046",
+  "thumb": "https://cards.scryfall.io/thumb/front/0/3/0370330d-83d9-44d2-a1ed-c4827edc60fd.webp?1783948046"
+ },
+ "keywords": [],
+ "lang": "en",
+ "layout": "normal",
+ "legalities": {
+  "alchemy": "not_legal",
+  "brawl": "not_legal",
+  "commander": "banned",
+  "competitivebrawl": "not_legal",
+  "duel": "banned",
+  "future": "not_legal",
+  "gladiator": "not_legal",
+  "historic": "not_legal",
+  "legacy": "banned",
+  "modern": "not_legal",
+  "oathbreaker": "banned",
+  "oldschool": "legal",
+  "pauper": "banned",
+  "paupercommander": "banned",
+  "penny": "not_legal",
+  "pioneer": "not_legal",
+  "predh": "banned",
+  "premodern": "legal",
+  "standard": "not_legal",
+  "standardbrawl": "not_legal",
+  "timeless": "not_legal",
+  "tlr": "not_legal",
+  "vintage": "banned"
+ },
+ "mana_cost": "{2}{G}",
+ "multiverse_ids": [
+  1537
+ ],
+ "name": "Pradesh Gypsies",
+ "nonfoil": true,
+ "object": "card",
+ "oracle_id": "37c49483-bef6-47c6-9354-ead8560d48da",
+ "oracle_text": "{1}{G}, {T}: Target creature gets -2/-0 until end of turn.",
+ "oversized": false,
+ "power": "1",
+ "prices": {
+  "eur": null,
+  "eur_foil": null,
+  "tix": null,
+  "usd": null,
+  "usd_etched": null,
+  "usd_foil": null
+ },
+ "prints_search_uri": "https://api.scryfall.com/cards/search?order=released&q=oracleid%3A37c49483-bef6-47c6-9354-ead8560d48da&unique=prints",
+ "promo": false,
+ "rarity": "uncommon",
+ "related_uris": {
+  "gatherer": "https://gatherer.wizards.com/Pages/Card/Details.aspx?multiverseid=1537&printed=false"
+ },
+ "released_at": "1994-06-01",
+ "reprint": false,
+ "reserved": false,
+ "rulings_uri": "https://api.scryfall.com/cards/0370330d-83d9-44d2-a1ed-c4827edc60fd/rulings",
+ "scryfall_set_uri": "https://scryfall.com/sets/leg?utm_source=api",
+ "scryfall_uri": "https://scryfall.com/card/leg/197/pradesh-gypsies?utm_source=api",
+ "set": "leg",
+ "set_id": "78c50b4b-b220-455b-a2d5-cee458fa56f3",
+ "set_name": "Legends",
+ "set_search_uri": "https://api.scryfall.com/cards/search?order=set&q=e%3Aleg&unique=prints",
+ "set_type": "expansion",
+ "set_uri": "https://api.scryfall.com/sets/78c50b4b-b220-455b-a2d5-cee458fa56f3",
+ "story_spotlight": false,
+ "textless": false,
+ "toughness": "1",
+ "type_line": "Creature — Human Nomad",
+ "uri": "https://api.scryfall.com/cards/0370330d-83d9-44d2-a1ed-c4827edc60fd",
+ "variation": false
+}

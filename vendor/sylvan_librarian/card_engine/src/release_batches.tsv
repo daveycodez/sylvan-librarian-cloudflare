@@ -2,8 +2,8 @@
 #
 # yyyymmdd <TAB> set code <TAB> batch: inside one release date, `order=released` orders the sets
 # by (batch, code). A (date, set) not listed is batch 0. See assign_set_ranks in lib.rs.
-# 360 dates measured, 143 of them in more than one batch; 128 same-run pairs
-# asked `prefer:newest` and `prefer:oldest`, 25 of them a boundary the code order hides.
+# 364 dates measured, 155 of them in more than one batch; 148 same-run pairs
+# asked `prefer:newest` and `prefer:oldest`, 27 of them a boundary the code order hides.
 19931210	cei	1
 19950401	4bb	1
 19970401	pmic	1
@@ -20,11 +20,11 @@
 20051007	pmps	1
 20051007	prav	1
 20060101	pal06	1
-20060101	pjas	2
-20060101	pjjt	2
-20060101	pjse	2
-20060101	pmps06	1
-20060101	psus	2
+20060101	pjas	3
+20060101	pjjt	3
+20060101	pjse	3
+20060101	pmps06	2
+20060101	psus	3
 20060203	pgpt	1
 20060505	pdis	1
 20061006	ptsp	1
@@ -164,6 +164,7 @@
 20200703	pm21	1
 20200717	ajmp	2
 20200717	pana	1
+20200731	sld	1
 20200807	2xm	1
 20200925	paer	3
 20200925	pgrn	3
@@ -198,6 +199,7 @@
 20210924	mic	1
 20210924	omic	1
 20210924	pmid	1
+20210924	prm	3
 20210924	smid	2
 20210924	tmic	1
 20210924	tmid	1
@@ -208,10 +210,14 @@
 20211015	q06	1
 20211119	mvow	2
 20211119	ovoc	2
+20211119	prm	3
 20211119	pvow	3
 20211119	svow	1
 20211119	tvoc	2
 20211119	tvow	2
+20211120	prm	1
+20211128	prm	1
+20211209	prm	1
 20220128	cc2	1
 20220218	mneo	3
 20220218	nec	1
@@ -220,6 +226,7 @@
 20220218	sneo	2
 20220218	tnec	1
 20220218	tneo	1
+20220422	prm	1
 20220429	msnc	1
 20220429	ncc	2
 20220429	pncc	4
@@ -229,6 +236,7 @@
 20220429	tsnc	3
 20220610	mclb	1
 20220610	pclb	1
+20220723	prm	1
 20220909	pdmu	2
 20220909	ptdmu	1
 20221007	sunf	1
@@ -245,10 +253,14 @@
 20221202	fj22	1
 20221202	scd	1
 20221202	tscd	1
+20221229	prm	1
 20230113	dmr	1
 20230113	tdmr	1
+20230210	prm	1
 20230421	fmom	2
+20230421	prm	2
 20230421	tmoc	1
+20230422	prm	1
 20230623	ltc	1
 20230804	acmm	1
 20230804	tcmm	1
@@ -276,8 +288,10 @@
 20240802	pblb	1
 20240802	tblb	1
 20240802	tblc	1
+20240819	prm	1
 20241115	afdn	1
 20241115	pfdn	1
+20241209	prm	1
 20250124	ainr	1
 20250214	adft	2
 20250214	pdft	1
@@ -305,5 +319,6 @@
 20260123	pecl	1
 20260123	pmh3	1
 20260424	psos	1
+20260814	prm	1
 20261002	tfra	1
 20261002	tfrc	1

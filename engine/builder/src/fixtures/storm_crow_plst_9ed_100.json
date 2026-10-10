@@ -1,0 +1,147 @@
+{
+ "all_parts": [
+  {
+   "component": "combo_piece",
+   "id": "a26a6daa-499d-4f3e-a75a-2fe4dcf3b629",
+   "name": "Storm Crow",
+   "object": "related_card",
+   "type_line": "Creature — Bird",
+   "uri": "https://api.scryfall.com/cards/a26a6daa-499d-4f3e-a75a-2fe4dcf3b629"
+  },
+  {
+   "component": "combo_piece",
+   "id": "03e88790-ac95-44a2-9886-153a7576c5ba",
+   "name": "Galathul Galecaller // Corvid Squall",
+   "object": "related_card",
+   "type_line": "Creature — Bird Wizard // Sorcery",
+   "uri": "https://api.scryfall.com/cards/03e88790-ac95-44a2-9886-153a7576c5ba"
+  }
+ ],
+ "artist": "John Matson",
+ "artist_ids": [
+  "a1685587-4b55-446b-b420-c37b202ed3f1"
+ ],
+ "booster": false,
+ "border_color": "black",
+ "card_back_id": "0aeebaf5-8c7d-4636-9e82-8c27447861f7",
+ "cardmarket_id": 443513,
+ "cmc": 2.0,
+ "collector_number": "9ED-100",
+ "color_identity": [
+  "U"
+ ],
+ "colors": [
+  "U"
+ ],
+ "digital": false,
+ "edhrec_rank": 21214,
+ "finishes": [
+  "foil"
+ ],
+ "flavor_text": "Storm crow descending, winter unending. Storm crow departing, summer is starting.",
+ "foil": true,
+ "frame": "2003",
+ "full_art": false,
+ "game_changer": false,
+ "games": [
+  "paper"
+ ],
+ "highres_image": true,
+ "id": "2955a257-302c-48df-9eec-8561cbc8374c",
+ "illustration_id": "d01aa92b-0582-4e1e-a7b0-737b2ad4e462",
+ "image_status": "highres_scan",
+ "image_updated_at": "2026-07-13T08:27:23Z",
+ "image_uris": {
+  "art": "https://cards.scryfall.io/art/front/2/9/2955a257-302c-48df-9eec-8561cbc8374c.webp?1783931243",
+  "art_crop": "https://cards.scryfall.io/art_crop/front/2/9/2955a257-302c-48df-9eec-8561cbc8374c.jpg?1783931243",
+  "border_crop": "https://cards.scryfall.io/border_crop/front/2/9/2955a257-302c-48df-9eec-8561cbc8374c.jpg?1783931243",
+  "crop": "https://cards.scryfall.io/crop/front/2/9/2955a257-302c-48df-9eec-8561cbc8374c.webp?1783931243",
+  "display": "https://cards.scryfall.io/display/front/2/9/2955a257-302c-48df-9eec-8561cbc8374c.webp?1783931243",
+  "grid": "https://cards.scryfall.io/grid/front/2/9/2955a257-302c-48df-9eec-8561cbc8374c.webp?1783931243",
+  "large": "https://cards.scryfall.io/large/front/2/9/2955a257-302c-48df-9eec-8561cbc8374c.jpg?1783931243",
+  "normal": "https://cards.scryfall.io/normal/front/2/9/2955a257-302c-48df-9eec-8561cbc8374c.jpg?1783931243",
+  "png": "https://cards.scryfall.io/png/front/2/9/2955a257-302c-48df-9eec-8561cbc8374c.png?1783931243",
+  "small": "https://cards.scryfall.io/small/front/2/9/2955a257-302c-48df-9eec-8561cbc8374c.jpg?1783931243",
+  "thumb": "https://cards.scryfall.io/thumb/front/2/9/2955a257-302c-48df-9eec-8561cbc8374c.webp?1783931243"
+ },
+ "keywords": [
+  "Flying"
+ ],
+ "lang": "en",
+ "layout": "normal",
+ "legalities": {
+  "alchemy": "not_legal",
+  "brawl": "not_legal",
+  "commander": "legal",
+  "competitivebrawl": "not_legal",
+  "duel": "legal",
+  "future": "not_legal",
+  "gladiator": "not_legal",
+  "historic": "not_legal",
+  "legacy": "legal",
+  "modern": "legal",
+  "oathbreaker": "legal",
+  "oldschool": "not_legal",
+  "pauper": "legal",
+  "paupercommander": "legal",
+  "penny": "legal",
+  "pioneer": "not_legal",
+  "predh": "legal",
+  "premodern": "legal",
+  "standard": "not_legal",
+  "standardbrawl": "not_legal",
+  "timeless": "not_legal",
+  "tlr": "legal",
+  "vintage": "legal"
+ },
+ "mana_cost": "{1}{U}",
+ "multiverse_ids": [],
+ "name": "Storm Crow",
+ "nonfoil": false,
+ "object": "card",
+ "oracle_id": "000d5588-5a4c-434e-988d-396632ade42c",
+ "oracle_text": "Flying (This creature can't be blocked except by creatures with flying or reach.)",
+ "oversized": false,
+ "penny_rank": 14390,
+ "power": "1",
+ "prices": {
+  "eur": null,
+  "eur_foil": "0.23",
+  "tix": null,
+  "usd": null,
+  "usd_etched": null,
+  "usd_foil": "0.26"
+ },
+ "prints_search_uri": "https://api.scryfall.com/cards/search?order=released&q=oracleid%3A000d5588-5a4c-434e-988d-396632ade42c&unique=prints",
+ "promo": false,
+ "purchase_uris": {
+  "cardhoarder": "https://www.cardhoarder.com/cards?affiliate_id=scryfall&data%5Bsearch%5D=Storm+Crow&ref=card-profile&utm_campaign=affiliate&utm_medium=card&utm_source=scryfall",
+  "cardmarket": "https://www.cardmarket.com/en/Magic/Products?idProduct=443513&referrer=scryfall&utm_campaign=card_prices&utm_medium=text&utm_source=scryfall",
+  "tcgplayer": "https://partner.tcgplayer.com/c/4931599/1830156/21018?subId1=api&u=https%3A%2F%2Fwww.tcgplayer.com%2Fproduct%2F210387%3Fpage%3D1"
+ },
+ "rarity": "common",
+ "related_uris": {
+  "edhrec": "https://edhrec.com/route/?cc=Storm+Crow",
+  "tcgplayer_infinite_articles": "https://partner.tcgplayer.com/c/4931599/1830156/21018?subId1=api&trafcat=tcgplayer.com%2Fsearch%2Farticles&u=https%3A%2F%2Fwww.tcgplayer.com%2Fsearch%2Farticles%3FproductLineName%3Dmagic%26q%3DStorm%2BCrow",
+  "tcgplayer_infinite_decks": "https://partner.tcgplayer.com/c/4931599/1830156/21018?subId1=api&trafcat=tcgplayer.com%2Fsearch%2Fdecks&u=https%3A%2F%2Fwww.tcgplayer.com%2Fsearch%2Fdecks%3FproductLineName%3Dmagic%26q%3DStorm%2BCrow"
+ },
+ "released_at": "2020-03-13",
+ "reprint": true,
+ "reserved": false,
+ "rulings_uri": "https://api.scryfall.com/cards/2955a257-302c-48df-9eec-8561cbc8374c/rulings",
+ "scryfall_set_uri": "https://scryfall.com/sets/plst?utm_source=api",
+ "scryfall_uri": "https://scryfall.com/card/plst/9ED-100/storm-crow?utm_source=api",
+ "set": "plst",
+ "set_id": "67e47ba2-b019-4181-9005-fe9fc021de44",
+ "set_name": "The List",
+ "set_search_uri": "https://api.scryfall.com/cards/search?order=set&q=e%3Aplst&unique=prints",
+ "set_type": "masters",
+ "set_uri": "https://api.scryfall.com/sets/67e47ba2-b019-4181-9005-fe9fc021de44",
+ "story_spotlight": false,
+ "tcgplayer_id": 210387,
+ "textless": false,
+ "toughness": "2",
+ "type_line": "Creature — Bird",
+ "uri": "https://api.scryfall.com/cards/2955a257-302c-48df-9eec-8561cbc8374c",
+ "variation": false
+}

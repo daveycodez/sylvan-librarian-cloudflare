@@ -2256,8 +2256,53 @@ export async function gzipBytes(bytes: Uint8Array): Promise<Uint8Array> {
  *      Paired with ARCHIVE_FORMAT_VERSION 2026100911 -> 2026100912: no layout moves and neither
  *      row grows, but the bit is clear in every older store, and this code reading one would
  *      answer the card's own order for EVERY artwork.
+ *
+ *   91 (2026-10-10): A CARD'S OWN ORDER, THE LAST THREE SEQUENCES — Shivan Dragon, Storm Crow
+ *      and Island, the three of generation 89's note — and each was a different thing.
+ *
+ *      THE TIERS ARE TWO FACTS. A card's printings come back in the classes `(covered, extra)` =
+ *      (0,0), (0,1), (1,0), (1,1), each newest first: outside the default tier or not
+ *      (`is:covered`, and every row that is not English), and hidden from a default search or
+ *      not (`is:extra`). The three tiers this was read as put "memorabilia, a gold border, an
+ *      oversized card" last by their shape. Shivan Dragon's Arena duplicate j21/788 (2021) has
+ *      none of the three and comes back among the memorabilia, between 30a/467 and o90p/5; Storm
+ *      Crow's Alchemy duplicate ysos/31 (2026) after its List printing of 2020; and History of
+ *      Benalia's ybro/31 (2023), an extra Scryfall does NOT record as covered, BEFORE the Magic
+ *      Online promo of 2024. 151 of 151 sequences read with their own `is:covered` against the
+ *      whole `is:extra` list (10,905 printings), where "extras last" alone has 116 of the first
+ *      135. Both facts were already decided per row at build (`ranks::rank_class`).
+ *
+ *      A PRINTING'S LANGUAGES NEED NOT SHARE A DATE. The 30th Anniversary History promos are
+ *      dated 2022-09-09 in Japanese and 2023-03-21 in English, and Scryfall orders each row by
+ *      its own: `!"Shivan Dragon"` has p30h/4 ahead of sld/716 (2023-02). The two dates are two
+ *      slots of one (set, number), and the Japanese one wrote the English rank. 25 printings.
+ *      Likewise the languages of one slot need not agree on being an extra (Pradesh Gypsies'
+ *      content warning is on five of seven): each kind is ranked in its own class.
+ *
+ *      TWO RELEASE BATCHES THE TABLE COULD NOT SEE. `!"Island"` returns Secret Lair's Japanese
+ *      sld/64 ahead of the Magic Online promos of the same day (2020-07-31) and the Japanese
+ *      pmps06/2 ahead of pal06/2 (2006-01-01): each a batch boundary the code order hides, which
+ *      scripts/generate-release-batches.ts finds by asking both prefers of a card the two sets
+ *      share — and it counted a set's cards by their English rows, so a set printed in Japanese
+ *      alone shared none. It counts the canonical row now; the table is regenerated against the
+ *      2026-10-10 corpus (364 dates, 148 pairs asked, 27 boundaries), which also moves `prm` on
+ *      sixteen dates Scryfall re-dated its Magic Online promos to.
+ *
+ *      AND THE RANK NO LONGER CLAMPS AT 1,024. The five basic lands are the only cards with more
+ *      ranks than that — a default-tier slot's other languages rank apart, so Forest is 956
+ *      slots and 1,380 ranks — and past the clamp a row fell to the score underneath: Island came
+ *      back in Scryfall's order for 745 rows and in none for the 188 after. `RANK_SPAN` is 2048,
+ *      and the largest rank term one step under 2^22, so rank 0 is held as exactly as it was.
+ *
+ *      Replayed through the real transform and ranks over every row of 437 cards — the five
+ *      basics, every card with a digital extra, and 200 drawn at random — 384 of 384 sequences
+ *      (8,313 rows) are Scryfall's, where production has 343.
+ *
+ *      GENERATION-ONLY: `prefer_score` is a stored value and the order the printings are stored
+ *      in follows it. No layout, no format version, neither row touched, nothing read at query
+ *      time.
  */
-export const STORE_CONTENT_GENERATION = 90;
+export const STORE_CONTENT_GENERATION = 91;
 
 /**
  * Chunk key for a store. Keyed by store_key, so publishes never collide.

@@ -1,0 +1,147 @@
+{
+ "all_parts": [
+  {
+   "component": "combo_piece",
+   "id": "3dbbfb7f-0e50-454b-a9a1-b4813a95112e",
+   "name": "Shivan Dragon",
+   "object": "related_card",
+   "type_line": "Creature — Dragon",
+   "uri": "https://api.scryfall.com/cards/3dbbfb7f-0e50-454b-a9a1-b4813a95112e"
+  },
+  {
+   "component": "combo_piece",
+   "id": "2a43b352-d84b-4714-bbcd-3ad282c8aa9d",
+   "name": "Sarkhan, Wanderer to Shiv",
+   "object": "related_card",
+   "type_line": "Legendary Planeswalker — Sarkhan",
+   "uri": "https://api.scryfall.com/cards/2a43b352-d84b-4714-bbcd-3ad282c8aa9d"
+  }
+ ],
+ "artist": "Satoru Senda",
+ "artist_ids": [
+  "56bf2f31-785d-4ceb-84f3-edfb65f3e81c"
+ ],
+ "booster": false,
+ "border_color": "black",
+ "card_back_id": "0aeebaf5-8c7d-4636-9e82-8c27447861f7",
+ "cardmarket_id": 678517,
+ "cmc": 6.0,
+ "collector_number": "4",
+ "color_identity": [
+  "R"
+ ],
+ "colors": [
+  "R"
+ ],
+ "digital": false,
+ "edhrec_rank": 11157,
+ "finishes": [
+  "foil"
+ ],
+ "foil": true,
+ "frame": "2015",
+ "full_art": false,
+ "game_changer": false,
+ "games": [
+  "paper"
+ ],
+ "highres_image": true,
+ "id": "f76d1d4f-4911-46cd-8adb-af4b5eba48bb",
+ "illustration_id": "3e36e37d-342c-4c48-abd9-ad30a310e0d3",
+ "image_status": "highres_scan",
+ "image_updated_at": "2026-07-13T04:42:07Z",
+ "image_uris": {
+  "art": "https://cards.scryfall.io/art/front/f/7/f76d1d4f-4911-46cd-8adb-af4b5eba48bb.webp?1783917727",
+  "art_crop": "https://cards.scryfall.io/art_crop/front/f/7/f76d1d4f-4911-46cd-8adb-af4b5eba48bb.jpg?1783917727",
+  "border_crop": "https://cards.scryfall.io/border_crop/front/f/7/f76d1d4f-4911-46cd-8adb-af4b5eba48bb.jpg?1783917727",
+  "crop": "https://cards.scryfall.io/crop/front/f/7/f76d1d4f-4911-46cd-8adb-af4b5eba48bb.webp?1783917727",
+  "display": "https://cards.scryfall.io/display/front/f/7/f76d1d4f-4911-46cd-8adb-af4b5eba48bb.webp?1783917727",
+  "grid": "https://cards.scryfall.io/grid/front/f/7/f76d1d4f-4911-46cd-8adb-af4b5eba48bb.webp?1783917727",
+  "large": "https://cards.scryfall.io/large/front/f/7/f76d1d4f-4911-46cd-8adb-af4b5eba48bb.jpg?1783917727",
+  "normal": "https://cards.scryfall.io/normal/front/f/7/f76d1d4f-4911-46cd-8adb-af4b5eba48bb.jpg?1783917727",
+  "png": "https://cards.scryfall.io/png/front/f/7/f76d1d4f-4911-46cd-8adb-af4b5eba48bb.png?1783917727",
+  "small": "https://cards.scryfall.io/small/front/f/7/f76d1d4f-4911-46cd-8adb-af4b5eba48bb.jpg?1783917727",
+  "thumb": "https://cards.scryfall.io/thumb/front/f/7/f76d1d4f-4911-46cd-8adb-af4b5eba48bb.webp?1783917727"
+ },
+ "keywords": [
+  "Flying"
+ ],
+ "lang": "en",
+ "layout": "normal",
+ "legalities": {
+  "alchemy": "legal",
+  "brawl": "legal",
+  "commander": "legal",
+  "competitivebrawl": "legal",
+  "duel": "legal",
+  "future": "legal",
+  "gladiator": "legal",
+  "historic": "legal",
+  "legacy": "legal",
+  "modern": "legal",
+  "oathbreaker": "legal",
+  "oldschool": "not_legal",
+  "pauper": "not_legal",
+  "paupercommander": "not_legal",
+  "penny": "legal",
+  "pioneer": "legal",
+  "predh": "legal",
+  "premodern": "legal",
+  "standard": "legal",
+  "standardbrawl": "legal",
+  "timeless": "legal",
+  "tlr": "not_legal",
+  "vintage": "legal"
+ },
+ "mana_cost": "{4}{R}{R}",
+ "multiverse_ids": [],
+ "name": "Shivan Dragon",
+ "nonfoil": false,
+ "object": "card",
+ "oracle_id": "711eea87-0fa3-46e0-a42b-fa5a86455f04",
+ "oracle_text": "Flying\n{R}: This creature gets +1/+0 until end of turn.",
+ "oversized": false,
+ "penny_rank": 11271,
+ "power": "5",
+ "prices": {
+  "eur": null,
+  "eur_foil": "11.69",
+  "tix": null,
+  "usd": null,
+  "usd_etched": null,
+  "usd_foil": "38.61"
+ },
+ "prints_search_uri": "https://api.scryfall.com/cards/search?order=released&q=oracleid%3A711eea87-0fa3-46e0-a42b-fa5a86455f04&unique=prints",
+ "promo": true,
+ "purchase_uris": {
+  "cardhoarder": "https://www.cardhoarder.com/cards?affiliate_id=scryfall&data%5Bsearch%5D=Shivan+Dragon&ref=card-profile&utm_campaign=affiliate&utm_medium=card&utm_source=scryfall",
+  "cardmarket": "https://www.cardmarket.com/en/Magic/Products?idProduct=678517&referrer=scryfall&utm_campaign=card_prices&utm_medium=text&utm_source=scryfall",
+  "tcgplayer": "https://partner.tcgplayer.com/c/4931599/1830156/21018?subId1=api&u=https%3A%2F%2Fwww.tcgplayer.com%2Fproduct%2F284937%3Fpage%3D1"
+ },
+ "rarity": "rare",
+ "related_uris": {
+  "edhrec": "https://edhrec.com/route/?cc=Shivan+Dragon",
+  "tcgplayer_infinite_articles": "https://partner.tcgplayer.com/c/4931599/1830156/21018?subId1=api&trafcat=tcgplayer.com%2Fsearch%2Farticles&u=https%3A%2F%2Fwww.tcgplayer.com%2Fsearch%2Farticles%3FproductLineName%3Dmagic%26q%3DShivan%2BDragon",
+  "tcgplayer_infinite_decks": "https://partner.tcgplayer.com/c/4931599/1830156/21018?subId1=api&trafcat=tcgplayer.com%2Fsearch%2Fdecks&u=https%3A%2F%2Fwww.tcgplayer.com%2Fsearch%2Fdecks%3FproductLineName%3Dmagic%26q%3DShivan%2BDragon"
+ },
+ "released_at": "2023-03-21",
+ "reprint": true,
+ "reserved": false,
+ "rulings_uri": "https://api.scryfall.com/cards/f76d1d4f-4911-46cd-8adb-af4b5eba48bb/rulings",
+ "scryfall_set_uri": "https://scryfall.com/sets/p30h?utm_source=api",
+ "scryfall_uri": "https://scryfall.com/card/p30h/4/shivan-dragon?utm_source=api",
+ "security_stamp": "oval",
+ "set": "p30h",
+ "set_id": "796c1128-14f7-44c4-93fd-cf7366caaa25",
+ "set_name": "30th Anniversary History Promos",
+ "set_search_uri": "https://api.scryfall.com/cards/search?order=set&q=e%3Ap30h&unique=prints",
+ "set_type": "promo",
+ "set_uri": "https://api.scryfall.com/sets/796c1128-14f7-44c4-93fd-cf7366caaa25",
+ "story_spotlight": false,
+ "tcgplayer_id": 284937,
+ "textless": false,
+ "toughness": "5",
+ "type_line": "Creature — Dragon",
+ "uri": "https://api.scryfall.com/cards/f76d1d4f-4911-46cd-8adb-af4b5eba48bb",
+ "variation": false
+}

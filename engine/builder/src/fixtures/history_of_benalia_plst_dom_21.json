@@ -1,0 +1,143 @@
+{
+ "all_parts": [
+  {
+   "component": "token",
+   "id": "f4035134-a162-4651-86c5-ae006b6e0e20",
+   "name": "Knight",
+   "object": "related_card",
+   "type_line": "Token Creature — Knight",
+   "uri": "https://api.scryfall.com/cards/f4035134-a162-4651-86c5-ae006b6e0e20"
+  },
+  {
+   "component": "combo_piece",
+   "id": "d2df1477-d865-4f2d-806f-ed7e319c84c7",
+   "name": "History of Benalia",
+   "object": "related_card",
+   "type_line": "Enchantment — Saga",
+   "uri": "https://api.scryfall.com/cards/d2df1477-d865-4f2d-806f-ed7e319c84c7"
+  }
+ ],
+ "artist": "Noah Bradley",
+ "artist_ids": [
+  "81995d11-da98-4f8b-89bd-b88ca2ddb06b"
+ ],
+ "booster": true,
+ "border_color": "black",
+ "card_back_id": "0aeebaf5-8c7d-4636-9e82-8c27447861f7",
+ "cardmarket_id": 498175,
+ "cmc": 3.0,
+ "collector_number": "DOM-21",
+ "color_identity": [
+  "W"
+ ],
+ "colors": [
+  "W"
+ ],
+ "digital": false,
+ "edhrec_rank": 10491,
+ "finishes": [
+  "nonfoil"
+ ],
+ "foil": false,
+ "frame": "2015",
+ "full_art": false,
+ "game_changer": false,
+ "games": [
+  "paper"
+ ],
+ "highres_image": true,
+ "id": "d2df1477-d865-4f2d-806f-ed7e319c84c7",
+ "illustration_id": "f743a27d-ec25-4341-aa24-6ed952b4be35",
+ "image_status": "highres_scan",
+ "image_updated_at": "2026-07-13T08:02:13Z",
+ "image_uris": {
+  "art": "https://cards.scryfall.io/art/front/d/2/d2df1477-d865-4f2d-806f-ed7e319c84c7.webp?1783929733",
+  "art_crop": "https://cards.scryfall.io/art_crop/front/d/2/d2df1477-d865-4f2d-806f-ed7e319c84c7.jpg?1783929733",
+  "border_crop": "https://cards.scryfall.io/border_crop/front/d/2/d2df1477-d865-4f2d-806f-ed7e319c84c7.jpg?1783929733",
+  "crop": "https://cards.scryfall.io/crop/front/d/2/d2df1477-d865-4f2d-806f-ed7e319c84c7.webp?1783929733",
+  "display": "https://cards.scryfall.io/display/front/d/2/d2df1477-d865-4f2d-806f-ed7e319c84c7.webp?1783929733",
+  "grid": "https://cards.scryfall.io/grid/front/d/2/d2df1477-d865-4f2d-806f-ed7e319c84c7.webp?1783929733",
+  "large": "https://cards.scryfall.io/large/front/d/2/d2df1477-d865-4f2d-806f-ed7e319c84c7.jpg?1783929733",
+  "normal": "https://cards.scryfall.io/normal/front/d/2/d2df1477-d865-4f2d-806f-ed7e319c84c7.jpg?1783929733",
+  "png": "https://cards.scryfall.io/png/front/d/2/d2df1477-d865-4f2d-806f-ed7e319c84c7.png?1783929733",
+  "small": "https://cards.scryfall.io/small/front/d/2/d2df1477-d865-4f2d-806f-ed7e319c84c7.jpg?1783929733",
+  "thumb": "https://cards.scryfall.io/thumb/front/d/2/d2df1477-d865-4f2d-806f-ed7e319c84c7.webp?1783929733"
+ },
+ "keywords": [],
+ "lang": "en",
+ "layout": "saga",
+ "legalities": {
+  "alchemy": "not_legal",
+  "brawl": "legal",
+  "commander": "legal",
+  "competitivebrawl": "legal",
+  "duel": "legal",
+  "future": "not_legal",
+  "gladiator": "legal",
+  "historic": "legal",
+  "legacy": "legal",
+  "modern": "legal",
+  "oathbreaker": "legal",
+  "oldschool": "not_legal",
+  "pauper": "not_legal",
+  "paupercommander": "not_legal",
+  "penny": "not_legal",
+  "pioneer": "legal",
+  "predh": "not_legal",
+  "premodern": "not_legal",
+  "standard": "not_legal",
+  "standardbrawl": "not_legal",
+  "timeless": "legal",
+  "tlr": "legal",
+  "vintage": "legal"
+ },
+ "mana_cost": "{1}{W}{W}",
+ "multiverse_ids": [],
+ "name": "History of Benalia",
+ "nonfoil": true,
+ "object": "card",
+ "oracle_id": "c15bb7eb-aaaa-4468-9641-8f706d6137e8",
+ "oracle_text": "(As this Saga enters and after your draw step, add a lore counter. Sacrifice after III.)\nI, II — Create a 2/2 white Knight creature token with vigilance.\nIII — Knights you control get +2/+1 until end of turn.",
+ "oversized": false,
+ "penny_rank": 3858,
+ "prices": {
+  "eur": "2.13",
+  "eur_foil": null,
+  "tix": null,
+  "usd": "8.82",
+  "usd_etched": null,
+  "usd_foil": null
+ },
+ "prints_search_uri": "https://api.scryfall.com/cards/search?order=released&q=oracleid%3Ac15bb7eb-aaaa-4468-9641-8f706d6137e8&unique=prints",
+ "promo": false,
+ "purchase_uris": {
+  "cardhoarder": "https://www.cardhoarder.com/cards?affiliate_id=scryfall&data%5Bsearch%5D=History+of+Benalia&ref=card-profile&utm_campaign=affiliate&utm_medium=card&utm_source=scryfall",
+  "cardmarket": "https://www.cardmarket.com/en/Magic/Products?idProduct=498175&referrer=scryfall&utm_campaign=card_prices&utm_medium=text&utm_source=scryfall",
+  "tcgplayer": "https://partner.tcgplayer.com/c/4931599/1830156/21018?subId1=api&u=https%3A%2F%2Fwww.tcgplayer.com%2Fproduct%2F222686%3Fpage%3D1"
+ },
+ "rarity": "mythic",
+ "related_uris": {
+  "edhrec": "https://edhrec.com/route/?cc=History+of+Benalia",
+  "tcgplayer_infinite_articles": "https://partner.tcgplayer.com/c/4931599/1830156/21018?subId1=api&trafcat=tcgplayer.com%2Fsearch%2Farticles&u=https%3A%2F%2Fwww.tcgplayer.com%2Fsearch%2Farticles%3FproductLineName%3Dmagic%26q%3DHistory%2Bof%2BBenalia",
+  "tcgplayer_infinite_decks": "https://partner.tcgplayer.com/c/4931599/1830156/21018?subId1=api&trafcat=tcgplayer.com%2Fsearch%2Fdecks&u=https%3A%2F%2Fwww.tcgplayer.com%2Fsearch%2Fdecks%3FproductLineName%3Dmagic%26q%3DHistory%2Bof%2BBenalia"
+ },
+ "released_at": "2020-09-01",
+ "reprint": true,
+ "reserved": false,
+ "rulings_uri": "https://api.scryfall.com/cards/d2df1477-d865-4f2d-806f-ed7e319c84c7/rulings",
+ "scryfall_set_uri": "https://scryfall.com/sets/plst?utm_source=api",
+ "scryfall_uri": "https://scryfall.com/card/plst/DOM-21/history-of-benalia?utm_source=api",
+ "security_stamp": "oval",
+ "set": "plst",
+ "set_id": "67e47ba2-b019-4181-9005-fe9fc021de44",
+ "set_name": "The List",
+ "set_search_uri": "https://api.scryfall.com/cards/search?order=set&q=e%3Aplst&unique=prints",
+ "set_type": "masters",
+ "set_uri": "https://api.scryfall.com/sets/67e47ba2-b019-4181-9005-fe9fc021de44",
+ "story_spotlight": false,
+ "tcgplayer_id": 222686,
+ "textless": false,
+ "type_line": "Enchantment — Saga",
+ "uri": "https://api.scryfall.com/cards/d2df1477-d865-4f2d-806f-ed7e319c84c7",
+ "variation": false
+}

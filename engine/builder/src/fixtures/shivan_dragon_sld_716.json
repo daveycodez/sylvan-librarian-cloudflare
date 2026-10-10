@@ -1,0 +1,155 @@
+{
+ "all_parts": [
+  {
+   "component": "combo_piece",
+   "id": "d6ac5a7f-0e73-45d1-9b20-6ae1a60fa7cf",
+   "name": "Shivan Dragon",
+   "object": "related_card",
+   "type_line": "Creature — Dragon",
+   "uri": "https://api.scryfall.com/cards/d6ac5a7f-0e73-45d1-9b20-6ae1a60fa7cf"
+  },
+  {
+   "component": "combo_piece",
+   "id": "2a43b352-d84b-4714-bbcd-3ad282c8aa9d",
+   "name": "Sarkhan, Wanderer to Shiv",
+   "object": "related_card",
+   "type_line": "Legendary Planeswalker — Sarkhan",
+   "uri": "https://api.scryfall.com/cards/2a43b352-d84b-4714-bbcd-3ad282c8aa9d"
+  }
+ ],
+ "artist": "Martin Ontiveros",
+ "artist_ids": [
+  "d55ff274-3ba7-4871-ab20-0a9806576cad"
+ ],
+ "booster": false,
+ "border_color": "borderless",
+ "card_back_id": "0aeebaf5-8c7d-4636-9e82-8c27447861f7",
+ "cardmarket_id": 727633,
+ "cmc": 6.0,
+ "collector_number": "716",
+ "color_identity": [
+  "R"
+ ],
+ "colors": [
+  "R"
+ ],
+ "digital": false,
+ "edhrec_rank": 11157,
+ "finishes": [
+  "nonfoil"
+ ],
+ "flavor_text": "While it's true most Dragons are cruel, the Shivan Dragon seems to take particular glee in the misery of others, often tormenting its victims much like a cat plays with a mouse before delivering the final blow.",
+ "foil": false,
+ "frame": "2015",
+ "frame_effects": [
+  "inverted"
+ ],
+ "full_art": false,
+ "game_changer": false,
+ "games": [
+  "paper"
+ ],
+ "highres_image": true,
+ "id": "b0a04baf-5301-4e47-ac8f-243d2a73f18e",
+ "illustration_id": "f1b62e7f-8f2a-4a7a-a3e8-5ab0265f8d3d",
+ "image_status": "highres_scan",
+ "image_updated_at": "2026-07-13T04:42:33Z",
+ "image_uris": {
+  "art": "https://cards.scryfall.io/art/front/b/0/b0a04baf-5301-4e47-ac8f-243d2a73f18e.webp?1783917753",
+  "art_crop": "https://cards.scryfall.io/art_crop/front/b/0/b0a04baf-5301-4e47-ac8f-243d2a73f18e.jpg?1783917753",
+  "border_crop": "https://cards.scryfall.io/border_crop/front/b/0/b0a04baf-5301-4e47-ac8f-243d2a73f18e.jpg?1783917753",
+  "crop": "https://cards.scryfall.io/crop/front/b/0/b0a04baf-5301-4e47-ac8f-243d2a73f18e.webp?1783917753",
+  "display": "https://cards.scryfall.io/display/front/b/0/b0a04baf-5301-4e47-ac8f-243d2a73f18e.webp?1783917753",
+  "grid": "https://cards.scryfall.io/grid/front/b/0/b0a04baf-5301-4e47-ac8f-243d2a73f18e.webp?1783917753",
+  "large": "https://cards.scryfall.io/large/front/b/0/b0a04baf-5301-4e47-ac8f-243d2a73f18e.jpg?1783917753",
+  "normal": "https://cards.scryfall.io/normal/front/b/0/b0a04baf-5301-4e47-ac8f-243d2a73f18e.jpg?1783917753",
+  "png": "https://cards.scryfall.io/png/front/b/0/b0a04baf-5301-4e47-ac8f-243d2a73f18e.png?1783917753",
+  "small": "https://cards.scryfall.io/small/front/b/0/b0a04baf-5301-4e47-ac8f-243d2a73f18e.jpg?1783917753",
+  "thumb": "https://cards.scryfall.io/thumb/front/b/0/b0a04baf-5301-4e47-ac8f-243d2a73f18e.webp?1783917753"
+ },
+ "keywords": [
+  "Flying"
+ ],
+ "lang": "en",
+ "layout": "normal",
+ "legalities": {
+  "alchemy": "legal",
+  "brawl": "legal",
+  "commander": "legal",
+  "competitivebrawl": "legal",
+  "duel": "legal",
+  "future": "legal",
+  "gladiator": "legal",
+  "historic": "legal",
+  "legacy": "legal",
+  "modern": "legal",
+  "oathbreaker": "legal",
+  "oldschool": "not_legal",
+  "pauper": "not_legal",
+  "paupercommander": "not_legal",
+  "penny": "legal",
+  "pioneer": "legal",
+  "predh": "legal",
+  "premodern": "legal",
+  "standard": "legal",
+  "standardbrawl": "legal",
+  "timeless": "legal",
+  "tlr": "not_legal",
+  "vintage": "legal"
+ },
+ "mana_cost": "{4}{R}{R}",
+ "multiverse_ids": [],
+ "name": "Shivan Dragon",
+ "nonfoil": true,
+ "object": "card",
+ "oracle_id": "711eea87-0fa3-46e0-a42b-fa5a86455f04",
+ "oracle_text": "Flying\n{R}: This creature gets +1/+0 until end of turn.",
+ "oversized": false,
+ "penny_rank": 11271,
+ "power": "5",
+ "prices": {
+  "eur": "2199.95",
+  "eur_foil": null,
+  "tix": null,
+  "usd": null,
+  "usd_etched": null,
+  "usd_foil": null
+ },
+ "prints_search_uri": "https://api.scryfall.com/cards/search?order=released&q=oracleid%3A711eea87-0fa3-46e0-a42b-fa5a86455f04&unique=prints",
+ "promo": false,
+ "promo_types": [
+  "serialized",
+  "sldbonus"
+ ],
+ "purchase_uris": {
+  "cardhoarder": "https://www.cardhoarder.com/cards?affiliate_id=scryfall&data%5Bsearch%5D=Shivan+Dragon&ref=card-profile&utm_campaign=affiliate&utm_medium=card&utm_source=scryfall",
+  "cardmarket": "https://www.cardmarket.com/en/Magic/Products?idProduct=727633&referrer=scryfall&utm_campaign=card_prices&utm_medium=text&utm_source=scryfall",
+  "tcgplayer": "https://partner.tcgplayer.com/c/4931599/1830156/21018?subId1=api&u=https%3A%2F%2Fwww.tcgplayer.com%2Fproduct%2F492051%3Fpage%3D1"
+ },
+ "rarity": "rare",
+ "related_uris": {
+  "edhrec": "https://edhrec.com/route/?cc=Shivan+Dragon",
+  "tcgplayer_infinite_articles": "https://partner.tcgplayer.com/c/4931599/1830156/21018?subId1=api&trafcat=tcgplayer.com%2Fsearch%2Farticles&u=https%3A%2F%2Fwww.tcgplayer.com%2Fsearch%2Farticles%3FproductLineName%3Dmagic%26q%3DShivan%2BDragon",
+  "tcgplayer_infinite_decks": "https://partner.tcgplayer.com/c/4931599/1830156/21018?subId1=api&trafcat=tcgplayer.com%2Fsearch%2Fdecks&u=https%3A%2F%2Fwww.tcgplayer.com%2Fsearch%2Fdecks%3FproductLineName%3Dmagic%26q%3DShivan%2BDragon"
+ },
+ "released_at": "2023-02-21",
+ "reprint": true,
+ "reserved": false,
+ "rulings_uri": "https://api.scryfall.com/cards/b0a04baf-5301-4e47-ac8f-243d2a73f18e/rulings",
+ "scryfall_set_uri": "https://scryfall.com/sets/sld?utm_source=api",
+ "scryfall_uri": "https://scryfall.com/card/sld/716/shivan-dragon?utm_source=api",
+ "security_stamp": "oval",
+ "set": "sld",
+ "set_id": "4d92a8a7-ccb0-437d-abdc-9d70fc5ed672",
+ "set_name": "Secret Lair Drop",
+ "set_search_uri": "https://api.scryfall.com/cards/search?order=set&q=e%3Asld&unique=prints",
+ "set_type": "box",
+ "set_uri": "https://api.scryfall.com/sets/4d92a8a7-ccb0-437d-abdc-9d70fc5ed672",
+ "story_spotlight": false,
+ "tcgplayer_id": 492051,
+ "textless": false,
+ "toughness": "5",
+ "type_line": "Creature — Dragon",
+ "uri": "https://api.scryfall.com/cards/b0a04baf-5301-4e47-ac8f-243d2a73f18e",
+ "variation": false
+}

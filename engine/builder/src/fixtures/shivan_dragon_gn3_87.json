@@ -1,0 +1,151 @@
+{
+ "all_parts": [
+  {
+   "component": "combo_piece",
+   "id": "8beb06f5-05e1-461e-927f-906d38d9448c",
+   "name": "Shivan Dragon",
+   "object": "related_card",
+   "type_line": "Creature — Dragon",
+   "uri": "https://api.scryfall.com/cards/8beb06f5-05e1-461e-927f-906d38d9448c"
+  },
+  {
+   "component": "combo_piece",
+   "id": "2a43b352-d84b-4714-bbcd-3ad282c8aa9d",
+   "name": "Sarkhan, Wanderer to Shiv",
+   "object": "related_card",
+   "type_line": "Legendary Planeswalker — Sarkhan",
+   "uri": "https://api.scryfall.com/cards/2a43b352-d84b-4714-bbcd-3ad282c8aa9d"
+  }
+ ],
+ "artist": "Donato Giancola",
+ "artist_ids": [
+  "90332db2-aecb-4d79-917b-95cbeb8d0cb6"
+ ],
+ "booster": false,
+ "border_color": "black",
+ "card_back_id": "0aeebaf5-8c7d-4636-9e82-8c27447861f7",
+ "cardmarket_id": 680321,
+ "cmc": 6.0,
+ "collector_number": "87",
+ "color_identity": [
+  "R"
+ ],
+ "colors": [
+  "R"
+ ],
+ "digital": false,
+ "edhrec_rank": 11157,
+ "finishes": [
+  "nonfoil"
+ ],
+ "flavor_text": "\"It's just playing with us, Marsden.\"\n—Dafynne the Radiant, last words",
+ "foil": false,
+ "frame": "2015",
+ "full_art": false,
+ "game_changer": false,
+ "games": [
+  "paper"
+ ],
+ "highres_image": true,
+ "id": "8beb06f5-05e1-461e-927f-906d38d9448c",
+ "illustration_id": "2f2cebbc-9458-47b8-b3d4-b2ddb06ad6a6",
+ "image_status": "highres_scan",
+ "image_updated_at": "2026-07-13T05:24:26Z",
+ "image_uris": {
+  "art": "https://cards.scryfall.io/art/front/8/b/8beb06f5-05e1-461e-927f-906d38d9448c.webp?1783920266",
+  "art_crop": "https://cards.scryfall.io/art_crop/front/8/b/8beb06f5-05e1-461e-927f-906d38d9448c.jpg?1783920266",
+  "border_crop": "https://cards.scryfall.io/border_crop/front/8/b/8beb06f5-05e1-461e-927f-906d38d9448c.jpg?1783920266",
+  "crop": "https://cards.scryfall.io/crop/front/8/b/8beb06f5-05e1-461e-927f-906d38d9448c.webp?1783920266",
+  "display": "https://cards.scryfall.io/display/front/8/b/8beb06f5-05e1-461e-927f-906d38d9448c.webp?1783920266",
+  "grid": "https://cards.scryfall.io/grid/front/8/b/8beb06f5-05e1-461e-927f-906d38d9448c.webp?1783920266",
+  "large": "https://cards.scryfall.io/large/front/8/b/8beb06f5-05e1-461e-927f-906d38d9448c.jpg?1783920266",
+  "normal": "https://cards.scryfall.io/normal/front/8/b/8beb06f5-05e1-461e-927f-906d38d9448c.jpg?1783920266",
+  "png": "https://cards.scryfall.io/png/front/8/b/8beb06f5-05e1-461e-927f-906d38d9448c.png?1783920266",
+  "small": "https://cards.scryfall.io/small/front/8/b/8beb06f5-05e1-461e-927f-906d38d9448c.jpg?1783920266",
+  "thumb": "https://cards.scryfall.io/thumb/front/8/b/8beb06f5-05e1-461e-927f-906d38d9448c.webp?1783920266"
+ },
+ "keywords": [
+  "Flying"
+ ],
+ "lang": "en",
+ "layout": "normal",
+ "legalities": {
+  "alchemy": "legal",
+  "brawl": "legal",
+  "commander": "legal",
+  "competitivebrawl": "legal",
+  "duel": "legal",
+  "future": "legal",
+  "gladiator": "legal",
+  "historic": "legal",
+  "legacy": "legal",
+  "modern": "legal",
+  "oathbreaker": "legal",
+  "oldschool": "not_legal",
+  "pauper": "not_legal",
+  "paupercommander": "not_legal",
+  "penny": "legal",
+  "pioneer": "legal",
+  "predh": "legal",
+  "premodern": "legal",
+  "standard": "legal",
+  "standardbrawl": "legal",
+  "timeless": "legal",
+  "tlr": "not_legal",
+  "vintage": "legal"
+ },
+ "mana_cost": "{4}{R}{R}",
+ "multiverse_ids": [
+  582697
+ ],
+ "name": "Shivan Dragon",
+ "nonfoil": true,
+ "object": "card",
+ "oracle_id": "711eea87-0fa3-46e0-a42b-fa5a86455f04",
+ "oracle_text": "Flying\n{R}: This creature gets +1/+0 until end of turn.",
+ "oversized": false,
+ "penny_rank": 11271,
+ "power": "5",
+ "prices": {
+  "eur": "0.15",
+  "eur_foil": null,
+  "tix": null,
+  "usd": "0.25",
+  "usd_etched": null,
+  "usd_foil": null
+ },
+ "prints_search_uri": "https://api.scryfall.com/cards/search?order=released&q=oracleid%3A711eea87-0fa3-46e0-a42b-fa5a86455f04&unique=prints",
+ "promo": false,
+ "purchase_uris": {
+  "cardhoarder": "https://www.cardhoarder.com/cards?affiliate_id=scryfall&data%5Bsearch%5D=Shivan+Dragon&ref=card-profile&utm_campaign=affiliate&utm_medium=card&utm_source=scryfall",
+  "cardmarket": "https://www.cardmarket.com/en/Magic/Products?idProduct=680321&referrer=scryfall&utm_campaign=card_prices&utm_medium=text&utm_source=scryfall",
+  "tcgplayer": "https://partner.tcgplayer.com/c/4931599/1830156/21018?subId1=api&u=https%3A%2F%2Fwww.tcgplayer.com%2Fproduct%2F448516%3Fpage%3D1"
+ },
+ "rarity": "rare",
+ "related_uris": {
+  "edhrec": "https://edhrec.com/route/?cc=Shivan+Dragon",
+  "gatherer": "https://gatherer.wizards.com/Pages/Card/Details.aspx?multiverseid=582697&printed=false",
+  "tcgplayer_infinite_articles": "https://partner.tcgplayer.com/c/4931599/1830156/21018?subId1=api&trafcat=tcgplayer.com%2Fsearch%2Farticles&u=https%3A%2F%2Fwww.tcgplayer.com%2Fsearch%2Farticles%3FproductLineName%3Dmagic%26q%3DShivan%2BDragon",
+  "tcgplayer_infinite_decks": "https://partner.tcgplayer.com/c/4931599/1830156/21018?subId1=api&trafcat=tcgplayer.com%2Fsearch%2Fdecks&u=https%3A%2F%2Fwww.tcgplayer.com%2Fsearch%2Fdecks%3FproductLineName%3Dmagic%26q%3DShivan%2BDragon"
+ },
+ "released_at": "2022-10-14",
+ "reprint": true,
+ "reserved": false,
+ "rulings_uri": "https://api.scryfall.com/cards/8beb06f5-05e1-461e-927f-906d38d9448c/rulings",
+ "scryfall_set_uri": "https://scryfall.com/sets/gn3?utm_source=api",
+ "scryfall_uri": "https://scryfall.com/card/gn3/87/shivan-dragon?utm_source=api",
+ "security_stamp": "oval",
+ "set": "gn3",
+ "set_id": "fe88ea3a-0e2c-44b9-9210-35bfdec1e288",
+ "set_name": "Game Night: Free-for-All",
+ "set_search_uri": "https://api.scryfall.com/cards/search?order=set&q=e%3Agn3&unique=prints",
+ "set_type": "box",
+ "set_uri": "https://api.scryfall.com/sets/fe88ea3a-0e2c-44b9-9210-35bfdec1e288",
+ "story_spotlight": false,
+ "tcgplayer_id": 448516,
+ "textless": false,
+ "toughness": "5",
+ "type_line": "Creature — Dragon",
+ "uri": "https://api.scryfall.com/cards/8beb06f5-05e1-461e-927f-906d38d9448c",
+ "variation": false
+}

@@ -4577,6 +4577,54 @@
 			"method": "GET",
 			"path": "/cards/search?q=%21%22Phantom+Monster%22+%28e%3Aema+or+e%3Aima%29&unique=art",
 			"note": "2026-10-09. ema/65 (2016), not ima/69 (2017): this painting debuted in Eternal Masters, so the older printing answers — the one artwork of 48 in the four masters sets that keeps its oldest, and the reason the key is the debut and not the newest."
+		},
+		{
+			"name": "print-order-language-dated-printing",
+			"method": "GET",
+			"path": "/cards/search?q=%21%22Shivan+Dragon%22+%28e%3Ap30h+or+e%3Asld+or+e%3Agn3%29&unique=prints",
+			"note": "2026-10-10. sld/2759, sld/7180, sld/1709, p30h/4, p30h/4★, sld/716, gn3/87. The 30th Anniversary History promo is dated 2023-03-21 in English and 2022-09-09 in Japanese, and the English rows come back at their own date; the port ranked them at the Japanese one, after gn3/87."
+		},
+		{
+			"name": "print-order-covered-extra-with-the-memorabilia",
+			"method": "GET",
+			"path": "/cards/search?q=%21%22Shivan+Dragon%22+%28e%3Aj21+or+e%3A30a+or+e%3Ao90p+or+e%3Aprm%29&unique=prints&include_extras=true",
+			"note": "2026-10-10. prm/62535, prm/36232, 30a/170, 30a/467, j21/788, o90p/5. The Arena duplicate of 2021 is covered and an extra, so it sits among the memorabilia at its date; the port led with it."
+		},
+		{
+			"name": "print-order-extra-representative",
+			"method": "GET",
+			"path": "/cards/search?q=%21%22Shivan+Dragon%22+%28e%3Aj21+or+e%3A30a%29&unique=cards&include_extras=true",
+			"note": "2026-10-10. 30a/170, the newer of two covered extras; the port answered j21/788."
+		},
+		{
+			"name": "print-order-uncovered-extra-second",
+			"method": "GET",
+			"path": "/cards/search?q=%21%22History+of+Benalia%22&unique=prints&include_extras=true",
+			"note": "2026-10-10. dom/21, ybro/31, prm/99669, plst/DOM-21, pdom/21p, pdom/21s. The Alchemy duplicate of 2023 is an extra Scryfall does not record as covered: after the default printing and before every covered one, the Magic Online promo of 2024 among them."
+		},
+		{
+			"name": "print-order-covered-alchemy-extra-last",
+			"method": "GET",
+			"path": "/cards/search?q=%21%22Storm+Crow%22+%28e%3Aysos+or+e%3Aplst+or+e%3Asld%29&unique=prints&include_extras=true",
+			"note": "2026-10-10. plst/POR-69, sld/60, plst/9ED-100, ysos/31. This Alchemy duplicate (2026) is covered, and last; the port led with it."
+		},
+		{
+			"name": "print-order-japanese-set-batch-2020",
+			"method": "GET",
+			"path": "/cards/search?q=%21%22Island%22+date%3D2020-07-31&unique=prints",
+			"note": "2026-10-10. sld/64 (Japanese), then the eight Magic Online promos prm/81846-81884: `sld` is a later release batch of that date than `prm`, a boundary the code order hides and the table missed while it counted a set's cards by their English rows."
+		},
+		{
+			"name": "print-order-japanese-set-batch-2006",
+			"method": "GET",
+			"path": "/cards/search?q=%21%22Island%22+date%3D2006-01-01&unique=prints",
+			"note": "2026-10-10. pmps06/2 (Japanese), then pal06/2: the same hidden boundary, `pal06 | pmps06`."
+		},
+		{
+			"name": "print-order-past-the-old-rank-clamp",
+			"method": "GET",
+			"path": "/cards/search?q=%21%22Island%22+year%3C%3D1996&unique=prints&include_extras=true",
+			"note": "2026-10-10. 48 rows, itp/56 down to the Collectors' Editions. Island has 1,352 ranks and the rank was clamped at 1,024, so its oldest covered printings and its memorabilia came back in no order."
 		}
 	]
 }

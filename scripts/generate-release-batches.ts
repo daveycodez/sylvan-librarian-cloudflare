@@ -35,7 +35,10 @@
 // inside a batch both keep the row with the lowest id, in whichever set it is (`blc`/`mb2` on
 // 2024-08-02: 14 shared cards, `mb2` kept 8 times and `blc` 6, identically under both; `eld`/`peld`
 // on 2019-10-04: 68 shared cards, `peld` every time under newest and `eld` every time under oldest).
-// 128 such pairs asked in the 2026-09-24 corpus, 25 of them a boundary.
+// 128 such pairs asked in the 2026-09-24 corpus, 25 of them a boundary; 148 and 27 in the
+// 2026-10-10 one, the first read with a card counted for a set by its CANONICAL row (see
+// `readDates`) — the two it added are `prm | sld` on 2020-07-31 and `pal06 | pmps06` on 2006-01-01,
+// each with a set printed in Japanese alone.
 //
 // Run by hand after a store build and commit the diff, like `bun run set-dates`: the nightly import
 // cannot touch committed code, and the table is only a snapshot of an order Scryfall does not
@@ -66,7 +69,7 @@ interface Pick {
 /** One release date in the local store: the printing to ask each set for, and each set's cards. */
 interface DateSets {
 	picks: Map<string, Pick>;
-	/** set → the oracle ids it prints in English on this date. */
+	/** set → the oracle ids it prints on this date in a row a default search reads. */
 	cards: Map<string, Set<string>>;
 }
 
@@ -107,6 +110,7 @@ async function readDates(path: string): Promise<Map<string, DateSets>> {
 			collector_number?: string;
 			released_at?: string | null;
 			oracle_id?: string;
+			is_canonical?: boolean;
 			card_compat_blob?: { lang?: string };
 		};
 		const { card_set_code: set, collector_number: cn, released_at: date } = row;
@@ -120,7 +124,15 @@ async function readDates(path: string): Promise<Map<string, DateSets>> {
 		}
 		const cur = sets.picks.get(set);
 		if (!cur || before(rank, cur.rank)) sets.picks.set(set, { rank, cn });
-		if (english && row.oracle_id) {
+		// THE CANONICAL ROW, NOT THE ENGLISH ONE. Which cards two sets share is asked so that the pair
+		// can be probed, and the probe is a default search: it reads a printing's English row where
+		// it has one and its only language where it has not. Counting English rows alone left a set
+		// printed in one other language with no cards at all, so no pair with it was ever asked — and
+		// the two the card order still had wrong were exactly those: Secret Lair's Japanese basics
+		// (sld/63-67) ahead of Magic Online's promos on 2020-07-31, and the Japanese Magic Premiere
+		// Shop lands (`pmps06`) ahead of the Arena League's (`pal06`) on 2006-01-01, each a boundary
+		// both prefers name. A rows file written before `is_canonical` existed falls back to English.
+		if ((row.is_canonical ?? english) && row.oracle_id) {
 			let cards = sets.cards.get(set);
 			if (!cards) {
 				cards = new Set();

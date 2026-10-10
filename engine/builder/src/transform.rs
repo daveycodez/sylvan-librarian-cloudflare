@@ -2605,6 +2605,13 @@ impl RowDraft {
         }
     }
 
+    /// Whether a default search hides this printing — the `is:extra` verdict `transform_row`
+    /// recorded ([`extras_class`]). The second of the two facts a row's rank class is made of
+    /// (`ranks::rank_class`).
+    pub(crate) fn is_extra(&self) -> bool {
+        self.has_is_tag(EXTRA_IS_TAG)
+    }
+
     fn is_token_layout(&self) -> bool {
         self.card_layout.as_deref().is_some_and(|layout| TOKEN_LAYOUTS.contains(&layout))
     }

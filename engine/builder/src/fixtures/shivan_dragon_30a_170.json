@@ -1,0 +1,148 @@
+{
+ "all_parts": [
+  {
+   "component": "combo_piece",
+   "id": "4bbcec3a-2747-4fa3-b8cd-d4a0b1dda042",
+   "name": "Shivan Dragon",
+   "object": "related_card",
+   "type_line": "Creature — Dragon",
+   "uri": "https://api.scryfall.com/cards/4bbcec3a-2747-4fa3-b8cd-d4a0b1dda042"
+  },
+  {
+   "component": "combo_piece",
+   "id": "2a43b352-d84b-4714-bbcd-3ad282c8aa9d",
+   "name": "Sarkhan, Wanderer to Shiv",
+   "object": "related_card",
+   "type_line": "Legendary Planeswalker — Sarkhan",
+   "uri": "https://api.scryfall.com/cards/2a43b352-d84b-4714-bbcd-3ad282c8aa9d"
+  }
+ ],
+ "artist": "Melissa A. Benson",
+ "artist_ids": [
+  "9ade7727-1436-4828-9a1d-487c3d2ad1d9"
+ ],
+ "booster": false,
+ "border_color": "black",
+ "card_back_id": "049a6229-ace9-4363-816a-60cb8773e95d",
+ "cardmarket_id": 683921,
+ "cmc": 6.0,
+ "collector_number": "170",
+ "color_identity": [
+  "R"
+ ],
+ "colors": [
+  "R"
+ ],
+ "digital": false,
+ "edhrec_rank": 11157,
+ "finishes": [
+  "nonfoil"
+ ],
+ "flavor_text": "While it's true most Dragons are cruel, the Shivan Dragon seems to take particular glee in the misery of others, often tormenting its victims much like a cat plays with a mouse before delivering the final blow.",
+ "foil": false,
+ "frame": "2015",
+ "full_art": false,
+ "game_changer": false,
+ "games": [
+  "paper"
+ ],
+ "highres_image": false,
+ "id": "9a5ddd65-b731-4805-827c-a25350531d74",
+ "illustration_id": "d326c884-fed0-4b92-bd88-fd4989597c20",
+ "image_status": "lowres",
+ "image_updated_at": "2026-07-13T05:11:29Z",
+ "image_uris": {
+  "art": "https://cards.scryfall.io/art/front/9/a/9a5ddd65-b731-4805-827c-a25350531d74.webp?1783919489",
+  "art_crop": "https://cards.scryfall.io/art_crop/front/9/a/9a5ddd65-b731-4805-827c-a25350531d74.jpg?1783919489",
+  "border_crop": "https://cards.scryfall.io/border_crop/front/9/a/9a5ddd65-b731-4805-827c-a25350531d74.jpg?1783919489",
+  "crop": "https://cards.scryfall.io/crop/front/9/a/9a5ddd65-b731-4805-827c-a25350531d74.webp?1783919489",
+  "display": "https://cards.scryfall.io/display/front/9/a/9a5ddd65-b731-4805-827c-a25350531d74.webp?1783919489",
+  "grid": "https://cards.scryfall.io/grid/front/9/a/9a5ddd65-b731-4805-827c-a25350531d74.webp?1783919489",
+  "large": "https://cards.scryfall.io/large/front/9/a/9a5ddd65-b731-4805-827c-a25350531d74.jpg?1783919489",
+  "normal": "https://cards.scryfall.io/normal/front/9/a/9a5ddd65-b731-4805-827c-a25350531d74.jpg?1783919489",
+  "png": "https://cards.scryfall.io/png/front/9/a/9a5ddd65-b731-4805-827c-a25350531d74.png?1783919489",
+  "small": "https://cards.scryfall.io/small/front/9/a/9a5ddd65-b731-4805-827c-a25350531d74.jpg?1783919489",
+  "thumb": "https://cards.scryfall.io/thumb/front/9/a/9a5ddd65-b731-4805-827c-a25350531d74.webp?1783919489"
+ },
+ "keywords": [
+  "Flying"
+ ],
+ "lang": "en",
+ "layout": "normal",
+ "legalities": {
+  "alchemy": "legal",
+  "brawl": "legal",
+  "commander": "legal",
+  "competitivebrawl": "legal",
+  "duel": "legal",
+  "future": "legal",
+  "gladiator": "legal",
+  "historic": "legal",
+  "legacy": "legal",
+  "modern": "legal",
+  "oathbreaker": "legal",
+  "oldschool": "not_legal",
+  "pauper": "not_legal",
+  "paupercommander": "not_legal",
+  "penny": "legal",
+  "pioneer": "legal",
+  "predh": "legal",
+  "premodern": "legal",
+  "standard": "legal",
+  "standardbrawl": "legal",
+  "timeless": "legal",
+  "tlr": "not_legal",
+  "vintage": "legal"
+ },
+ "mana_cost": "{4}{R}{R}",
+ "multiverse_ids": [],
+ "name": "Shivan Dragon",
+ "nonfoil": true,
+ "object": "card",
+ "oracle_id": "711eea87-0fa3-46e0-a42b-fa5a86455f04",
+ "oracle_text": "Flying\n{R}: This creature gets +1/+0 until end of turn.",
+ "oversized": false,
+ "penny_rank": 11271,
+ "power": "5",
+ "prices": {
+  "eur": "116.82",
+  "eur_foil": null,
+  "tix": null,
+  "usd": null,
+  "usd_etched": null,
+  "usd_foil": null
+ },
+ "prints_search_uri": "https://api.scryfall.com/cards/search?order=released&q=oracleid%3A711eea87-0fa3-46e0-a42b-fa5a86455f04&unique=prints",
+ "promo": false,
+ "purchase_uris": {
+  "cardhoarder": "https://www.cardhoarder.com/cards?affiliate_id=scryfall&data%5Bsearch%5D=Shivan+Dragon&ref=card-profile&utm_campaign=affiliate&utm_medium=card&utm_source=scryfall",
+  "cardmarket": "https://www.cardmarket.com/en/Magic/Products?idProduct=683921&referrer=scryfall&utm_campaign=card_prices&utm_medium=text&utm_source=scryfall",
+  "tcgplayer": "https://partner.tcgplayer.com/c/4931599/1830156/21018?subId1=api&u=https%3A%2F%2Fwww.tcgplayer.com%2Fproduct%2F449055%3Fpage%3D1"
+ },
+ "rarity": "rare",
+ "related_uris": {
+  "edhrec": "https://edhrec.com/route/?cc=Shivan+Dragon",
+  "tcgplayer_infinite_articles": "https://partner.tcgplayer.com/c/4931599/1830156/21018?subId1=api&trafcat=tcgplayer.com%2Fsearch%2Farticles&u=https%3A%2F%2Fwww.tcgplayer.com%2Fsearch%2Farticles%3FproductLineName%3Dmagic%26q%3DShivan%2BDragon",
+  "tcgplayer_infinite_decks": "https://partner.tcgplayer.com/c/4931599/1830156/21018?subId1=api&trafcat=tcgplayer.com%2Fsearch%2Fdecks&u=https%3A%2F%2Fwww.tcgplayer.com%2Fsearch%2Fdecks%3FproductLineName%3Dmagic%26q%3DShivan%2BDragon"
+ },
+ "released_at": "2022-11-28",
+ "reprint": true,
+ "reserved": false,
+ "rulings_uri": "https://api.scryfall.com/cards/9a5ddd65-b731-4805-827c-a25350531d74/rulings",
+ "scryfall_set_uri": "https://scryfall.com/sets/30a?utm_source=api",
+ "scryfall_uri": "https://scryfall.com/card/30a/170/shivan-dragon?utm_source=api",
+ "security_stamp": "oval",
+ "set": "30a",
+ "set_id": "c3cddb17-44d9-4abd-8d19-666f6c5171fe",
+ "set_name": "30th Anniversary Edition",
+ "set_search_uri": "https://api.scryfall.com/cards/search?order=set&q=e%3A30a&unique=prints",
+ "set_type": "memorabilia",
+ "set_uri": "https://api.scryfall.com/sets/c3cddb17-44d9-4abd-8d19-666f6c5171fe",
+ "story_spotlight": false,
+ "tcgplayer_id": 449055,
+ "textless": false,
+ "toughness": "5",
+ "type_line": "Creature — Dragon",
+ "uri": "https://api.scryfall.com/cards/9a5ddd65-b731-4805-827c-a25350531d74",
+ "variation": false
+}

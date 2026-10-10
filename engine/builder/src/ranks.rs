@@ -57,10 +57,11 @@
 //! `!f32_sort_bits(prefer_score)`, so whatever this rule is, it has to fit 24 bits of mantissa.
 //! It does not: `released_at` spans 1,279 distinct values, and collector numbers reach 105,882
 //! with 483 distinct suffixes — about 37 bits together. What DOES fit is the rank of the row
-//! within its own card, 10 bits, leaving 14 for the existing score to ride underneath:
+//! within its own card, 11 bits, leaving 11 whole and two fractional for the existing score to
+//! ride underneath:
 //!
 //! ```text
-//! prefer_score = (RANK_SPAN - rank) * RANK_STEP + prefer_score_as_before + (pinned ? PIN_BONUS : 0)
+//! prefer_score = (RANK_SPAN - 1 - rank) * RANK_STEP + prefer_score_as_before + (pinned ? PIN_BONUS : 0)
 //! ```
 //!
 //! Three properties come out of that shape, and each is a thing that must not move:
@@ -72,8 +73,8 @@
 //!     term orders them as before.
 //!   * CROSS-CARD ORDER IS UNTOUCHED. `cards_containing_all_words` and `exact_card_by_name` rank
 //!     CARDS by their chosen printing's score; every rank-0 printing carries
-//!     `RANK_SPAN * RANK_STEP` plus its own old score, so those comparisons still turn on the old
-//!     score alone.
+//!     `(RANK_SPAN - 1) * RANK_STEP` plus its own old score, so those comparisons still turn on
+//!     the old score alone.
 //!
 //! A LANGUAGE IS NOT A TIER OF ITS OWN, BUT THE DEFAULT TIER IS ENGLISH ONLY. `!"Counterspell"
 //! lang:any` leads with the 27 default-tier printings in English and nothing else; dsc/114's
@@ -85,6 +86,32 @@
 //! their date puts them in the second tier, and every other slot's languages share its rank.
 //! Ten printed names in five languages asked of `/cards/named?fuzzy=` the same day each answered
 //! the newest printing in that language (ties by set and number as above).
+//!
+//! THE TIER IS TWO FACTS, AND FOUR CLASSES (2026-10-10). What was read as three tiers — default,
+//! everything else, and "memorabilia, a gold border, an oversized card" last — is the pair
+//! `(covered, extra)`: whether the printing is outside the default tier (`is:covered`, and every row
+//! that is not English), and whether a search hides it unless it is asked for extras (`is:extra`).
+//! A card's printings come back in the classes `(0,0)`, `(0,1)`, `(1,0)`, `(1,1)`, each newest first:
+//!
+//! ```text
+//! Shivan Dragon        fdn/763 … lea/174 | sld/2759 … fbb/177 (fr) | 30a/170, 30a/467, j21/788,
+//!                      o90p/5, cei/175, ced/175          — the Arena duplicate j21/788 of 2021 sits
+//!                      among the memorabilia, by its date: covered AND an extra
+//! Storm Crow           9ed/100 … all/36b | plst/POR-69, sld/60, plst/9ED-100 | ysos/31
+//! Flametongue Kavu     dmr/120 … pls/60 | yeoe/41 | plst/PLS-60 (2026-11), dmr/320 …
+//!                      — the Alchemy duplicate of 2025 AHEAD of a newer List printing: an extra
+//!                      that is NOT covered is the second class, not part of the third
+//! History of Benalia   dom/21 | ybro/31 (2023) | prm/99669 (2024), plst/DOM-21, pdom/21p, pdom/21s
+//! ```
+//!
+//! Measured on 151 sequences read with their own `is:covered` and against the whole `is:extra`
+//! list (10,905 printings): every card with an Arena-only or Alchemy extra beside served
+//! printings, 62 with a foil-only List printing, 17 with an extra that is not covered, the two
+//! token cards with a memorabilia printing, the oversized cards that are not extras (three
+//! dungeons, the 2009-2011 oversized promos) and a sample of the 932 with memorabilia — 151 of
+//! 151 in class order and date-descending inside each class. "Extras last" alone holds on 116 of
+//! the first 135, and the three tiers on 7 of the 16 where an oversized printing is not an extra.
+//! Both facts were already decided per row: [`recorded_tier`] and `transform::extras_class`.
 //!
 //! WHAT IT STILL GETS WRONG, measured: 64 of the 2,433 sequences.
 //!
@@ -99,8 +126,6 @@
 //!     per-set table where it does not (`print_tiers.tsv`) — and, since 2026-10-09, from
 //!     Scryfall's record of the printing itself where `is_lists.tsv` holds it ([`recorded_tier`]):
 //!     these departures are exactly the rows `is:covered` lists against the rule.
-//!   * Digital-only Arena printings split between the second and third run with no visible rule
-//!     (`j21`, `hbg`, three Alchemy sets); they rank second here.
 //!   * `lang:any` interleaves the languages by date — mar/9, mar/9 in German, Spanish, French and
 //!     Japanese, then dsc/114's translations — where this store pages a card's English rows
 //!     before its others (the canonical and annex spaces of the sort key). The ranks are right
@@ -114,22 +139,29 @@ use serde_json::Value;
 
 use crate::transform::{pin_key, PinKey, PinnedPrintings, RowDraft};
 
-/// Ranks are clamped to this, and it is the multiplier's ceiling: the worst-ranked row of a card
-/// scores 0 from the rank term. 1024 because all but the five basic lands have fewer ranked rows
-/// (`Forest` has 949 printing slots, measured 2026-08-16, and more ranks than that now that a
-/// default-tier slot's other languages rank apart): a basic land's oldest second-tier rows share
-/// the last rank and fall back to the score underneath, exactly as a row past the clamp always did.
-pub const RANK_SPAN: u32 = 1024;
+/// The number of ranks a card has, the last of them shared by every row past it: the worst-ranked
+/// row of a card scores 0 from the rank term.
+///
+/// 2048 SINCE 2026-10-10, AND 1024 BEFORE IT. The five basic lands are the only cards that need
+/// more than 1,024, and they need a third more: a default-tier slot's other languages rank apart
+/// from its English row, so `Forest` is 956 slots and 1,380 ranks, `Mountain` 1,377, `Plains`
+/// 1,353, `Island` 1,352, `Swamp` 1,344 (all_cards, 2026-10-10; the next card, Sol Ring, is 196).
+/// Past the clamp a row fell back to the score underneath, so `!"Island" unique=prints` came back
+/// in Scryfall's order for 745 rows and in no order for the 188 after them.
+pub const RANK_SPAN: u32 = 2048;
 
 /// What one rank step is worth. Must exceed everything that rides underneath it — the ordinary
 /// `prefer_score` (~130-220) plus `PIN_BONUS` (1000) — so a better rank always wins outright;
 /// 2048 is the next power of two above that 1250, and powers of two keep the product exact in an
-/// f32. `RANK_SPAN * RANK_STEP` is 2^21, so the whole score stays inside the 2^24 an f32 holds.
+/// f32. The largest rank term is `(RANK_SPAN - 1) * RANK_STEP`, 2^22 less one step, so the whole
+/// score stays under 2^22: an f32 holds it to a quarter point there, which is what rank 0 — the
+/// only rank the cross-card comparisons read — was held to under the span of 1024.
 pub const RANK_STEP: f64 = 2048.0;
 
-/// The rank term of `prefer_score`: rank 0 scores highest, and each further rank drops one step.
+/// The rank term of `prefer_score`: rank 0 scores highest, and each further rank drops one step
+/// down to the last, which scores nothing.
 pub fn rank_term(rank: u32) -> f64 {
-    f64::from(RANK_SPAN - rank.min(RANK_SPAN)) * RANK_STEP
+    f64::from(RANK_SPAN - 1 - rank.min(RANK_SPAN - 1)) * RANK_STEP
 }
 
 /// A collector number as `order=set` orders it, which is how a card's printings inside one set and
@@ -282,6 +314,26 @@ pub fn recorded_tier(r: &RowDraft) -> u8 {
     }
 }
 
+/// The CLASS a row is ranked in, `0..=3`: `2 * covered + extra` — see the module doc for the
+/// measurement. `covered` is [`recorded_tier`]'s first-two-tiers verdict made a boolean, with the
+/// two things that verdict set aside read as what they are:
+///
+///   * AN ALCHEMY SET'S RECORD COUNTS. `recorded_tier` left an Alchemy row to the shape rule
+///     because the ten rows the table lists NOT covered there sat "in the second tier all the
+///     same". They sit in the second CLASS: each is an Arena duplicate of a paper card, an extra,
+///     and an extra that is not covered comes after the default printings and before every covered
+///     one — History of Benalia's ybro/31 (2023) ahead of prm/99669 (2024).
+///   * THE SHAPE'S "LAST" IS NOT A CLASS. Memorabilia, a gold border and an oversized card are
+///     covered by the rule, and whether one is LAST is whether it is an extra: an oversized dungeon
+///     or a 2009 oversized promo is served by default and ranks with the covered printings, and an
+///     Arena duplicate with no mark on it at all ranks with the memorabilia.
+///
+/// A row that is not English is covered whatever the record says, as before.
+pub fn rank_class(r: &RowDraft) -> u8 {
+    let covered = !r.raw_lang_en || crate::transform::covered_verdict(r).unwrap_or_else(|| print_tier(r) != 0);
+    u8::from(covered) * 2 + u8::from(r.is_extra())
+}
+
 /// Promo types a default-tier printing carries. Anything else Scryfall names is a treatment.
 const PLAIN_PROMO_TYPES: [&str; 11] = [
     "beginnerbox",
@@ -343,7 +395,7 @@ fn set_tier(set: &str, set_type: &str) -> u8 {
 #[cfg(test)]
 pub(crate) fn split(score: f64) -> (u32, f64) {
     let steps = (score / RANK_STEP).floor();
-    (RANK_SPAN - steps as u32, score - steps * RANK_STEP)
+    (RANK_SPAN - 1 - steps as u32, score - steps * RANK_STEP)
 }
 
 /// A printing slot of one card: `(released_at, set_code, collector_number)`.
@@ -352,12 +404,29 @@ type SlotKey = (String, String, String);
 /// What the order needs to know about one printing slot's rows.
 #[derive(Debug, Default, Clone)]
 struct Slot {
-    /// The tier of the slot's English row, when it has one.
+    /// The class ([`rank_class`]) of the slot's English row, when it has one.
     english: Option<u8>,
-    /// The tier its rows in other languages take, when it has any.
-    foreign: Option<u8>,
+    /// The classes its rows in other languages take — `[served rows, extras]`, each `None` where
+    /// the slot has no such row.
+    ///
+    /// TWO, because one slot's languages need not agree on being an extra. Pradesh Gypsies carries
+    /// Scryfall's content warning, which hides a printing by default, on its English, Spanish,
+    /// Japanese and Portuguese 4th Edition rows and not on the Korean and Chinese ones; kept as one
+    /// class the black-bordered slot took the Korean row's, and `4bb/265` in Spanish (1995-04)
+    /// came back ahead of Renaissance's `ren/152` (1995-08), an extra like it and four months newer.
+    foreign: [Option<u8>; 2],
     collector_number_int: Option<i64>,
 }
+
+/// Which rows of a slot an entry of the order ranks: its English row, its served rows in other
+/// languages, or its extras in other languages. Also the index of that rank in [`RowRanks`].
+type Half = usize;
+const ENGLISH: Half = 0;
+/// `FOREIGN + 0` the served rows, `FOREIGN + 1` the extras.
+const FOREIGN: Half = 1;
+
+/// One printing's ranks, by [`Half`].
+type RowRanks = [u32; 3];
 
 /// Where each printing row sits in its card's order.
 ///
@@ -369,10 +438,11 @@ struct Slot {
 pub struct PrintingRanks {
     /// oracle_id → its distinct `(released_at, set_code, collector_number)` slots.
     slots: HashMap<String, HashMap<SlotKey, Slot>>,
-    /// The sealed answer: slot → `(rank of its English row, rank of its other languages)`. Keyed
-    /// exactly as a pin is, so the two per-card facts a finalized row needs are asked in the same
-    /// shape. The two ranks differ only for a default-tier slot — see the module doc.
-    ranks: HashMap<PinKey, (u32, u32)>,
+    /// The sealed answer: printing → the rank of its English row, of its served rows in other
+    /// languages and of its extras in other languages. Keyed exactly as a pin is, so the two
+    /// per-card facts a finalized row needs are asked in the same shape. The ranks differ where
+    /// the halves are in different classes, or carry different dates — see `seal`.
+    ranks: HashMap<PinKey, RowRanks>,
     sealed: bool,
 }
 
@@ -387,9 +457,9 @@ impl PrintingRanks {
                 .or_default()
                 .entry((r.released_at.clone(), set.clone(), cn.clone()))
                 .or_default();
-            let tier = recorded_tier(r);
-            let side = if r.raw_lang_en { &mut slot.english } else { &mut slot.foreign };
-            *side = Some(side.map_or(tier, |seen| seen.min(tier)));
+            let class = rank_class(r);
+            let side = if r.raw_lang_en { &mut slot.english } else { &mut slot.foreign[usize::from(r.is_extra())] };
+            *side = Some(side.map_or(class, |seen| seen.min(class)));
             slot.collector_number_int = r.collector_number_int;
         }
     }
@@ -402,54 +472,68 @@ impl PrintingRanks {
         }
         self.sealed = true;
         for (oracle_id, slots) in std::mem::take(&mut self.slots) {
-            // One entry per rank: a slot's English row, and its other languages where they do not
-            // share that row's tier. The `bool` says which half of the slot the entry ranks.
-            let mut ordered: Vec<(&SlotKey, &Slot, u8, bool)> = Vec::with_capacity(slots.len());
+            // One entry per rank: a slot's English row, and each kind of its other languages that
+            // does not share that row's class.
+            let mut ordered: Vec<(&SlotKey, &Slot, u8, Half)> = Vec::with_capacity(slots.len());
             for (key, slot) in &slots {
-                match (slot.english, slot.foreign) {
-                    (Some(en), Some(other)) if en != other => {
-                        ordered.push((key, slot, en, true));
-                        ordered.push((key, slot, other, false));
+                if let Some(class) = slot.english {
+                    ordered.push((key, slot, class, ENGLISH));
+                }
+                for (kind, class) in slot.foreign.iter().enumerate() {
+                    if let Some(class) = *class
+                        && slot.english != Some(class)
+                    {
+                        ordered.push((key, slot, class, FOREIGN + kind));
                     }
-                    (Some(en), _) => ordered.push((key, slot, en, true)),
-                    (None, Some(other)) => ordered.push((key, slot, other, false)),
-                    (None, None) => {}
                 }
             }
-            ordered.sort_unstable_by_key(|((released_at, set, cn), slot, tier, english)| {
+            ordered.sort_unstable_by_key(|((released_at, set, cn), slot, class, half)| {
                 let key: PinKey = (oracle_id.clone(), set.clone(), cn.clone());
                 let date = released_at.replace('-', "").parse::<u32>().unwrap_or(0);
                 // The label names one printing, and it is the English one wherever a slot has one.
-                let pinned = pins.contains_key(&key) && (*english || slot.english.is_none());
+                let pinned = pins.contains_key(&key) && (*half == ENGLISH || slot.english.is_none());
                 (
                     u8::from(!pinned),
-                    *tier,
+                    *class,
                     Reverse(released_at.clone()),
                     Reverse(card_engine::release_batch(date, set)),
                     set.clone(),
                     collector_order_key(slot.collector_number_int, cn),
-                    u8::from(!*english),
+                    *half,
                 )
             });
-            let mut ranks: HashMap<(&str, &str), (u32, u32)> = HashMap::with_capacity(slots.len());
-            for (rank, ((_, set, cn), slot, _, english)) in ordered.into_iter().enumerate() {
-                let rank = rank as u32;
-                let entry = ranks.entry((set.as_str(), cn.as_str())).or_insert((rank, rank));
-                if english {
-                    entry.0 = rank;
-                    // Its other languages share the rank unless they have an entry of their own.
-                    if slot.foreign.is_none() || slot.foreign == slot.english {
-                        entry.1 = rank;
-                    }
-                } else {
-                    entry.1 = rank;
-                    if slot.english.is_none() {
-                        entry.0 = rank;
+            // A PRINTING IS (set, number), AND ITS LANGUAGES NEED NOT SHARE A DATE. The 30th
+            // Anniversary History promos were handed out in Japan in September 2022 and in English
+            // in March 2023, and Scryfall dates each row: `!"Shivan Dragon"` returns p30h/4 at
+            // 2023-03-21, between p30t/2 and sld/716, and under `lang:any` its Japanese row at
+            // 2022-09-09, after gn3/87 (2026-10-10). Two dates are two SLOTS of one printing, so
+            // the rank of each half is the rank of an entry that HOLDS rows of that half — the
+            // English one from a slot with an English row, the others' from a slot with theirs —
+            // and only a half with no entry of its own borrows another's. Until 2026-10-10 the
+            // Japanese-only slot wrote both halves and, sorting later, won: the English p30h/4
+            // ranked at the Japanese date. 25 printings carry two dates (p30h 10, phpr 5, pl21 4,
+            // pcbb 4, one each in cmm and dci).
+            let mut ranks: HashMap<(&str, &str), [Option<u32>; 3]> = HashMap::with_capacity(slots.len());
+            for (rank, ((_, set, cn), slot, class, half)) in ordered.into_iter().enumerate() {
+                let entry = ranks.entry((set.as_str(), cn.as_str())).or_default();
+                // `ordered` is best first, so the first entry seen for a half is its best rank.
+                entry[half].get_or_insert(rank as u32);
+                if half == ENGLISH {
+                    // Its other languages share the rank where they share its class.
+                    for (kind, other) in slot.foreign.iter().enumerate() {
+                        if *other == Some(class) {
+                            entry[FOREIGN + kind].get_or_insert(rank as u32);
+                        }
                     }
                 }
             }
-            for ((set, cn), pair) in ranks {
-                self.ranks.insert((oracle_id.clone(), set.to_owned(), cn.to_owned()), pair);
+            for ((set, cn), [english, served, extra]) in ranks {
+                let row: RowRanks = [
+                    english.or(served).or(extra).unwrap_or(RANK_SPAN),
+                    served.or(extra).or(english).unwrap_or(RANK_SPAN),
+                    extra.or(served).or(english).unwrap_or(RANK_SPAN),
+                ];
+                self.ranks.insert((oracle_id.clone(), set.to_owned(), cn.to_owned()), row);
             }
         }
     }
@@ -457,9 +541,8 @@ impl PrintingRanks {
     /// `r`'s rank within its card. A row with no addressable slot ranks last, so it can never
     /// displace a printing the rule actually ordered.
     pub fn rank_of(&self, r: &RowDraft) -> u32 {
-        pin_key(r)
-            .and_then(|k| self.ranks.get(&k).copied())
-            .map_or(RANK_SPAN, |(english, other)| if r.raw_lang_en { english } else { other })
+        let half = if r.raw_lang_en { ENGLISH } else { FOREIGN + usize::from(r.is_extra()) };
+        pin_key(r).and_then(|k| self.ranks.get(&k)).map_or(RANK_SPAN, |ranks| ranks[half])
     }
 
     pub fn len(&self) -> usize {
@@ -513,9 +596,15 @@ mod tests {
                 .iter()
                 .map(|(date, set, cn, english, foreign)| {
                     let collector_number_int = cn.chars().filter(char::is_ascii_digit).collect::<String>().parse().ok();
+                    // A test slot's other languages are all of one kind: extras when their class
+                    // is an extras class (odd), served rows otherwise.
+                    let mut other = [None, None];
+                    if let Some(class) = foreign {
+                        other[usize::from(class & 1)] = Some(*class);
+                    }
                     (
                         (date.to_string(), set.to_string(), cn.to_string()),
-                        Slot { english: *english, foreign: *foreign, collector_number_int },
+                        Slot { english: *english, foreign: other, collector_number_int },
                     )
                 })
                 .collect(),
@@ -531,7 +620,8 @@ mod tests {
         let r = sealed(slots, &PinnedPrintings::default());
         let mut out: Vec<(u32, String)> = Vec::new();
         for (_, set, cn, english, foreign) in slots {
-            let (en, other) = r.ranks[&("o".to_owned(), set.to_string(), cn.to_string())];
+            let ranks = r.ranks[&("o".to_owned(), set.to_string(), cn.to_string())];
+            let (en, other) = (ranks[ENGLISH], ranks[FOREIGN + usize::from(foreign.unwrap_or(0) & 1)]);
             if english.is_some() {
                 out.push((en, format!("{set}/{cn}")));
             }
@@ -543,9 +633,12 @@ mod tests {
         out.into_iter().map(|(_, s)| s).collect()
     }
 
+    /// The four classes ([`rank_class`]): the default tier; an extra that is not covered; a
+    /// covered printing; a covered extra.
     const A: Option<u8> = Some(0);
-    const B: Option<u8> = Some(1);
-    const C: Option<u8> = Some(2);
+    const X: Option<u8> = Some(1);
+    const B: Option<u8> = Some(2);
+    const C: Option<u8> = Some(3);
 
     #[test]
     fn a_foreign_only_slot_loses_to_an_english_one_it_outdates() {
@@ -696,14 +789,92 @@ mod tests {
         let mut pins = PinnedPrintings::default();
         pins.pin_slot_for_test(("o".to_owned(), "ren".to_owned(), "46".to_owned()));
         let r = sealed(&[("2026-09-01", "usg", "4", A, None), ("2025-01-01", "ren", "46", None, B)], &pins);
-        assert_eq!(r.ranks[&("o".to_owned(), "ren".to_owned(), "46".to_owned())], (0, 0));
+        assert_eq!(r.ranks[&("o".to_owned(), "ren".to_owned(), "46".to_owned())], [0, 0, 0]);
         // The label is the ENGLISH row of the slot it names: that slot's other languages keep the
         // rank their date gives them.
         let mut pins = PinnedPrintings::default();
         pins.pin_slot_for_test(("o".to_owned(), "cmm".to_owned(), "81".to_owned()));
         let r = sealed(&[("2024-09-27", "dsc", "114", A, B), ("2023-08-04", "cmm", "81", A, B)], &pins);
-        assert_eq!(r.ranks[&("o".to_owned(), "cmm".to_owned(), "81".to_owned())], (0, 3));
-        assert_eq!(r.ranks[&("o".to_owned(), "dsc".to_owned(), "114".to_owned())], (1, 2));
+        assert_eq!(r.ranks[&("o".to_owned(), "cmm".to_owned(), "81".to_owned())], [0, 3, 3]);
+        assert_eq!(r.ranks[&("o".to_owned(), "dsc".to_owned(), "114".to_owned())], [1, 2, 2]);
+    }
+
+    #[test]
+    fn the_classes_are_covered_then_extra_each_newest_first() {
+        // Shivan Dragon, api.scryfall.com 2026-10-10: after the default printings and the covered
+        // ones come 30a/170, 30a/467, j21/788, o90p/5, cei/175 — the Arena duplicate of 2021 among
+        // the memorabilia, at its date. It is covered and an extra, as they are.
+        assert_eq!(
+            ranked(&[
+                ("1998-01-01", "o90p", "5", C, None),
+                ("2021-08-26", "j21", "788", C, None),
+                ("2022-11-28", "30a", "170", C, None),
+                ("2022-10-14", "gn3", "87", B, None),
+                ("2024-11-15", "fdn", "206", A, None),
+            ]),
+            vec!["fdn/206", "gn3/87", "30a/170", "j21/788", "o90p/5"],
+        );
+        // History of Benalia: dom/21, then ybro/31 (2023), then prm/99669 (2024) and plst/DOM-21
+        // (2020). The Alchemy duplicate is an extra Scryfall does NOT record as covered: it comes
+        // before every covered printing, the newer Magic Online promo among them.
+        assert_eq!(
+            ranked(&[
+                ("2020-09-26", "plst", "DOM-21", B, None),
+                ("2024-03-27", "prm", "99669", B, None),
+                ("2023-10-10", "ybro", "31", X, None),
+                ("2018-04-27", "dom", "21", A, None),
+            ]),
+            vec!["dom/21", "ybro/31", "prm/99669", "plst/DOM-21"],
+        );
+    }
+
+    #[test]
+    fn a_printing_whose_languages_carry_two_dates_ranks_each_at_its_own() {
+        // The 30th Anniversary History promo of Shivan Dragon: Japanese 2022-09-09, English
+        // 2023-03-21. api.scryfall.com 2026-10-10 answers sld/1709, p30t/2 (ja), p30h/4, sld/716,
+        // dmr/329, gn3/87 — the English row at ITS date — and, with every language, p30h/4 in
+        // Japanese after gn3/87. Either input order: the Japanese slot used to write both halves.
+        let slots = [
+            ("2024-06-24", "sld", "1709", B, None),
+            ("2023-03-21", "p30h", "4", B, None),
+            ("2022-09-09", "p30h", "4", None, B),
+            ("2023-02-21", "sld", "716", B, None),
+            ("2022-10-14", "gn3", "87", B, None),
+        ];
+        let want = vec!["sld/1709", "p30h/4", "sld/716", "gn3/87", "p30h/4:x"];
+        assert_eq!(ranked(&slots), want);
+        let mut reversed = slots;
+        reversed.reverse();
+        assert_eq!(ranked(&reversed), want);
+    }
+
+    #[test]
+    fn a_slots_other_languages_rank_apart_where_only_some_are_extras() {
+        // Pradesh Gypsies, api.scryfall.com 2026-10-10: 4ed/265, leg/197, ren/152 (fr), 4bb/265
+        // (es) — every one an extra by its content warning, the Renaissance printing the newer.
+        // The black-bordered slot's Korean and Chinese rows carry no warning and are served; they
+        // rank with the covered printings, and the Spanish row does not ride with them.
+        let mut r = PrintingRanks::default();
+        let slot = |english, foreign| Slot { english, foreign, collector_number_int: Some(265) };
+        r.slots.insert(
+            "o".to_owned(),
+            [
+                (("1995-04-01".to_owned(), "4ed".to_owned(), "265".to_owned()), slot(X, [None, C])),
+                (("1995-08-01".to_owned(), "ren".to_owned(), "152".to_owned()), slot(None, [None, C])),
+                (("1995-04-01".to_owned(), "4bb".to_owned(), "265".to_owned()), slot(None, [B, C])),
+            ]
+            .into_iter()
+            .collect(),
+        );
+        r.seal(&PinnedPrintings::default());
+        let ranks = |set: &str, cn: &str| r.ranks[&("o".to_owned(), set.to_owned(), cn.to_owned())];
+        // 4ed/265 in English, 4bb/265 in Korean, ren/152, then 4bb/265 in Spanish and 4ed/265's
+        // translations by set code.
+        assert_eq!(ranks("4ed", "265")[ENGLISH], 0);
+        assert_eq!(ranks("4bb", "265")[FOREIGN], 1);
+        assert_eq!(ranks("ren", "152")[FOREIGN + 1], 2);
+        assert_eq!(ranks("4bb", "265")[FOREIGN + 1], 3);
+        assert_eq!(ranks("4ed", "265")[FOREIGN + 1], 4);
     }
 
     #[test]
