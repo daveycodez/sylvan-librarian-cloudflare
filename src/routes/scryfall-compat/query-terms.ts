@@ -434,10 +434,10 @@ const SCRYFALL_ONLY_KEYWORDS: ReadonlySet<string> = new Set([
 	//   cube      `cube:vintage` 540, `cube:legacy` 600, `cube:arena` 550 … membership of
 	//             Scryfall's curated cube lists, which are in no bulk file and have no API
 	//             endpoint. Not obtainable by the import.
-	//   new       STAYS, and is part answered: NEW_KEYWORDS below answers `new:rarity` (x72,
-	//             store generation 66) and the values of NEW_VALUE_IS_TAGS, and says Scryfall's
-	//             sentence for a value it does not know; every other value it honors still fails
-	//             to parse here, which is what this table is for (NEW_HONORED_UNANSWERED).
+	//   new       STAYS, and is answered whole: NEW_KEYWORDS below answers `new:rarity` (x72,
+	//             store generation 66) and the values of NEW_VALUE_IS_TAGS — every value
+	//             Scryfall honors, since `new:artist` joined them with generation 94 — and says
+	//             Scryfall's sentence for a value it does not know.
 	//
 	// `cheapest` LEFT SIXTH, the same day, with store generation 61, which holds each printing's
 	// answer: CHEAPEST_KEYWORDS below.
@@ -2145,6 +2145,19 @@ const NEW_KEYWORDS: ReadonlySet<string> = new Set(["new"]);
  *                    language — the one value an annex row answers — outside memorabilia and
  *                    serialized printings. 285,762 of 285,762; 36,503 by default, the term does not
  *                    widen the search.
+ *   artist, illustrator   ONE list, and NOT A RULE: 542,667 rows of every language, each name
+ *                    without the other a 404, and nearly every row there is — its complement is
+ *                    2,773 (2026-10-10; 2,757 the day before). Scryfall decided the flag against
+ *                    the illustration ids it held when it catalogued each printing and has not
+ *                    decided it again since those ids were merged: the nearest rule over today's
+ *                    card objects — a `new:art` printing that shares an artist id with an earlier
+ *                    printing of its card is not new — names 2,679 of the complement's rows,
+ *                    misses 93 and adds 2, and 50 of the 93 are explained by bulk files of earlier
+ *                    years. So the complement is COPIED, as the `is:` lists are
+ *                    (engine/builder/src/is_lists.tsv `old_artist`, `bun run is-lists`), refreshed
+ *                    by the nightly with them (src/import-is-lists.ts), and stored as a bit on
+ *                    every row it does not name. 2,773 of 2,773, id for id. Until 2026-10-10 the
+ *                    two spellings were left as written and failed to parse.
  *
  * None forces extras or widens, and each negation is the complement over every row of every
  * language (`-new:card lang:any` is 510,145 of 545,303).
@@ -2176,34 +2189,9 @@ const NEW_VALUE_IS_TAGS: ReadonlyMap<string, string> = new Map([
 	["illustration", "newart"],
 	["language", "newlanguage"],
 	["lang", "newlanguage"],
+	["artist", "newartist"],
+	["illustrator", "newartist"],
 ]);
-
-/**
- * The `new:` values Scryfall HONORS that this port does not answer — one list under two names.
- * The term is left as written and fails to parse, as `new:` did before — never dropped, which
- * would answer wider than Scryfall does, and never guessed:
- *
- *   artist, illustrator   NOT EXACT, measured 2026-10-09. `new:illustrator` is `new:artist`:
- *            115,747 and 115,747, 542,546 and 542,546 with every language, and each without the
- *            other a 404. It is nearly every row — 542,546 of 545,303 — so the list read is its
- *            complement, 2,757 rows. The nearest rule: a printing is NOT new when it is `new:art`
- *            (the stored bit: the artwork's first printing anywhere, read off the front face) and
- *            shares an ARTIST ID with an earlier non-memorabilia printing of its card, a variation
- *            never. That picks 2,663 of the 2,756 canonical rows and 2 others (the artist's name
- *            as one string: 2,644 and 1 — "Mark Poole & Post Malone" is Mark Poole again).
- *            92 of the 93 it misses are not new art at all — who/504, an extended-art printing of
- *            the painting who/288 carries, where who/1095, the same treatment in surge foil, is
- *            new; 77 of the 93 were released since 2024; under the name-string rule no
- *            combination of up to three of eleven other card fields told its 112 from the
- *            printings around them, and one annex row is in the list (tdm/400 in Japanese). The flag is a record of what Scryfall held when it
- *            last decided the printing, and it moves: Ponder's sld/7185 was in the list and
- *            sld/7186 out of it while the rule said the reverse, and hours later
- *            `-new:artist !"Ponder"` answered sld/7186, as the rule does (sld/7185's artwork was
- *            identified on 2026-10-08). The 92 are printings whose artwork was told apart from
- *            its first printing's when they were flagged and has been merged since, which no
- *            bulk file carries.
- */
-const NEW_HONORED_UNANSWERED: ReadonlySet<string> = new Set(["artist", "illustrator"]);
 
 const STRICT_REGEX_KEYWORDS: ReadonlySet<string> = new Set([
 	...STAMP_KEYWORDS,
@@ -3929,8 +3917,6 @@ function classifyLeaf(term: string, context: TermPolicyContext = {}): LeafVerdic
 		if (newValue === "rarity") return { keep: true, text: `${sign}is:${NEW_RARITY_IS_VALUE}` };
 		const newTag = NEW_VALUE_IS_TAGS.get(newValue);
 		if (newTag !== undefined) return { keep: true, text: `${sign}is:${newTag}` };
-		// Honored there and unanswered here: left as written, to fail to parse.
-		if (NEW_HONORED_UNANSWERED.has(newValue)) return { keep: true, text: term };
 		return { keep: false, reason: `Checking if cards have a new “${newValue}” is not supported` };
 	}
 

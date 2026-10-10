@@ -4715,6 +4715,48 @@
 			"method": "GET",
 			"path": "/cards/search?q=%21%22Temple+of+Deceit%22+%28e%3Adsc+or+e%3Afdn%29&unique=art&include_extras=true",
 			"note": "2026-10-10. fdn/697 alone: without thb/245, the artwork's representative, the answer is the first of the card's order — not dsc/307, though the `unique_artwork` bulk file lists dsc/307 beside thb/245."
+		},
+		{
+			"name": "new-artist-one-of-four-printings-of-one-day",
+			"method": "GET",
+			"path": "/cards/search?q=-new%3Aartist+%21%22Irrigated+Farmland%22+e%3Awho&unique=prints&include_extras=true",
+			"note": "2026-10-10. who/504 alone: four printings of one painting by one artist on one day, and Scryfall's record leaves out the extended-art one. No rule over the card objects gives it; the list is copied (is_lists.tsv `old_artist`)."
+		},
+		{
+			"name": "new-illustrator-is-new-artist",
+			"method": "GET",
+			"path": "/cards/search?q=new%3Aillustrator+%21%22Irrigated+Farmland%22+e%3Awho&unique=prints&include_extras=true",
+			"note": "2026-10-10. who/288, who/879 and who/1095: the other three, under the list's second name."
+		},
+		{
+			"name": "new-illustrator-negated-on-the-anchor",
+			"method": "GET",
+			"path": "/cards/search?q=-new%3Aillustrator+e%3Akhm+t%3Agod",
+			"note": "2026-10-10. A 404: all 25 are new. The port answered 25 with a warning while it dropped the term, and a 400 while it refused it."
+		},
+		{
+			"name": "new-artist-variations",
+			"method": "GET",
+			"path": "/cards/search?q=-new%3Aartist+is%3Avariation&unique=prints",
+			"note": "2026-10-10. 13 rows: ten of Murders at Karlov Manor's daggers, ons/200★, mid/57† and om1/117†. A variation is a row of the list like any other."
+		},
+		{
+			"name": "new-artist-hides-a-variation-by-default",
+			"method": "GET",
+			"path": "/cards/search?q=-new%3Aartist+%21%22Grafted+Identity%22&unique=prints",
+			"note": "2026-10-10. dbl/57 alone; mid/57† is in the list and a default search hides it (2 rows with include_variations=true). The term forces nothing."
+		},
+		{
+			"name": "new-artist-a-translated-row",
+			"method": "GET",
+			"path": "/cards/search?q=-new%3Aartist+e%3Atdm+lang%3Aany&unique=prints&include_extras=true",
+			"note": "2026-10-10. 26 rows where the default search has 25: tdm/400 in Japanese, the one row of the list that is a translation of another row of it."
+		},
+		{
+			"name": "new-artist-phyrexian",
+			"method": "GET",
+			"path": "/cards/search?q=-new%3Aartist+lang%3Aph&unique=prints&include_extras=true",
+			"note": "2026-10-10. 9 rows: eight Phyrexian printings of Phyrexia: All Will Be One and jmp/58."
 		}
 	]
 }

@@ -8,6 +8,12 @@
 //! scripts/generate-is-lists.ts (`bun run is-lists`). What each value is, and what was tried, is
 //! written at its constant in transform.rs.
 //!
+//! AND A NINTH LIST THAT IS NOT AN `is:` VALUE, since 2026-10-10: `old_artist`, the rows
+//! `new:artist` (and `new:illustrator`) leaves out — 2,773 of every language, written by row.
+//! Scryfall's record of what it held when it catalogued each printing, which no rule over a card
+//! object gives (card_engine `NEW_ARTIST`). It is tagged like the plain lists and the engine's
+//! build turns the tag's absence into a bit, so no stored row carries the word.
+//!
 //! THE TABLE names a value's printings at the widest key that is exact:
 //!
 //! ```text
@@ -49,7 +55,15 @@ use crate::transform::{
 };
 
 /// The values the table may name, in the order [`Verdicts`] holds them.
-pub const LIST_TAGS: [&str; 8] = [
+///
+/// THE NINTH IS NOT AN `is:` VALUE. `old_artist` is the complement of `new:artist` (and
+/// `new:illustrator`, the same list): the 2,773 rows of every language Scryfall does not count as
+/// a new artist's, which no rule over a card object gives (card_engine `NEW_ARTIST` carries the
+/// measurement) — a record like the eight, so it is kept in the same table, read by the same
+/// lookups and refreshed by the same night. The engine's build turns the word into bit 12 of
+/// `new_flags` on every row that does NOT carry it and takes it off again, so it is never a tag
+/// of a stored row.
+pub const LIST_TAGS: [&str; 9] = [
     COVERED_IS_TAG,
     INTRO_IS_TAG,
     INVITATIONAL_IS_TAG,
@@ -58,6 +72,7 @@ pub const LIST_TAGS: [&str; 8] = [
     RELATED_IS_TAG,
     SPELLBOOK_IS_TAG,
     SPIKEY_IS_TAG,
+    card_engine::OLD_ARTIST_TAG,
 ];
 
 const IS_LISTS_TSV: &str = include_str!("is_lists.tsv");

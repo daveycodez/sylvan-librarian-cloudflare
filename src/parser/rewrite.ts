@@ -395,6 +395,8 @@ export const NEW_RARITY_IS_VALUE = "newrarity";
  *             cards; 52,047 of 52,047
  *   newlanguage `new:language`, `new:lang` — the card's first printing in each language, annex rows
  *             too; 285,762 of 285,762
+ *   newartist `new:artist`, `new:illustrator` — Scryfall's own record, every row but the 2,773 its
+ *             list leaves out (engine/builder/src/is_lists.tsv `old_artist`); 2,773 of 2,773
  */
 export const NEW_FLAG_IS_VALUES: readonly string[] = [
 	"newcard",
@@ -409,6 +411,7 @@ export const NEW_FLAG_IS_VALUES: readonly string[] = [
 	"newflavor",
 	"newart",
 	"newlanguage",
+	"newartist",
 ];
 
 /**

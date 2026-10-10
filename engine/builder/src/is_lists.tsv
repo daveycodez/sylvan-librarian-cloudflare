@@ -17,7 +17,9 @@
 # related: 91293 rows of every language on api.scryfall.com
 # spellbook: 75 rows of every language on api.scryfall.com
 # spikey: 14806 rows of every language on api.scryfall.com
+# old_artist: 2773 rows of every language on api.scryfall.com
 # 0 rows of the bulk file no search returns were not counted either way.
+# old_artist was measured again alone on 2026-10-10 (--only).
 # print_tiers.tsv 30ff0dad0087b62d
 covered	row	bot	en	1 2 3 4 5 6 7 8 9 10 11 12 13 14 15
 covered	row	cp1	en	1 2 3 4 5 6
@@ -1346,3 +1348,273 @@ spikey	oracle	88222fd2-8316-426c-8218-64f6be5ca0f8	_____ Goblin
 spikey	oracle	1009f979-b1fa-4427-bf9e-2a533a4ca19b	_____ _____ Rocketship
 spikey	oracle	75854e14-5f15-443d-b342-b27fc3ab4b6e	_____ _____ _____ Trespasser
 spikey	oracle	32921952-8846-418d-8689-c42dbc24a7b8	_____-o-saurus
+old_artist	row	10e	en	50★ 214★
+old_artist	row	2x2	en	98 345
+old_artist	row	2xm	en	371
+old_artist	row	40k	en	272★
+old_artist	row	5dn	en	131
+old_artist	row	5ed	en	12 61 270 431 432 433 435 436 437 439 440 441 442 443 444 445 447 448 449
+old_artist	row	7ed	en	205★ 208 214 232★ 273★ 311★ 329 330 331 332★ 333★ 334 335★ 338 339★ 340★ 341★ 342 343★ 344 347
+old_artist	row	7ed	zhs	289★s
+old_artist	row	8ed	en	23 259★
+old_artist	row	9ed	en	47 327
+old_artist	row	aa1	en	2 5
+old_artist	row	acr	en	85 101 120 162 165 303
+old_artist	row	afr	en	262 264 265 266 268 269 270 272 273 274 276 277 280 281
+old_artist	row	akh	en	251 253 254 256 257 258 259 260 261 262 264 265 267 268
+old_artist	row	ala	en	232 236 237 238 239 240 242 244 248
+old_artist	row	all	en	1b 2b 7b 9a 10a 11b 12a 13b 15b 21b 22a 23a 24b 27b 29b 30a 33a 34b 36a 41a 44a 49b 50b 51b 55a 57a 58a 60a 61a 63b 64b 66b 67b 71a 72a 73b 74a 81a 82b 84a 86a 88a 90b 92a 93b 94b 100a 102a 103a 104a 116b 118a 127b 132b 133a
+old_artist	row	atq	en	80a 80c 80d 82a 82b 82d 83a 83c 83d 84a 84b 84d 85a 85b 85d
+old_artist	row	avr	en	230 231 232 233 234 235 236 237 238 239 240 241 242 243 244
+old_artist	row	bbd	en	104 250 251 252 253 254 255 256
+old_artist	row	bfz	en	76 226 250 251 252 255 257 260 261 262 265 266 268 270 271 272
+old_artist	row	big	en	57 65 68 88
+old_artist	row	blb	en	262 263 264 265 267 268 269 271 272 273 275 276 277 279 280 281 338 339 340 369 373 375 376 377 378
+old_artist	row	blc	en	51 58 88 129
+old_artist	row	bot	en	16 17 18 19 20 21 22 23 24 25 26 27 28 29
+old_artist	row	brc	en	131
+old_artist	row	bro	en	261 271 272 276 277 281 283 285 286 287 299 378
+old_artist	row	brr	en	64z 67 69z 70 71 75z 76z 77 79 80 81z 82 83 84z 85z 88 90z 91z 92 93z 94z 95z 98 99z 100z 102 106 110 111 112 113z 114 115z 116 121z 122z 123 125 126
+old_artist	row	c16	en	337 341 345 346 347 348 351
+old_artist	row	chk	en	160a 185 288 289 290 291 292 293 294 296 297 298 299 300 301 302 303 304 305 306
+old_artist	row	clb	en	110 453 456 457 458 459 462 465 466
+old_artist	row	clu	en	220 275
+old_artist	row	cmb2	en	84
+old_artist	row	cmm	en	558 632 663 881
+old_artist	row	cn2	en	222
+old_artist	row	cns	en	143
+old_artist	row	cp2	en	3
+old_artist	row	csp	en	101
+old_artist	row	dbl	en	1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33 34 35 36 37 38 39 40 41 42 43 44 45 46 47 48 49 50 51 52 53 54 55 56 57 58 59 60 61 62 63 64 65 66 67 68 69 70 71 72 73 74 75 76 77 78 79 80 81 82 83 84 85 86 87 88 89 90 91 92 93 94 95 96 97 98 99 100 101 102 103 104 105 106 107 108 109 110 111 112 113 114 115 116 117 118 119 120 121 122 123 124 125 126 127 128 129 130 131 132 133 134 135 136 137 138 139 140 141 142 143 144 145 146 147 148 149 150 151 152 153 154 155 156 157 158 159 160 161 162 163 164 165 166 167 168 169 170 172 173 174 175 176 177 178 179 180 181 182 183 184 185 186 187 188 189 190 191 192 193 194 195 196 197 198 200 201 202 203 204 205 206 207 208 209 210 211 212 213 214 215 216 217 218 219 220 221 222 223 224 225 226 227 228 229 230 231 232 233 234 235 236 237 238 239 240 241 242 243 244 245 246 247 248 249 250 251 252 253 254 255 256 257 258 259 260 261 262 263 264 265 266 267 268 269 270 271 272 273 274 275 276 277 278 279 280 281 282 283 284 285 286 287 288 289 290 291 292 293 294 295 296 297 298 299 300 301 302 303 304 305 306 307 308 309 310 311 312 313 314 315 316 317 318 319 320 321 322 323 324 325 326 327 328 329 330 331 332 333 334 335 336 337 338 339 340 341 342 343 344 345 346 347 348 349 350 351 352 353 354 355 356 357 358 359 360 361 362 363 364 365 366 367 368 369 370 371 372 373 374 375 376 377 378 379 380 381 382 383 384 385 386 387 388 389 390 391 392 393 394 395 396 397 398 399 400 401 402 403 404 405 406 407 408 409 410 411 412 413 414 415 416 417 418 419 420 421 422 423 424 425 426 427 428 429 430 431 432 433 434 435 436 437 438 439 440 441 442 443 444 445 446 447 448 449 450 451 452 453 454 455 456 457 458 459 460 461 462 463 464 465 466 467 468 469 470 471 472 473 474 475 476 477 478 479 480 481 482 483 484 485 486 487 488 489 490 491 492 493 494 495 496 497 498 499 500 501 502 503 504 505 506 507 508 509 510 511 512 513 514 515 516 517 518 519 520 521 522 523 524 525 526 527 528 529 531 532 533 534 535
+old_artist	row	dci	en	5 6
+old_artist	row	dd2	en	50
+old_artist	row	ddh	en	59
+old_artist	row	ddi	en	1
+old_artist	row	ddr	en	1
+old_artist	row	dft	en	272 274 276 277 278 280 281 283 284 286 287 289 290 407 431 441 444 450 453 472 513 514 522 531 535 544
+old_artist	row	dgm	en	146 147 148 149 150 151 152 153 154 155 156
+old_artist	row	dis	en	140
+old_artist	row	dmr	en	216
+old_artist	row	dmu	en	264 266 267 268 269 271 275 281 379 434
+old_artist	row	dom	en	247 250 251 252 253 254 255 256 257 258 259 260 261 262 263 264 265 266 267 268 269
+old_artist	row	drc	en	129
+old_artist	row	dsc	en	61 92 124
+old_artist	row	dsk	en	272 273 274 275 276 283 287 288 289 290 291 292 293 294 295 296 297 298 299 300 301 406 407 408 409 410
+old_artist	row	dst	en	139
+old_artist	row	dtk	en	151 160 163 193 250 251 252 253 254 255 256 257 258 259 260 261 262 263 264
+old_artist	row	e01	en	101 102 103 104 105 106
+old_artist	row	ecc	en	28 29 35 36 58 98 122
+old_artist	row	ecl	en	262 264 266 269 270 271 273 276 277 279 280 281 282 283 357 364
+old_artist	row	eld	en	250 252 253 254 255 257 265 269
+old_artist	row	ema	en	49
+old_artist	row	emn	en	166
+old_artist	row	eoc	en	170
+old_artist	row	eoe	en	258 262 263 264 265 266 267 268 269 271 273 274 275 276 282 286
+old_artist	row	eos	en	131
+old_artist	row	exo	en	130
+old_artist	row	exp	en	38
+old_artist	row	f08	en	3
+old_artist	row	f13	en	6
+old_artist	row	f15	en	2 3 4
+old_artist	row	fdn	en	228 282 283 285 286 287 289 290 291 298 329 337 341 742
+old_artist	row	fem	en	16b 27b 49a
+old_artist	row	fic	en	191 218 219 226 253 333 359 382
+old_artist	row	fin	en	243 295 298 306 307 416 422 460 510 512 551b 551c 551d 551f 567
+old_artist	row	fin	ja	551
+old_artist	row	fra	en	241 286 287 288 382 383 384 385 386 387 389 390 391 392 393 394 395 396 397 398 400 455
+old_artist	row	frc	en	23
+old_artist	row	frf	en	19 26 36 46 59 85 98 123 129 146 161 164 165 166 168 169 170 171 172 173 174 175 176 177 178 179 180 181 182 183 184 185
+old_artist	row	gk1	en	24 25 48 100 101 126 127
+old_artist	row	gk2	en	26 27 78 79 105 106 132 133
+old_artist	row	grn	en	244 245 246 248 249 252 256 260 261 262 263 264
+old_artist	row	gtc	en	154
+old_artist	row	hml	en	2b 3a 10a 13a 19a 25b 27b 30a 32b 36b 44b 46b 47b 57a 59b 61b 63b 66a 67a 72b 84b 87a 88b 97b 99a
+old_artist	row	hob	en	192 193 195 198 314 315 316 317 321
+old_artist	row	hou	en	185 186 187 188 189 190 191 193 194 195 196 197 198 199
+old_artist	row	ice	en	14 132 365 366 369 370 374 375 377 378 381 382
+old_artist	row	iko	en	247 261 263 266 268 269 270 271 272 274 372
+old_artist	row	inr	en	400
+old_artist	row	inv	en	332 334 335 336 337 340 341 342 346 347 349
+old_artist	row	isd	en	250 251 254 255 257 258 259 260 263
+old_artist	row	j14	en	1★ 2★ 3★ 4★ 5★
+old_artist	row	j25	en	73 150 748
+old_artist	row	jmp	en	41 42 44 48 49 50 51 52 53 56 57 59 60 61 62 63 64 66 67 68 69 71 72 73 74 75 76
+old_artist	row	jmp	ph	58
+old_artist	row	khm	en	394 395 396 397 398
+old_artist	row	kld	en	158 250 251 253 254 256 257 258 259 260 261 263
+old_artist	row	ktk	en	250 252 254 255 257 260 261 263 264 268 269
+old_artist	row	lci	en	229 287 288 291 371 393 394 396 397 398 399 400 402 410a 410b 410c 410d 410e 410f
+old_artist	row	lea	en	287 289 291 293 295
+old_artist	row	leb	en	290 293 296 299 302
+old_artist	row	lrw	en	283 288 289 291 295 299
+old_artist	row	ltc	en	299 354
+old_artist	row	ltr	en	270 273 275 277 279 281 336
+old_artist	row	m10	en	47 231 234
+old_artist	row	m12	en	240
+old_artist	row	m13	en	239
+old_artist	row	m15	en	191 250 258 266
+old_artist	row	m19	en	271 280
+old_artist	row	m21	en	275 276 277 309 310 311 312 313
+old_artist	row	m3c	en	17 21 113 116 136 237
+old_artist	row	mar	en	79 80
+old_artist	row	mbs	en	5 43 140 146 147 148 149 150 151 152 153 154 155
+old_artist	row	mdd	en	292 301
+old_artist	row	med	en	GR7 WS1
+old_artist	row	mh2	en	300 327 328 329 330 331 332 333 334 335 336 337 338 339 340 341 342 343 345 346 347 348 349 350 351 352 353 354 355 356 357 358 359 360 361 362 363 364 365 366 367 368 369 370 371 372 373 374 375 376 377 378 379 380
+old_artist	row	mh3	en	305 308 310 311 312 315 318 421 498 499
+old_artist	row	mid	en	57† 268 272 276 380 381 384
+old_artist	row	mir	en	332 333 334 336 337 338 340 341 342 344 345 346 347 348 349 350
+old_artist	row	mkc	en	46 47 48
+old_artist	row	mkm	en	7† 36† 72† 73† 79† 82† 146† 190† 213† 239† 278 279 280 282 283 284 285 286 329 333 395
+old_artist	row	mmq	en	337 341 346 349
+old_artist	row	mom	en	269 277 278 279 280 281 282 287 288 290
+old_artist	row	mps	en	53
+old_artist	row	mrd	en	251 288 290 292 294 296 298 300 302 304 306
+old_artist	row	msc	en	159 193 207 214 229 233 243 271 274
+old_artist	row	msh	en	289
+old_artist	row	mul	en	2 18 28
+old_artist	row	ncc	en	120
+old_artist	row	neo	en	283 284 285 286 287 288 289 290 291 292 429 430 431 432 502
+old_artist	row	neo	ja	300 302
+old_artist	row	nph	en	166 167 168 169 170 171 172 173 174 175
+old_artist	row	ody	en	333 334 336 338 341 345 348
+old_artist	row	om1	en	117†
+old_artist	row	one	en	262 263 264 265 266 272 275
+old_artist	row	one	ph	267 268 269 270 271 365 366 369
+old_artist	row	ons	en	92 200★ 331 335 339 341 343 346 347 349
+old_artist	row	ori	en	257 258 265 266 268 270 271
+old_artist	row	otc	en	164 267
+old_artist	row	otj	en	277 278 280 281 282 283 284 286
+old_artist	row	p02	en	152 153 155 156 158 159 161 162 164 165
+old_artist	row	p05	en	2 3 5
+old_artist	row	p06	en	7
+old_artist	row	p09	en	1 5
+old_artist	row	p10e	en	35
+old_artist	row	p23	en	6
+old_artist	row	pal03	en	1 2 3 4 5
+old_artist	row	pal04	en	1 2 3 4 5 14
+old_artist	row	pal06	en	1 2 3 4 5
+old_artist	row	palp	en	6 15
+old_artist	row	pana	en	236 237 239 262 263 264 266 267 271
+old_artist	row	pbro	en	T2
+old_artist	row	pelp	en	7 8 12
+old_artist	row	pf19	en	2 3 4 5 6 7
+old_artist	row	pf20	en	2 3 4 5 6
+old_artist	row	pf25	en	10
+old_artist	row	pgpx	en	2018b 2018f
+old_artist	row	pgru	en	1 5
+old_artist	row	pip	en	253 318 321 323 325 476 520
+old_artist	row	pktk	en	219
+old_artist	row	plc	en	161
+old_artist	row	plg21	ja	J1 J3
+old_artist	row	pltr	en	246s
+old_artist	row	pmei	en	2009-1 2026-1
+old_artist	row	pmoa	en	2 6 18 28 30 61 104 105 106 107 108
+old_artist	row	pmps	ja	301 305
+old_artist	row	pmps06	ja	2 4 5
+old_artist	row	pmps07	ja	1 2 3 4 5
+old_artist	row	pmps08	ja	1 2 3 4 5
+old_artist	row	pmps09	ja	1 2 3 4 5
+old_artist	row	pmps10	ja	1 2 3 4 5
+old_artist	row	por	en	197 198 199 201 202 203 205 206 207 209 210 211 213 214 215
+old_artist	row	por	zhs	197s 198s 199s 201s 202s 203s 209s 210s 211s 213s 214s 215s
+old_artist	row	pori	en	43 171
+old_artist	row	ppp1	en	5
+old_artist	row	ppro	en	2010
+old_artist	row	pr2	en	3
+old_artist	row	prm	en	46954 62535 69987 69991 72305 72307 72890 77959 77961 77963 77965 77967 77969 77971 77973 77975 77977 77979 77981 77983 77985 77987 77989 77991 77993 77995 77997 77999 78001 78003 78005 78007 78009 78011 78013 78015 78017 78019 78021 78023 78025 78027 78029 91341 97941 97969 98051 99935 103470 105766
+old_artist	row	ps16	en	29
+old_artist	row	pss4	en	2 3 4
+old_artist	row	psus	en	9 11
+old_artist	row	ptk	en	167 168 170 171 173 174 176 177 179 180
+old_artist	row	ptsnc	en	4 6
+old_artist	row	purl	en	324 445
+old_artist	row	rav	en	301 305
+old_artist	row	rex	en	21 22 25
+old_artist	row	rix	en	183
+old_artist	row	rna	en	244 250 253 256 258 260 262 263 264
+old_artist	row	roe	en	229 230 231 232 233 234 235 236 237 238 239 240 242 243 244 245 246 247 248
+old_artist	row	rtr	en	250 252 253 255 257 258 260 262 263 265 267 268 270 272 273
+old_artist	row	shm	en	282 285 287 289 299 301
+old_artist	row	skhm	en	2 3 4 5 6 7 8 9
+old_artist	row	sld	en	14 15 16 38 40 100 103 105 107 109 152 153 173 336 337 338 339 386 389 390 392 393 394 395 495 539 582 587 588 678 679 690 698 699 700 701 725 797 917 918 1001 1044 1094 1151 1162 1190 1191 1192 1193 1251 1286 1292 1294 1303 1340 1358 1362 1364 1371 1492 1510 1513 1514 1515 1553 1634 1641 1641★ 1727 1817 1819 1820 1857 1907 1908 1909 2011 2012 2013 2019 2020 2021 2022 2023 2057 2065 2139 2145 2146 2147 2225 2358 2359 2360 2361 2419 2420 2511 2539 2546 2547 2548 2549 2550 2551 7016 7017 7018 7019 7020 7021 7022 7032 7033 7034 7035 7036 7037 7072 7120 7121 7122 7123 7124 7125 7126 7128 7129 7180 7185 7186 IFIYW-10 IFIYW-6 IFIYW-7 IFIYW-8 IFIYW-9 VS
+old_artist	row	slp	en	1 31 32 33 34 35
+old_artist	row	slu	en	504
+old_artist	row	slz	en	122 123 124 125 126 127 128 129 130 131 132 133 134 135 136 137 138 139 140 141 142 143 144 145 146 147 148 149 150 151 152 153 154 155 156 157 158 159 160 161 162 163 164 165 166 167 168 169 170 171 172 173 174 175 176 177 178 179 180 181 182 183 184 185 186 187 188 189 190 191 192 193 194 195 196 197 198 199 200 201 202 203 204 205 206 207 208 209 210 211 212 213 214 215 216 217 218 219 220 221 222 223 224 225 226 227 228 229 230 231 232 233 234 235 236 237 238 239 240 241 242 243 244 245 246 247 248 249 250 251 252 253 254 255 256 257 258 259 260 261 262 263 264 265 266 267 268 269 270 271 272 273 274 275 276 277 278 279 280 281 282 283 284 285 286 287 288 289 290 291 292 293 294 295 296 297 298 299 300 301 302 303 304 305 306 307 308 309 310 311 312 313 314 315 316 317 318 319 320 321 322 323 324 325 326 327 328 329 330 331 332 333 334 335 336 337 338 339 340 341 342 343 344 345 346 347 348 349 350 351 352 353 354 355 356 357 358 359 360 361 362 363
+old_artist	row	smid	en	2 3 4 5 6 7 8 9
+old_artist	row	snc	en	262 264 267 269
+old_artist	row	sneo	en	2 3 4 5 6 7 8 9
+old_artist	row	soa	en	7
+old_artist	row	soa	ja	163
+old_artist	row	soc	en	162 184
+old_artist	row	soi	en	82 283 284 285 286 287 288 289 290 291 292 293 294 295 296 297
+old_artist	row	som	en	223 231 232 233 234 235 236 237 238 239 240 241 243 244 245 246 247 248 249
+old_artist	row	sos	en	272 274 275 276 277 278 301
+old_artist	row	spg	en	17 17a 17b 17c 17e 17f 38 62 109 112
+old_artist	row	spm	en	91 112 189 190 191 192 193 194 195 196 197 198 216 235 236 237 238 239 240 241 256 260
+old_artist	row	sstx	en	1 2 3 4 5 6 7 8 9
+old_artist	row	stx	en	276 366 367 368 370 371 372 375
+old_artist	row	svow	en	2 3 4 5 6 7 8 9
+old_artist	row	sznr	en	2 3 4 5 6 7 8 9
+old_artist	row	t30a	en	14
+old_artist	row	t40k	en	3 4
+old_artist	row	tbrc	en	8
+old_artist	row	tcmr	en	7
+old_artist	row	tcn2	en	6
+old_artist	row	tcns	en	5
+old_artist	row	tdc	en	51
+old_artist	row	tdm	en	272 273 274 275 276 277 279 280 283 285 289 359 399 400 401 402 403 404 405 406 407 408 420 423 424
+old_artist	row	tdm	ja	400
+old_artist	row	tdom	en	8 9
+old_artist	row	teld	en	3
+old_artist	row	teoe	en	2
+old_artist	row	tfic	en	2
+old_artist	row	tfin	en	3 22 30
+old_artist	row	tfra	en	7
+old_artist	row	thb	en	250 251 252 253 254 278 279 280 281 282 283 284 285 286 287
+old_artist	row	thob	en	4 12
+old_artist	row	ths	en	149 230 232 234 236 238 240 242 244 246 247 248
+old_artist	row	tinr	en	25
+old_artist	row	tktk	en	2
+old_artist	row	tla	en	284 285 287 288 294 299
+old_artist	row	tle	en	272 282
+old_artist	row	tltr	en	6 9
+old_artist	row	tmbs	en	2
+old_artist	row	tmh3	en	40 45
+old_artist	row	tmkm	en	20
+old_artist	row	tmom	en	21
+old_artist	row	tmp	en	332 333 334 336 337 338 340 341 342 344 345 346 348 349 350
+old_artist	row	tmsc	en	1
+old_artist	row	tmsh	en	22
+old_artist	row	tmt	en	194 258 264
+old_artist	row	togw	en	1 3
+old_artist	row	tonc	en	17
+old_artist	row	totj	en	1
+old_artist	row	totp	en	5
+old_artist	row	trk	en	278 286 318 320 322 324 326
+old_artist	row	tsp	en	282 285 286 289 290 293 294 298
+old_artist	row	ttdc	en	2
+old_artist	row	ttla	en	6 15 18
+old_artist	row	ttmc	en	3
+old_artist	row	ttmt	en	1
+old_artist	row	twar	en	9 10 15 18
+old_artist	row	twho	en	61 64
+old_artist	row	ugin	en	24 30 48 68 73 88 96 97 113 131 216 217 220
+old_artist	row	ugl	en	84 87
+old_artist	row	und	en	23 87 88 89 90 91 92 93 94 95 96
+old_artist	row	unf	en	235 236 237 238 239 240 241 242 243 244
+old_artist	row	unh	en	4★ 48★ 136 137 138 139 140
+old_artist	row	usg	en	139 142 332 333 334 336 337 338 340 341 342 343 344 345 346 348 349 350
+old_artist	row	usg	zhs	119s 130s 163s 164s 187s
+old_artist	row	ust	en	3a 3b 3c 54b 54c 54d 98a 98b 98c 103b 103c 103d 212 213 214 215 216
+old_artist	row	v15	en	9
+old_artist	row	voc	en	43 56
+old_artist	row	vow	en	38 270 274 275 331
+old_artist	row	war	en	250 251 252 253 254 256 257 258 259 260 261 262 263 264
+old_artist	row	who	en	196 198 200 201 202 203 204 205 245 247 264 268 270 504
+old_artist	row	woe	en	256 268 270 271 272 273 275 276 306 327
+old_artist	row	wth	en	116
+old_artist	row	xln	en	47 260 261 262 264 265 266 268 269 270 272 273 274 276 277 278 284
+old_artist	row	zen	en	230a 234a 238 242 246a
+old_artist	row	zne	en	27 29
+old_artist	row	znr	en	266 267 269 271 272 274 275 276 278 279 280

@@ -2,7 +2,8 @@
 // tell (src/import-is-lists.ts) — for tests/import/is-lists-refresh.test.ts and for the harness's
 // dump server, which hands it the list requests.
 //
-// It answers exactly the queries the refresh writes: `is:V` and `-is:V` terms, `lang:any`,
+// It answers exactly the queries the refresh writes: `is:V` and `-is:V` terms, `new:artist` and its
+// negation (every row not marked `old_artist`, and the rows that are), `lang:any`,
 // `lang:en`, `-lang:en` and `e:SET`, with `unique=prints|cards` and `page=N`, in Scryfall's
 // envelope — `total_cards`, `has_more`, a 404 `not_found` for no match. With no `lang:` term a
 // printing answers with its English row, or its only one, as Scryfall's default does.
@@ -27,7 +28,7 @@ export interface FakeCard {
 	all_parts?: unknown[];
 	/** A `variation: true` printing: in no answer unless the request asks for variations. */
 	variation?: boolean;
-	/** The `is:` values this row is in. */
+	/** The `is:` values this row is in — and `old_artist`, for a row `new:artist` leaves out. */
 	is: string[];
 }
 
@@ -66,6 +67,8 @@ export class FakeScryfall {
 			const [key, value] = (negated ? term.slice(1) : term).split(":") as [string, string | undefined];
 			if (!value) return { warning: `Invalid expression “${term}” was ignored.` };
 			if (key === "is") rows = rows.filter((c) => c.is.includes(value) !== negated);
+			// Nearly every row is `new:artist`; the list read is its complement.
+			else if (key === "new" && value === "artist") rows = rows.filter((c) => c.is.includes("old_artist") === negated);
 			else if (key === "e" && !negated) rows = rows.filter((c) => c.set === value);
 			else if (key === "lang" && value === "any" && !negated) lang = "any";
 			else if (key === "lang" && value === "en") lang = negated ? "-en" : "en";

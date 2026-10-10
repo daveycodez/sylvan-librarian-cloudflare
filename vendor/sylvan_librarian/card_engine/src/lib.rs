@@ -5723,6 +5723,24 @@ pub const ART_DEBUT_TAG: &str = "art_debut";
 /// that day holds one, and 3,111 of the 3,700 over all.
 pub(crate) const ART_DEBUT: u32 = 1 << 11;
 
+/// The `card_is_tags` word the builder marks a printing with when Scryfall's record says its
+/// artist is NOT new — see `NEW_ARTIST`. Never stored: `assign_new_flags` turns its ABSENCE into
+/// the bit and removes it, as it removes `NEW_ART_TAG`.
+pub const OLD_ARTIST_TAG: &str = "old_artist";
+
+/// `Printing::new_flags`: the printing is `new:artist` — and `new:illustrator`, the same list —
+/// which is nearly every row of every language, so the bit is set wherever the builder did NOT
+/// mark the row with [`OLD_ARTIST_TAG`].
+///
+/// A RECORD, NOT A RULE. Scryfall decided the flag against the illustration ids it held when each
+/// printing was catalogued and has not decided it again since those ids were merged, so nothing a
+/// card object carries today gives the list: the nearest rule — a `new:art` printing that shares
+/// an artist id with an earlier printing of its card is not new — names 2,679 of the 2,772 rows
+/// of the complement, misses 93 and adds 2. The complement is small — 2,773 rows of every
+/// language on 2026-10-10, variations and extras in — so it is copied, as the eight `is:` lists
+/// are (engine/builder `is_lists`, the ninth value of that table), and refreshed with them.
+pub(crate) const NEW_ARTIST: u32 = 1 << 12;
+
 /// The engine's `is:` spelling of each `new:` value `Printing::new_flags` answers, and the bits
 /// it reads. None of these is a Scryfall `is:` value: the compat surface writes `new:<value>` as
 /// one (query-terms.ts NEW_VALUE_IS_TAGS) and drops the spelling when it is typed.
@@ -5739,6 +5757,7 @@ pub(crate) const NEW_FLAG_IS_VALUES: &[(&str, u32)] = &[
     ("newflavor", NEW_FLAVOR),
     ("newart", NEW_ART),
     ("newlanguage", NEW_LANGUAGE),
+    ("newartist", NEW_ARTIST),
 ];
 
 /// The printings Scryfall's own order puts FIRST among the rows of their card that share their
@@ -5918,6 +5937,16 @@ pub fn new_order_key(
 ///     are first wherever the order puts them (713 of the 35,158 are promos).
 ///   - NEGATION is the plain complement, over every row of every language. No value forces
 ///     extras or widens.
+///
+/// AND ONE VALUE THAT IS NOT THAT SHAPE, because it is not a rule at all:
+///
+///   `NEW_ARTIST` new:artist, new:illustrator — one list (each without the other a 404), nearly
+///               every row: its complement is 2,773 rows of every language, variations and extras
+///               in (2026-10-10) — 2,714 English, 32 Japanese, 18 Simplified Chinese and 9
+///               Phyrexian, 13 of them variations, in 261 sets. Scryfall's record of what it
+///               held when it catalogued each printing; see `NEW_ARTIST`. The builder marks the
+///               complement from Scryfall's own list (`OLD_ARTIST_TAG`) and every other row, an
+///               annex row too, carries the bit.
 fn assign_new_flags(
     printings: &mut [Printing],
     offsets: &[u32],
@@ -5967,6 +5996,10 @@ fn assign_new_flags(
     // and a tag left on 52,000 rows would be stored and indexed for nothing.
     // `ART_DEBUT_TAG` beside it, the same way: the rows dated the day that leading row is.
     let marks = [(vid(NEW_ART_TAG), NEW_ART), (vid(ART_DEBUT_TAG), ART_DEBUT)];
+    // `new:artist` arrives decided too, and the other way round: the builder marks the rows
+    // Scryfall's record leaves OUT of it (`OLD_ARTIST_TAG`) and every other row of every language
+    // is new — so a store none of whose rows is marked answers every row.
+    let old_artist = vid(OLD_ARTIST_TAG);
     for p in printings.iter_mut().chain(foreign.iter_mut()) {
         p.new_flags = 0;
         for (tag, bit) in marks {
@@ -5974,6 +6007,12 @@ fn assign_new_flags(
                 p.card_is_tags.remove(at);
                 p.new_flags |= bit;
             }
+        }
+        match old_artist.and_then(|tag| p.card_is_tags.iter().position(|t| *t == tag)) {
+            Some(at) => {
+                p.card_is_tags.remove(at);
+            }
+            None => p.new_flags |= NEW_ARTIST,
         }
     }
     for cid in 0..offsets.len().saturating_sub(1) {
@@ -22269,7 +22308,12 @@ const ARCHIVE_MAGIC: [u8; 8] = *b"ATCARDS\0";
 //                day. No layout moves and the reader is the same code (`artwork_prefer_key`), so a
 //                2026101001 store read by this code answers as it did; the version moves because
 //                the bit's meaning does. Paired with STORE_CONTENT_GENERATION 93.
-const ARCHIVE_FORMAT_VERSION: u32 = 2026101002;
+//   2026101003 — NEW:ARTIST (LOCAL PATCH). Bit 12 of `Printing::new_flags`, clear in every older
+//                store and set on every row — annex rows too — the builder did not mark with
+//                `OLD_ARTIST_TAG`. No layout moves and neither row grows; the version moves because
+//                this code reading a 2026101002 store would answer `new:artist` with nothing and
+//                its negation with every row. Paired with STORE_CONTENT_GENERATION 94.
+const ARCHIVE_FORMAT_VERSION: u32 = 2026101003;
 const ARCHIVE_HEADER_LEN: usize = 16;
 
 fn archive_header() -> [u8; ARCHIVE_HEADER_LEN] {

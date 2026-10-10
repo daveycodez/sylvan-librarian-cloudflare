@@ -213,8 +213,11 @@ describe("the answer checks, shared with `bun run is-lists`", () => {
 		expect(base.refinable).toBe(true);
 		// The foreign rows the compiled table lists are `-is:covered -lang:en`, row for row.
 		expect(base.foreignRows).toBeGreaterThan(3000);
-		for (const tag of ["intro", "invitational", "jumpstart", "misprint"] as const)
+		for (const tag of ["intro", "invitational", "jumpstart", "misprint", "old_artist"] as const)
 			expect(base.totals[tag]).toBeGreaterThan(0);
+		// The ninth list is written by row and nothing wider: a translation is not its English row.
+		expect(lines.old_artist.length).toBeGreaterThan(200);
+		expect(lines.old_artist.every((line) => line.split("\t")[1] === "row")).toBe(true);
 		expect(lines.covered.length + lines.related.length).toBeGreaterThan(300);
 	});
 });
@@ -229,13 +232,14 @@ describe("what a night may cost on the free plan", () => {
 		// Each alarm pays the chain's fixed toll and writes its progress row; the last writes three more.
 		const rowsWritten = alarms * (FIXED_ROWS_WRITTEN_PER_ALARM + 1) + 3;
 		expect(rowsWritten).toBeLessThan(MAX_DAY_ROWS_WRITTEN / 1000);
-		// The fixed part of the worst night — every small list whole (422, 92, 5,989 and 491 rows of
-		// 175 a page; 72 and 678 cards), the foreign rows whole, three sizes and /sets — leaves the
-		// sets most of the night's requests.
+		// The fixed part of the worst night — every small list whole (422, 92, 5,989, 491 and the
+		// 2,773 rows `new:artist` leaves out, of 175 a page; 72 and 678 cards), the foreign rows whole,
+		// three sizes and /sets — leaves the sets most of the night's requests.
 		const pages = (rows: number) => Math.ceil(rows / SCRYFALL_PAGE_ROWS);
-		const fixed = pages(422) + pages(92) + pages(5989) + pages(491) + pages(72) + pages(678) + pages(3226) + 3 + 1;
-		expect(fixed).toBe(70);
-		expect(IS_LISTS_NIGHT_REQUESTS - fixed).toBeGreaterThanOrEqual(170);
+		const fixed =
+			pages(422) + pages(92) + pages(5989) + pages(491) + pages(2773) + pages(72) + pages(678) + pages(3226) + 3 + 1;
+		expect(fixed).toBe(86);
+		expect(IS_LISTS_NIGHT_REQUESTS - fixed).toBeGreaterThanOrEqual(150);
 		// One request a second, and a slow answer on every one of them: still inside the deadline's
 		// order, and an alarm's share far inside the 5-minute alarm watchdog.
 		expect(IS_LISTS_GAP_MS).toBeGreaterThanOrEqual(1000);
@@ -604,5 +608,107 @@ describe("a night of the refresh", () => {
 		expect(later.line).toContain("refine another table than this build's (2026-10-20): starting over");
 		expect(later.state.baseDate).toBe("2026-10-20");
 		expect(() => composeOverride(regenerated, first.state)).toThrow(ListRefused);
+	});
+});
+
+// The ninth list is not an `is:` value: `old_artist`, the rows `new:artist` leaves out, which the
+// builder turns into a bit on every OTHER row (card_engine `NEW_ARTIST`). It is asked as
+// `-new:artist lang:any` and is otherwise a row list like `misprint`.
+describe("the rows new:artist leaves out are the ninth list", () => {
+	/** `world()` with five rows out of `new:artist` — a translation among them. */
+	function artistWorld(): FakeScryfall {
+		const fake = world();
+		const out = new Set(["old/2/en", "old/3/es", "new/4/en", "new/5/en", "jmp/7/en"]);
+		for (const card of fake.cards) {
+			if (out.has(`${card.set}/${card.collector_number}/${card.lang}`)) card.is.push("old_artist");
+		}
+		return fake;
+	}
+	const ROWS = [
+		"old_artist\trow\tjmp\ten\t7",
+		"old_artist\trow\tnew\ten\t4 5",
+		"old_artist\trow\told\ten\t2",
+		"old_artist\trow\told\tes\t3",
+	];
+	/** `compiledFor`, with the ninth list counted and written by row, as `bun run is-lists` writes it. */
+	function compiledWithArtists(fake: FakeScryfall, rows: string[] = ROWS): string {
+		const count = `# old_artist: ${rowsOf(fake, "-new:artist lang:any")} rows of every language on api.scryfall.com`;
+		return `${compiledFor(fake).replace("# print_tiers.tsv ", `${count}\n# print_tiers.tsv `)}${rows.join("\n")}\n`;
+	}
+
+	test("an unmoved night asks its first page and nothing else of it", async () => {
+		const fake = artistWorld();
+		// Six rows at five a page: one row too many to be whole on its probe.
+		fake.cards.find((c) => c.set === "new" && c.collector_number === "6")?.is.push("old_artist");
+		const compiled = compiledWithArtists(fake, ROWS.with(1, "old_artist\trow\tnew\ten\t4 5 6"));
+		expect(readCompiled(compiled).base.totals.old_artist).toBe(6);
+		const first = await runNight(fake, compiled, null, night(1));
+		// The fourteen of the other world's first night, and this list's probe.
+		expect(first.asked).toHaveLength(15);
+		expect(pagesOf(first.asked, "-new:artist lang:any")).toBe(1);
+		expect(first.line).toContain("old_artist = (6)");
+		expect(first.state.lists.old_artist).toBeUndefined();
+		// Not read, so the table handed to the builder keeps the compiled rows.
+		expect(composeOverride(compiled, first.state)).toContain("old_artist\trow\tnew\ten\t4 5 6\n");
+		const second = await runNight(fake, compiled, first.state, night(2));
+		expect(second.asked).toHaveLength(12);
+		expect(pagesOf(second.asked, "-new:artist lang:any")).toBe(1);
+	});
+
+	test("a row that joined or left is read with the whole list, and the table carries the rows as they are", async () => {
+		const fake = artistWorld();
+		const compiled = compiledWithArtists(fake);
+		const first = await runNight(fake, compiled, null, night(1));
+		// Whole on its probe (five rows, five a page): read the first night like any such list.
+		expect(first.line).toContain("old_artist first read (5)");
+		// A printing catalogued since, whose artist Scryfall has decided is not new...
+		fake.cards.push({
+			id: uuid(700),
+			oracle_id: uuid(9021),
+			name: "New 1",
+			set: "new",
+			collector_number: "7",
+			lang: "en",
+			is: ["old_artist"],
+		});
+		// ...and one it has decided again: Ponder's sld/7185 left the list overnight in 2026-10.
+		const left = fake.cards.find((c) => c.set === "jmp" && c.collector_number === "7") as FakeCard;
+		left.is = left.is.filter((v) => v !== "old_artist");
+		const joined = fake.cards.find((c) => c.set === "jmp" && c.collector_number === "8") as FakeCard;
+		joined.is.push("old_artist");
+		const second = await runNight(fake, compiled, first.state, night(2));
+		expect(pagesOf(second.asked, "-new:artist lang:any")).toBe(2);
+		expect(second.line).toContain("old_artist +2 −1 (6)");
+		const table = composeOverride(compiled, second.state) as string;
+		expect(table.split("\n").filter((l) => l.startsWith("old_artist\t"))).toEqual([
+			"old_artist\trow\tjmp\ten\t8",
+			"old_artist\trow\tnew\ten\t4 5 7",
+			"old_artist\trow\told\ten\t2",
+			"old_artist\trow\told\tes\t3",
+		]);
+		expect(noteOf(second.state, COMPILED_DAY).fetched?.old_artist).toBe("2026-10-11");
+	});
+
+	test("a read that fails leaves the list as it was, and the other lists go on", async () => {
+		const fake = artistWorld();
+		const compiled = compiledWithArtists(fake);
+		fake.fault = (path) => (path.includes("new%3Aartist") ? { status: 503, body: { object: "error" } } : null);
+		const ran = await runNight(fake, compiled, null, night(1));
+		expect(ran.line).toContain("old_artist REFUSED (-new:artist lang:any: 503");
+		expect(ran.state.lists.old_artist).toBeUndefined();
+		expect(ran.state.checked).toBe("2026-10-10");
+		expect(ran.line).toContain("spikey first read (2)");
+		expect(composeOverride(compiled, ran.state)).toContain("old_artist\trow\tnew\ten\t4 5\n");
+	});
+
+	test("a compiled table from before the list existed is never asked for it", async () => {
+		// The import blob of a build before this one compiles a table that does not count the list
+		// and refuses a table that names it — and with it every other list's refresh. So the night
+		// asks only for what the blob's own table counts.
+		const fake = artistWorld();
+		const ran = await runNight(fake, compiledFor(fake), null, night(1));
+		expect(queries(ran.asked).filter((q) => q.includes("new:artist"))).toEqual([]);
+		expect(composeOverride(compiledFor(fake), ran.state)).not.toContain("old_artist");
+		expect(ran.state.checked).toBe("2026-10-10");
 	});
 });

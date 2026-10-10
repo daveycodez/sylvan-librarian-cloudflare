@@ -1,6 +1,6 @@
 // Scryfall's `new:` at the term-policy and parser level: `new:rarity` and the `new_flags` values
-// answered, the other values Scryfall honors still refused, and a value it does not know ignored
-// with its sentence.
+// answered — `new:artist` among them since 2026-10-10, from Scryfall's own list — and a value it does
+// not know ignored with its sentence.
 //
 // Every expectation is a measurement on api.scryfall.com, 2026-10-04; the requests are recorded at
 // NEW_KEYWORDS in src/routes/scryfall-compat/query-terms.ts, and the rule `new:rarity` follows at
@@ -27,6 +27,8 @@ const NEW_FLAG_VALUES = [
 	"flavor",
 	"art",
 	"language",
+	"artist",
+	"illustrator",
 ];
 
 const ignored = (echo: string, reason: string) => `Invalid expression “${echo}” was ignored. ${reason}`;
@@ -182,22 +184,37 @@ describe("the new: values the store's new_flags answer are the engine's is:new<v
 	});
 });
 
-describe("the one list Scryfall honors and this port does not answer fails to parse, under both its names", () => {
-	// `new:artist` is nearly every row there (542,546 of 545,303 with every language) and follows
-	// no rule the bulk files hold — NEW_HONORED_UNANSWERED has the measurement. Refused, never
-	// dropped: dropping it would answer every printing where Scryfall leaves 2,757 out.
-	// `new:illustrator` is the same list (115,747 each, and each without the other a 404); the
-	// port dropped it with the "not supported" sentence, which answered all 25 with a warning
-	// Scryfall does not give and `-new:illustrator e:khm t:god` with 25 where Scryfall has a 404.
-	test.each(["new:artist", "new:ARTIST", "-new:artist", "new:illustrator", "new:Illustrator", "-new:illustrator"])(
-		"%s is kept, unwarned, and refused",
-		(term) => {
+describe("new:artist and new:illustrator are one list, answered from Scryfall's own record of it", () => {
+	// Nearly every row there (542,667 of 545,440 with every language, 2026-10-10) and no rule the
+	// card objects hold: the 2,773 rows it leaves out are copied (engine/builder/src/is_lists.tsv
+	// `old_artist`) and the store holds the answer as a bit on every other row. `new:illustrator` is
+	// the same list, each without the other a 404. Until 2026-10-10 both were left as written and
+	// refused, which answered a 400 where Scryfall answers cards; before 2026-10-09
+	// `new:illustrator` was dropped with a sentence, which answered `-new:illustrator e:khm t:god`
+	// with 25 where Scryfall has a 404. The answers on real card objects are in
+	// engine/builder/tests/new_flags.rs.
+	test.each([
+		["new:artist", "is:newartist"],
+		["new:ARTIST", "is:newartist"],
+		["-new:artist", "-is:newartist"],
+		["new:illustrator", "is:newartist"],
+		["new:Illustrator", "is:newartist"],
+		["-new:illustrator", "-is:newartist"],
+	])("%s", (q, rewritten) => {
+		const policy = scryfallTermPolicy(`${q} e:khm t:god`);
+		expect(policy.warnings).toEqual([]);
+		expect(policy.query).toBe(`${rewritten} e:khm t:god`);
+		expect(() => parseScryfallQuery(policy.query)).not.toThrow();
+	});
+
+	test("the port's own spelling is not a Scryfall value", () => {
+		for (const term of ["is:newartist", "is:old_artist", "is:oldartist"]) {
+			const value = term.slice(term.indexOf(":") + 1);
 			const policy = scryfallTermPolicy(`${term} e:khm t:god`);
-			expect(policy.warnings).toEqual([]);
-			expect(policy.query).toBe(`${term} e:khm t:god`);
-			expect(() => parseScryfallQuery(policy.query)).toThrow();
-		},
-	);
+			expect(policy.query).toBe("e:khm t:god");
+			expect(policy.warnings).toEqual([ignored(term, `Checking if cards are “${value}” is not supported`)]);
+		}
+	});
 });
 
 describe("a value Scryfall does not know is ignored with its sentence", () => {

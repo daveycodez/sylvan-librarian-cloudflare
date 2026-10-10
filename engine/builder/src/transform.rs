@@ -1739,8 +1739,17 @@ fn class_tags(card: &Map<String, Value>) -> Vec<&'static str> {
 }
 
 /// The values whose printings are Scryfall's own list and nothing else — see [`crate::is_lists`].
-const LISTED_IS_TAGS: [&str; 6] =
-    [INTRO_IS_TAG, INVITATIONAL_IS_TAG, JUMPSTART_IS_TAG, MISPRINT_IS_TAG, SPELLBOOK_IS_TAG, SPIKEY_IS_TAG];
+/// The seventh is the complement of `new:artist`, which the engine's build turns into a bit and
+/// removes (`card_engine::OLD_ARTIST_TAG`): a row the list does not name is new.
+const LISTED_IS_TAGS: [&str; 7] = [
+    INTRO_IS_TAG,
+    INVITATIONAL_IS_TAG,
+    JUMPSTART_IS_TAG,
+    MISPRINT_IS_TAG,
+    SPELLBOOK_IS_TAG,
+    SPIKEY_IS_TAG,
+    card_engine::OLD_ARTIST_TAG,
+];
 
 /// What the measured table says about a draft: its set, language and collector number, its own
 /// oracle id and any `more_oracle_ids` its card carries.

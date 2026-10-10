@@ -4017,7 +4017,8 @@ impl FilterExpr {
                 tri_bool(super::printing_is_new_rarity(p))
             }
 
-            // Two-valued as well, and clear on every annex row.
+            // Two-valued as well. An annex row carries two of the bits: `new:language`'s and
+            // `new:artist`'s.
             FilterExpr::NewFlag { mask } => {
                 let Some(p) = printing else { return Tri::PrintingDep };
                 tri_bool(super::printing_new_flags(p) & mask != 0)

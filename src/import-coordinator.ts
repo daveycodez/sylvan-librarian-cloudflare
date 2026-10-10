@@ -2067,7 +2067,8 @@ export class ImportCoordinator extends DurableObject<Env> {
 
 	// ── phase: is_lists (the lists that are Scryfall's own record, refreshed) ────
 	//
-	// Eight `is:` values are tagged from a table compiled into the import blob, exact on the day
+	// Eight `is:` values — and the rows `new:artist` leaves out, the ninth list of the same table —
+	// are tagged from a table compiled into the import blob, exact on the day
 	// `bun run is-lists` measured it. This phase brings it to tonight before the first row is
 	// transformed — what is asked, what it costs and what a list must be to be used are written at
 	// the top of src/import-is-lists.ts — and leaves two meta rows for the rest of the run:

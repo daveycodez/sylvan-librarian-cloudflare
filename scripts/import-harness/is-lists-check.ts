@@ -1,6 +1,8 @@
 // What the harness checks about the `is:` lists the nightly refreshes (src/import-is-lists.ts):
-// the eight values that are Scryfall's own record, here answered by a Scryfall made from the
-// harness corpus (fake-scryfall.ts) so the lists name rows the store really holds.
+// the eight values that are Scryfall's own record and the ninth list kept with them — the rows
+// `new:artist` leaves out, which the store holds as a bit on every OTHER row — here answered by a
+// Scryfall made from the harness corpus (fake-scryfall.ts) so the lists name rows the store
+// really holds.
 //
 //   1. THE NIGHT THE STORE WAS BUILT ON. The refresh ran across more than one alarm, one list's
 //      read FAILED MIDWAY and the run published all the same; the state is in KV, the manifest
@@ -36,7 +38,10 @@ import {
 	type IsListsState,
 	LIST_TAGS,
 	type ListTag,
+	listQuery,
 	oraclesOf,
+	readCompiled,
+	type SmallList,
 } from "../../src/import-is-lists";
 import type { Corpus } from "./corpus";
 import { type FakeCard, FakeScryfall } from "./fake-scryfall";
@@ -105,6 +110,8 @@ export function listsWorld(corpus: Corpus): ListsWorld {
 		if (hash(key) % 150 === 3) is.push("misprint");
 		if (hash(printing) % 211 === 5) is.push("intro");
 		if (c.lang !== "en" && hash(key) % 2003 === 11) is.push("invitational");
+		// The rows `new:artist` leaves out: one in sixty-one, whatever the language.
+		if (hash(`artist ${key}`) % 61 === 7) is.push("old_artist");
 		const card: FakeCard = {
 			id: c.id,
 			oracle_id: oracles[0] as string,
@@ -154,15 +161,24 @@ export function failMidway(world: ListsWorld): void {
 		path.includes(encodeURIComponent(`is:${world.failing}`)) && path.includes("page=2") ? "throw" : null;
 }
 
+const isNode = (tag: string) => ({
+	node_type: "CardBinaryOperatorNode",
+	kwargs: {
+		lhs: { node_type: "CardAttributeNode", kwargs: { attribute_name: "card_is_tags", original_attribute: "is" } },
+		op: ":",
+		rhs: [tag],
+	},
+});
+
+/**
+ * The tree that answers a list's rows. `old_artist` is no tag of a stored row: the engine's build
+ * turns its ABSENCE into the `new:artist` bit, so its rows are the ones `is:newartist` does not
+ * answer.
+ */
 const isTree = (tag: string) =>
-	JSON.stringify({
-		node_type: "CardBinaryOperatorNode",
-		kwargs: {
-			lhs: { node_type: "CardAttributeNode", kwargs: { attribute_name: "card_is_tags", original_attribute: "is" } },
-			op: ":",
-			rhs: [tag],
-		},
-	});
+	JSON.stringify(
+		tag === "old_artist" ? { node_type: "NotNode", kwargs: { operand: isNode("newartist") } } : isNode(tag),
+	);
 
 /** The ids of every row the published store tags with each value. */
 async function publishedTags(kv: FakeKV, manifest: StoreManifest): Promise<Map<ListTag, Set<string>>> {
@@ -296,8 +312,19 @@ export async function checkIsLists(
 	const idsWhere = (keep: (row: (typeof world.rows)[number]) => boolean) =>
 		new Set(world.rows.filter(keep).map((r) => r.id));
 	const expected = new Map<string, Set<string>>();
-	for (const tag of ["intro", "invitational", "jumpstart"] as const) {
-		const keys = keysOf(scry(`is:${tag} lang:any`));
+	// The ninth list only where the blob's own table counts it: an import blob built before the
+	// list existed is never asked for it (`beginNight`), and its store holds no such bit.
+	const artists = readCompiled(compiled).base.totals.old_artist !== undefined;
+	const rowLists: readonly SmallList[] = artists
+		? ["intro", "invitational", "jumpstart", "old_artist"]
+		: ["intro", "invitational", "jumpstart"];
+	if (!artists) {
+		lines.push(
+			"is lists: the rows new:artist leaves out NOT CHECKED — the committed import blob predates the list (`bun run build`)",
+		);
+	}
+	for (const tag of rowLists) {
+		const keys = keysOf(scry(listQuery(tag).q));
 		expected.set(
 			tag,
 			idsWhere((r) => keys.has(rowKey(r))),
@@ -372,6 +399,7 @@ export async function checkIsLists(
 		);
 	}
 	for (const tag of LIST_TAGS) {
+		if (tag === "old_artist" && !artists) continue;
 		const off = differ(got.get(tag) as Set<string>, native.get(tag) as Set<string>);
 		if (off) return fail(`is:${tag}: the nightly's rows are not the native builder's under the same table (${off})`);
 	}

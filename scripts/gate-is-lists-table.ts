@@ -5,7 +5,8 @@
 // The gate asks both builders for the same rows under ONE override — `memprobe rows --is-lists`
 // natively, engine/wasm-import/driver.ts's sixth argument in wasm — and the table has to be one the
 // nightly could have composed, touching every kind of line it writes: a card list by oracle id, a
-// row list by row, the foreign rows out of `covered`, and one set written absolutely for `covered`
+// row list by row (and the ninth list, the rows `new:artist` leaves out, which the builders turn
+// into a mark the engine's build reads), the foreign rows out of `covered`, and one set written absolutely for `covered`
 // (English rows in and out) and `related` (printings in and out, and a card by its oracle id). So
 // it is composed by the nightly's own `composeOverride` (src/import-is-lists.ts) over the
 // committed table, from a state cut out of the bulk file's first rows.
@@ -86,6 +87,17 @@ state.lists.intro = {
 		grouped(introRows, (r) => `${r.set}\t${r.lang}`),
 	),
 };
+// The ninth list, which is not an `is:` value: rows `new:artist` leaves out, of any language.
+const oldArtistRows = rows.filter((_, i) => i % 89 === 0).slice(0, 50);
+state.lists.old_artist = {
+	total: oldArtistRows.length,
+	fetched: night,
+	lines: numberLines(
+		"old_artist",
+		"row",
+		grouped(oldArtistRows, (r) => `${r.set}\t${r.lang}`),
+	),
+};
 const uncovered = foreign.filter((_, i) => i % 53 === 0).slice(0, 60);
 state.foreign = {
 	total: uncovered.length,
@@ -129,5 +141,6 @@ if (table === null) throw new Error("the state refines nothing");
 writeFileSync(outPath, table);
 console.log(
 	`${outPath}: ${table.split("\n").length - 5} lines — 3 spellbook and 3 spikey cards, ${introRows.length} intro rows, ` +
+		`${oldArtistRows.length} rows out of new:artist, ` +
 		`${uncovered.length} foreign rows out of covered, ${numbers.length} printings of ${set} in or out of covered and related`,
 );

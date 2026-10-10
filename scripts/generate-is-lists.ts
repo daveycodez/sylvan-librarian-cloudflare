@@ -4,6 +4,7 @@
 //
 //   bun run is-lists -- --bulk all-cards.jsonl.gz              # ~1 h of paced requests
 //   bun run is-lists -- --bulk all-cards.jsonl.gz --cache DIR  # keeps every answer; a rerun reads them
+//   bun run is-lists -- --bulk all-cards.jsonl.gz --only old_artist   # one value; the others stay as written
 //
 // `--bulk` is Scryfall's `all_cards` file (https://api.scryfall.com/bulk-data), downloaded the same
 // day: every row of every language, which is what says how wide a key can be. Without it the file
@@ -24,6 +25,10 @@
 //                    language.
 //   related          `is:related`. The rule is "some printing of the card carries `all_parts`";
 //                    the list is the cards in the answer that the rule does not reach.
+//   old_artist       NOT an `is:` value: `-new:artist lang:any`, the rows `new:artist` leaves out
+//                    (2,773 where the list itself is 542,667), after `new:illustrator` is shown
+//                    to be the same list. A LIST OF ROWS and written as nothing wider: the
+//                    English row of a printing is in it and its translations are not.
 //   covered          `is:covered`, `-is:covered` and `-is:covered -lang:en`. The rule is the tier
 //                    of the printing in its card's own order (ranks.rs `print_tier`, which reads
 //                    print_tiers.tsv): everything outside the default tier is covered. The list
@@ -71,7 +76,9 @@ import {
 	checkLine,
 	checkSearchPage,
 	fnv1a64,
+	LIST_TAGS,
 	ListRefused,
+	listQuery,
 	newList,
 	oraclesOf,
 	refuseRepeats,
@@ -357,6 +364,21 @@ async function printingList(tag: string, corpus: Corpus): Promise<{ entries: Ent
 	return { entries, rows: rows.length };
 }
 
+/**
+ * A list of ROWS and nothing wider: every row of the answer under its own set, language and
+ * number, as the nightly's refresh writes a row list. For the complement of `new:artist`, where a
+ * printing's English row is in and its translations are not (2,714 of the 2,773 are English).
+ */
+async function rowList(tag: "old_artist", corpus: Corpus): Promise<{ entries: Entries; rows: number }> {
+	const { q } = listQuery(tag);
+	const rows = await list(q);
+	if (!rows.length) stop(`${q} answers nothing`);
+	const entries = new Entries();
+	for (const r of rows) entries.add("row", r.set, r.collector_number, r.lang);
+	selfCheck(tag, corpus, entries, new Set(rows.map((r) => r.id)), () => false);
+	return { entries, rows: rows.length };
+}
+
 /** A list of CARDS, by oracle id. */
 async function cardList(tag: string, corpus: Corpus): Promise<{ entries: Entries; rows: number }> {
 	const rows = await list(`is:${tag} lang:any`);
@@ -434,6 +456,36 @@ async function coveredList(corpus: Corpus): Promise<{ entries: Entries; rows: nu
 	return { entries, rows: everyLanguage };
 }
 
+/**
+ * `table` with one value's lines and its header count replaced (`--only`): the other values, the
+ * day the table was measured and the tier fingerprint stay as they are, and a comment says which
+ * value was measured again and when. The value's lines keep their place in the builder's order.
+ */
+function spliced(table: string, tag: string, rows: number, lines: string[], day: string): string {
+	const count = `# ${tag}: ${rows} rows of every language on api.scryfall.com`;
+	const again = `# ${tag} was measured again alone on ${day} (--only).`;
+	const kept = table.split("\n").filter((line) => line !== "" && !line.startsWith(`${tag}\t`));
+	const header = kept.filter(
+		(line) => line.startsWith("#") && !line.startsWith(`# ${tag}: `) && !line.startsWith(`# ${tag} was measured again`),
+	);
+	const body = kept.filter((line) => !line.startsWith("#"));
+	const tiers = header.findIndex((line) => /^# print_tiers\.tsv /.test(line));
+	if (tiers < 0) stop(`${OUT} has no print_tiers.tsv line to write beside`);
+	const counts = header
+		.map((line, i) => (/^# \w+: \d+ rows of every language/.test(line) ? i : -1))
+		.filter((i) => i >= 0);
+	header.splice((counts.at(-1) ?? tiers - 1) + 1, 0, count);
+	header.splice(
+		header.findIndex((line) => /^# print_tiers\.tsv /.test(line)),
+		0,
+		again,
+	);
+	const order = (line: string) => (LIST_TAGS as readonly string[]).indexOf(line.slice(0, line.indexOf("\t")));
+	const before = body.filter((line) => order(line) < order(`${tag}\t`));
+	const after = body.filter((line) => order(line) > order(`${tag}\t`));
+	return `${[...header, ...before, ...lines, ...after].join("\n")}\n`;
+}
+
 async function main(): Promise<void> {
 	if (cacheDir) mkdirSync(cacheDir, { recursive: true });
 	const tiers = readTiers();
@@ -456,18 +508,38 @@ async function main(): Promise<void> {
 		if ((await list(q)).length) stop(`${q} is not empty: beginner is no longer intro`);
 	}
 
-	const measured: [string, { entries: Entries; rows: number }][] = [
-		["covered", await coveredList(corpus)],
-		["intro", await printingList("intro", corpus)],
-		["invitational", await printingList("invitational", corpus)],
-		["jumpstart", await printingList("jumpstart", corpus)],
-		["misprint", await printingList("misprint", corpus)],
-		["related", await relatedList(corpus)],
-		["spellbook", await cardList("spellbook", corpus)],
-		["spikey", await cardList("spikey", corpus)],
-	];
+	for (const q of ["new:artist -new:illustrator", "new:illustrator -new:artist"]) {
+		if ((await total(q)) !== 0) stop(`${q} is not empty: new:illustrator is no longer new:artist`);
+	}
 
+	const measures: Record<(typeof LIST_TAGS)[number], () => Promise<{ entries: Entries; rows: number }>> = {
+		covered: () => coveredList(corpus),
+		intro: () => printingList("intro", corpus),
+		invitational: () => printingList("invitational", corpus),
+		jumpstart: () => printingList("jumpstart", corpus),
+		misprint: () => printingList("misprint", corpus),
+		related: () => relatedList(corpus),
+		spellbook: () => cardList("spellbook", corpus),
+		spikey: () => cardList("spikey", corpus),
+		old_artist: () => rowList("old_artist", corpus),
+	};
 	const day = new Date().toISOString().slice(0, 10);
+	const only = arg("--only");
+	if (only !== undefined) {
+		if (!(LIST_TAGS as readonly string[]).includes(only)) stop(`--only ${only}: not one of ${LIST_TAGS.join(", ")}`);
+		const tag = only as (typeof LIST_TAGS)[number];
+		const one = await measures[tag]();
+		const lines = one.entries.lines(tag);
+		lines.forEach(checkLine);
+		writeFileSync(OUT, spliced(readFileSync(OUT, "utf8"), tag, one.rows, lines, day));
+		console.log(
+			`Wrote ${OUT} — ${tag} alone: ${lines.length} lines for ${one.rows} rows; the other values as they were`,
+		);
+		return;
+	}
+	const measured: [string, { entries: Entries; rows: number }][] = [];
+	for (const tag of LIST_TAGS) measured.push([tag, await measures[tag]()]);
+
 	const header = [
 		`# GENERATED FILE - do not edit. Built by scripts/generate-is-lists.ts from api.scryfall.com, ${day}.`,
 		"#",

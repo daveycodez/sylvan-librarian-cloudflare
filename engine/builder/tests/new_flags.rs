@@ -459,6 +459,65 @@ fn new_language_is_the_first_printing_in_each_language_over_the_annex_too() {
     );
 }
 
+/// `new:artist` (and `new:illustrator`, the same list) is not a rule: the store answers Scryfall's
+/// own list of the rows it leaves out (`is_lists.tsv`, `old_artist`; api.scryfall.com
+/// 2026-10-10, 2,773 rows of every language), and every other row is new. Each pair here is a
+/// pair no field of the two card objects tells apart.
+#[test]
+fn new_artist_is_every_row_scryfalls_list_does_not_leave_out() {
+    let store = store_of(&[
+        // FOUR PRINTINGS OF ONE PAINTING BY ONE ARTIST ON ONE DAY, and Scryfall leaves out one:
+        // the extended-art who/504, where the surge-foil who/1095 of the same treatment is new.
+        ("irrigated_farmland_who_288", true),
+        ("irrigated_farmland_who_504", true),
+        ("irrigated_farmland_who_879", true),
+        ("irrigated_farmland_who_1095", true),
+        // THREE JAPANESE PROMOS OF ONE DAY, three artworks by one artist: J2 is new, the one
+        // Scryfall's order puts first (`NEW_ORDER_LEADS`), and J1 and J3 are not.
+        ("orb_of_dragonkind_plg21_j1_ja", true),
+        ("orb_of_dragonkind_plg21_j2_ja", true),
+        ("orb_of_dragonkind_plg21_j3_ja", true),
+        // A VARIATION is a row of the list like any other (13 of the 2,773): the `★` twin is out,
+        // and so is the `†` misprint of Grafted Identity — with its Double Feature reprint, where
+        // the showcase mid/335, a second artwork by the same artist, is new.
+        ("embermage_goblin_ons_200", true),
+        ("embermage_goblin_ons_200_star", true),
+        ("grafted_identity_mid_57", true),
+        ("grafted_identity_mid_57_dagger", true),
+        ("grafted_identity_mid_335", true),
+        ("grafted_identity_dbl_57", true),
+        // THE ANNEX ANSWERS, row by row. Nearly every translated row is new — the list holds 59
+        // rows that are not English and 58 of them are the only row of their printing — so
+        // Transluminant's Russian edition is, like its English row; the one annex row Scryfall
+        // leaves out is Clarion Conqueror's Japanese tdm/400, beside its English row.
+        ("transluminant_rav_186", true),
+        ("transluminant_rav_186_ru", false),
+        ("clarion_conqueror_tdm_400", true),
+        ("clarion_conqueror_tdm_400_ja", false),
+    ]);
+    assert_eq!(
+        rows(&store, &is("newartist")),
+        [
+            "mid/335/en",
+            "mid/57/en",
+            "ons/200/en",
+            "plg21/J2/ja",
+            "rav/186/en",
+            "rav/186/ru",
+            "who/1095/en",
+            "who/288/en",
+            "who/879/en"
+        ]
+    );
+    // Two-valued: the negation is the list itself.
+    assert_eq!(
+        rows(&store, &not(is("newartist"))),
+        ["dbl/57/en", "mid/57†/en", "ons/200★/en", "plg21/J1/ja", "plg21/J3/ja", "tdm/400/en", "tdm/400/ja", "who/504/en"]
+    );
+    // The builder's mark is not a stored tag: the engine's build turned its absence into the bit.
+    assert_eq!(rows(&store, &is("old_artist")), [] as [&str; 0]);
+}
+
 #[test]
 fn new_flavor_is_the_first_printing_with_each_flavor_text_as_scryfall_compares_them() {
     let store = store_of(&[

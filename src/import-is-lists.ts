@@ -2,7 +2,11 @@
 //
 // Eight values of `is:` are answered from a list api.scryfall.com keeps and no field of a card
 // decides: `covered`, `intro`, `invitational`, `jumpstart`, `misprint`, `related`, `spellbook`
-// and `spikey`. The builder tags them from a table compiled into it
+// and `spikey`. A NINTH LIST IS NOT AN `is:` VALUE and is kept with them because it is the same
+// kind of thing: `old_artist`, the complement of `new:artist` (`new:illustrator` is the same
+// list), which Scryfall decided against the illustration ids it held when it catalogued each
+// printing and no rule over today's card objects gives (card_engine `NEW_ARTIST`). The builder
+// tags them from a table compiled into it
 // (engine/builder/src/is_lists.tsv, written by `bun run is-lists`), exact on the day it was
 // measured and drifting from then on. This module is what the nightly import runs BEFORE its
 // first row to bring that table to tonight (the `is_lists` phase of src/import-coordinator.ts),
@@ -10,10 +14,13 @@
 //
 // ── WHAT IS ASKED, AND WHEN ────────────────────────────────────────────────────────────────────
 //
-// A whole refetch of the eight lists is ~870 pages of 175 — an hour at a polite pace, every
+// A whole refetch of the nine lists is ~890 pages of 175 — an hour at a polite pace, every
 // night, from each of two accounts. So the night asks for the FIRST page of what is small, reads
 // the list's size off it (`total_cards`), and goes on only where something moved:
 //
+//   old_artist                                 `-new:artist lang:any`, rows: 2,773 of them, 16
+//                                              pages, where the list itself is 542,667. The
+//                                              same rule as the four below.
 //   intro invitational jumpstart misprint      `is:V lang:any`, rows. Refetched whole when the
 //                                              total moved, and every IS_LISTS_REFETCH_DAYS
 //                                              regardless (a list can swap a member for another
@@ -45,10 +52,11 @@
 //
 // ── WHAT A NIGHT COSTS (the free plan) ─────────────────────────────────────────────────────────
 //
-//   typical     11 requests: six list probes, one for the foreign rows, three sizes, /sets
+//   typical     12 requests: seven list probes, one for the foreign rows, three sizes, /sets
 //   a set moved +3 to +30 each (a 300-printing set is ~7; Secret Lair's 2,833 is ~30)
 //   worst case  IS_LISTS_NIGHT_REQUESTS (240), whatever moved: what does not fit waits a night.
-//               70 of them are the fixed part on the night everything is refetched whole.
+//               86 of them are the fixed part on the night everything is refetched whole
+//               (16 of the 86 are `old_artist`), which leaves 154 for sets that moved.
 //   variations  cost no request: 122 rows of the corpus, 36 of them in `misprint` (491 rows where a
 //               default search shows 455, three pages either way) and none a row of another
 //               language that is not covered; and a set's cost was already reckoned from
@@ -74,7 +82,7 @@
 // A deploy rebuilds the store whenever Scryfall's dumps are newer than the live one — most pushes.
 // It asks Scryfall nothing; it reads this module's state back from KV and hands the builder the
 // same table (scripts/is-lists-override.ts, `sylvan-store-builder --is-lists`), so a deploy's
-// store and the nightly's differ by the dumps between them and not by eight values going back to
+// store and the nightly's differ by the dumps between them and not by nine lists going back to
 // the committed day. The manifest of either says which lists it was tagged from (`is_lists`).
 //
 // ── WHAT CANNOT HAPPEN ─────────────────────────────────────────────────────────────────────────
@@ -96,14 +104,30 @@ export const LIST_TAGS = [
 	"related",
 	"spellbook",
 	"spikey",
+	"old_artist",
 ] as const;
 export type ListTag = (typeof LIST_TAGS)[number];
 
-/** Lists of ROWS: `is:V lang:any`, each row in or out by itself. */
-export const ROW_LISTS = ["intro", "invitational", "jumpstart", "misprint"] as const;
+/** Lists of ROWS: `is:V lang:any` (`LIST_QUERY`), each row in or out by itself. */
+export const ROW_LISTS = ["intro", "invitational", "jumpstart", "misprint", "old_artist"] as const;
 /** Lists of CARDS: every printing of an oracle id, asked one row a card. */
 export const CARD_LISTS = ["spellbook", "spikey"] as const;
 export type SmallList = (typeof ROW_LISTS)[number] | (typeof CARD_LISTS)[number];
+
+/**
+ * What a small list is asked as, where it is not `is:<its name>`: `old_artist` is no `is:` value
+ * but the rows `new:artist` leaves out, 2,773 of every language where the list itself is nearly
+ * every row there is. `bun run is-lists` asks the same query.
+ */
+export const LIST_QUERY: Partial<Record<SmallList, string>> = { old_artist: "-new:artist" };
+
+/** The search a small list is read with: one row a card for a card list, every row of every language otherwise. */
+export function listQuery(tag: SmallList): { q: string; unique: "prints" | "cards" } {
+	const term = LIST_QUERY[tag] ?? `is:${tag}`;
+	return (CARD_LISTS as readonly string[]).includes(tag)
+		? { q: term, unique: "cards" }
+		: { q: `${term} lang:any`, unique: "prints" };
+}
 
 /** Where the state lives in KV. No generation in the name, so retention never sweeps it. */
 export const IS_LISTS_KV_KEY = "is-lists:state";
@@ -604,7 +628,10 @@ export function beginNight(compiledTsv: string, stored: unknown, nowMs: number):
 	const { base } = readCompiled(compiledTsv);
 	const held = usableState(stored, base);
 	const state = held ?? freshState(base);
-	const queue: Unit[] = [...ROW_LISTS, ...CARD_LISTS].map((tag) => ({ kind: "list", tag }));
+	// A list the compiled table does not count is one this build's importer does not know — a blob
+	// built before the list existed would refuse a table that names it — so it is not asked.
+	const known = [...ROW_LISTS, ...CARD_LISTS].filter((tag) => base.totals[tag] !== undefined);
+	const queue: Unit[] = known.map((tag) => ({ kind: "list", tag }));
 	if (base.refinable) queue.push({ kind: "foreign" }, { kind: "sizes" }, { kind: "sets" });
 	const notes: string[] = [];
 	if (stored && !held)
@@ -645,9 +672,7 @@ export interface SliceEnv {
 function listsOf(unit: Unit): ListProgress<Got>[] {
 	switch (unit.kind) {
 		case "list":
-			return (CARD_LISTS as readonly string[]).includes(unit.tag)
-				? [newList(`is:${unit.tag}`, "cards")]
-				: [newList(`is:${unit.tag} lang:any`)];
+			return [newList(listQuery(unit.tag).q, listQuery(unit.tag).unique)];
 		case "foreign":
 			return [newList("-is:covered -lang:en")];
 		case "sizes":
@@ -720,7 +745,7 @@ function oracleLines(tag: string, rows: readonly Got[]): string[] {
 
 /** A small list, read whole, into the state. */
 function applyList(work: NightWork, tag: SmallList, list: ListProgress<Got>): void {
-	if (list.rows.length === 0) refuse(`is:${tag} answers nothing`);
+	if (list.rows.length === 0) refuse(`${list.q} answers nothing`);
 	refuseRepeats(list, keyOf);
 	const isCards = (CARD_LISTS as readonly string[]).includes(tag);
 	const lines = isCards

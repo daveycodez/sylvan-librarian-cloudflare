@@ -1,0 +1,141 @@
+{
+ "artist": "Nathaniel Himawan",
+ "artist_ids": [
+  "ae1e4729-d4ec-4d0f-8c71-883fc7358005"
+ ],
+ "booster": false,
+ "border_color": "black",
+ "card_back_id": "0aeebaf5-8c7d-4636-9e82-8c27447861f7",
+ "cardmarket_id": 818629,
+ "cmc": 3.0,
+ "collector_number": "400",
+ "color_identity": [
+  "W"
+ ],
+ "colors": [
+  "W"
+ ],
+ "digital": false,
+ "edhrec_rank": 6302,
+ "finishes": [
+  "foil"
+ ],
+ "flavor_text": "The dragon's roar silenced all challengers, yet it was only an echo of Ugin's power.",
+ "foil": true,
+ "frame": "2015",
+ "frame_effects": [
+  "showcase",
+  "inverted"
+ ],
+ "full_art": false,
+ "game_changer": false,
+ "games": [
+  "paper",
+  "mtgo"
+ ],
+ "highres_image": false,
+ "id": "5aa73d25-c887-487a-ba77-0d4ca992f106",
+ "illustration_id": "95f39758-c03b-4707-8caa-e3b00c8656b4",
+ "image_status": "lowres",
+ "image_updated_at": "2026-07-13T01:46:47Z",
+ "image_uris": {
+  "art": "https://cards.scryfall.io/art/front/5/a/5aa73d25-c887-487a-ba77-0d4ca992f106.webp?1783907207",
+  "art_crop": "https://cards.scryfall.io/art_crop/front/5/a/5aa73d25-c887-487a-ba77-0d4ca992f106.jpg?1783907207",
+  "border_crop": "https://cards.scryfall.io/border_crop/front/5/a/5aa73d25-c887-487a-ba77-0d4ca992f106.jpg?1783907207",
+  "crop": "https://cards.scryfall.io/crop/front/5/a/5aa73d25-c887-487a-ba77-0d4ca992f106.webp?1783907207",
+  "display": "https://cards.scryfall.io/display/front/5/a/5aa73d25-c887-487a-ba77-0d4ca992f106.webp?1783907207",
+  "grid": "https://cards.scryfall.io/grid/front/5/a/5aa73d25-c887-487a-ba77-0d4ca992f106.webp?1783907207",
+  "large": "https://cards.scryfall.io/large/front/5/a/5aa73d25-c887-487a-ba77-0d4ca992f106.jpg?1783907207",
+  "normal": "https://cards.scryfall.io/normal/front/5/a/5aa73d25-c887-487a-ba77-0d4ca992f106.jpg?1783907207",
+  "png": "https://cards.scryfall.io/png/front/5/a/5aa73d25-c887-487a-ba77-0d4ca992f106.png?1783907207",
+  "small": "https://cards.scryfall.io/small/front/5/a/5aa73d25-c887-487a-ba77-0d4ca992f106.jpg?1783907207",
+  "thumb": "https://cards.scryfall.io/thumb/front/5/a/5aa73d25-c887-487a-ba77-0d4ca992f106.webp?1783907207"
+ },
+ "keywords": [
+  "Flying"
+ ],
+ "lang": "en",
+ "layout": "normal",
+ "legalities": {
+  "alchemy": "legal",
+  "brawl": "legal",
+  "commander": "legal",
+  "competitivebrawl": "legal",
+  "duel": "legal",
+  "future": "legal",
+  "gladiator": "legal",
+  "historic": "legal",
+  "legacy": "legal",
+  "modern": "legal",
+  "oathbreaker": "legal",
+  "oldschool": "not_legal",
+  "pauper": "not_legal",
+  "paupercommander": "not_legal",
+  "penny": "not_legal",
+  "pioneer": "legal",
+  "predh": "not_legal",
+  "premodern": "not_legal",
+  "standard": "legal",
+  "standardbrawl": "legal",
+  "timeless": "legal",
+  "tlr": "legal",
+  "vintage": "legal"
+ },
+ "mana_cost": "{2}{W}",
+ "mtgo_id": 139831,
+ "multiverse_ids": [
+  695701
+ ],
+ "name": "Clarion Conqueror",
+ "nonfoil": false,
+ "object": "card",
+ "oracle_id": "f1266a1b-bae6-4ded-b4d5-7586a5b6c5d0",
+ "oracle_text": "Flying\nActivated abilities of artifacts, creatures, and planeswalkers can't be activated.",
+ "oversized": false,
+ "power": "3",
+ "prices": {
+  "eur": null,
+  "eur_foil": "13.84",
+  "tix": "1.45",
+  "usd": null,
+  "usd_etched": null,
+  "usd_foil": "23.44"
+ },
+ "prints_search_uri": "https://api.scryfall.com/cards/search?order=released&q=oracleid%3Af1266a1b-bae6-4ded-b4d5-7586a5b6c5d0&unique=prints",
+ "promo": false,
+ "promo_types": [
+  "boosterfun"
+ ],
+ "purchase_uris": {
+  "cardhoarder": "https://www.cardhoarder.com/cards/139831?affiliate_id=scryfall&ref=card-profile&utm_campaign=affiliate&utm_medium=card&utm_source=scryfall",
+  "cardmarket": "https://www.cardmarket.com/en/Magic/Products?idProduct=818629&referrer=scryfall&utm_campaign=card_prices&utm_medium=text&utm_source=scryfall",
+  "tcgplayer": "https://partner.tcgplayer.com/c/4931599/1830156/21018?subId1=api&u=https%3A%2F%2Fwww.tcgplayer.com%2Fproduct%2F624547%3Fpage%3D1"
+ },
+ "rarity": "mythic",
+ "related_uris": {
+  "edhrec": "https://edhrec.com/route/?cc=Clarion+Conqueror",
+  "gatherer": "https://gatherer.wizards.com/Pages/Card/Details.aspx?multiverseid=695701&printed=false",
+  "tcgplayer_infinite_articles": "https://partner.tcgplayer.com/c/4931599/1830156/21018?subId1=api&trafcat=tcgplayer.com%2Fsearch%2Farticles&u=https%3A%2F%2Fwww.tcgplayer.com%2Fsearch%2Farticles%3FproductLineName%3Dmagic%26q%3DClarion%2BConqueror",
+  "tcgplayer_infinite_decks": "https://partner.tcgplayer.com/c/4931599/1830156/21018?subId1=api&trafcat=tcgplayer.com%2Fsearch%2Fdecks&u=https%3A%2F%2Fwww.tcgplayer.com%2Fsearch%2Fdecks%3FproductLineName%3Dmagic%26q%3DClarion%2BConqueror"
+ },
+ "released_at": "2025-04-11",
+ "reprint": false,
+ "reserved": false,
+ "rulings_uri": "https://api.scryfall.com/cards/5aa73d25-c887-487a-ba77-0d4ca992f106/rulings",
+ "scryfall_set_uri": "https://scryfall.com/sets/tdm?utm_source=api",
+ "scryfall_uri": "https://scryfall.com/card/tdm/400/clarion-conqueror?utm_source=api",
+ "security_stamp": "oval",
+ "set": "tdm",
+ "set_id": "1361ca81-1304-49a8-b2e6-e76a4aa4a8c3",
+ "set_name": "Tarkir: Dragonstorm",
+ "set_search_uri": "https://api.scryfall.com/cards/search?order=set&q=e%3Atdm&unique=prints",
+ "set_type": "expansion",
+ "set_uri": "https://api.scryfall.com/sets/1361ca81-1304-49a8-b2e6-e76a4aa4a8c3",
+ "story_spotlight": false,
+ "tcgplayer_id": 624547,
+ "textless": false,
+ "toughness": "3",
+ "type_line": "Creature — Dragon",
+ "uri": "https://api.scryfall.com/cards/5aa73d25-c887-487a-ba77-0d4ca992f106",
+ "variation": false
+}

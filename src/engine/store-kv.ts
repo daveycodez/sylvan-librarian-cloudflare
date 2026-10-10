@@ -2361,8 +2361,45 @@ export async function gzipBytes(bytes: Uint8Array): Promise<Uint8Array> {
  *
  *      Paired with ARCHIVE_FORMAT_VERSION 2026101001 -> 2026101002 (bit 11 means something else;
  *      no layout moves). No SORT_KEY_VERSION: no sort key reads the bit.
+ *
+ * 94 — `new:artist` AND `new:illustrator` ARE ANSWERED, FROM SCRYFALL'S OWN LIST. The two are one
+ *      list (each without the other a 404) and nearly every row there is — 542,667 of 545,440
+ *      with every language on 2026-10-10 — and they were the last `new:` values this port refused:
+ *      left as written, they failed to parse. No rule gives the list. Scryfall decided the flag
+ *      against the illustration ids it held when it catalogued each printing and has not decided
+ *      it again since those ids were merged; the nearest rule over today's card objects (a
+ *      `new:art` printing sharing an artist id with an earlier printing of its card is not new)
+ *      names 2,679 of the complement's rows, misses 93 and adds 2, and 50 of the 93 are explained
+ *      only by bulk files of earlier years.
+ *
+ *      So the COMPLEMENT IS COPIED, as the eight `is:` lists are: `-new:artist lang:any`, extras
+ *      and variations in, is 2,773 rows in 261 sets (2,714 English, 32 Japanese, 18 Simplified
+ *      Chinese, 9 Phyrexian; 13 variations; one annex row, tdm/400 in Japanese). It is the ninth
+ *      list of engine/builder/src/is_lists.tsv (`old_artist`, 270 `row` lines, 17 KB — by row and
+ *      nothing wider, because a printing's translations are new where its English row is not),
+ *      tagged by the same lookup, and card_engine's `assign_new_flags` sets bit 12 of `new_flags`
+ *      on every row, annex rows too, that does NOT carry the tag, and removes it. A printing the
+ *      list does not name is new — which is Scryfall's answer for 99.5% of rows, and what a
+ *      printing catalogued tonight gets until the list is read again.
+ *
+ *      AND IT IS READ AGAIN EVERY NIGHT IT MOVED, with the lists it sits beside
+ *      (src/import-is-lists.ts): one first page a night says how long the list is, and its 16
+ *      pages are read when that moved and once a week regardless. A typical night goes from 11
+ *      requests to 12; the fixed part of the worst night from 70 to 86 of the 240. `bun run
+ *      is-lists -- --only old_artist` is the same read on demand. A night's importer asks only
+ *      for the lists its own compiled table counts, so a blob built before this one is not
+ *      handed a table it would refuse.
+ *
+ *      Through the real builder over the whole 2026-10-10 `all_cards` file (545,440 rows): the
+ *      2,773 rows Scryfall lists and no other, id for id.
+ *
+ *      Paired with ARCHIVE_FORMAT_VERSION 2026101002 -> 2026101003: no layout moves and neither
+ *      row grows (card 288 bytes, printing 304), but the bit is clear in every older store, and
+ *      this code reading one would answer `new:artist` with nothing. No SORT_KEY_VERSION: no sort
+ *      key reads the bit. The committed table changed, so the nightly's stored state
+ *      (`is-lists:state`) starts over from it.
  */
-export const STORE_CONTENT_GENERATION = 93;
+export const STORE_CONTENT_GENERATION = 94;
 
 /**
  * Chunk key for a store. Keyed by store_key, so publishes never collide.
