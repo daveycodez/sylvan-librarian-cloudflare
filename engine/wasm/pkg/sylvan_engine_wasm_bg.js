@@ -1067,10 +1067,12 @@ export function query(filter_tree_json, opts_json) {
  *
  * ```text
  * version: u32 (= KEY_PACKET_VERSION)
- * total: u32, n: u32, inline: u32, flags: u32 (KEY_PACKET_FLAG_WIDENED | KEY_PACKET_FLAG_ARTLESS)
+ * total: u32, n: u32, inline: u32, flags: u32 (KEY_PACKET_FLAG_WIDENED | _ARTLESS | _SHARED)
  * n      of: keylen: u16, key: keylen bytes, vpid: u32
  * inline of: rowlen: u32, row bytes in `shape`
  * with KEY_PACKET_FLAG_ARTLESS: ranklen: u16, rank bytes, keylen: u16, key bytes, vpid: u32
+ * with KEY_PACKET_FLAG_SHARED:  count: u16, then count of
+ *                               art: 16 bytes, ranklen: u16, rank bytes, keylen: u16, key bytes, vpid: u32
  * ```
  *
  * `total` is the partition's exact match count; the keys are its top `offset + limit` in page
