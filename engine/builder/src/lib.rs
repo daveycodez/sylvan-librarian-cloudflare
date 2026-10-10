@@ -9,6 +9,10 @@
 // (engine/wasm-import, run inside the ImportCoordinator Durable Object) does
 // its networking in JS and publishes through bindings, consuming only the
 // pure transform/tags logic from this crate.
+// art_reps (the printing that represents each artwork, from Scryfall's own answers) is NOT gated,
+// for is_lists' reason: the table is compiled in, and the wasm import marks rows from it exactly
+// as the native build does.
+pub mod art_reps;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod bulk;
 // is_lists (the `is:` classes copied from Scryfall's own record) is NOT gated: the table is

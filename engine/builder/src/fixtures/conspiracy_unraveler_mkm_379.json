@@ -1,0 +1,149 @@
+{
+ "artist": "Vance Kelly",
+ "artist_ids": [
+  "c0e0548d-5992-4341-936d-8e2bbed3e923"
+ ],
+ "booster": false,
+ "border_color": "black",
+ "card_back_id": "0aeebaf5-8c7d-4636-9e82-8c27447861f7",
+ "cardmarket_id": 752635,
+ "cmc": 7.0,
+ "collector_number": "379",
+ "color_identity": [
+  "U"
+ ],
+ "colors": [
+  "U"
+ ],
+ "digital": false,
+ "edhrec_rank": 13710,
+ "finishes": [
+  "foil"
+ ],
+ "flavor_text": "INVARIABLY REACHES THE CORRECT CONCLUSION. CANNOT BE RUSHED.",
+ "foil": true,
+ "frame": "2015",
+ "frame_effects": [
+  "showcase"
+ ],
+ "full_art": false,
+ "game_changer": false,
+ "games": [
+  "paper",
+  "mtgo"
+ ],
+ "highres_image": true,
+ "id": "a8002174-8cff-4566-ba4d-d6caec14d69c",
+ "illustration_id": "1f91f707-820c-4427-bbcc-6f27c86b71ef",
+ "image_status": "highres_scan",
+ "image_updated_at": "2026-07-13T03:19:42Z",
+ "image_uris": {
+  "art": "https://cards.scryfall.io/art/front/a/8/a8002174-8cff-4566-ba4d-d6caec14d69c.webp?1783912782",
+  "art_crop": "https://cards.scryfall.io/art_crop/front/a/8/a8002174-8cff-4566-ba4d-d6caec14d69c.jpg?1783912782",
+  "border_crop": "https://cards.scryfall.io/border_crop/front/a/8/a8002174-8cff-4566-ba4d-d6caec14d69c.jpg?1783912782",
+  "crop": "https://cards.scryfall.io/crop/front/a/8/a8002174-8cff-4566-ba4d-d6caec14d69c.webp?1783912782",
+  "display": "https://cards.scryfall.io/display/front/a/8/a8002174-8cff-4566-ba4d-d6caec14d69c.webp?1783912782",
+  "grid": "https://cards.scryfall.io/grid/front/a/8/a8002174-8cff-4566-ba4d-d6caec14d69c.webp?1783912782",
+  "large": "https://cards.scryfall.io/large/front/a/8/a8002174-8cff-4566-ba4d-d6caec14d69c.jpg?1783912782",
+  "normal": "https://cards.scryfall.io/normal/front/a/8/a8002174-8cff-4566-ba4d-d6caec14d69c.jpg?1783912782",
+  "png": "https://cards.scryfall.io/png/front/a/8/a8002174-8cff-4566-ba4d-d6caec14d69c.png?1783912782",
+  "small": "https://cards.scryfall.io/small/front/a/8/a8002174-8cff-4566-ba4d-d6caec14d69c.jpg?1783912782",
+  "thumb": "https://cards.scryfall.io/thumb/front/a/8/a8002174-8cff-4566-ba4d-d6caec14d69c.webp?1783912782"
+ },
+ "keywords": [
+  "Flying",
+  "Collect evidence"
+ ],
+ "lang": "en",
+ "layout": "normal",
+ "legalities": {
+  "alchemy": "not_legal",
+  "brawl": "legal",
+  "commander": "legal",
+  "competitivebrawl": "legal",
+  "duel": "legal",
+  "future": "legal",
+  "gladiator": "legal",
+  "historic": "legal",
+  "legacy": "legal",
+  "modern": "legal",
+  "oathbreaker": "legal",
+  "oldschool": "not_legal",
+  "pauper": "not_legal",
+  "paupercommander": "not_legal",
+  "penny": "legal",
+  "pioneer": "legal",
+  "predh": "not_legal",
+  "premodern": "not_legal",
+  "standard": "legal",
+  "standardbrawl": "legal",
+  "timeless": "legal",
+  "tlr": "not_legal",
+  "vintage": "legal"
+ },
+ "mana_cost": "{5}{U}{U}",
+ "mtgo_id": 121398,
+ "multiverse_ids": [
+  649895
+ ],
+ "name": "Conspiracy Unraveler",
+ "nonfoil": false,
+ "object": "card",
+ "oracle_id": "e4541d02-2860-46ef-b630-1d6307b60766",
+ "oracle_text": "Flying\nYou may collect evidence 10 rather than pay the mana cost for spells you cast. (To collect evidence 10, exile cards with total mana value 10 or greater from your graveyard.)",
+ "oversized": false,
+ "penny_rank": 5472,
+ "power": "6",
+ "preview": {
+  "previewed_at": "2024-01-22",
+  "source": "Wizards of the Coast",
+  "source_uri": ""
+ },
+ "prices": {
+  "eur": null,
+  "eur_foil": "1.44",
+  "tix": "0.02",
+  "usd": null,
+  "usd_etched": null,
+  "usd_foil": "3.16"
+ },
+ "prints_search_uri": "https://api.scryfall.com/cards/search?order=released&q=oracleid%3Ae4541d02-2860-46ef-b630-1d6307b60766&unique=prints",
+ "promo": false,
+ "promo_types": [
+  "dossier",
+  "boosterfun",
+  "invisibleink"
+ ],
+ "purchase_uris": {
+  "cardhoarder": "https://www.cardhoarder.com/cards/121398?affiliate_id=scryfall&ref=card-profile&utm_campaign=affiliate&utm_medium=card&utm_source=scryfall",
+  "cardmarket": "https://www.cardmarket.com/en/Magic/Products?idProduct=752635&referrer=scryfall&utm_campaign=card_prices&utm_medium=text&utm_source=scryfall",
+  "tcgplayer": "https://partner.tcgplayer.com/c/4931599/1830156/21018?subId1=api&u=https%3A%2F%2Fwww.tcgplayer.com%2Fproduct%2F534604%3Fpage%3D1"
+ },
+ "rarity": "mythic",
+ "related_uris": {
+  "edhrec": "https://edhrec.com/route/?cc=Conspiracy+Unraveler",
+  "gatherer": "https://gatherer.wizards.com/Pages/Card/Details.aspx?multiverseid=649895&printed=false",
+  "tcgplayer_infinite_articles": "https://partner.tcgplayer.com/c/4931599/1830156/21018?subId1=api&trafcat=tcgplayer.com%2Fsearch%2Farticles&u=https%3A%2F%2Fwww.tcgplayer.com%2Fsearch%2Farticles%3FproductLineName%3Dmagic%26q%3DConspiracy%2BUnraveler",
+  "tcgplayer_infinite_decks": "https://partner.tcgplayer.com/c/4931599/1830156/21018?subId1=api&trafcat=tcgplayer.com%2Fsearch%2Fdecks&u=https%3A%2F%2Fwww.tcgplayer.com%2Fsearch%2Fdecks%3FproductLineName%3Dmagic%26q%3DConspiracy%2BUnraveler"
+ },
+ "released_at": "2024-02-09",
+ "reprint": false,
+ "reserved": false,
+ "rulings_uri": "https://api.scryfall.com/cards/a8002174-8cff-4566-ba4d-d6caec14d69c/rulings",
+ "scryfall_set_uri": "https://scryfall.com/sets/mkm?utm_source=api",
+ "scryfall_uri": "https://scryfall.com/card/mkm/379/conspiracy-unraveler?utm_source=api",
+ "security_stamp": "oval",
+ "set": "mkm",
+ "set_id": "2b17794b-15c3-4796-ad6f-0887a0eceeca",
+ "set_name": "Murders at Karlov Manor",
+ "set_search_uri": "https://api.scryfall.com/cards/search?order=set&q=e%3Amkm&unique=prints",
+ "set_type": "expansion",
+ "set_uri": "https://api.scryfall.com/sets/2b17794b-15c3-4796-ad6f-0887a0eceeca",
+ "story_spotlight": false,
+ "tcgplayer_id": 534604,
+ "textless": false,
+ "toughness": "6",
+ "type_line": "Creature — Sphinx Detective",
+ "uri": "https://api.scryfall.com/cards/a8002174-8cff-4566-ba4d-d6caec14d69c",
+ "variation": false
+}

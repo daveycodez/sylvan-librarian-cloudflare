@@ -31,6 +31,7 @@
     "set-digital": "bun scripts/generate-set-digital.ts",
     "release-batches": "bun scripts/generate-release-batches.ts",
     "print-tiers": "bun scripts/generate-print-tiers.ts",
+    "art-reps": "bun scripts/generate-art-reps.ts",
     "is-lists": "bun scripts/generate-is-lists.ts",
     "seed:local": "scripts/seed-local.sh",
     "cf-typegen": "wrangler types"

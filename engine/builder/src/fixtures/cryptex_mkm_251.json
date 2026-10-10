@@ -1,0 +1,143 @@
+{
+ "arena_id": 89173,
+ "artist": "Yeong-Hao Han",
+ "artist_ids": [
+  "f8e7f8d6-6dde-4059-973c-30f1fd1bbe4e"
+ ],
+ "booster": true,
+ "border_color": "black",
+ "card_back_id": "0aeebaf5-8c7d-4636-9e82-8c27447861f7",
+ "cardmarket_id": 751992,
+ "cmc": 2.0,
+ "collector_number": "251",
+ "color_identity": [],
+ "colors": [],
+ "digital": false,
+ "edhrec_rank": 20932,
+ "finishes": [
+  "nonfoil",
+  "foil"
+ ],
+ "foil": true,
+ "frame": "2015",
+ "full_art": false,
+ "game_changer": false,
+ "games": [
+  "paper",
+  "mtgo",
+  "arena"
+ ],
+ "highres_image": true,
+ "id": "f92a2563-6cfb-4d12-9513-b44d1a7a20ab",
+ "illustration_id": "280419cd-a2d1-4a3c-9c0c-1fd9c5a28426",
+ "image_status": "highres_scan",
+ "image_updated_at": "2026-07-13T03:20:29Z",
+ "image_uris": {
+  "art": "https://cards.scryfall.io/art/front/f/9/f92a2563-6cfb-4d12-9513-b44d1a7a20ab.webp?1783912829",
+  "art_crop": "https://cards.scryfall.io/art_crop/front/f/9/f92a2563-6cfb-4d12-9513-b44d1a7a20ab.jpg?1783912829",
+  "border_crop": "https://cards.scryfall.io/border_crop/front/f/9/f92a2563-6cfb-4d12-9513-b44d1a7a20ab.jpg?1783912829",
+  "crop": "https://cards.scryfall.io/crop/front/f/9/f92a2563-6cfb-4d12-9513-b44d1a7a20ab.webp?1783912829",
+  "display": "https://cards.scryfall.io/display/front/f/9/f92a2563-6cfb-4d12-9513-b44d1a7a20ab.webp?1783912829",
+  "grid": "https://cards.scryfall.io/grid/front/f/9/f92a2563-6cfb-4d12-9513-b44d1a7a20ab.webp?1783912829",
+  "large": "https://cards.scryfall.io/large/front/f/9/f92a2563-6cfb-4d12-9513-b44d1a7a20ab.jpg?1783912829",
+  "normal": "https://cards.scryfall.io/normal/front/f/9/f92a2563-6cfb-4d12-9513-b44d1a7a20ab.jpg?1783912829",
+  "png": "https://cards.scryfall.io/png/front/f/9/f92a2563-6cfb-4d12-9513-b44d1a7a20ab.png?1783912829",
+  "small": "https://cards.scryfall.io/small/front/f/9/f92a2563-6cfb-4d12-9513-b44d1a7a20ab.jpg?1783912829",
+  "thumb": "https://cards.scryfall.io/thumb/front/f/9/f92a2563-6cfb-4d12-9513-b44d1a7a20ab.webp?1783912829"
+ },
+ "keywords": [
+  "Collect evidence",
+  "Surveil"
+ ],
+ "lang": "en",
+ "layout": "normal",
+ "legalities": {
+  "alchemy": "not_legal",
+  "brawl": "legal",
+  "commander": "legal",
+  "competitivebrawl": "legal",
+  "duel": "legal",
+  "future": "legal",
+  "gladiator": "legal",
+  "historic": "legal",
+  "legacy": "legal",
+  "modern": "legal",
+  "oathbreaker": "legal",
+  "oldschool": "not_legal",
+  "pauper": "not_legal",
+  "paupercommander": "not_legal",
+  "penny": "legal",
+  "pioneer": "legal",
+  "predh": "not_legal",
+  "premodern": "not_legal",
+  "standard": "legal",
+  "standardbrawl": "legal",
+  "timeless": "legal",
+  "tlr": "legal",
+  "vintage": "legal"
+ },
+ "mana_cost": "{2}",
+ "mtgo_id": 121994,
+ "multiverse_ids": [
+  646805
+ ],
+ "name": "Cryptex",
+ "nonfoil": true,
+ "object": "card",
+ "oracle_id": "8186a992-9065-4a7f-bb00-1c20e01e8fb6",
+ "oracle_text": "{T}, Collect evidence 3: Add one mana of any color. Put an unlock counter on this artifact. (To collect evidence 3, exile cards with total mana value 3 or greater from your graveyard.)\nSacrifice this artifact: Surveil 3, then draw three cards. Activate only if this artifact has five or more unlock counters on it.",
+ "oversized": false,
+ "preview": {
+  "previewed_at": "2024-01-20",
+  "source": "Riley Knight",
+  "source_uri": "https://twitter.com/RLYKNGHT/status/1748940982631137583"
+ },
+ "prices": {
+  "eur": "0.07",
+  "eur_foil": "0.11",
+  "tix": "0.02",
+  "usd": "0.13",
+  "usd_etched": null,
+  "usd_foil": "0.09"
+ },
+ "prints_search_uri": "https://api.scryfall.com/cards/search?order=released&q=oracleid%3A8186a992-9065-4a7f-bb00-1c20e01e8fb6&unique=prints",
+ "produced_mana": [
+  "B",
+  "G",
+  "R",
+  "U",
+  "W"
+ ],
+ "promo": false,
+ "purchase_uris": {
+  "cardhoarder": "https://www.cardhoarder.com/cards/121994?affiliate_id=scryfall&ref=card-profile&utm_campaign=affiliate&utm_medium=card&utm_source=scryfall",
+  "cardmarket": "https://www.cardmarket.com/en/Magic/Products?idProduct=751992&referrer=scryfall&utm_campaign=card_prices&utm_medium=text&utm_source=scryfall",
+  "tcgplayer": "https://partner.tcgplayer.com/c/4931599/1830156/21018?subId1=api&u=https%3A%2F%2Fwww.tcgplayer.com%2Fproduct%2F534065%3Fpage%3D1"
+ },
+ "rarity": "rare",
+ "related_uris": {
+  "edhrec": "https://edhrec.com/route/?cc=Cryptex",
+  "gatherer": "https://gatherer.wizards.com/Pages/Card/Details.aspx?multiverseid=646805&printed=false",
+  "tcgplayer_infinite_articles": "https://partner.tcgplayer.com/c/4931599/1830156/21018?subId1=api&trafcat=tcgplayer.com%2Fsearch%2Farticles&u=https%3A%2F%2Fwww.tcgplayer.com%2Fsearch%2Farticles%3FproductLineName%3Dmagic%26q%3DCryptex",
+  "tcgplayer_infinite_decks": "https://partner.tcgplayer.com/c/4931599/1830156/21018?subId1=api&trafcat=tcgplayer.com%2Fsearch%2Fdecks&u=https%3A%2F%2Fwww.tcgplayer.com%2Fsearch%2Fdecks%3FproductLineName%3Dmagic%26q%3DCryptex"
+ },
+ "released_at": "2024-02-09",
+ "reprint": false,
+ "reserved": false,
+ "rulings_uri": "https://api.scryfall.com/cards/f92a2563-6cfb-4d12-9513-b44d1a7a20ab/rulings",
+ "scryfall_set_uri": "https://scryfall.com/sets/mkm?utm_source=api",
+ "scryfall_uri": "https://scryfall.com/card/mkm/251/cryptex?utm_source=api",
+ "security_stamp": "oval",
+ "set": "mkm",
+ "set_id": "2b17794b-15c3-4796-ad6f-0887a0eceeca",
+ "set_name": "Murders at Karlov Manor",
+ "set_search_uri": "https://api.scryfall.com/cards/search?order=set&q=e%3Amkm&unique=prints",
+ "set_type": "expansion",
+ "set_uri": "https://api.scryfall.com/sets/2b17794b-15c3-4796-ad6f-0887a0eceeca",
+ "story_spotlight": false,
+ "tcgplayer_id": 534065,
+ "textless": false,
+ "type_line": "Artifact",
+ "uri": "https://api.scryfall.com/cards/f92a2563-6cfb-4d12-9513-b44d1a7a20ab",
+ "variation": false
+}

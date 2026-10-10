@@ -84,6 +84,9 @@ const SOURCE_FILES = [
 	// (`bun run is-lists`) and the print tiers they and the ranks read (`bun run print-tiers`).
 	"engine/builder/src/is_lists.tsv",
 	"engine/builder/src/print_tiers.tsv",
+	// ...and the printing that represents each artwork (`bun run art-reps`), which the builder
+	// marks rows from.
+	"engine/builder/src/art_reps.tsv",
 ];
 
 /** The committed blobs this record describes. */

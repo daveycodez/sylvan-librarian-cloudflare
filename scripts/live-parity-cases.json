@@ -4679,6 +4679,42 @@
 			"method": "GET",
 			"path": "/cards/search?q=%21%22B.F.M.+%28Big+Furry+Monster%29%22&include_extras=true",
 			"note": "2026-10-10. ugl/28, ugl/29: the left half first. The one pair of 1,901 the rules text orders the other way, so it is held by name; the oracle id happened to agree."
+		},
+		{
+			"name": "unique-art-representative-extended-art",
+			"method": "GET",
+			"path": "/cards/search?q=%21%22Cryptex%22&unique=art&include_extras=true",
+			"note": "2026-10-10. mkm/422, the extended-art printing: an artwork's representative is Scryfall's record, not a rule — mkm/251, pmkm/251p and pmkm/251s share its day and the card's order leads with mkm/251, which the port answered."
+		},
+		{
+			"name": "unique-art-representative-absent-is-the-cards-order",
+			"method": "GET",
+			"path": "/cards/search?q=%21%22Cryptex%22+-cn%3A422&unique=art&include_extras=true",
+			"note": "2026-10-10. mkm/251: with the representative filtered away the answer is the first of the card's own order, not a second-best representative."
+		},
+		{
+			"name": "unique-art-representative-foil-twin",
+			"method": "GET",
+			"path": "/cards/search?q=%21%22Conspiracy+Unraveler%22+e%3Amkm&unique=art&include_extras=true&order=set",
+			"note": "2026-10-10. mkm/47 and mkm/379: the dossier art is represented by the invisible-ink foil mkm/379, not the showcase printing mkm/341 it copies, which comes first in the card's order."
+		},
+		{
+			"name": "unique-art-representative-promo-pack",
+			"method": "GET",
+			"path": "/cards/search?q=%21%22Silvergill+Mentor%22&unique=art&include_extras=true",
+			"note": "2026-10-10. ecl/403 and the art card aecl/10: the promo-pack printing represents the artwork, over the set's own ecl/69 of the same day."
+		},
+		{
+			"name": "unique-art-representative-of-four-one-day",
+			"method": "GET",
+			"path": "/cards/search?q=%21%22Irrigated+Farmland%22+e%3Awho&unique=art&include_extras=true",
+			"note": "2026-10-10. who/504, the extended-art printing, over who/288, the surge foil who/879 and the extended surge foil who/1095 — four printings of one artwork and one day."
+		},
+		{
+			"name": "unique-art-representative-not-the-bulk-files",
+			"method": "GET",
+			"path": "/cards/search?q=%21%22Temple+of+Deceit%22+%28e%3Adsc+or+e%3Afdn%29&unique=art&include_extras=true",
+			"note": "2026-10-10. fdn/697 alone: without thb/245, the artwork's representative, the answer is the first of the card's order — not dsc/307, though the `unique_artwork` bulk file lists dsc/307 beside thb/245."
 		}
 	]
 }

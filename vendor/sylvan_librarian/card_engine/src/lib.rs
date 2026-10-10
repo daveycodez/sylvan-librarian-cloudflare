@@ -5704,17 +5704,23 @@ pub(crate) const NEW_ART: u32 = 1 << 9;
 /// and `new:lang`. The one bit an annex row can carry.
 pub(crate) const NEW_LANGUAGE: u32 = 1 << 10;
 
-/// The `card_is_tags` word the builder marks a printing with when it was released THE DAY ITS
-/// ARTWORK WAS FIRST PRINTED — see `ART_DEBUT`. Never stored: `assign_new_flags` turns it into the
-/// bit and removes it, as it does `NEW_ART_TAG`.
+/// The `card_is_tags` word the builder marks a printing with when it REPRESENTS ITS ARTWORK — see
+/// `ART_DEBUT`. Never stored: `assign_new_flags` turns it into the bit and removes it, as it does
+/// `NEW_ART_TAG`. (The word is the bit's first meaning, the day the artwork debuted, which is
+/// still what marks a row of a set the builder's table does not name.)
 pub const ART_DEBUT_TAG: &str = "art_debut";
 
-/// `Printing::new_flags`: the printing shares its release date with its artwork's first printing
-/// anywhere — the `new:art` row itself, and every other row of that illustration dated the same
-/// day (a foil twin, a prerelease promo, a translation). No `new:` value reads it: it is what
-/// `unique=art` chooses an artwork's representative by (`artwork_prefer_key`). Like `NEW_ART` its
-/// group crosses cards, so the builder's corpus-wide pass decides it (engine/builder `NewArt`) and
-/// marks the row with [`ART_DEBUT_TAG`]; unlike it, annex rows carry it too.
+/// `Printing::new_flags`: the printing is the one `unique=art` answers its artwork with wherever
+/// a query holds it (`artwork_prefer_key`). No `new:` value reads it.
+///
+/// THE REPRESENTATIVE IS SCRYFALL'S RECORD, AND SINCE 2026-10-10 THE BIT IS THAT RECORD: the row
+/// api.scryfall.com returns for the artwork when every card is in scope, one row an artwork
+/// (engine/builder `art_reps`, which carries the measurement — 3,700 of 3,700 artworks with two or
+/// more printings in scope, over 24 scopes). Before that, and still for a set the builder's
+/// table does not name, it is every row that shares its release date with the artwork's first
+/// printing anywhere — the `new:art` row, a foil twin, a prerelease promo, a translation —
+/// decided by the builder's corpus-wide pass (engine/builder `NewArt`): the same printing where
+/// that day holds one, and 3,111 of the 3,700 over all.
 pub(crate) const ART_DEBUT: u32 = 1 << 11;
 
 /// The engine's `is:` spelling of each `new:` value `Printing::new_flags` answers, and the bits
@@ -12403,6 +12409,16 @@ fn dated_prefer_key(p: &APrinting, siblings: &[APrinting], newest: bool) -> f64 
 /// The debut is corpus-wide — an illustration's first printing may be another card's — so it is a
 /// stored bit, [`ART_DEBUT`], decided by the builder beside `new:art`; nothing is scanned here.
 /// A store built before the bit answers the card's own order for every artwork.
+///
+/// AND INSIDE ONE DATE IT IS A RECORD, NOT A RULE (2026-10-10). What the debut key still missed —
+/// 589 of 3,700 artworks over 24 scopes, every one with several printings on its first day — is
+/// which of those printings Scryfall keeps for the artwork: asked for them one at a time it
+/// answers one first and then the card's own order (`!"Cryptex"`: mkm/422, then mkm/251,
+/// pmkm/251p, pmkm/251s), and that one follows no field. So the builder sets the bit from
+/// Scryfall's own answers (`art_reps`): one row an artwork, and this key reads it exactly as it
+/// read the debut — the marked printing where the query holds it, the store's order where it
+/// does not. The promo step below only ever separates the rows of a debut day, which is what the
+/// bit still is for a set released since the table was written.
 ///
 /// Ties fall to the first printing in store order, as under every prefer.
 fn artwork_prefer_key(p: &APrinting) -> f64 {
@@ -22247,7 +22263,13 @@ const ARCHIVE_MAGIC: [u8; 8] = *b"ATCARDS\0";
 //                name rank away and order `order=name` by nothing, and an older reader of this
 //                store would sort a descending page of one name's cards backwards. Paired with
 //                STORE_CONTENT_GENERATION 92 and SORT_KEY_VERSION 6.
-const ARCHIVE_FORMAT_VERSION: u32 = 2026101001;
+//   2026101002 — THE ARTWORK'S REPRESENTATIVE (LOCAL PATCH). Bit 11 of `Printing::new_flags`
+//                changes what it says: the row Scryfall answers the artwork with, set from the
+//                builder's table of those answers, where it was every row of the artwork's debut
+//                day. No layout moves and the reader is the same code (`artwork_prefer_key`), so a
+//                2026101001 store read by this code answers as it did; the version moves because
+//                the bit's meaning does. Paired with STORE_CONTENT_GENERATION 93.
+const ARCHIVE_FORMAT_VERSION: u32 = 2026101002;
 const ARCHIVE_HEADER_LEN: usize = 16;
 
 fn archive_header() -> [u8; ARCHIVE_HEADER_LEN] {

@@ -2576,16 +2576,28 @@ impl RowDraft {
         self.card_is_tags.iter().any(|t| t == tag)
     }
 
-    /// Mark the first printing of an artwork with `card_engine::NEW_ART_TAG`, and every printing
-    /// released the day that one was with `card_engine::ART_DEBUT_TAG` — the words the engine's
-    /// build turns into the printing's `new:art` and artwork-debut bits and removes, so they are
-    /// never stored, never indexed and never a value `is:` answers. See [`NewArt`].
+    /// Mark the first printing of an artwork with `card_engine::NEW_ART_TAG`, and the printing
+    /// that REPRESENTS it with `card_engine::ART_DEBUT_TAG` — the words the engine's build turns
+    /// into the printing's `new:art` and artwork-representative bits and removes, so they are
+    /// never an `is:` value.
+    ///
+    /// The representative is Scryfall's own record where the table holds the row's set
+    /// ([`crate::art_reps`]): one row an artwork, whichever it is. Where it does not — a
+    /// printing released since the table was written — it is every printing released the day
+    /// the artwork's first one was, the rule the bit was named for and all of what it was until
+    /// 2026-10-10.
     fn set_art_standing(&mut self, standing: ArtStanding) {
         self.card_is_tags.retain(|t| t != card_engine::NEW_ART_TAG && t != card_engine::ART_DEBUT_TAG);
         if standing == ArtStanding::First {
             self.card_is_tags.push(card_engine::NEW_ART_TAG.to_owned());
         }
-        if standing != ArtStanding::Later {
+        let recorded = crate::art_reps::verdict(
+            self.card_set_code.as_deref().unwrap_or(""),
+            self.collector_number.as_deref().unwrap_or(""),
+            self.compat_blob.get("lang").and_then(Value::as_str).unwrap_or(""),
+            &self.released_at,
+        );
+        if recorded.unwrap_or(standing != ArtStanding::Later) {
             self.card_is_tags.push(card_engine::ART_DEBUT_TAG.to_owned());
         }
     }
@@ -3431,7 +3443,8 @@ impl CorpusTables {
 pub enum ArtStanding {
     /// Released after the artwork's first printing, or nothing is known of the artwork.
     Later,
-    /// Released the day the artwork's first printing was, and not that printing.
+    /// Released the day the artwork's first printing was, and not that printing. What marks an
+    /// artwork's representative for a set `art_reps` does not name (`RowDraft::set_art_standing`).
     Debut,
     /// The artwork's first printing anywhere: `new:art`.
     First,
@@ -3590,9 +3603,12 @@ impl NewArt {
     /// the first, or a later one. The day is the leading eight characters of the order (the date,
     /// `ffffffff` for none, which no row shares a debut on).
     ///
-    /// THE DEBUT IS WHAT `unique=art` ANSWERS AN ARTWORK WITH (card_engine `artwork_prefer_key`
-    /// carries the measurement): a printing of the day the artwork was first printed where the
-    /// query matches one, and the card's own order where it does not. The same-day rows are not
+    /// THE DEBUT IS WHAT `unique=art` ANSWERED AN ARTWORK WITH until 2026-10-10 (card_engine
+    /// `artwork_prefer_key` carries the measurement): a printing of the day the artwork was first
+    /// printed where the query matches one, and the card's own order where it does not. Which
+    /// printing of that day is Scryfall's record, and the builder marks it from that record where
+    /// it has it ([`crate::art_reps`]); the day is what is left for a set released since, and is
+    /// right for every reprint, which is never of the debut's day. The same-day rows are not
     /// the eligible ones alone — a translation, or a memorabilia printing of that day, is a
     /// printing of the debut like any other; eligibility decides which row LEADS, and so the day.
     /// A row with no illustration has no debut: those are one artwork corpus-wide, answered apart.
@@ -5977,12 +5993,12 @@ mod tests {
                 // Its `all_parts` lists a combo piece: `RelatedCards`, written at finalize. And
                 // NOT `covered`: a plain English printing of a core set is in the default tier.
                 "related": true,
-                // The only row of this corpus, so its artwork's first printing: the builder's
-                // marks for `new:art` and the artwork's debut (`NewArt`), which the engine's build
-                // turns into bits and takes off again — a finalized row carries them, a store
-                // never does.
-                "new_art": true,
-                "art_debut": true
+                // The only row of this corpus, so its artwork's first printing: the builder's mark
+                // for `new:art` (`NewArt`), which the engine's build turns into a bit and takes
+                // off again — a finalized row carries it, a store never does. NOT `art_debut`,
+                // the artwork's representative: that is Scryfall's record (`art_reps`), and of
+                // this painting it names 9th Edition's printing (9ed/253), not Foundations' reprint.
+                "new_art": true
             })
         );
         assert_eq!(row["card_subtypes"], json!(["Elf", "Druid"]));
@@ -6592,5 +6608,41 @@ mod tests {
             HashMap::from([("c890cb20-7e04-4ad0-96a6-8854cd409c14".into(), vec!["fire".into()])]),
         );
         assert_eq!(art_tags_of(&split_tags, &fire_ice), vec!["fire"]);
+    }
+
+    /// The artwork's representative is Scryfall's record where the table names the row's set, and
+    /// the debut's day where it does not. Real card objects: Cryptex, whose plain printing
+    /// (mkm/251) and extended-art printing (mkm/422) share the artwork's first day, and whose
+    /// representative on api.scryfall.com is the extended-art one.
+    #[test]
+    fn the_representative_is_the_record_and_the_debut_day_only_for_a_set_the_table_does_not_name() {
+        let marked = |card: &Value, standing: ArtStanding| {
+            let mut draft = transform_row(card, true).unwrap().unwrap();
+            draft.set_art_standing(standing);
+            (draft.has_is_tag(card_engine::NEW_ART_TAG), draft.has_is_tag(card_engine::ART_DEBUT_TAG))
+        };
+        let plain = fixture("cryptex_mkm_251");
+        let extended = fixture("cryptex_mkm_422");
+        // A set the table names: the record alone, whatever the day says. The plain printing is
+        // the artwork's first and `new:art`, and is not the representative; the extended-art
+        // printing is, at any standing.
+        assert_eq!(marked(&plain, ArtStanding::First), (true, false));
+        for standing in [ArtStanding::Debut, ArtStanding::Later] {
+            assert_eq!(marked(&extended, standing), (false, true));
+            assert_eq!(marked(&plain, standing), (false, false));
+        }
+        // A set the table does not name, and a printing dated after the table in a set it does
+        // (a later drop): the day, as before the table.
+        let mut unnamed = plain.clone();
+        unnamed["set"] = Value::from("zzz");
+        let mut since = plain.clone();
+        since["released_at"] = Value::from("2099-01-01");
+        assert_eq!(crate::art_reps::verdict("zzz", "251", "en", "2024-02-09"), None);
+        assert_eq!(crate::art_reps::verdict("mkm", "251", "en", "2099-01-01"), None);
+        for card in [&unnamed, &since] {
+            assert_eq!(marked(card, ArtStanding::First), (true, true));
+            assert_eq!(marked(card, ArtStanding::Debut), (false, true));
+            assert_eq!(marked(card, ArtStanding::Later), (false, false));
+        }
     }
 }

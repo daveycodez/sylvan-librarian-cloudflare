@@ -2334,8 +2334,35 @@ export async function gzipBytes(bytes: Uint8Array): Promise<Uint8Array> {
  *      Paired with ARCHIVE_FORMAT_VERSION 2026100912 -> 2026101001 (no layout moves and neither
  *      row grows — card 288 bytes, printing 304 — but `name_rank` means something else) and
  *      SORT_KEY_VERSION 5 -> 6 (the key gains the segment).
+ *
+ * 93 — THE PRINTING THAT REPRESENTS AN ARTWORK IS SCRYFALL'S RECORD OF IT. `unique=art` answered
+ *      a printing of the day the artwork debuted, which is one printing for most artworks and no
+ *      rule where that day holds several: `!"Cryptex" unique=art` was mkm/251 against
+ *      api.scryfall.com's extended-art mkm/422, `!"Irrigated Farmland" e:who` who/288 against
+ *      who/504, `!"Silvergill Mentor"` ecl/69 against the promo-pack ecl/403. Asked for an
+ *      artwork's printings one at a time, Scryfall answers ONE first and then the card's own
+ *      order, and which one follows no field of a card object (the best key — not a promo, then
+ *      the lowest number — names 81% of 9,910 artworks with several printings on their first
+ *      day). But a search matching every card returns every artwork's representative, so the
+ *      record is read whole: `bun run art-reps` writes engine/builder/src/art_reps.tsv (54,746
+ *      rows over 1,058 sets, 45 KB of runs; read twice the same day, the same 54,746), compiled
+ *      into the builder, which sets bit 11 of `new_flags` from it. "The representative where the
+ *      query holds it, else the first of the card's order" is Scryfall's answer for 3,700 of
+ *      3,700 artworks with two or more printings in scope over 24 scopes (the debut rule:
+ *      3,111); through the real builder and engine, 0 wrong of 2,552 over 16 scopes where
+ *      production has 476.
+ *
+ *      NOTHING IS READ AT QUERY TIME THAT WAS NOT: the reader is `artwork_prefer_key`, the bit it
+ *      already read, and neither row grows. A printing released after the table's `@written` day
+ *      — a new set's, a new drop's — keeps the debut rule, which is right for every reprint;
+ *      `bun run art-reps` after a release brings its new artworks in (about 25 minutes of
+ *      requests; nothing runs it nightly). Scryfall's `unique_artwork` bulk file is NOT this
+ *      record: it lists two rows for 51 artworks and none for 7.
+ *
+ *      Paired with ARCHIVE_FORMAT_VERSION 2026101001 -> 2026101002 (bit 11 means something else;
+ *      no layout moves). No SORT_KEY_VERSION: no sort key reads the bit.
  */
-export const STORE_CONTENT_GENERATION = 92;
+export const STORE_CONTENT_GENERATION = 93;
 
 /**
  * Chunk key for a store. Keyed by store_key, so publishes never collide.
