@@ -1,0 +1,188 @@
+{
+ "all_parts": [
+  {
+   "component": "combo_piece",
+   "id": "a2c1a004-4d80-481b-8f3f-30cc362556bc",
+   "name": "Garbage Elemental",
+   "object": "related_card",
+   "type_line": "Creature — Elemental",
+   "uri": "https://api.scryfall.com/cards/a2c1a004-4d80-481b-8f3f-30cc362556bc"
+  },
+  {
+   "component": "token",
+   "id": "6be4b0d5-b3f8-4a5d-8a38-eb0e1886f655",
+   "name": "Goblin",
+   "object": "related_card",
+   "type_line": "Token Creature — Goblin",
+   "uri": "https://api.scryfall.com/cards/6be4b0d5-b3f8-4a5d-8a38-eb0e1886f655"
+  },
+  {
+   "component": "combo_piece",
+   "id": "2d33c84b-3807-430e-8315-5de2d7f6fa32",
+   "name": "Garbage Elemental",
+   "object": "related_card",
+   "type_line": "Creature — Elemental",
+   "uri": "https://api.scryfall.com/cards/2d33c84b-3807-430e-8315-5de2d7f6fa32"
+  },
+  {
+   "component": "combo_piece",
+   "id": "a5579dfb-4e63-4e7b-80c5-56949518c71e",
+   "name": "Garbage Elemental",
+   "object": "related_card",
+   "type_line": "Creature — Elemental",
+   "uri": "https://api.scryfall.com/cards/a5579dfb-4e63-4e7b-80c5-56949518c71e"
+  },
+  {
+   "component": "combo_piece",
+   "id": "ef8ae74c-6aba-4ea7-8afd-ce319ef6b047",
+   "name": "Garbage Elemental",
+   "object": "related_card",
+   "type_line": "Creature — Elemental",
+   "uri": "https://api.scryfall.com/cards/ef8ae74c-6aba-4ea7-8afd-ce319ef6b047"
+  },
+  {
+   "component": "combo_piece",
+   "id": "9427b338-42d0-44cc-9594-9e50ccbdd809",
+   "name": "Garbage Elemental",
+   "object": "related_card",
+   "type_line": "Creature — Elemental Rigger",
+   "uri": "https://api.scryfall.com/cards/9427b338-42d0-44cc-9594-9e50ccbdd809"
+  },
+  {
+   "component": "combo_piece",
+   "id": "de96731b-d4b1-4c6c-8413-f9e00030d11d",
+   "name": "Garbage Elemental",
+   "object": "related_card",
+   "type_line": "Creature — Elemental",
+   "uri": "https://api.scryfall.com/cards/de96731b-d4b1-4c6c-8413-f9e00030d11d"
+  }
+ ],
+ "artist": "Hector Ortiz",
+ "artist_ids": [
+  "b12df60b-57df-47d9-8f3e-cfc5fa3b8519"
+ ],
+ "booster": true,
+ "border_color": "silver",
+ "card_back_id": "0aeebaf5-8c7d-4636-9e82-8c27447861f7",
+ "cardmarket_id": 314663,
+ "cmc": 5.0,
+ "collector_number": "82c",
+ "color_identity": [
+  "R"
+ ],
+ "colors": [
+  "R"
+ ],
+ "digital": false,
+ "finishes": [
+  "nonfoil",
+  "foil"
+ ],
+ "foil": true,
+ "frame": "2015",
+ "full_art": false,
+ "game_changer": false,
+ "games": [
+  "paper"
+ ],
+ "highres_image": true,
+ "id": "a5579dfb-4e63-4e7b-80c5-56949518c71e",
+ "illustration_id": "d01f92ba-f1c7-4328-b701-8952739d808a",
+ "image_status": "highres_scan",
+ "image_updated_at": "2026-07-13T09:37:02Z",
+ "image_uris": {
+  "art": "https://cards.scryfall.io/art/front/a/5/a5579dfb-4e63-4e7b-80c5-56949518c71e.webp?1783935422",
+  "art_crop": "https://cards.scryfall.io/art_crop/front/a/5/a5579dfb-4e63-4e7b-80c5-56949518c71e.jpg?1783935422",
+  "border_crop": "https://cards.scryfall.io/border_crop/front/a/5/a5579dfb-4e63-4e7b-80c5-56949518c71e.jpg?1783935422",
+  "crop": "https://cards.scryfall.io/crop/front/a/5/a5579dfb-4e63-4e7b-80c5-56949518c71e.webp?1783935422",
+  "display": "https://cards.scryfall.io/display/front/a/5/a5579dfb-4e63-4e7b-80c5-56949518c71e.webp?1783935422",
+  "grid": "https://cards.scryfall.io/grid/front/a/5/a5579dfb-4e63-4e7b-80c5-56949518c71e.webp?1783935422",
+  "large": "https://cards.scryfall.io/large/front/a/5/a5579dfb-4e63-4e7b-80c5-56949518c71e.jpg?1783935422",
+  "normal": "https://cards.scryfall.io/normal/front/a/5/a5579dfb-4e63-4e7b-80c5-56949518c71e.jpg?1783935422",
+  "png": "https://cards.scryfall.io/png/front/a/5/a5579dfb-4e63-4e7b-80c5-56949518c71e.png?1783935422",
+  "small": "https://cards.scryfall.io/small/front/a/5/a5579dfb-4e63-4e7b-80c5-56949518c71e.jpg?1783935422",
+  "thumb": "https://cards.scryfall.io/thumb/front/a/5/a5579dfb-4e63-4e7b-80c5-56949518c71e.webp?1783935422"
+ },
+ "keywords": [
+  "Battle Cry"
+ ],
+ "lang": "en",
+ "layout": "normal",
+ "legalities": {
+  "alchemy": "not_legal",
+  "brawl": "not_legal",
+  "commander": "not_legal",
+  "competitivebrawl": "not_legal",
+  "duel": "not_legal",
+  "future": "not_legal",
+  "gladiator": "not_legal",
+  "historic": "not_legal",
+  "legacy": "not_legal",
+  "modern": "not_legal",
+  "oathbreaker": "not_legal",
+  "oldschool": "not_legal",
+  "pauper": "not_legal",
+  "paupercommander": "not_legal",
+  "penny": "not_legal",
+  "pioneer": "not_legal",
+  "predh": "not_legal",
+  "premodern": "not_legal",
+  "standard": "not_legal",
+  "standardbrawl": "not_legal",
+  "timeless": "not_legal",
+  "tlr": "not_legal",
+  "vintage": "not_legal"
+ },
+ "mana_cost": "{4}{R}",
+ "multiverse_ids": [
+  439631
+ ],
+ "name": "Garbage Elemental",
+ "nonfoil": true,
+ "object": "card",
+ "oracle_id": "9f10e977-25b5-4505-a56c-65bf1dfca64a",
+ "oracle_text": "Battle cry (Whenever this creature attacks, each other attacking creature gets +1/+0 until end of turn.)\nWhen this creature enters, roll two six-sided dice. Create a number of 1/1 red Goblin creature tokens equal to the difference between those results.",
+ "oversized": false,
+ "power": "3",
+ "prices": {
+  "eur": "0.25",
+  "eur_foil": "28.95",
+  "tix": null,
+  "usd": "0.44",
+  "usd_etched": null,
+  "usd_foil": "0.54"
+ },
+ "prints_search_uri": "https://api.scryfall.com/cards/search?order=released&q=oracleid%3A9f10e977-25b5-4505-a56c-65bf1dfca64a&unique=prints",
+ "promo": false,
+ "purchase_uris": {
+  "cardhoarder": "https://www.cardhoarder.com/cards?affiliate_id=scryfall&data%5Bsearch%5D=Garbage+Elemental&ref=card-profile&utm_campaign=affiliate&utm_medium=card&utm_source=scryfall",
+  "cardmarket": "https://www.cardmarket.com/en/Magic/Products?idProduct=314663&referrer=scryfall&utm_campaign=card_prices&utm_medium=text&utm_source=scryfall",
+  "tcgplayer": "https://partner.tcgplayer.com/c/4931599/1830156/21018?subId1=api&u=https%3A%2F%2Fwww.tcgplayer.com%2Fproduct%2F154462%3Fpage%3D1"
+ },
+ "rarity": "uncommon",
+ "related_uris": {
+  "edhrec": "https://edhrec.com/route/?cc=Garbage+Elemental",
+  "gatherer": "https://gatherer.wizards.com/Pages/Card/Details.aspx?multiverseid=439631&printed=false",
+  "tcgplayer_infinite_articles": "https://partner.tcgplayer.com/c/4931599/1830156/21018?subId1=api&trafcat=tcgplayer.com%2Fsearch%2Farticles&u=https%3A%2F%2Fwww.tcgplayer.com%2Fsearch%2Farticles%3FproductLineName%3Dmagic%26q%3DGarbage%2BElemental",
+  "tcgplayer_infinite_decks": "https://partner.tcgplayer.com/c/4931599/1830156/21018?subId1=api&trafcat=tcgplayer.com%2Fsearch%2Fdecks&u=https%3A%2F%2Fwww.tcgplayer.com%2Fsearch%2Fdecks%3FproductLineName%3Dmagic%26q%3DGarbage%2BElemental"
+ },
+ "released_at": "2017-12-08",
+ "reprint": false,
+ "reserved": false,
+ "rulings_uri": "https://api.scryfall.com/cards/a5579dfb-4e63-4e7b-80c5-56949518c71e/rulings",
+ "scryfall_set_uri": "https://scryfall.com/sets/ust?utm_source=api",
+ "scryfall_uri": "https://scryfall.com/card/ust/82c/garbage-elemental?utm_source=api",
+ "set": "ust",
+ "set_id": "83491685-880d-41dd-a4af-47d2b3b17c10",
+ "set_name": "Unstable",
+ "set_search_uri": "https://api.scryfall.com/cards/search?order=set&q=e%3Aust&unique=prints",
+ "set_type": "funny",
+ "set_uri": "https://api.scryfall.com/sets/83491685-880d-41dd-a4af-47d2b3b17c10",
+ "story_spotlight": false,
+ "tcgplayer_id": 154462,
+ "textless": false,
+ "toughness": "2",
+ "type_line": "Creature — Elemental",
+ "uri": "https://api.scryfall.com/cards/a5579dfb-4e63-4e7b-80c5-56949518c71e",
+ "variation": false
+}

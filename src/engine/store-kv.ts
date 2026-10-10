@@ -2301,8 +2301,41 @@ export async function gzipBytes(bytes: Uint8Array): Promise<Uint8Array> {
  *      GENERATION-ONLY: `prefer_score` is a stored value and the order the printings are stored
  *      in follows it. No layout, no format version, neither row touched, nothing read at query
  *      time.
+ *
+ *   92 (2026-10-10): DIFFERENT CARDS THAT SHARE A NAME COME BACK IN SCRYFALL'S ORDER. 236 names
+ *      are carried by more than one card — 105 by several tokens (`Elemental` by 31), about as
+ *      many by a card and the token that copies it, the rest by front cards, art-series cards and
+ *      seventeen by two or more real cards — and under `order=name`, or wherever another order
+ *      ties and falls to the name, this port broke the tie on the oracle id: `!"Inferno"` led
+ *      with the Jumpstart front card ffdn/8 where Scryfall has the instant first, and `g:ecc`'s
+ *      three Elemental tokens came back tecc/2, 10, 9 against tecc/9, 2, 10. 90 of the 236 names
+ *      matched, which is chance.
+ *
+ *      The order is a class — a card, then a token, emblem or front card, then an art-series
+ *      card — and ONE string compared as Scryfall compares names (lowercased, letters and digits
+ *      only): for a token the type line with the words left of its dash reversed, the colours
+ *      as WUBRG letters, the power, the toughness and the rules text, face by face; for a card
+ *      its rules text. One string and not columns: a token whose power is `*` sorts by what
+ *      follows the star, so the red `*\/*` Elemental with rules text comes after the red-green
+ *      5/5. Read with `!"<name>"` for each of the 236 (754 cards, ascending, descending, and
+ *      again half an hour later): 235 names in order, 1,900 of 1,901 pairs, and the 236th — the
+ *      two halves of B.F.M. — held by name. The order is ascending whatever `dir` says, and is
+ *      the name tiebreak of every other order (card_engine `same_name_tie`).
+ *
+ *      IT RIDES `name_rank`, WHICH EVERY SORT ALREADY READS: the dense rank of the name moves
+ *      above eight bits, and below it sits the card's place among the cards of its name — so the
+ *      lane a tie used to cross on its way to the card id decides it, and no query does more
+ *      work. A cross-partition key gains a segment between the name and the oracle id: one zero
+ *      byte for a card whose string is not read (every card but ~3,600 tokens, front cards, art
+ *      cards and the real cards of the seventeen names), the class and the string otherwise.
+ *      Through the real builder and engine, a store of all 754 cards answers all 236 names in
+ *      Scryfall's order, both directions.
+ *
+ *      Paired with ARCHIVE_FORMAT_VERSION 2026100912 -> 2026101001 (no layout moves and neither
+ *      row grows — card 288 bytes, printing 304 — but `name_rank` means something else) and
+ *      SORT_KEY_VERSION 5 -> 6 (the key gains the segment).
  */
-export const STORE_CONTENT_GENERATION = 91;
+export const STORE_CONTENT_GENERATION = 92;
 
 /**
  * Chunk key for a store. Keyed by store_key, so publishes never collide.

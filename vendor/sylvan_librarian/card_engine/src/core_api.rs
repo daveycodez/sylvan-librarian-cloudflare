@@ -4166,6 +4166,11 @@ impl NameHit<'_> {
 /// that search, the `*/*` tinr/13 with rules text sorts after the GR tokens and the `*/1` tthb/8
 /// between 1/1s and 2/1s. Neither decides a first answer in the 2026-09-26 corpus: both are
 /// Elemental tokens, and `exact=elemental` is City's Blessing // Elemental, by name.
+///
+/// THE WHOLE ORDER IS `crate::same_name_tie` (2026-10-10), which those two tokens gave away: one
+/// collated string, where this key is four fields. The search's sort reads that one; this key is
+/// left as fitted, because a name lookup asks only for the FIRST card and it answers every one
+/// probed.
 fn name_tie_key(card: &AOracleCard, strings: &AStrings) -> String {
     let at = |id: u32| str_at(strings, id);
     let (type_line, colors, power, toughness, text) = match card.faces.first() {
@@ -7927,6 +7932,85 @@ mod tests {
                 want_keys,
                 "merged partition streams must equal the unpartitioned order (orderby={orderby} {direction} unique={unique} ml={ml})"
             );
+        }
+    }
+
+    /// THE CARDS THAT SHARE A NAME, in the shapes the same-name order reads (`same_name_tie`): six
+    /// cards named Elemental — a real card, four tokens and a Jumpstart front card — plus a card
+    /// of another name on either side. Scryfall's order of the six, by collector id: the card;
+    /// then `card…` (the front card); then the tokens, the enchantment one first, the red 3/1
+    /// with haste, the red-green 5/5, and last the red `*/*` whose string is its text alone.
+    /// Distinct oracles and cmcs that tie, so every cut splits the name and every order's name
+    /// tiebreak is on trial.
+    fn same_name_rows() -> Vec<Value> {
+        let mut rows = Vec::new();
+        for (scry, name, type_line, colors, stats, text) in [
+            ("sn-before", "Elder Mastery", "Instant", json!({"R": true}), None, "Before the name."),
+            ("sn-star", "Elemental", "Token Creature \u{2014} Elemental", json!({"R": true}), Some(("*", "*")), "Trample"),
+            ("sn-rg", "Elemental", "Token Creature \u{2014} Elemental", json!({"R": true, "G": true}), Some(("5", "5")), ""),
+            ("sn-haste", "Elemental", "Token Creature \u{2014} Elemental", json!({"R": true}), Some(("3", "1")), "Haste"),
+            ("sn-ench", "Elemental", "Token Enchantment Creature \u{2014} Elemental", json!({"R": true}), Some(("3", "1")), ""),
+            ("sn-front", "Elemental", "Card", json!({}), None, "(Theme color: {R})"),
+            ("sn-card", "Elemental", "Creature \u{2014} Elemental", json!({"U": true}), Some(("1", "1")), "A card of the name."),
+            ("sn-after", "Elephant Ambush", "Instant", json!({"G": true}), None, "After the name."),
+        ] {
+            let mut r = annex_row(name, &format!("oracle-{scry}"), scry, "en", 150.0);
+            r["type_line"] = json!(type_line);
+            r["card_colors"] = colors;
+            r["oracle_text"] = json!(text);
+            r["cmc"] = json!(0.0);
+            // The row's label, where a query can read it back: a fixture id is hashed.
+            r["collector_number"] = json!(scry);
+            if let Some((power, toughness)) = stats {
+                r["creature_power_text"] = json!(power);
+                r["creature_toughness_text"] = json!(toughness);
+            }
+            rows.push(r);
+        }
+        rows
+    }
+
+    /// The order of the cards of one name is the same from one archive and from a merge of
+    /// partitions, ascending whatever the direction, and under an order that ties on its primary.
+    #[test]
+    fn the_cards_of_one_name_merge_across_partitions_as_one_archive_orders_them() {
+        let rows = same_name_rows();
+        let (_b, reference) = build_store(&rows);
+        let tree = json!({ "node_type": "TrueNode" });
+        let ids = |store: &BufferStore, orderby: &str, direction: &str| -> Vec<String> {
+            let opts = QueryOptions { fields: Some(vec!["collector_number".to_owned()]), ..keys_opts(orderby, direction, "card", false) };
+            store
+                .query_value(&tree, &opts)
+                .expect("query")
+                .rows
+                .iter()
+                .map(|r| r["collector_number"].as_str().expect("collector_number").to_owned())
+                .collect()
+        };
+        let elementals = ["sn-card", "sn-front", "sn-ench", "sn-haste", "sn-rg", "sn-star"];
+        let ascending: Vec<&str> = std::iter::once("sn-before").chain(elementals).chain(["sn-after"]).collect();
+        assert_eq!(ids(&reference, "name", "asc"), ascending);
+        // Descending by name, and the cards of ONE name still ascending among themselves.
+        let descending: Vec<&str> = std::iter::once("sn-after").chain(elementals).chain(["sn-before"]).collect();
+        assert_eq!(ids(&reference, "name", "desc"), descending);
+        // Every row ties on the mana value: the name decides, and then the same order.
+        assert_eq!(ids(&reference, "cmc", "asc"), ascending);
+        assert_eq!(ids(&reference, "cmc", "desc"), ascending);
+
+        for n in [2, 3, 4, 5, 7] {
+            let partitions = partitioned_stores(&rows, n);
+            for (orderby, direction) in [("name", "asc"), ("name", "desc"), ("cmc", "asc"), ("cmc", "desc"), ("edhrec", "asc")] {
+                let opts = keys_opts(orderby, direction, "card", false);
+                let want = reference.query_keys(&tree, &opts, 0).expect("reference keys");
+                let mut merged: Vec<Vec<u8>> =
+                    partitions.iter().flat_map(|p| p.query_keys(&tree, &opts, 0).expect("partition keys").keys).map(|(key, _)| key).collect();
+                merged.sort_unstable();
+                assert_eq!(
+                    merged.iter().collect::<Vec<_>>(),
+                    want.keys.iter().map(|(k, _)| k).collect::<Vec<_>>(),
+                    "N={n} orderby={orderby} {direction}"
+                );
+            }
         }
     }
 

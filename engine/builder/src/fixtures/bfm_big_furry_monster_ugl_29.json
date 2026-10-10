@@ -1,0 +1,146 @@
+{
+ "all_parts": [
+  {
+   "component": "combo_piece",
+   "id": "a9f9c279-e382-4feb-9575-196e7cf5d7dc",
+   "name": "B.F.M. (Big Furry Monster)",
+   "object": "related_card",
+   "type_line": "Creature — The Biggest, Baddest, Nastiest,",
+   "uri": "https://api.scryfall.com/cards/a9f9c279-e382-4feb-9575-196e7cf5d7dc"
+  },
+  {
+   "component": "combo_piece",
+   "id": "d15c6375-2e4e-47f7-88e1-d90794e7f724",
+   "name": "B.F.M. (Big Furry Monster)",
+   "object": "related_card",
+   "type_line": "Scariest Creature You'll Ever See",
+   "uri": "https://api.scryfall.com/cards/d15c6375-2e4e-47f7-88e1-d90794e7f724"
+  }
+ ],
+ "artist": "Douglas Shuler",
+ "artist_ids": [
+  "a9ddb513-51c7-455c-ab8f-5b90aae9f75b"
+ ],
+ "booster": true,
+ "border_color": "silver",
+ "card_back_id": "0aeebaf5-8c7d-4636-9e82-8c27447861f7",
+ "cardmarket_id": 11869,
+ "cmc": 15.0,
+ "collector_number": "29",
+ "color_identity": [
+  "B"
+ ],
+ "colors": [
+  "B"
+ ],
+ "digital": false,
+ "finishes": [
+  "nonfoil"
+ ],
+ "flavor_text": "than that. Even bigger. Keep going. More.\ndreadnoughts for jewelry. It was *big*!\"\n—Arna Kennerüd, skyknight",
+ "foil": false,
+ "frame": "1997",
+ "full_art": false,
+ "game_changer": false,
+ "games": [
+  "paper"
+ ],
+ "highres_image": true,
+ "id": "d15c6375-2e4e-47f7-88e1-d90794e7f724",
+ "illustration_id": "c85bd9c9-2a73-4e76-8c58-5903134b674d",
+ "image_status": "highres_scan",
+ "image_updated_at": "2026-07-13T12:40:31Z",
+ "image_uris": {
+  "art": "https://cards.scryfall.io/art/front/d/1/d15c6375-2e4e-47f7-88e1-d90794e7f724.webp?1783946431",
+  "art_crop": "https://cards.scryfall.io/art_crop/front/d/1/d15c6375-2e4e-47f7-88e1-d90794e7f724.jpg?1783946431",
+  "border_crop": "https://cards.scryfall.io/border_crop/front/d/1/d15c6375-2e4e-47f7-88e1-d90794e7f724.jpg?1783946431",
+  "crop": "https://cards.scryfall.io/crop/front/d/1/d15c6375-2e4e-47f7-88e1-d90794e7f724.webp?1783946431",
+  "display": "https://cards.scryfall.io/display/front/d/1/d15c6375-2e4e-47f7-88e1-d90794e7f724.webp?1783946431",
+  "grid": "https://cards.scryfall.io/grid/front/d/1/d15c6375-2e4e-47f7-88e1-d90794e7f724.webp?1783946431",
+  "large": "https://cards.scryfall.io/large/front/d/1/d15c6375-2e4e-47f7-88e1-d90794e7f724.jpg?1783946431",
+  "normal": "https://cards.scryfall.io/normal/front/d/1/d15c6375-2e4e-47f7-88e1-d90794e7f724.jpg?1783946431",
+  "png": "https://cards.scryfall.io/png/front/d/1/d15c6375-2e4e-47f7-88e1-d90794e7f724.png?1783946431",
+  "small": "https://cards.scryfall.io/small/front/d/1/d15c6375-2e4e-47f7-88e1-d90794e7f724.jpg?1783946431",
+  "thumb": "https://cards.scryfall.io/thumb/front/d/1/d15c6375-2e4e-47f7-88e1-d90794e7f724.webp?1783946431"
+ },
+ "keywords": [],
+ "lang": "en",
+ "layout": "normal",
+ "legalities": {
+  "alchemy": "not_legal",
+  "brawl": "not_legal",
+  "commander": "not_legal",
+  "competitivebrawl": "not_legal",
+  "duel": "not_legal",
+  "future": "not_legal",
+  "gladiator": "not_legal",
+  "historic": "not_legal",
+  "legacy": "not_legal",
+  "modern": "not_legal",
+  "oathbreaker": "not_legal",
+  "oldschool": "not_legal",
+  "pauper": "not_legal",
+  "paupercommander": "not_legal",
+  "penny": "not_legal",
+  "pioneer": "not_legal",
+  "predh": "not_legal",
+  "premodern": "not_legal",
+  "standard": "not_legal",
+  "standardbrawl": "not_legal",
+  "timeless": "not_legal",
+  "tlr": "not_legal",
+  "vintage": "not_legal"
+ },
+ "mana_cost": "{B}{B}{B}{B}{B}{B}{B}{B}{B}{B}{B}{B}{B}{B}{B}",
+ "multiverse_ids": [
+  9844
+ ],
+ "name": "B.F.M. (Big Furry Monster)",
+ "nonfoil": true,
+ "object": "card",
+ "oracle_id": "d0bd00f2-91bb-4c9c-a8e7-f8aeadc0bbb9",
+ "oracle_text": "B.F.M. onto the battlefield. If one B.F.M. card\nmore creatures.",
+ "oversized": false,
+ "power": "99",
+ "prices": {
+  "eur": "9.94",
+  "eur_foil": null,
+  "tix": null,
+  "usd": "20.24",
+  "usd_etched": null,
+  "usd_foil": null
+ },
+ "prints_search_uri": "https://api.scryfall.com/cards/search?order=released&q=oracleid%3Ad0bd00f2-91bb-4c9c-a8e7-f8aeadc0bbb9&unique=prints",
+ "promo": false,
+ "purchase_uris": {
+  "cardhoarder": "https://www.cardhoarder.com/cards?affiliate_id=scryfall&data%5Bsearch%5D=B.F.M.+%28Big+Furry+Monster%29&ref=card-profile&utm_campaign=affiliate&utm_medium=card&utm_source=scryfall",
+  "cardmarket": "https://www.cardmarket.com/en/Magic/Products?idProduct=11869&referrer=scryfall&utm_campaign=card_prices&utm_medium=text&utm_source=scryfall",
+  "tcgplayer": "https://partner.tcgplayer.com/c/4931599/1830156/21018?subId1=api&u=https%3A%2F%2Fwww.tcgplayer.com%2Fproduct%2F829%3Fpage%3D1"
+ },
+ "rarity": "rare",
+ "related_uris": {
+  "edhrec": "https://edhrec.com/route/?cc=B.F.M.+%28Big+Furry+Monster%29",
+  "gatherer": "https://gatherer.wizards.com/Pages/Card/Details.aspx?multiverseid=9844&printed=false",
+  "tcgplayer_infinite_articles": "https://partner.tcgplayer.com/c/4931599/1830156/21018?subId1=api&trafcat=tcgplayer.com%2Fsearch%2Farticles&u=https%3A%2F%2Fwww.tcgplayer.com%2Fsearch%2Farticles%3FproductLineName%3Dmagic%26q%3DB.F.M.%2B%2528Big%2BFurry%2BMonster%2529",
+  "tcgplayer_infinite_decks": "https://partner.tcgplayer.com/c/4931599/1830156/21018?subId1=api&trafcat=tcgplayer.com%2Fsearch%2Fdecks&u=https%3A%2F%2Fwww.tcgplayer.com%2Fsearch%2Fdecks%3FproductLineName%3Dmagic%26q%3DB.F.M.%2B%2528Big%2BFurry%2BMonster%2529"
+ },
+ "released_at": "1998-08-11",
+ "reprint": false,
+ "reserved": false,
+ "rulings_uri": "https://api.scryfall.com/cards/d15c6375-2e4e-47f7-88e1-d90794e7f724/rulings",
+ "scryfall_set_uri": "https://scryfall.com/sets/ugl?utm_source=api",
+ "scryfall_uri": "https://scryfall.com/card/ugl/29/bfm-(big-furry-monster)?utm_source=api",
+ "set": "ugl",
+ "set_id": "3404fc78-6678-4cf4-bd39-4c0be3bb7baf",
+ "set_name": "Unglued",
+ "set_search_uri": "https://api.scryfall.com/cards/search?order=set&q=e%3Augl&unique=prints",
+ "set_type": "funny",
+ "set_uri": "https://api.scryfall.com/sets/3404fc78-6678-4cf4-bd39-4c0be3bb7baf",
+ "story_spotlight": false,
+ "tcgplayer_id": 829,
+ "textless": false,
+ "toughness": "99",
+ "type_line": "Scariest Creature You'll Ever See",
+ "uri": "https://api.scryfall.com/cards/d15c6375-2e4e-47f7-88e1-d90794e7f724",
+ "variation": false
+}

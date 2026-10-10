@@ -4625,6 +4625,60 @@
 			"method": "GET",
 			"path": "/cards/search?q=%21%22Island%22+year%3C%3D1996&unique=prints&include_extras=true",
 			"note": "2026-10-10. 48 rows, itp/56 down to the Collectors' Editions. Island has 1,352 ranks and the rank was clamped at 1,024, so its oldest covered printings and its memorabilia came back in no order."
+		},
+		{
+			"name": "same-name-card-before-front-card",
+			"method": "GET",
+			"path": "/cards/search?q=%21%22Inferno%22&include_extras=true",
+			"note": "2026-10-10. 8ed/196, then ffdn/8: the instant before the Jumpstart front card of its name. The port broke the tie on the oracle id and led with the front card."
+		},
+		{
+			"name": "same-name-tokens-of-one-set",
+			"method": "GET",
+			"path": "/cards/search?q=%21%22Elemental%22+e%3Atecc&include_extras=true",
+			"note": "2026-10-10. tecc/9, tecc/2, tecc/10: red-green 5/5, white 4/4, green-white */* — the colours as WUBRG text (`rg`, `w`, `wg`). The port answered tecc/2, 10, 9."
+		},
+		{
+			"name": "same-name-tokens-whole-name",
+			"method": "GET",
+			"path": "/cards/search?q=%21%22Elemental%22&include_extras=true",
+			"note": "2026-10-10. 35 cards: City's Blessing // Elemental, the 31 Elemental tokens from the enchantment tbng/7 to the five-colour tfin/21 — the `*/1` tthb/8 between the 1/1s and the 2/1, the red `*/*` tinr/13 after the red-green tecc/9 — then Elemental // Centaur and the two Elemental // Elemental (tust/11, tust/17)."
+		},
+		{
+			"name": "same-name-order-under-a-tied-order-descending",
+			"method": "GET",
+			"path": "/cards/search?q=%21%22Elemental%22+e%3Atecc&include_extras=true&order=cmc&dir=desc",
+			"note": "2026-10-10. tecc/9, tecc/2, tecc/10 again: the three tie on the mana value, the name decides, and the order of the cards of one name is ascending whatever `dir` says."
+		},
+		{
+			"name": "same-name-order-name-descending",
+			"method": "GET",
+			"path": "/cards/search?q=%21%22Spirit%22&include_extras=true&dir=desc",
+			"note": "2026-10-10. Spirit // Spirit first (the names descend), then the 23 cards named Spirit in the SAME order as ascending: the front card jtla/16, the enchantment token tc15/23, the colourless tokens, green, red, blue, white, white-black, white-red."
+		},
+		{
+			"name": "same-name-real-cards-by-rules-text",
+			"method": "GET",
+			"path": "/cards/search?q=%21%22Garbage+Elemental%22&include_extras=true",
+			"note": "2026-10-10. ust/82c, 82d, 82a, 82f, 82e, 82b: six real cards of one name by their rules text — Battle cry, Cascade, Frenzy, Last strike, Unleash, When — not by collector number, power or id."
+		},
+		{
+			"name": "same-name-artifact-token-before-front-card",
+			"method": "GET",
+			"path": "/cards/search?q=%21%22Treasure%22+%28e%3Atfra+or+e%3Afj22%29&include_extras=true",
+			"note": "2026-10-10. tfra/15, then fj22/36: `artifacttokentreasure…` before `card…`, where `!\"Spirit\"` has its front card before every creature token."
+		},
+		{
+			"name": "same-name-enchantment-token-first",
+			"method": "GET",
+			"path": "/cards/search?q=t%3Atoken+%28t%3Asoldier+or+t%3Abird%29+e%3Atbng&include_extras=true&order=name",
+			"note": "2026-10-10. tbng/4, tbng/1, tbng/2, tbng/3: of the two Bird tokens of Born of the Gods the blue enchantment creature comes before the white creature, its type words reversed reading `creatureenchantmenttoken` against `creaturetoken`."
+		},
+		{
+			"name": "same-name-measured-pair",
+			"method": "GET",
+			"path": "/cards/search?q=%21%22B.F.M.+%28Big+Furry+Monster%29%22&include_extras=true",
+			"note": "2026-10-10. ugl/28, ugl/29: the left half first. The one pair of 1,901 the rules text orders the other way, so it is held by name; the oracle id happened to agree."
 		}
 	]
 }

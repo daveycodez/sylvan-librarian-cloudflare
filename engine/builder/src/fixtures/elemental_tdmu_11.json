@@ -1,0 +1,146 @@
+{
+ "all_parts": [
+  {
+   "component": "combo_piece",
+   "id": "f175746b-e98e-448c-b3ca-bcbcdf2817cf",
+   "name": "Lagomos, Hand of Hatred",
+   "object": "related_card",
+   "type_line": "Legendary Creature — Human Shaman",
+   "uri": "https://api.scryfall.com/cards/f175746b-e98e-448c-b3ca-bcbcdf2817cf"
+  },
+  {
+   "component": "token",
+   "id": "c6b2ff6f-d55a-4fa2-86be-e2e012267de4",
+   "name": "Elemental",
+   "object": "related_card",
+   "type_line": "Token Creature — Elemental",
+   "uri": "https://api.scryfall.com/cards/c6b2ff6f-d55a-4fa2-86be-e2e012267de4"
+  }
+ ],
+ "artist": "Tuan Duong Chu",
+ "artist_ids": [
+  "d84246f9-a536-485f-a21d-a237302ed100"
+ ],
+ "booster": false,
+ "border_color": "black",
+ "card_back_id": "0aeebaf5-8c7d-4636-9e82-8c27447861f7",
+ "cardmarket_id": 673072,
+ "cmc": 0.0,
+ "collector_number": "11",
+ "color_identity": [
+  "R"
+ ],
+ "colors": [
+  "R"
+ ],
+ "digital": false,
+ "finishes": [
+  "nonfoil",
+  "foil"
+ ],
+ "foil": true,
+ "frame": "2015",
+ "full_art": false,
+ "game_changer": false,
+ "games": [
+  "paper"
+ ],
+ "highres_image": true,
+ "id": "c6b2ff6f-d55a-4fa2-86be-e2e012267de4",
+ "illustration_id": "f360ef5f-140e-4bc4-9ba8-5e5a64930df7",
+ "image_status": "highres_scan",
+ "image_updated_at": "2026-07-13T05:38:49Z",
+ "image_uris": {
+  "art": "https://cards.scryfall.io/art/front/c/6/c6b2ff6f-d55a-4fa2-86be-e2e012267de4.webp?1783921129",
+  "art_crop": "https://cards.scryfall.io/art_crop/front/c/6/c6b2ff6f-d55a-4fa2-86be-e2e012267de4.jpg?1783921129",
+  "border_crop": "https://cards.scryfall.io/border_crop/front/c/6/c6b2ff6f-d55a-4fa2-86be-e2e012267de4.jpg?1783921129",
+  "crop": "https://cards.scryfall.io/crop/front/c/6/c6b2ff6f-d55a-4fa2-86be-e2e012267de4.webp?1783921129",
+  "display": "https://cards.scryfall.io/display/front/c/6/c6b2ff6f-d55a-4fa2-86be-e2e012267de4.webp?1783921129",
+  "grid": "https://cards.scryfall.io/grid/front/c/6/c6b2ff6f-d55a-4fa2-86be-e2e012267de4.webp?1783921129",
+  "large": "https://cards.scryfall.io/large/front/c/6/c6b2ff6f-d55a-4fa2-86be-e2e012267de4.jpg?1783921129",
+  "normal": "https://cards.scryfall.io/normal/front/c/6/c6b2ff6f-d55a-4fa2-86be-e2e012267de4.jpg?1783921129",
+  "png": "https://cards.scryfall.io/png/front/c/6/c6b2ff6f-d55a-4fa2-86be-e2e012267de4.png?1783921129",
+  "small": "https://cards.scryfall.io/small/front/c/6/c6b2ff6f-d55a-4fa2-86be-e2e012267de4.jpg?1783921129",
+  "thumb": "https://cards.scryfall.io/thumb/front/c/6/c6b2ff6f-d55a-4fa2-86be-e2e012267de4.webp?1783921129"
+ },
+ "keywords": [
+  "Haste",
+  "Trample"
+ ],
+ "lang": "en",
+ "layout": "token",
+ "legalities": {
+  "alchemy": "not_legal",
+  "brawl": "not_legal",
+  "commander": "not_legal",
+  "competitivebrawl": "not_legal",
+  "duel": "not_legal",
+  "future": "not_legal",
+  "gladiator": "not_legal",
+  "historic": "not_legal",
+  "legacy": "not_legal",
+  "modern": "not_legal",
+  "oathbreaker": "not_legal",
+  "oldschool": "not_legal",
+  "pauper": "not_legal",
+  "paupercommander": "not_legal",
+  "penny": "not_legal",
+  "pioneer": "not_legal",
+  "predh": "not_legal",
+  "premodern": "not_legal",
+  "standard": "not_legal",
+  "standardbrawl": "not_legal",
+  "timeless": "not_legal",
+  "tlr": "not_legal",
+  "vintage": "not_legal"
+ },
+ "mana_cost": "",
+ "multiverse_ids": [],
+ "name": "Elemental",
+ "nonfoil": true,
+ "object": "card",
+ "oracle_id": "6a5497df-7ad8-443b-afc9-0017f9b1eac0",
+ "oracle_text": "Trample, haste",
+ "oversized": false,
+ "power": "2",
+ "prices": {
+  "eur": "0.22",
+  "eur_foil": "1.07",
+  "tix": null,
+  "usd": "0.28",
+  "usd_etched": null,
+  "usd_foil": null
+ },
+ "prints_search_uri": "https://api.scryfall.com/cards/search?order=released&q=oracleid%3A6a5497df-7ad8-443b-afc9-0017f9b1eac0&unique=prints",
+ "promo": false,
+ "purchase_uris": {
+  "cardhoarder": "https://www.cardhoarder.com/cards?affiliate_id=scryfall&data%5Bsearch%5D=Elemental&ref=card-profile&utm_campaign=affiliate&utm_medium=card&utm_source=scryfall",
+  "cardmarket": "https://www.cardmarket.com/en/Magic/Products?idProduct=673072&referrer=scryfall&utm_campaign=card_prices&utm_medium=text&utm_source=scryfall",
+  "tcgplayer": "https://partner.tcgplayer.com/c/4931599/1830156/21018?subId1=api&u=https%3A%2F%2Fwww.tcgplayer.com%2Fproduct%2F283708%3Fpage%3D1"
+ },
+ "rarity": "common",
+ "related_uris": {
+  "edhrec": "https://edhrec.com/route/?cc=Elemental",
+  "tcgplayer_infinite_articles": "https://partner.tcgplayer.com/c/4931599/1830156/21018?subId1=api&trafcat=tcgplayer.com%2Fsearch%2Farticles&u=https%3A%2F%2Fwww.tcgplayer.com%2Fsearch%2Farticles%3FproductLineName%3Dmagic%26q%3DElemental",
+  "tcgplayer_infinite_decks": "https://partner.tcgplayer.com/c/4931599/1830156/21018?subId1=api&trafcat=tcgplayer.com%2Fsearch%2Fdecks&u=https%3A%2F%2Fwww.tcgplayer.com%2Fsearch%2Fdecks%3FproductLineName%3Dmagic%26q%3DElemental"
+ },
+ "released_at": "2022-09-09",
+ "reprint": false,
+ "reserved": false,
+ "rulings_uri": "https://api.scryfall.com/cards/c6b2ff6f-d55a-4fa2-86be-e2e012267de4/rulings",
+ "scryfall_set_uri": "https://scryfall.com/sets/tdmu?utm_source=api",
+ "scryfall_uri": "https://scryfall.com/card/tdmu/11/elemental?utm_source=api",
+ "set": "tdmu",
+ "set_id": "1e96e903-601f-4286-b61e-8da021cbceff",
+ "set_name": "Dominaria United Tokens",
+ "set_search_uri": "https://api.scryfall.com/cards/search?order=set&q=e%3Atdmu&unique=prints",
+ "set_type": "token",
+ "set_uri": "https://api.scryfall.com/sets/1e96e903-601f-4286-b61e-8da021cbceff",
+ "story_spotlight": false,
+ "tcgplayer_id": 283708,
+ "textless": false,
+ "toughness": "1",
+ "type_line": "Token Creature — Elemental",
+ "uri": "https://api.scryfall.com/cards/c6b2ff6f-d55a-4fa2-86be-e2e012267de4",
+ "variation": false
+}

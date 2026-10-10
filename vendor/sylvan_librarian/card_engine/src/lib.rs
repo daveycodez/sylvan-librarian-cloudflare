@@ -1003,10 +1003,11 @@ struct OracleCard {
     illustration_count: u16,
     edhrec_rank: Option<u32>,         // up to ~30k unique cards
     cubecobra_score: Option<f32>,
-    // Dense rank of card_name_lower in byte order (equal names share a rank so
-    // sort secondaries break their ties). Assigned post-load by
-    // assign_name_ranks; the sort key for SortCol::Name. Ranks stay below 2^24
-    // so the f32 sort-key conversion is exact.
+    // The card's place in the archive's name order, in two halves (see `assign_name_ranks`): the
+    // dense rank of its collated name above `NAME_TIE_BITS` — equal names share it, and it alone
+    // is the sort key for SortCol::Name — and, below, where the card sits among the cards that
+    // share that name (`same_name_tie`), which every order's name tiebreak reads with it. The
+    // whole stays below 2^24, so an f32 holds either half exactly.
     name_rank: u32,
 
     // Collection elements interned as u16 ids into CardData.coll_vocab (see
@@ -1135,7 +1136,8 @@ struct DivergentPrinting {
     /// not: `sld/1969` prints `Mechtitan // Mechtitan` where its card is `Mechtitan Core`, and
     /// Scryfall orders it under `mechtitanmechtitan`. The rank has to be STORED rather than derived
     /// at query time for the same reason `OracleCard::name_rank` is: it is a position in the
-    /// archive's whole name order, which no single row can compute.
+    /// archive's whole name order, which no single row can compute. Shifted as the card's is
+    /// (`NAME_TIE_BITS`), with nothing in the low half: a record is a name, not a card.
     name_rank: u32,
     /// Scryfall's FACE-level `layout` — a SECOND value those printings answer `layout:` with.
     ///
@@ -4854,9 +4856,223 @@ pub(crate) fn fold_ae(value: &str) -> String {
     if value.contains(['æ', 'Æ']) { value.replace('æ', "ae").replace('Æ', "AE") } else { value.to_owned() }
 }
 
-/// Dense rank of `collate_name(folded name)` onto each card (equal collated names share a rank; the
-/// standard sort secondaries break their ties). Every card has a name, so unlike the other sort
-/// columns the rank is never absent.
+// ─── The order of DIFFERENT cards that share a name (LOCAL PATCH, Cloudflare port) ───────────
+//
+// 236 names are carried by more than one card (all_cards, 2026-10-10): 105 by several tokens
+// (`Elemental` by 31, `Spirit` by 23), about as many by a card and the token that copies it, the
+// rest by Jumpstart front cards, art-series cards, and seventeen by two or more real cards — the
+// six-fold Unstable variants, Mystery Booster's playtest cards beside the real card of the name.
+// Under `order=name`, and wherever another order ties and falls to the name, api.scryfall.com
+// returns such cards in ONE order, a card's printings together, and the same order ascending
+// whatever `dir` says. This port broke the tie on the oracle id: 90 of the 236 names came back in
+// Scryfall's order, which is what chance gives.
+//
+// THE ORDER, MEASURED (`!"<name>"` with `unique=cards`, extras and variations in, each of the 236
+// read ascending, descending and again half an hour later: 754 cards, 1,901 pairs). First a CLASS,
+// then one string, compared as Scryfall compares names — lowercased, everything that is not a
+// letter or a digit removed:
+//
+//   class 0   a card that is neither of the two below
+//   class 1   a token, an emblem or a Jumpstart front card: the first face's type line carries
+//             `Token` or `Emblem`, or is `Card`
+//   class 2   an art-series card: two faces, each of type `Card`
+//
+//   classes 1 and 2   face by face: the type line with the words left of its dash REVERSED
+//                     (`Token Artifact Creature — Soldier` reads `creatureartifacttokensoldier`),
+//                     the colours as WUBRG letters, the power, the toughness, the rules text
+//   class 0           face by face: the rules text
+//
+// It is one string and not a list of columns, and three things show it. A token whose power is
+// `*` sorts by what FOLLOWS the star: of 31 Elemental tokens, the red `*/*` with rules text
+// (tinr/13, `…rtramplethiscreatures…`) comes after the red-green 5/5 (`…rg55`) and before the
+// blue 1/0, though it is red; the `*/1` tthb/8 (`…r1tramplehaste`) sits between the 1/1s and the
+// 2/1; the Ooze `*/*+1` between 1/1 and 2/2. The reversed type words put `Token Artifact
+// Creature` before `Token Enchantment Creature` before `Token Creature` for every subtype — an
+// enchantment Bird ahead of a plain black one — and `Card` between an artifact token and a
+// creature token (`Treasure` the token then the front card, `Spirit` the front card then 22
+// tokens). And the colours order as text: `b`, `br`, `g`, `r`, `rg`, `u`, `ur`, `w`, `wg`, `wu`.
+//
+// 235 of the 236 names in Scryfall's order, 1,900 of the 1,901 pairs: all 105 token names, all
+// eleven of front cards, sixteen of the seventeen of real cards (the Unstable variants by their
+// rules text — `Garbage Elemental` c, d, a, f, e, b — whatever their power or cost). The one that
+// is not is the two halves of B.F.M., whose left half comes first and whose text does not; it is
+// two printings long and named below. The same order holds as the name tiebreak of `order=cmc`,
+// `rarity`, `color`, `power`, `toughness` and `edhrec`, and under `unique=prints` (fourteen
+// queries, 370 adjacent ties, none against).
+//
+// WHAT IT COSTS A QUERY: NOTHING IT DID NOT PAY. The order rides `name_rank`, which every sort
+// already reads: its low `NAME_TIE_BITS` hold the card's place among the cards of its name, so the
+// lane a tie used to cross on the way to the card id now decides it. Across partitions the key
+// carries one more byte for a card of class 0 and the string itself for the others — tokens,
+// front cards and art cards, 3,500 of 38,700 cards, whose strings are short — and for the real
+// cards of the seventeen names.
+
+/// How many low bits of `name_rank` hold the same-name order: an ordinal above one flag bit.
+pub(crate) const NAME_TIE_BITS: u32 = 8;
+/// The low bit: the card's same-name string is not empty, so a cross-partition key must carry it.
+const NAME_TIE_KEYED: u32 = 1;
+/// The ordinal's ceiling. The largest name is `Elemental`, 31 cards corpus-wide.
+const NAME_TIE_MAX_ORDINAL: u32 = (1 << (NAME_TIE_BITS - 1)) - 1;
+
+/// The collated names two or more REAL cards share, sorted — the only class-0 cards whose rules
+/// text is read, because reading it for every card would put a card's whole text on the wire of
+/// every cross-partition page to order seventeen names. MEASURED, like the tables beside it
+/// (all_cards 2026-10-10): a pair of real cards that comes to share a name later ties, and falls
+/// to the oracle id as every pair did before, until it is listed here.
+const SAME_NAME_CARDS: [&str; 17] = [
+    "artistalley",
+    "bfmbigfurrymonster",
+    "everythingamajig",
+    "fastfurious",
+    "garbageelemental",
+    "ineffableblessing",
+    "jovenandchandler",
+    "knightofthekitchensink",
+    "nowayout",
+    "pickyourpoison",
+    "redherring",
+    "scavengerhunt",
+    "slyspy",
+    "thesuperlatorium",
+    "triviacontest",
+    "unquenchablefury",
+    "verycrypticcommand",
+];
+
+/// ...and the cards whose string is MEASURED rather than read: the two halves of B.F.M. (Big Furry
+/// Monster), which api.scryfall.com returns left half first (ugl/28, then ugl/29; 2026-10-10)
+/// where the rules text says the right — `bfmontothebattlefield…` before `youmustcastboth…`. The
+/// one pair of the 1,901 the rule gets wrong, and no field of the two card objects read as text
+/// orders it without breaking another name.
+const SAME_NAME_MEASURED: [(u128, &str); 2] =
+    [(0x8fd7_503b_e722_49a7_a8ac_786e_7354_bc95, "0"), (0xd0bd_00f2_91bb_4c9c_a8e7_f8ae_adc0_bbb9, "1")];
+
+/// One face of a card as the same-name order reads it (a card without faces is its own one face).
+pub(crate) struct NameTieFace<'a> {
+    type_line: &'a str,
+    /// The face's own colours, or the card's where the face states none (`face_color_masks`).
+    colors: u8,
+    power: &'a str,
+    toughness: &'a str,
+    text: &'a str,
+}
+
+/// Append `text` as Scryfall collates it here: its ASCII letters and digits, lowercased.
+fn push_tie_text(key: &mut String, text: &str) {
+    key.extend(text.chars().filter(char::is_ascii_alphanumeric).map(|c| c.to_ascii_lowercase()));
+}
+
+/// Where a card sits among the cards that share its name: `(class, whether the string is read,
+/// the string)` — see the section header for the measurement. `collated` is the card's own
+/// collated name and `faces` its faces in order.
+pub(crate) fn same_name_tie(collated: &str, oracle_id: u128, faces: &[NameTieFace]) -> (u8, bool, String) {
+    let first = faces.first().map_or("", |f| f.type_line);
+    let class = if faces.len() > 1 && faces.iter().all(|f| f.type_line == "Card") {
+        2
+    } else if first == "Card"
+        || first.split(" \u{2014} ").next().unwrap_or("").split_whitespace().any(|w| w == "Token" || w == "Emblem")
+    {
+        1
+    } else {
+        0
+    };
+    let mut key = String::new();
+    if class == 0 {
+        if SAME_NAME_CARDS.binary_search(&collated).is_err() {
+            return (0, false, key);
+        }
+        if let Some((_, measured)) = SAME_NAME_MEASURED.iter().find(|(id, _)| *id == oracle_id) {
+            return (0, true, (*measured).to_owned());
+        }
+        for face in faces {
+            push_tie_text(&mut key, face.text);
+        }
+        return (0, true, key);
+    }
+    for face in faces {
+        let (types, subtypes) = face.type_line.split_once(" \u{2014} ").unwrap_or((face.type_line, ""));
+        for word in types.split_whitespace().rev() {
+            push_tie_text(&mut key, word);
+        }
+        push_tie_text(&mut key, subtypes);
+        for (bit, letter) in [(1u8, 'w'), (2, 'u'), (4, 'b'), (8, 'r'), (16, 'g')] {
+            if face.colors & bit != 0 {
+                key.push(letter);
+            }
+        }
+        push_tie_text(&mut key, face.power);
+        push_tie_text(&mut key, face.toughness);
+        push_tie_text(&mut key, face.text);
+    }
+    (class, true, key)
+}
+
+/// A card's faces for [`same_name_tie`], at build time.
+fn name_tie_faces_of<'a>(card: &'a OracleCard, strings: &'a [String]) -> Vec<NameTieFace<'a>> {
+    let at = |id: u32| strings.get(id as usize).map_or("", String::as_str);
+    if card.faces.is_empty() {
+        return vec![NameTieFace {
+            type_line: at(card.type_line_id),
+            colors: card.card_colors,
+            power: at(card.creature_power_text_id),
+            toughness: at(card.creature_toughness_text_id),
+            text: at(card.oracle_text_id),
+        }];
+    }
+    card.faces
+        .iter()
+        .map(|f| NameTieFace {
+            type_line: at(f.type_line_id),
+            colors: f.card_colors.unwrap_or(card.card_colors),
+            power: at(f.creature_power_text_id),
+            toughness: at(f.creature_toughness_text_id),
+            text: at(f.oracle_text_id),
+        })
+        .collect()
+}
+
+/// [`name_tie_faces_of`] over an archived card — the same fields through the same sentinels.
+fn name_tie_faces<'a>(card: &'a AOracleCard, strings: &'a AStrings) -> Vec<NameTieFace<'a>> {
+    let at = |id: u32| str_at(strings, id).unwrap_or("");
+    if card.faces.is_empty() {
+        return vec![NameTieFace {
+            type_line: at(u32::from(card.type_line_id)),
+            colors: card.card_colors,
+            power: at(u32::from(card.creature_power_text_id)),
+            toughness: at(u32::from(card.creature_toughness_text_id)),
+            text: at(u32::from(card.oracle_text_id)),
+        }];
+    }
+    card.faces
+        .iter()
+        .map(|f| NameTieFace {
+            type_line: at(u32::from(f.type_line_id)),
+            colors: f.card_colors.as_ref().map_or(card.card_colors, |v| *v),
+            power: at(u32::from(f.creature_power_text_id)),
+            toughness: at(u32::from(f.creature_toughness_text_id)),
+            text: at(u32::from(f.oracle_text_id)),
+        })
+        .collect()
+}
+
+/// The same-name order as a cross-partition key segment, in the order `assign_name_ranks` ranked
+/// it inside the archive: one zero byte for a card whose string is not read (class 0, the whole
+/// corpus but ~3,600 cards), otherwise `1 + class`, the string and a terminator below every
+/// character it holds.
+fn push_same_name_tie(key: &mut Vec<u8>, card: &AOracleCard, strings: &AStrings) {
+    if u32::from(card.name_rank) & NAME_TIE_KEYED == 0 {
+        key.push(0);
+        return;
+    }
+    let (class, _, tie) = same_name_tie(collated_name(card, strings), u128::from(card.oracle_id), &name_tie_faces(card, strings));
+    key.push(1 + class);
+    key.extend_from_slice(tie.as_bytes());
+    key.push(0);
+}
+
+/// The name order, onto each card: the dense rank of `collate_name(folded name)` above
+/// `NAME_TIE_BITS` (equal collated names share it) and, below, the card's place among the cards of
+/// that name. Every card has a name, so unlike the other sort columns the rank is never absent.
 ///
 /// RANKED OVER THE UNION OF CARD NAMES AND DIVERGENT PRINTING NAMES, on one number line. 81
 /// printings print a name their card does not (`DivergentPrinting`), `order=name` sorts a printing
@@ -4866,28 +5082,55 @@ pub(crate) fn fold_ae(value: &str) -> String {
 ///
 /// A divergent name that IS also some card's name shares that card's rank, exactly as two cards
 /// sharing a name do — this is a dense rank over the value, not over the row.
+///
+/// THE LOW HALF IS THE ORDER OF CARDS THAT SHARE A NAME: an ordinal over the archive's cards of
+/// one collated name by `same_name_tie`'s `(class, string)` — two cards it does not tell apart
+/// share an ordinal and fall to the card id, as every such pair used to — and the bit that says
+/// the string is not empty. It decides nothing between two names, which differ above it, and
+/// `SortCol::Name` does not read it at all (`sort_primary_f32` shifts it away): the name tiebreak
+/// is ascending whatever the direction, and a descending primary that carried it would return
+/// `Elemental`'s 31 tokens backwards.
 fn assign_name_ranks(cards: &mut [OracleCard], strings: &[String]) {
-    // (collated name, card index, divergent index within that card). `None` addresses the card
-    // itself; `Some(d)` its d-th divergent record.
-    let mut keyed: Vec<(String, u32, Option<u32>)> = Vec::with_capacity(cards.len());
+    // (collated name, the card's same-name tie, card index, divergent index within that card).
+    // `None` addresses the card itself; `Some(d)` its d-th divergent record, which is a name and
+    // not a card: it has no tie, and sorts ahead of the cards of its name.
+    type Tie = (u8, String, bool);
+    let mut keyed: Vec<(String, Option<Tie>, u32, Option<u32>)> = Vec::with_capacity(cards.len());
     for (i, c) in cards.iter().enumerate() {
-        keyed.push((collated_name_of(c, strings).to_owned(), i as u32, None));
+        let collated = collated_name_of(c, strings).to_owned();
+        let (class, read, tie) = same_name_tie(&collated, c.oracle_id, &name_tie_faces_of(c, strings));
+        keyed.push((collated, Some((class, tie, read)), i as u32, None));
         for (d, rec) in c.divergent.iter().enumerate() {
             let folded = strings.get(rec.card_name_folded_id as usize).map_or("", String::as_str);
-            keyed.push((collate_name(folded), i as u32, Some(d as u32)));
+            keyed.push((collate_name(folded), None, i as u32, Some(d as u32)));
         }
     }
-    keyed.sort_unstable_by(|a, b| a.0.cmp(&b.0));
+    keyed.sort_unstable_by(|a, b| a.0.cmp(&b.0).then_with(|| a.1.cmp(&b.1)));
     let mut rank = 0u32;
+    let mut ordinal = 0u32;
+    // The tie of the last CARD seen under the current name.
+    let mut last: Option<usize> = None;
     for i in 0..keyed.len() {
         if i > 0 && keyed[i - 1].0 != keyed[i].0 {
             rank += 1;
+            ordinal = 0;
+            last = None;
         }
-        let (_, cid, div) = &keyed[i];
-        let card = &mut cards[*cid as usize];
+        assert!(rank < 1 << (24 - NAME_TIE_BITS), "the name rank outgrew its half of name_rank");
+        let high = rank << NAME_TIE_BITS;
+        let (cid, div) = (keyed[i].2, keyed[i].3);
         match div {
-            None => card.name_rank = rank,
-            Some(d) => card.divergent[*d as usize].name_rank = rank,
+            Some(d) => cards[cid as usize].divergent[d as usize].name_rank = high,
+            None => {
+                let tie = keyed[i].1.as_ref().expect("a card entry carries its tie");
+                if let Some(prev) = last
+                    && keyed[prev].1.as_ref().is_some_and(|p| (p.0, &p.1) != (tie.0, &tie.1))
+                {
+                    ordinal = (ordinal + 1).min(NAME_TIE_MAX_ORDINAL);
+                }
+                last = Some(i);
+                cards[cid as usize].name_rank = high | (ordinal << 1) | u32::from(tie.2);
+            }
         }
     }
 }
@@ -12485,7 +12728,9 @@ fn sort_primary_f32(card: &AOracleCard, p: &APrinting, sort_col: SortCol) -> Opt
         // THE NAME THIS PRINTING PRINTS, not its card's. The two differ on 81 printings, which is
         // the whole reason `divergent_of` and `DivergentPrinting::name_rank` exist; both ranks come
         // off the one number line `assign_name_ranks` builds, so this is a plain substitution.
-        SortCol::Name       => Some(printing_name_rank(card, p) as f32),
+        // ...and the NAME's half of it alone. The low bits order the cards that share a name,
+        // which is the tiebreak's work and always ascending (`sort_key_bits`' third lane).
+        SortCol::Name       => Some((printing_name_rank(card, p) >> NAME_TIE_BITS) as f32),
         // Packed rather than raw: yyyymmdd exceeds the exact-f32 range (see released_sort_ord).
         SortCol::Released   => p.released_int().map(|v| released_sort_ord(v) as f32),
         SortCol::Color      => Some(color_sort_rank(card) as f32),
@@ -12603,9 +12848,12 @@ fn sort_col_secondary(p: &APrinting, sort_col: SortCol, descending: bool) -> u32
         // several cards share (`is:token`, 338 adjacent card pairs) the type line leads —
         // enchantment artifact creatures, artifact creatures, enchantment creatures, creatures —
         // then the colours as WUBRG text (`B`, `BR`, `G`, `R`, `RG`, `U`, `W`, `WRG`, `WU`), then
-        // power and the oracle text, which fits 302 of the 338. This port still breaks that tie on
-        // the oracle id: the three Elemental tokens of `g:ecc` come back tecc/9, 2, 10 there and
-        // tecc/2, 10, 9 here.
+        // power and the oracle text, which fits 302 of the 338.
+        //
+        // 2026-10-10: and that order is ONE STRING, which is the 36 — see `same_name_tie`, 235 of
+        // 236 names. It is still not a second key of this column: it is a property of the CARD,
+        // under every order, so it lives in the name tiebreak every sort already reads (the low
+        // half of `name_rank`, lane three of `sort_key_bits`).
         _ => return 0,
     };
     if descending { !key } else { key }
@@ -12692,7 +12940,11 @@ fn page_cmp(a: &Match, b: &Match) -> std::cmp::Ordering {
 /// a version-4 key and a version-5 key are the same length and compare without complaint while
 /// disagreeing about where every multicolour card and every land belongs — the same silent
 /// disagreement as 1 -> 2.
-pub const SORT_KEY_VERSION: u8 = 5;
+/// 5 -> 6: a segment is ADDED between the collated name and the oracle id — the order of the cards
+/// that share a name (`push_same_name_tie`), which `name_rank` now carries inside an archive. A
+/// version-5 key has the oracle id where a version-6 key has that segment, so a merge across the
+/// two would compare a uuid's first byte against a class.
+pub const SORT_KEY_VERSION: u8 = 6;
 
 /// One string-primary segment. Present values are the raw bytes plus a terminator OUTSIDE the
 /// alphabet (names never contain NUL), so a prefix compares before its extensions; descending
@@ -12766,6 +13018,9 @@ fn push_collector_segment(key: &mut Vec<u8>, data: &Archived<CardData>, p: &APri
 ///                                                    rather than sent as `name_rank`: that rank is
 ///                                                    archive-local. Ascending regardless of `dir`,
 ///                                                    because the name tiebreak does not reverse
+/// [same-name order (push_same_name_tie)]           — the low half of `name_rank`: one zero byte,
+///                                                    or the class and the string for a card
+///                                                    whose string is read. Ascending always
 /// [16B BE oracle_id]                               — reproduces the cid tiebreak: build order
 ///                                                    sorts by oracle_id, so cid asc ≡ oracle asc
 ///                                                    inside an archive, and oracle_id is the
@@ -12838,6 +13093,9 @@ pub(crate) fn encode_sort_key(
     // because the name tiebreak does not follow the primary's direction (measured 2026-08-16:
     // `order=cmc&dir=desc` still runs Barbtooth Wurm, Elspeth, Hair-Strung Koto … inside one cmc).
     push_str_segment(&mut key, Some(collated_name(card, &data.strings)), false);
+    // ...and where the card sits among the cards of that name — the low half of `name_rank`, spelled
+    // out for the same reason the name is: the ordinal is the archive's own.
+    push_same_name_tie(&mut key, card, &data.strings);
     key.extend_from_slice(&u128::from(card.oracle_id).to_be_bytes());
     key.push(u8::from(vpid >= data.printings.len() as u32));
     // `!f32_sort_bits(v)`, not `f32_sort_bits(-v)`: the exact total_cmp reversal, agreeing with
@@ -21981,7 +22239,15 @@ const ARCHIVE_MAGIC: [u8; 8] = *b"ATCARDS\0";
 //                `unique=art` picks an artwork's representative by it (`artwork_prefer_key`), so a
 //                reader pairing this code with an older store would answer the card's own order
 //                for every artwork. No layout moves. Paired with STORE_CONTENT_GENERATION 88.
-const ARCHIVE_FORMAT_VERSION: u32 = 2026100912;
+//   2026101001 — THE CARDS THAT SHARE A NAME (LOCAL PATCH). `OracleCard::name_rank` and
+//                `DivergentPrinting::name_rank` hold the dense name rank above `NAME_TIE_BITS`
+//                and, on the card, its place among the cards of that name below (see
+//                `assign_name_ranks`). No layout moves and neither row grows, so the header cannot
+//                see it: a reader pairing this code with a 2026100912 store would shift every
+//                name rank away and order `order=name` by nothing, and an older reader of this
+//                store would sort a descending page of one name's cards backwards. Paired with
+//                STORE_CONTENT_GENERATION 92 and SORT_KEY_VERSION 6.
+const ARCHIVE_FORMAT_VERSION: u32 = 2026101001;
 const ARCHIVE_HEADER_LEN: usize = 16;
 
 fn archive_header() -> [u8; ARCHIVE_HEADER_LEN] {

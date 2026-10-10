@@ -1,5 +1,5 @@
 use super::{
-    and_child_rank, assign_name_ranks, AStrings, face_mana_cost, face_stat_nums, lane_get, mana_lane, ManaVocabInterner,
+    and_child_rank, assign_name_ranks, same_name_tie, NameTieFace, NAME_TIE_BITS, SAME_NAME_CARDS, AStrings, face_mana_cost, face_stat_nums, lane_get, mana_lane, ManaVocabInterner,
     build_numeric_index, build_oracle_text_index, build_trigram_index, build_type_line_index,
     build_rarity_index, build_flavor_index, build_hybrid_tag_index, build_layout_hybrid_index, bitmap_beats_postings, HybridTagIndex, build_sort_permutations,
     assign_artwork_groups, assign_artist_ranks, assign_set_ranks, assign_foreign_artwork_groups, build_artwork_base_from, build_bit_planes, build_border_printing_planes, build_rarity_printing_planes, build_divergent_ids, build_name_bigram_index, build_name_unigram_index, build_printing_to_card, flavor_fingerprint, flavor_match_sets,
@@ -12409,13 +12409,129 @@ fn named_store() -> CardData {
     data
 }
 
-// Equal names share a dense rank; distinct names rank in byte order.
+// Equal names share a dense rank; distinct names rank in byte order. The rank is the HIGH half of
+// `name_rank` (above `NAME_TIE_BITS`), and two cards the same-name order does not tell apart —
+// these two stub creatures — share the low half too, so the pair still falls to the card id.
 #[test]
 fn name_ranks_dense_and_shared_across_duplicates() {
     let data = named_store();
     let ranks: Vec<u32> = data.cards.iter().map(|c| c.name_rank).collect();
     // fog=3, sol ring=4 (both copies), atog=0, black lotus=1, cancel=2
-    assert_eq!(ranks, vec![3, 4, 0, 4, 1, 2]);
+    assert_eq!(ranks, [3u32, 4, 0, 4, 1, 2].map(|r| r << NAME_TIE_BITS).to_vec());
+}
+
+/// One face for `same_name_tie`, as a card object states it.
+fn tie_face<'a>(type_line: &'a str, colors: u8, power: &'a str, toughness: &'a str, text: &'a str) -> NameTieFace<'a> {
+    NameTieFace { type_line, colors, power, toughness, text }
+}
+
+/// THE ORDER OF DIFFERENT CARDS THAT SHARE A NAME is a class and one collated string — eleven of
+/// the 31 Elemental tokens in the order api.scryfall.com returns them (`!"Elemental"`,
+/// `unique=cards`, extras in; 2026-10-10), each with the fields its card object carries.
+#[test]
+fn the_cards_of_one_name_order_by_one_collated_string() {
+    const TOKEN: &str = "Token Creature \u{2014} Elemental";
+    let (white, blue, black, red, green): (u8, u8, u8, u8, u8) = (1, 2, 4, 8, 16);
+    let seize = "Trample\nThis creature's power and toughness are each equal to the number of instant and sorcery cards in your graveyard.";
+    let in_scryfalls_order = [
+        // An enchantment creature token ahead of every plain one, whatever its colour: the words
+        // left of the dash read reversed, `creatureenchantmenttoken` before `creaturetoken`.
+        ("tbng/7", tie_face("Token Enchantment Creature \u{2014} Elemental", red, "3", "1", "")),
+        // Colours as WUBRG text: `br` before `g` before `r`.
+        ("tshm/9", tie_face(TOKEN, black | red, "5", "5", "")),
+        ("totj/12", tie_face(TOKEN, green, "*", "*", "")),
+        ("tori/8", tie_face(TOKEN, green, "2", "2", "")),
+        // A bare `*/*` is nothing at all, so it leads its colour...
+        ("troe/2", tie_face(TOKEN, red, "*", "*", "")),
+        ("totc/14", tie_face(TOKEN, red, "1", "1", "")),
+        ("tcmm/24", tie_face(TOKEN, red, "1", "1", "Haste")),
+        // ...a `*/1` reads `1` and then its text, after every 1/1 and before the 2/1...
+        ("tthb/8", tie_face(TOKEN, red, "*", "1", "Trample, haste")),
+        ("tdmu/11", tie_face(TOKEN, red, "2", "1", "Trample, haste")),
+        // ...and a `*/*` WITH text reads its text alone: after the red-green 5/5, though it is red.
+        ("tecc/9", tie_face(TOKEN, red | green, "5", "5", "")),
+        ("tinr/13", tie_face(TOKEN, red, "*", "*", seize)),
+        ("tddt/1", tie_face(TOKEN, blue, "1", "0", "")),
+        ("tecc/2", tie_face(TOKEN, white, "4", "4", "Flying")),
+        ("trtr/12", tie_face(TOKEN, green | white, "8", "8", "Vigilance")),
+    ];
+    let ties: Vec<(u8, bool, String)> =
+        in_scryfalls_order.iter().map(|(_, face)| same_name_tie("elemental", 1, std::slice::from_ref(face))).collect();
+    for (pair, names) in ties.windows(2).zip(in_scryfalls_order.windows(2)) {
+        assert!(pair[0] < pair[1], "{} sorts before {}: {:?} / {:?}", names[0].0, names[1].0, pair[0], pair[1]);
+    }
+    assert_eq!(ties[0], (1, true, "creatureenchantmenttokenelementalr31".to_owned()));
+    assert_eq!(ties[7].2, "creaturetokenelementalr1tramplehaste");
+    assert_eq!(ties[13].2, "creaturetokenelementalwg88vigilance");
+}
+
+/// The classes: a card, then a token or a front card, then an art-series card — and a card's
+/// string is read only where two real cards share its name.
+#[test]
+fn a_card_comes_before_the_token_and_the_art_card_of_its_name() {
+    // Inferno: the 8th Edition instant, then the Jumpstart front card (ffdn/8).
+    let card = same_name_tie("inferno", 1, &[tie_face("Instant", 8, "", "", "Inferno deals 6 damage to each creature and each player.")]);
+    let front = same_name_tie("inferno", 2, &[tie_face("Card", 0, "", "", "(Theme color: {R})")]);
+    assert_eq!(card, (0, false, String::new()), "one real card of the name: nothing to read");
+    assert_eq!(front, (1, true, "cardthemecolorr".to_owned()));
+    assert!(card < front);
+    // Treasure: the token, then the front card — `artifacttokentreasure` before `card`. Spirit:
+    // the front card, then every creature token — `card` before `creaturetokenspirit`.
+    let treasure = same_name_tie("treasure", 3, &[tie_face("Token Artifact \u{2014} Treasure", 0, "", "", "{T}, Sacrifice this token: Add one mana of any color.")]);
+    let spirit = same_name_tie("spirit", 4, &[tie_face("Token Creature \u{2014} Spirit", 0, "1", "1", "")]);
+    assert!(treasure < front && front < spirit);
+    // Plains // Plains: the art-series card last, two faces of type `Card`.
+    let art = same_name_tie("plainsplains", 5, &[tie_face("Card", 0, "", "", ""), tie_face("Card", 0, "", "", "")]);
+    assert_eq!(art.0, 2);
+    // A double-faced token is a token: its faces' strings one after the other.
+    let zombies = same_name_tie(
+        "zombiezombie",
+        6,
+        &[tie_face("Token Creature \u{2014} Zombie", 4, "2", "2", ""), tie_face("Token Creature \u{2014} Zombie", 4, "2", "2", "")],
+    );
+    assert_eq!(zombies, (1, true, "creaturetokenzombieb22creaturetokenzombieb22".to_owned()));
+    // Garbage Elemental, six real cards of one name in Unstable: c, d, a by their rules text —
+    // Battle cry, Cascade, Frenzy — whatever their power (3/2, 3/3, 2/4).
+    let garbage = |text| same_name_tie("garbageelemental", 7, &[tie_face("Creature \u{2014} Elemental", 8, "3", "2", text)]);
+    assert!(garbage("Battle cry (Whenever…)") < garbage("Cascade (When you cast…)"));
+    assert!(garbage("Cascade (When you cast…)") < garbage("Frenzy 2 (Whenever…)"));
+    assert_eq!(garbage("Battle cry").2, "battlecry");
+    // B.F.M.: measured. The left half first, though its text says otherwise.
+    let left = same_name_tie("bfmbigfurrymonster", 0x8fd7_503b_e722_49a7_a8ac_786e_7354_bc95, &[tie_face("Creature", 4, "", "", "You must cast both")]);
+    let right = same_name_tie("bfmbigfurrymonster", 0xd0bd_00f2_91bb_4c9c_a8e7_f8ae_adc0_bbb9, &[tie_face("Creature", 4, "99", "99", "B.F.M. onto")]);
+    assert!(left < right);
+    // The list is searched, so it is sorted.
+    assert!(SAME_NAME_CARDS.windows(2).all(|w| w[0] < w[1]));
+}
+
+/// `assign_name_ranks` writes that order into the low half of `name_rank`, and leaves the name's
+/// half what it was: three cards named `elemental` in store order token-with-text, card, bare
+/// token rank card, bare token, token with text; `order=name` reads the high half alone.
+#[test]
+fn the_same_name_order_rides_the_low_half_of_name_rank() {
+    let mut vocab = VocabInterner::new();
+    let strings: Vec<String> =
+        ["Token Creature \u{2014} Elemental", "Creature \u{2014} Elemental", "Haste", "3", "1"].map(str::to_owned).to_vec();
+    let mut cards: Vec<OracleCard> = (0..4)
+        .map(|i| {
+            let mut c = stub_card((i + 1) as u128, TYPE_CREATURE, &[], &mut vocab);
+            c.card_name_lower = InlineStr::from_str(if i == 3 { "fog" } else { "elemental" });
+            c.card_colors = 8;
+            c.type_line_id = if i == 1 { 1 } else { 0 };
+            c.creature_power_text_id = 3;
+            c.creature_toughness_text_id = 4;
+            c.oracle_text_id = if i == 0 { 2 } else { NONE_STR };
+            c
+        })
+        .collect();
+    cards[3].type_line_id = 1;
+    assign_name_ranks(&mut cards, &strings);
+    let (name, ordinal, read) = (|c: &OracleCard| c.name_rank >> NAME_TIE_BITS, |c: &OracleCard| (c.name_rank & 0xFF) >> 1, |c: &OracleCard| c.name_rank & 1);
+    assert_eq!(cards.iter().map(name).collect::<Vec<_>>(), [0, 0, 0, 1]);
+    // The real card first and unread; then the token with no text, then the one with haste.
+    assert_eq!(cards.iter().map(ordinal).collect::<Vec<_>>(), [2, 0, 1, 0]);
+    assert_eq!(cards.iter().map(read).collect::<Vec<_>>(), [1, 0, 1, 0]);
+    assert!(cards.iter().all(|c| c.name_rank < 1 << 24), "an f32 still holds it exactly");
 }
 
 // ExactName narrows to the exact, tight card set: hit (single), hit (duplicate pair), boundary

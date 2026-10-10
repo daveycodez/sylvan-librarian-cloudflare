@@ -1,0 +1,144 @@
+{
+ "all_parts": [
+  {
+   "component": "combo_piece",
+   "id": "a9f9c279-e382-4feb-9575-196e7cf5d7dc",
+   "name": "B.F.M. (Big Furry Monster)",
+   "object": "related_card",
+   "type_line": "Creature — The Biggest, Baddest, Nastiest,",
+   "uri": "https://api.scryfall.com/cards/a9f9c279-e382-4feb-9575-196e7cf5d7dc"
+  },
+  {
+   "component": "combo_piece",
+   "id": "d15c6375-2e4e-47f7-88e1-d90794e7f724",
+   "name": "B.F.M. (Big Furry Monster)",
+   "object": "related_card",
+   "type_line": "Scariest Creature You'll Ever See",
+   "uri": "https://api.scryfall.com/cards/d15c6375-2e4e-47f7-88e1-d90794e7f724"
+  }
+ ],
+ "artist": "Douglas Shuler",
+ "artist_ids": [
+  "a9ddb513-51c7-455c-ab8f-5b90aae9f75b"
+ ],
+ "booster": true,
+ "border_color": "silver",
+ "card_back_id": "0aeebaf5-8c7d-4636-9e82-8c27447861f7",
+ "cardmarket_id": 11868,
+ "cmc": 15.0,
+ "collector_number": "28",
+ "color_identity": [
+  "B"
+ ],
+ "colors": [
+  "B"
+ ],
+ "digital": false,
+ "finishes": [
+  "nonfoil"
+ ],
+ "flavor_text": "\"It was big. Really, really big. No, bigger\nNo, more. Look, we're talking krakens and",
+ "foil": false,
+ "frame": "1997",
+ "full_art": false,
+ "game_changer": false,
+ "games": [
+  "paper"
+ ],
+ "highres_image": true,
+ "id": "a9f9c279-e382-4feb-9575-196e7cf5d7dc",
+ "illustration_id": "604f7df7-c364-444a-9224-b7a952aa8512",
+ "image_status": "highres_scan",
+ "image_updated_at": "2026-07-13T12:40:32Z",
+ "image_uris": {
+  "art": "https://cards.scryfall.io/art/front/a/9/a9f9c279-e382-4feb-9575-196e7cf5d7dc.webp?1783946432",
+  "art_crop": "https://cards.scryfall.io/art_crop/front/a/9/a9f9c279-e382-4feb-9575-196e7cf5d7dc.jpg?1783946432",
+  "border_crop": "https://cards.scryfall.io/border_crop/front/a/9/a9f9c279-e382-4feb-9575-196e7cf5d7dc.jpg?1783946432",
+  "crop": "https://cards.scryfall.io/crop/front/a/9/a9f9c279-e382-4feb-9575-196e7cf5d7dc.webp?1783946432",
+  "display": "https://cards.scryfall.io/display/front/a/9/a9f9c279-e382-4feb-9575-196e7cf5d7dc.webp?1783946432",
+  "grid": "https://cards.scryfall.io/grid/front/a/9/a9f9c279-e382-4feb-9575-196e7cf5d7dc.webp?1783946432",
+  "large": "https://cards.scryfall.io/large/front/a/9/a9f9c279-e382-4feb-9575-196e7cf5d7dc.jpg?1783946432",
+  "normal": "https://cards.scryfall.io/normal/front/a/9/a9f9c279-e382-4feb-9575-196e7cf5d7dc.jpg?1783946432",
+  "png": "https://cards.scryfall.io/png/front/a/9/a9f9c279-e382-4feb-9575-196e7cf5d7dc.png?1783946432",
+  "small": "https://cards.scryfall.io/small/front/a/9/a9f9c279-e382-4feb-9575-196e7cf5d7dc.jpg?1783946432",
+  "thumb": "https://cards.scryfall.io/thumb/front/a/9/a9f9c279-e382-4feb-9575-196e7cf5d7dc.webp?1783946432"
+ },
+ "keywords": [],
+ "lang": "en",
+ "layout": "normal",
+ "legalities": {
+  "alchemy": "not_legal",
+  "brawl": "not_legal",
+  "commander": "not_legal",
+  "competitivebrawl": "not_legal",
+  "duel": "not_legal",
+  "future": "not_legal",
+  "gladiator": "not_legal",
+  "historic": "not_legal",
+  "legacy": "not_legal",
+  "modern": "not_legal",
+  "oathbreaker": "not_legal",
+  "oldschool": "not_legal",
+  "pauper": "not_legal",
+  "paupercommander": "not_legal",
+  "penny": "not_legal",
+  "pioneer": "not_legal",
+  "predh": "not_legal",
+  "premodern": "not_legal",
+  "standard": "not_legal",
+  "standardbrawl": "not_legal",
+  "timeless": "not_legal",
+  "tlr": "not_legal",
+  "vintage": "not_legal"
+ },
+ "mana_cost": "",
+ "multiverse_ids": [
+  9780
+ ],
+ "name": "B.F.M. (Big Furry Monster)",
+ "nonfoil": true,
+ "object": "card",
+ "oracle_id": "8fd7503b-e722-49a7-a8ac-786e7354bc95",
+ "oracle_text": "You must cast both B.F.M. cards to put\nleaves the battlefield, sacrifice the other.\nB.F.M. can't be blocked except by three or",
+ "oversized": false,
+ "prices": {
+  "eur": "8.44",
+  "eur_foil": null,
+  "tix": null,
+  "usd": "18.42",
+  "usd_etched": null,
+  "usd_foil": null
+ },
+ "prints_search_uri": "https://api.scryfall.com/cards/search?order=released&q=oracleid%3A8fd7503b-e722-49a7-a8ac-786e7354bc95&unique=prints",
+ "promo": false,
+ "purchase_uris": {
+  "cardhoarder": "https://www.cardhoarder.com/cards?affiliate_id=scryfall&data%5Bsearch%5D=B.F.M.+%28Big+Furry+Monster%29&ref=card-profile&utm_campaign=affiliate&utm_medium=card&utm_source=scryfall",
+  "cardmarket": "https://www.cardmarket.com/en/Magic/Products?idProduct=11868&referrer=scryfall&utm_campaign=card_prices&utm_medium=text&utm_source=scryfall",
+  "tcgplayer": "https://partner.tcgplayer.com/c/4931599/1830156/21018?subId1=api&u=https%3A%2F%2Fwww.tcgplayer.com%2Fproduct%2F828%3Fpage%3D1"
+ },
+ "rarity": "rare",
+ "related_uris": {
+  "edhrec": "https://edhrec.com/route/?cc=B.F.M.+%28Big+Furry+Monster%29",
+  "gatherer": "https://gatherer.wizards.com/Pages/Card/Details.aspx?multiverseid=9780&printed=false",
+  "tcgplayer_infinite_articles": "https://partner.tcgplayer.com/c/4931599/1830156/21018?subId1=api&trafcat=tcgplayer.com%2Fsearch%2Farticles&u=https%3A%2F%2Fwww.tcgplayer.com%2Fsearch%2Farticles%3FproductLineName%3Dmagic%26q%3DB.F.M.%2B%2528Big%2BFurry%2BMonster%2529",
+  "tcgplayer_infinite_decks": "https://partner.tcgplayer.com/c/4931599/1830156/21018?subId1=api&trafcat=tcgplayer.com%2Fsearch%2Fdecks&u=https%3A%2F%2Fwww.tcgplayer.com%2Fsearch%2Fdecks%3FproductLineName%3Dmagic%26q%3DB.F.M.%2B%2528Big%2BFurry%2BMonster%2529"
+ },
+ "released_at": "1998-08-11",
+ "reprint": false,
+ "reserved": false,
+ "rulings_uri": "https://api.scryfall.com/cards/a9f9c279-e382-4feb-9575-196e7cf5d7dc/rulings",
+ "scryfall_set_uri": "https://scryfall.com/sets/ugl?utm_source=api",
+ "scryfall_uri": "https://scryfall.com/card/ugl/28/bfm-(big-furry-monster)?utm_source=api",
+ "set": "ugl",
+ "set_id": "3404fc78-6678-4cf4-bd39-4c0be3bb7baf",
+ "set_name": "Unglued",
+ "set_search_uri": "https://api.scryfall.com/cards/search?order=set&q=e%3Augl&unique=prints",
+ "set_type": "funny",
+ "set_uri": "https://api.scryfall.com/sets/3404fc78-6678-4cf4-bd39-4c0be3bb7baf",
+ "story_spotlight": false,
+ "tcgplayer_id": 828,
+ "textless": false,
+ "type_line": "Creature — The Biggest, Baddest, Nastiest,",
+ "uri": "https://api.scryfall.com/cards/a9f9c279-e382-4feb-9575-196e7cf5d7dc",
+ "variation": false
+}
