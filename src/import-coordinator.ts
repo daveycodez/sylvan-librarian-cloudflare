@@ -250,6 +250,7 @@ import {
 	stagingBytesOf,
 } from "./import-budget";
 import {
+	artRepsFrom,
 	beginNight,
 	closeNight,
 	composeOverride,
@@ -263,6 +264,7 @@ import {
 	readCompiled,
 	runSlice,
 	type SearchAnswer,
+	tableLines,
 	usableState,
 } from "./import-is-lists";
 import { isBlankLine, scanJsonlSlice } from "./import-lines";
@@ -2077,6 +2079,10 @@ export class ImportCoordinator extends DurableObject<Env> {
 	//                    over the compiled one (installIsLists). ABSENT means the compiled table.
 	//   is_lists_note    what the manifest will say about it (StoreManifest.is_lists).
 	//
+	// The same table carries the newest end of the record of ARTWORK REPRESENTATIVES — which
+	// printing `unique=art` answers each artwork with, for printings released since the compiled
+	// copy of that record was written — read by the same night under the same caps.
+	//
 	// THE STORE DOES NOT NEED THIS PHASE, so nothing in it may cost the store anything:
 	//
 	//   - every error is caught here and ends the refresh, never the run (only the fence's
@@ -2189,6 +2195,13 @@ export class ImportCoordinator extends DurableObject<Env> {
 			return null;
 		}
 		const { base } = readCompiled(compiled);
+		// The artwork representatives ride the same table, for a blob that reads them: it says so
+		// by naming the day its own table of them was written, and the night reads back from there.
+		const artWritten = wasm.artRepsWritten();
+		// Test-only, like SCRYFALL_API_URL: never set in wrangler.jsonc. The harness corpus is
+		// dated years before any table, so its window has to open earlier to hold a row.
+		const artFromVar = (this.env as { ART_REPS_FROM?: string }).ART_REPS_FROM;
+		const artFrom = artWritten === null ? null : (artFromVar ?? artRepsFrom(artWritten));
 		// Until something better is known, the manifest says what is true: the compiled table's day.
 		this.metaSet("is_lists_note", JSON.stringify(noteOf(null, base.date)));
 		// A read that fails is NOT "no state": starting over on one would put a first night's state
@@ -2196,12 +2209,12 @@ export class ImportCoordinator extends DurableObject<Env> {
 		const stored = await this.isListsIo("the stored lists", () => this.env.STORE_KV.get(IS_LISTS_KV_KEY, "json"));
 		const held = usableState(stored, base);
 		this.ctx.storage.transactionSync(() => {
-			this.metaSet("is_lists_note", JSON.stringify(noteOf(held, base.date)));
-			const table = held ? composeOverride(compiled, held) : null;
+			this.metaSet("is_lists_note", JSON.stringify(noteOf(held, base.date, artWritten !== null)));
+			const table = held ? composeOverride(compiled, held, artWritten !== null) : null;
 			// Asked of the blob that will read it: a table it refuses is not installed anywhere.
 			if (table !== null && wasm.isListsOverride(table) !== null) this.metaSet("is_lists_table", table);
 		});
-		return beginNight(compiled, stored, Date.now());
+		return beginNight(compiled, stored, Date.now(), artFrom);
 	}
 
 	/** The night is over: put its state, hand its table to the build, say what moved, move on. */
@@ -2211,7 +2224,8 @@ export class ImportCoordinator extends DurableObject<Env> {
 		wasm.reset();
 		const compiled = wasm.isListsCompiled();
 		if (compiled === null) throw new Error("the import blob lost its compiled table between two slices");
-		const table = composeOverride(compiled, state);
+		const artReps = wasm.artRepsWritten() !== null;
+		const table = composeOverride(compiled, state, artReps);
 		if (table !== null && wasm.isListsOverride(table) === null) {
 			throw new Error("the import blob refused the table the night composed (see the [wasm-import] line)");
 		}
@@ -2220,7 +2234,7 @@ export class ImportCoordinator extends DurableObject<Env> {
 		await this.isListsIo("the stored lists' put", () =>
 			this.env.STORE_KV.put(IS_LISTS_KV_KEY, json, { metadata: kvBytesMetadata(json.length) }),
 		);
-		const note: IsListsNote = noteOf(state, state.baseDate);
+		const note: IsListsNote = noteOf(state, state.baseDate, artReps);
 		this.ctx.storage.transactionSync(() => {
 			if (table !== null) this.metaSet("is_lists_table", table);
 			else this.sqlRun("DELETE FROM meta WHERE key = 'is_lists_table'");
@@ -2229,7 +2243,7 @@ export class ImportCoordinator extends DurableObject<Env> {
 			this.metaSet("phase", phaseAfterIsLists());
 		});
 		console.log(
-			`${line}; the build uses ${table === null ? "the compiled table" : `the refreshed table (${table.split("\n").length - 5} lines)`} ` +
+			`${line}; the build uses ${table === null ? "the compiled table" : `the refreshed table (${tableLines(table)} lines)`} ` +
 				`over ${state.baseDate}'s`,
 		);
 	}

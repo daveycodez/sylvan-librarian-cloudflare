@@ -46,7 +46,7 @@
 //! and the tier table its `covered` lines were measured against (`# print_tiers.tsv`). With no
 //! override installed nothing here differs from the compiled table alone.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::{LazyLock, RwLock};
 
 use crate::transform::{
@@ -77,6 +77,20 @@ pub const LIST_TAGS: [&str; 9] = [
 
 const IS_LISTS_TSV: &str = include_str!("is_lists.tsv");
 
+/// The first word of an override's lines that are not a list at all: THE PRINTINGS THAT REPRESENT
+/// AN ARTWORK, released on or after the override's `# art-reps-from` day.
+///
+/// `art_reps.tsv` is Scryfall's record of which printing `unique=art` answers each artwork with,
+/// compiled in and exact on the day `bun run art-reps` read it; a printing released since falls
+/// back to the debut rule ([`crate::art_reps`]). The nightly reads the NEWEST END of the same
+/// record — the whole-corpus `unique=art` answer, newest release first, down to a day safely
+/// before the compiled table was written — and hands the rows over in the table it already hands
+/// over, as `art_rep <TAB> row <TAB> set <TAB> lang <TAB> numbers` under one `# art-reps-from
+/// YYYY-MM-DD` line. From that day on the lines ARE the record: a row released on or after it
+/// represents its artwork exactly when it is listed ([`art_rep_verdict`]); a row released before
+/// it is the compiled table's. Only an override carries them.
+pub const ART_REP_LINE: &str = "art_rep";
+
 /// What the table says about one row for each of [`LIST_TAGS`]: in, out, or nothing.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct Verdicts([Option<bool>; LIST_TAGS.len()]);
@@ -104,6 +118,10 @@ struct Table {
     /// An override's `# meta` line, verbatim: what the importer says about it (its dates), carried
     /// to the manifest and not read here.
     meta: Option<&'static str>,
+    /// An override's `# art-reps-from` day and its [`ART_REP_LINE`] rows as (set, collector
+    /// number, language): the artwork representatives released on or after that day.
+    art_from: Option<&'static str>,
+    art_rows: HashSet<(&'static str, &'static str, &'static str)>,
     /// Data lines read.
     lines: usize,
 }
@@ -120,6 +138,8 @@ fn try_parse(tsv: &'static str) -> Result<Table, String> {
                 table.base = Some(base);
             } else if let Some(meta) = comment.strip_prefix("meta ") {
                 table.meta = Some(meta);
+            } else if let Some(from) = comment.strip_prefix("art-reps-from ") {
+                table.art_from = Some(from);
             }
             continue;
         }
@@ -127,6 +147,17 @@ fn try_parse(tsv: &'static str) -> Result<Table, String> {
         let fields: Vec<&'static str> = line.split('\t').collect();
         if fields.iter().any(|f| f.is_empty()) {
             return Err(malformed());
+        }
+        if fields[0] == ART_REP_LINE {
+            let [_, "row", set, lang, list] = fields[..] else { return Err(malformed()) };
+            for number in list.split(' ') {
+                if number.is_empty() {
+                    return Err(format!("is_lists.tsv: an empty collector number in {line:?}"));
+                }
+                table.art_rows.insert((set, number, lang));
+            }
+            table.lines += 1;
+            continue;
         }
         let Some(tag) = fields.first().and_then(|t| LIST_TAGS.iter().position(|x| x == t)) else {
             return Err(malformed());
@@ -182,9 +213,7 @@ pub fn compiled_fingerprint() -> String {
 /// The day the compiled table was measured, from its first line (`… api.scryfall.com, 2026-10-09.`).
 pub fn compiled_date() -> Option<&'static str> {
     let date = IS_LISTS_TSV.lines().next()?.trim_end_matches('.').rsplit(' ').next()?;
-    let shaped = date.len() == 10
-        && date.bytes().enumerate().all(|(i, b)| if i == 4 || i == 7 { b == b'-' } else { b.is_ascii_digit() });
-    shaped.then_some(date)
+    is_day(date).then_some(date)
 }
 
 /// `tsv` as a table that may stand in for the compiled one, or why it may not.
@@ -207,7 +236,19 @@ fn checked_override(tsv: &'static str) -> Result<Table, String> {
     if table.lines == 0 {
         return Err("the override holds no line".to_owned());
     }
+    match table.art_from {
+        Some(from) if !is_day(from) => return Err(format!("the override's `# art-reps-from` is not a day: {from:?}")),
+        None if !table.art_rows.is_empty() => {
+            return Err("the override names artwork representatives and no `# art-reps-from` day".to_owned());
+        }
+        _ => {}
+    }
     Ok(table)
+}
+
+/// `YYYY-MM-DD`, as a card object's `released_at` is written — so the two compare as strings.
+fn is_day(text: &str) -> bool {
+    text.len() == 10 && text.bytes().enumerate().all(|(i, b)| if i == 4 || i == 7 { b == b'-' } else { b.is_ascii_digit() })
 }
 
 /// Install `tsv` as the table every later [`verdicts`] call reads, in place of the compiled one.
@@ -276,6 +317,19 @@ fn verdicts_in<'a>(
 /// of `set`/`number` in `lang` whose card carries `oracle_ids` (its own, or each face's).
 pub fn verdicts<'a>(set: &str, lang: &str, number: &str, oracle_ids: impl IntoIterator<Item = &'a str>) -> Verdicts {
     verdicts_in(installed().unwrap_or(&TABLE), set, lang, number, oracle_ids)
+}
+
+fn art_rep_verdict_in(table: &Table, set: &str, number: &str, lang: &str, released_at: &str) -> Option<bool> {
+    let from = table.art_from?;
+    (released_at >= from).then(|| table.art_rows.contains(&(set, number, lang)))
+}
+
+/// Whether the row of `set`/`number` in `lang`, released `released_at` (`YYYY-MM-DD`), represents
+/// its artwork by the installed override's [`ART_REP_LINE`] rows — `None` with no override, with
+/// one that names no `# art-reps-from` day, and for a row released before that day, where the
+/// compiled record stands ([`crate::art_reps::verdict`], which asks here first).
+pub fn art_rep_verdict(set: &str, number: &str, lang: &str, released_at: &str) -> Option<bool> {
+    art_rep_verdict_in(installed()?, set, number, lang, released_at)
 }
 
 /// 64-bit FNV-1a, as src/import-is-lists.ts computes it over print_tiers.tsv and over this table.
@@ -386,6 +440,49 @@ mod tests {
         assert!(refused(format!("# print_tiers.tsv {tiers}\n{line}")).contains("no `# base` line"));
         assert!(refused(format!("# base {base}\n# print_tiers.tsv 0000000000000000\n{line}")).contains("print_tiers.tsv"));
         assert!(refused(format!("# base {base}\n# print_tiers.tsv {tiers}\n")).contains("no line"));
+    }
+
+    /// The artwork representatives ride an override as rows under one day, and answer for every
+    /// row released on or after it — listed or not — and for none before.
+    #[test]
+    fn an_override_carries_the_artwork_representatives_released_since_a_day() {
+        let table = checked_override(override_text(concat!(
+            "# art-reps-from 2026-09-10\n",
+            "spikey\toracle\taaaa\tA\n",
+            "art_rep\trow\ttla\ten\t1 2 300a\n",
+            "art_rep\trow\ttla\tja\t7\n",
+        )))
+        .unwrap();
+        assert_eq!(table.lines, 3);
+        let v = |set, number, lang, day| art_rep_verdict_in(&table, set, number, lang, day);
+        assert_eq!(v("tla", "1", "en", "2026-11-21"), Some(true));
+        assert_eq!(v("tla", "300a", "en", "2026-11-21"), Some(true));
+        assert_eq!(v("tla", "3", "en", "2026-11-21"), Some(false));
+        // A row is its language's: the translation of a representative is not one.
+        assert_eq!(v("tla", "1", "ja", "2026-11-21"), Some(false));
+        assert_eq!(v("tla", "7", "ja", "2026-11-21"), Some(true));
+        // The day itself is inside; the day before is the compiled record's, listed or not.
+        assert_eq!(v("spm", "9", "en", "2026-09-10"), Some(false));
+        assert_eq!(v("tla", "1", "en", "2026-09-09"), None);
+        assert_eq!(v("tla", "1", "en", ""), None);
+        // A table without the day says nothing about any row, and the compiled table has none.
+        let plain = checked_override(override_text("spikey\toracle\taaaa\tA\n")).unwrap();
+        assert_eq!(art_rep_verdict_in(&plain, "tla", "1", "en", "2026-11-21"), None);
+        assert_eq!(art_rep_verdict_in(&TABLE, "tla", "1", "en", "2026-11-21"), None);
+        // The day alone, with no row: every row released since is NOT a representative.
+        let empty = checked_override(override_text("# art-reps-from 2026-09-10\nspikey\toracle\taaaa\tA\n")).unwrap();
+        assert_eq!(art_rep_verdict_in(&empty, "tla", "1", "en", "2026-11-21"), Some(false));
+    }
+
+    #[test]
+    fn artwork_representative_lines_are_refused_unless_they_are_rows_under_a_day() {
+        let refused = |body: &str| checked_override(override_text(body)).err().expect("refused");
+        assert!(refused("art_rep\trow\ttla\ten\t1\n").contains("no `# art-reps-from` day"));
+        assert!(refused("# art-reps-from yesterday\nart_rep\trow\ttla\ten\t1\n").contains("not a day"));
+        for body in ["art_rep\tprint\ttla\t1\n", "art_rep\trow\ttla\ten\n", "art_rep\trow\ttla\ten\t1  2\n"] {
+            let why = refused(&format!("# art-reps-from 2026-09-10\n{body}"));
+            assert!(why.contains("is_lists.tsv"), "{why}");
+        }
     }
 
     #[test]

@@ -37,20 +37,35 @@
 // released since the last run — falls back to the debut rule (engine/builder `NewArt::standing`),
 // which is right for a reprint, since the representative of an old artwork is in an old set.
 //
+// THE NIGHTLY IMPORT READS THE NEWEST END OF THE SAME RECORD (src/import-is-lists.ts, THE ARTWORK
+// REPRESENTATIVES): the same query asked newest release first, down to a month before this
+// table's `@written` day, handed to the builder beside the lists it refreshes. So a set released
+// since this script last ran is answered by Scryfall's record all the same, and what this script
+// is still for is everything the night's window does not reach: a representative Scryfall moved
+// in an older set, a printing catalogued late under an old date, and the window itself, which
+// grows a page for every 175 artworks printed since `@written` and is refused past 60 pages.
+// The query, the paging and what counts as a page of a list are that module's own code.
+//
 // Run by hand and commit the diff, like `bun run print-tiers`: the nightly import cannot touch
 // committed code. A table change moves a stored bit, so it ships with a STORE_CONTENT_GENERATION
 // bump.
 
 import { readFileSync, writeFileSync } from "node:fs";
+import {
+	type ApiCard,
+	ART_REPS_QUERY,
+	acceptPage,
+	checkSearchPage,
+	newList,
+	refuseRepeats,
+	searchQuery,
+} from "../src/import-is-lists";
 
 const OUT = "engine/builder/src/art_reps.tsv";
 const UA = "sylvan-librarian-cloudflare/generate-art-reps (the printing that represents each artwork)";
 // api.scryfall.com asks for under 10 requests a second; /cards/search rate-limits well below that
 // in practice, so this stays at two a second unless told to go slower.
 const GAP_MS = Number(process.env.SCRYFALL_GAP_MS ?? 500);
-/** Every card: nothing was printed before 1993. */
-const EVERYTHING = "year>=1993";
-
 /** What is kept of one representative. */
 export interface Rep {
 	set: string;
@@ -65,8 +80,8 @@ function arg(name: string): string | undefined {
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
-/** One GET, with the pause and the 429 back-off every request here takes. `null` on a 404. */
-async function get<T>(url: string): Promise<T | null> {
+/** One GET, with the pause and the 429 back-off every request here takes: the status and the parsed body. */
+async function answer(url: string): Promise<{ status: number; body: unknown }> {
 	for (;;) {
 		const res = await fetch(url, { headers: { "User-Agent": UA, Accept: "application/json" } });
 		await sleep(GAP_MS);
@@ -74,10 +89,16 @@ async function get<T>(url: string): Promise<T | null> {
 			await sleep(1000 * Number(res.headers.get("Retry-After") ?? 65));
 			continue;
 		}
-		if (res.status === 404) return null;
-		if (!res.ok) throw new Error(`${url}: ${res.status} ${(await res.text()).slice(0, 200)}`);
-		return (await res.json()) as T;
+		return { status: res.status, body: await res.json().catch(() => null) };
 	}
+}
+
+/** The same, for an endpoint that is not a search: its body, or `null` on a 404. */
+async function get<T>(url: string): Promise<T | null> {
+	const { status, body } = await answer(url);
+	if (status === 404) return null;
+	if (status !== 200) throw new Error(`${url}: ${status} ${JSON.stringify(body).slice(0, 200)}`);
+	return body as T;
 }
 
 /** Every set code Scryfall lists. */
@@ -93,29 +114,21 @@ async function readSets(): Promise<string[]> {
 	return sets;
 }
 
-/** Every artwork's representative: the whole of `unique=art` over every card. */
+/**
+ * Every artwork's representative: the whole of `unique=art` over every card, oldest release
+ * first. Asked page by page through the nightly's own request and checks (`searchQuery`,
+ * `checkSearchPage`, `acceptPage`): each a page of a list, the totals agreeing from page to
+ * page, as many rows as the total, no row twice — anything else throws and nothing is written.
+ */
 async function readReps(): Promise<Rep[]> {
-	const qs = new URLSearchParams({
-		q: EVERYTHING,
-		unique: "art",
-		include_extras: "true",
-		include_variations: "true",
-		order: "released",
-		dir: "asc",
-	});
-	let url: string | null = `https://api.scryfall.com/cards/search?${qs}`;
-	const reps: Rep[] = [];
-	let total = 0;
-	while (url) {
-		const page: { data: Rep[]; total_cards?: number; has_more?: boolean; next_page?: string } | null = await get(url);
-		if (!page) throw new Error("the search for every card answered nothing");
-		total = page.total_cards ?? total;
-		for (const { set, collector_number, lang } of page.data) reps.push({ set, collector_number, lang });
-		if (reps.length % 3500 === 0) console.log(`  ${reps.length} of ${total}`);
-		url = page.has_more && page.next_page ? page.next_page : null;
+	const reading = newList<ApiCard>(ART_REPS_QUERY, "art");
+	while (!reading.done) {
+		const url = `https://api.scryfall.com/cards/search${searchQuery(reading.q, "art", reading.page, "asc")}`;
+		acceptPage(reading, checkSearchPage(reading.q, await answer(url)), (card) => card);
+		if (reading.rows.length % 3500 === 0) console.log(`  ${reading.rows.length} of ${reading.total}`);
 	}
-	if (reps.length !== total) throw new Error(`read ${reps.length} representatives where Scryfall counts ${total}`);
-	return reps;
+	refuseRepeats(reading, (card) => card.id);
+	return reading.rows.map(({ set, collector_number, lang }) => ({ set, collector_number, lang }));
 }
 
 /** A collector number that is a whole number as written — the ones a run can hold. */

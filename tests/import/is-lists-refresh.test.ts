@@ -13,6 +13,10 @@ import { join } from "node:path";
 import { type FakeCard, FakeScryfall } from "../../scripts/import-harness/fake-scryfall";
 import { FIXED_ROWS_WRITTEN_PER_ALARM, MAX_DAY_ROWS_WRITTEN } from "../../src/import-budget";
 import {
+	ART_REPS_MARGIN_DAYS,
+	ART_REPS_MAX_PAGES,
+	ART_REPS_QUERY,
+	artRepsFrom,
 	beginNight,
 	byNumber,
 	checkSearchPage,
@@ -128,9 +132,10 @@ async function runNight(
 	stored: IsListsState | null,
 	nowMs: number,
 	perSlice = 1000,
+	artFrom: string | null = null,
 ): Promise<Ran> {
 	const from = fake.asked.length;
-	let work = beginNight(compiled, stored && structuredClone(stored), nowMs);
+	let work = beginNight(compiled, stored && structuredClone(stored), nowMs, artFrom);
 	for (let slices = 0; ; slices++) {
 		if (slices > 500) throw new Error("the night does not end");
 		const over = await runSlice(work, {
@@ -710,5 +715,259 @@ describe("the rows new:artist leaves out are the ninth list", () => {
 		expect(queries(ran.asked).filter((q) => q.includes("new:artist"))).toEqual([]);
 		expect(composeOverride(compiledFor(fake), ran.state)).not.toContain("old_artist");
 		expect(ran.state.checked).toBe("2026-10-10");
+	});
+});
+
+// Not a list of a value: which printing `unique=art` answers each artwork with. The record is the
+// whole-corpus answer, one row an artwork, and the night reads its NEWEST END — newest release
+// first, down to a month before the day the importer's compiled copy of the record was written —
+// and hands the builder those rows under that day (is_lists.rs `ART_REP_LINE`).
+describe("the newest end of the record of artwork representatives", () => {
+	const WRITTEN = "2026-10-09";
+	const FROM = "2026-09-09";
+	/**
+	 * `world()`, dated — the old set and Jumpstart in 2020, the new set a week before the table,
+	 * and a set not yet released — with every English row of an odd number its artwork's
+	 * representative: 13 in the three sets and `previews` in the fourth.
+	 */
+	function artWorld(previews = 5): FakeScryfall {
+		const fake = world();
+		for (const card of fake.cards) {
+			card.released_at = card.set === "new" ? "2026-10-02" : card.set === "jmp" ? "2020-07-17" : "2020-01-01";
+			card.rep = card.lang === "en" && Number(card.collector_number) % 2 === 1;
+		}
+		for (let n = 1; n <= previews; n++) {
+			fake.cards.push({
+				id: uuid(800 + n),
+				oracle_id: uuid(9800 + n),
+				name: `Preview ${n}`,
+				set: "pre",
+				collector_number: String(n),
+				lang: "en",
+				is: [],
+				released_at: "2026-11-20",
+				rep: true,
+			});
+		}
+		fake.sets.push({ code: "pre", released_at: "2026-11-20" });
+		return fake;
+	}
+	const artLines = (table: string | null) => (table ?? "").split("\n").filter((l) => l.startsWith("art_rep\t"));
+	const artNight = (fake: FakeScryfall, compiled: string, stored: IsListsState | null, n: number, perSlice = 1000) =>
+		runNight(fake, compiled, stored, night(n), perSlice, FROM);
+
+	test("the day it reads back to is a month before the compiled record was written", () => {
+		expect(ART_REPS_MARGIN_DAYS).toBe(30);
+		expect(artRepsFrom(WRITTEN)).toBe(FROM);
+		expect(artRepsFrom("2026-03-15")).toBe("2026-02-13");
+		expect(() => artRepsFrom("yesterday")).toThrow(ListRefused);
+		expect(() => beginNight(compiledFor(world()), null, night(1), "soon")).toThrow(ListRefused);
+	});
+
+	test("it is read from the top until a row older than the day, and no further", async () => {
+		const fake = artWorld();
+		const compiled = compiledFor(fake);
+		const first = await artNight(fake, compiled, null, 1);
+		// 18 representatives; eight released since the day; five a page: the second page holds
+		// the first older row, and the third and fourth are never asked for.
+		expect(rowsOf(fake, ART_REPS_QUERY)).toBeGreaterThan(18);
+		expect((fake.rows(ART_REPS_QUERY, "art") as FakeCard[]).length).toBe(18);
+		expect(pagesOf(first.asked, ART_REPS_QUERY)).toBe(2);
+		const asked = first.asked.filter((path) => path.includes("unique=art"));
+		for (const path of asked) {
+			expect(path).toContain("order=released&dir=desc");
+			expect(path).toContain("include_extras=true&include_variations=true");
+		}
+		expect(first.line).toContain(`art reps first read (8 released since ${FROM}, of 18)`);
+		expect(first.state.art).toEqual({
+			total: 18,
+			fetched: "2026-10-10",
+			from: FROM,
+			lines: ["art_rep\trow\tnew\ten\t1 3 5", "art_rep\trow\tpre\ten\t1 2 3 4 5"],
+		});
+		// Before the sets: the one read a night that must not wait for the budget.
+		const order = queries(first.asked);
+		expect(order.indexOf(ART_REPS_QUERY)).toBeLessThan(order.findIndex((q) => q.startsWith("e:")));
+		expect(order.indexOf(ART_REPS_QUERY)).toBeGreaterThan(order.indexOf("is:related"));
+
+		const table = composeOverride(compiled, first.state) as string;
+		expect(table).toContain(`\n# art-reps-from ${FROM}\n`);
+		// After every list's lines, and nothing of a row released before the day.
+		expect(
+			table
+				.split("\n")
+				.filter((l) => l && !l.startsWith("#"))
+				.slice(-2),
+		).toEqual(artLines(table));
+		expect(artLines(table)).toEqual(["art_rep\trow\tnew\ten\t1 3 5", "art_rep\trow\tpre\ten\t1 2 3 4 5"]);
+		expect(noteOf(first.state, COMPILED_DAY).art_reps).toEqual({ from: FROM, fetched: "2026-10-10", rows: 8 });
+	});
+
+	test("a record the same size is not read again for a week: its first page, and the same lines", async () => {
+		const fake = artWorld();
+		const compiled = compiledFor(fake);
+		const first = await artNight(fake, compiled, null, 1);
+		const second = await artNight(fake, compiled, first.state, 2);
+		expect(pagesOf(second.asked, ART_REPS_QUERY)).toBe(1);
+		expect(second.asked).toHaveLength(12);
+		expect(second.line).toContain("art reps = (18)");
+		expect(second.state.art).toEqual(first.state.art as NonNullable<typeof first.state.art>);
+		// Scryfall keeps another printing for an artwork and the record's size does not move:
+		// seen by the weekly read, not before.
+		const [was, now] = ["1", "2"].map((n) => fake.cards.find((c) => c.set === "pre" && c.collector_number === n));
+		(was as FakeCard).rep = false;
+		fake.cards.push({ ...(now as FakeCard), id: uuid(820), collector_number: "2a", rep: true });
+		const sixth = await artNight(fake, compiled, second.state, 6);
+		expect(pagesOf(sixth.asked, ART_REPS_QUERY)).toBe(1);
+		const eighth = await artNight(fake, compiled, sixth.state, 8);
+		expect(pagesOf(eighth.asked, ART_REPS_QUERY)).toBe(2);
+		expect(eighth.line).toContain("art reps +1 −1 (8 released");
+		expect(eighth.state.art?.lines).toEqual(["art_rep\trow\tnew\ten\t1 3 5", "art_rep\trow\tpre\ten\t2 2a 3 4 5"]);
+	});
+
+	test("a record that grew is read the same night", async () => {
+		const fake = artWorld();
+		const compiled = compiledFor(fake);
+		const first = await artNight(fake, compiled, null, 1);
+		fake.cards.push({
+			id: uuid(830),
+			oracle_id: uuid(9830),
+			name: "Preview 6",
+			set: "pre",
+			collector_number: "6",
+			lang: "ja",
+			is: [],
+			released_at: "2026-11-20",
+			rep: true,
+		});
+		const second = await artNight(fake, compiled, first.state, 2);
+		expect(pagesOf(second.asked, ART_REPS_QUERY)).toBe(2);
+		expect(second.line).toContain("art reps +1 −0 (9 released");
+		// A row is its language's.
+		expect(second.state.art?.lines).toContain("art_rep\trow\tpre\tja\t6");
+		expect(second.state.art?.total).toBe(19);
+	});
+
+	test("a window that fits the first page is whole on its probe", async () => {
+		const fake = artWorld(1);
+		const compiled = compiledFor(fake);
+		const first = await artNight(fake, compiled, null, 1);
+		expect(pagesOf(first.asked, ART_REPS_QUERY)).toBe(1);
+		expect(first.state.art?.lines).toEqual(["art_rep\trow\tnew\ten\t1 3 5", "art_rep\trow\tpre\ten\t1"]);
+		const second = await artNight(fake, compiled, first.state, 2);
+		expect(pagesOf(second.asked, ART_REPS_QUERY)).toBe(1);
+		expect(second.line).toContain("art reps +0 −0 (4 released");
+	});
+
+	test("another compiled record moves the day, and the window is read back to it", async () => {
+		const fake = artWorld();
+		const compiled = compiledFor(fake);
+		const first = await artNight(fake, compiled, null, 1);
+		// `bun run art-reps` was run and committed: written a month later, so the day is the 9th of October.
+		const later = await runNight(fake, compiled, first.state, night(2), 1000, artRepsFrom("2026-11-08"));
+		expect(later.state.art?.from).toBe("2026-10-09");
+		expect(later.state.art?.lines).toEqual(["art_rep\trow\tpre\ten\t1 2 3 4 5"]);
+	});
+
+	test("an answer that is not the record's newest end is refused, and the night goes on", async () => {
+		const faults: Record<string, (truth: SearchAnswer, path: string) => SearchAnswer> = {
+			"not newest first (2026-11-20 after 2026-10-02)": (t) => {
+				const body = structuredClone(t.body) as { data: unknown[] };
+				body.data.reverse();
+				return { status: 200, body };
+			},
+			"has no release day": (t) => {
+				const body = structuredClone(t.body) as { data: Record<string, unknown>[] };
+				delete (body.data[1] as Record<string, unknown>).released_at;
+				return { status: 200, body };
+			},
+			"the list moved while it was read (18 rows, then 19)": (t, path) =>
+				path.includes("page=2") ? { status: 200, body: { ...(t.body as object), total_cards: 19 } } : t,
+			"answered with a warning": (t) => ({ status: 200, body: { ...(t.body as object), warnings: ["x"] } }),
+			"503": () => ({ status: 503, body: { object: "error" } }),
+		};
+		for (const [why, mangle] of Object.entries(faults)) {
+			const fake = artWorld();
+			const compiled = compiledFor(fake);
+			fake.pageRows = 4;
+			fake.fault = (path) => (path.includes("unique=art") ? mangle(fake.truth(path), path) : null);
+			const ran = await artNight(fake, compiled, null, 1);
+			expect(ran.line).toContain("art reps REFUSED");
+			expect(ran.line).toContain(why);
+			expect(ran.state.art).toBeUndefined();
+			// The lists before it and the sets after it were read all the same.
+			expect(ran.line).toContain("spikey first read (2)");
+			expect(ran.line).toContain("owed a read, 2 read");
+			expect(ran.state.checked).toBe("2026-10-10");
+			expect(composeOverride(compiled, ran.state)).not.toContain("art-reps-from");
+		}
+		// A failed read leaves last night's rows in the table.
+		const fake = artWorld();
+		const compiled = compiledFor(fake);
+		const first = await artNight(fake, compiled, null, 1);
+		fake.cards.push({ ...(fake.cards.at(-1) as FakeCard), id: uuid(840), collector_number: "9" });
+		fake.fault = (path) => (path.includes("unique=art") && path.includes("page=2") ? "throw" : null);
+		const second = await artNight(fake, compiled, first.state, 2);
+		expect(second.line).toContain("art reps REFUSED (fake Scryfall: connection reset)");
+		expect(second.state.art).toEqual(first.state.art as NonNullable<typeof first.state.art>);
+		expect(artLines(composeOverride(compiled, second.state))).toEqual(first.state.art?.lines as string[]);
+	});
+
+	test("a record with nothing released since the day is not an answer", async () => {
+		const fake = artWorld(0);
+		for (const card of fake.cards) if (card.set === "new") card.released_at = "2020-02-02";
+		const ran = await artNight(fake, compiledFor(fake), null, 1);
+		expect(ran.line).toContain(
+			`art reps REFUSED (${ART_REPS_QUERY}: no artwork representative released since ${FROM})`,
+		);
+		expect(ran.state.art).toBeUndefined();
+	});
+
+	test("a window that has outgrown a night's read is refused, not read short", async () => {
+		const fake = artWorld(ART_REPS_MAX_PAGES + 4);
+		fake.pageRows = 1;
+		const compiled = compiledFor(fake);
+		const ran = await artNight(fake, compiled, null, 1);
+		expect(pagesOf(ran.asked, ART_REPS_QUERY)).toBe(ART_REPS_MAX_PAGES);
+		expect(ran.line).toContain(
+			`art reps REFUSED (${ART_REPS_QUERY}: ${ART_REPS_MAX_PAGES} pages read and still on 2026-11-20`,
+		);
+		expect(ran.state.art).toBeUndefined();
+		// The fixed part of the worst night with the record's read at its cap still fits the night.
+		const pages = (rows: number) => Math.ceil(rows / SCRYFALL_PAGE_ROWS);
+		const fixed =
+			pages(422) + pages(92) + pages(5989) + pages(491) + pages(2773) + pages(72) + pages(678) + pages(3226) + 3 + 1;
+		expect(fixed + ART_REPS_MAX_PAGES).toBeLessThanOrEqual(IS_LISTS_NIGHT_REQUESTS - 90);
+	});
+
+	test("the read survives the end of an alarm between any two pages", async () => {
+		const fake = artWorld(9);
+		fake.pageRows = 2;
+		const compiled = compiledFor(fake);
+		const whole = await artNight(fake, compiled, null, 1);
+		const sliced = await artNight(artWorld(9), compiled, null, 1, 1);
+		expect(sliced.work.slices).toBeGreaterThan(20);
+		expect(sliced.state.art).toEqual(whole.state.art as NonNullable<typeof whole.state.art>);
+	});
+
+	test("an importer that cannot read the lines is asked nothing and handed none", async () => {
+		const fake = artWorld();
+		const compiled = compiledFor(fake);
+		// No day: the blob has no `art_reps_written`, so it would refuse a table with such a line.
+		const ran = await runNight(fake, compiled, null, night(1));
+		expect(queries(ran.asked)).not.toContain(ART_REPS_QUERY);
+		expect(ran.state.art).toBeUndefined();
+		// A state another build's night left: its rows are kept and not handed over.
+		const first = await artNight(fake, compiled, null, 1);
+		const without = composeOverride(compiled, first.state, false) as string;
+		expect(without).not.toContain("art_rep");
+		expect(without).not.toContain("art-reps-from");
+		expect(noteOf(first.state, COMPILED_DAY, false).art_reps).toBeUndefined();
+		const blind = await runNight(fake, compiled, first.state, night(2));
+		expect(blind.state.art).toEqual(first.state.art as NonNullable<typeof first.state.art>);
+		// Rows that are not rows under a day never reach a builder.
+		const bad = structuredClone(first.state);
+		(bad.art as NonNullable<typeof bad.art>).lines.push("spikey\toracle\tx\tY");
+		expect(() => composeOverride(compiled, bad)).toThrow(ListRefused);
 	});
 });

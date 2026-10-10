@@ -62,6 +62,7 @@ import {
 	checkIsLists,
 	checkLaterNights,
 	failMidway,
+	HARNESS_ART_FROM,
 	type IsListsCheck,
 	listsWorld,
 	writeRunTable,
@@ -379,6 +380,8 @@ async function main(): Promise<number> {
 	env.IMPORT_PARTITION_CEILING_BYTES = String(opts.partitionCeilingBytes);
 	// No pacing against a local fake (src/import-coordinator.ts stepIsLists; production reads the constant).
 	env.IS_LISTS_GAP_MS = "0";
+	// The artwork representatives are read back to a day the corpus has rows after (is-lists-check.ts).
+	env.ART_REPS_FROM = HARNESS_ART_FROM;
 	const isListsLogged: string[] = [];
 	const [consoleLog, consoleWarn] = [console.log, console.warn];
 	const noting =

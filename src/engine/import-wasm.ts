@@ -107,6 +107,8 @@ interface ImportExports {
 	/** Absent on a blob built before the `is:` lists could be overridden (isListsRefreshable). */
 	is_lists_compiled?(): bigint;
 	is_lists_override?(ptr: number, len: number): bigint;
+	/** Absent on a blob built before the override carried artwork representatives (artRepsWritten). */
+	art_reps_written?(): bigint;
 }
 
 /** A staged snapshot, served to a pull restore row by row: row `index` unpacked, null past the end. */
@@ -475,6 +477,18 @@ export class ImportWasm {
 		new Uint8Array(this.ex.memory.buffer, ptr, bytes.length).set(bytes);
 		const rc = call(ptr, bytes.length);
 		return rc < 0n ? null : Number(rc);
+	}
+
+	/**
+	 * The day this blob's compiled table of artwork representatives was read (`YYYY-MM-DD`), or
+	 * null on a blob that predates the export — which is also a blob whose `isListsOverride`
+	 * refuses a table carrying `art_rep` lines, so null means "hand it none".
+	 */
+	artRepsWritten(): string | null {
+		const day = this.ex.art_reps_written?.();
+		if (day === undefined || day < 19930101n || day > 99991231n) return null;
+		const text = String(day);
+		return `${text.slice(0, 4)}-${text.slice(4, 6)}-${text.slice(6, 8)}`;
 	}
 
 	// ── resumable inflate (the recode phase's cross-alarm decompressor) ──────

@@ -4757,6 +4757,18 @@
 			"method": "GET",
 			"path": "/cards/search?q=-new%3Aartist+lang%3Aph&unique=prints&include_extras=true",
 			"note": "2026-10-10. 9 rows: eight Phyrexian printings of Phyrexia: All Will Be One and jmp/58."
+		},
+		{
+			"name": "unique-art-representative-of-an-unreleased-set-surge-foil",
+			"method": "GET",
+			"path": "/cards/search?q=%21%22Sacred+Foundry%22+e%3Atrk&unique=art&include_extras=true",
+			"note": "2026-10-10. trk/295 and trk/495: Star Trek is dated 2026-11-13, after the compiled table of representatives, and the showcase artwork is kept by its surge foil. Answered from the nightly's read of the record's newest end (generation 95); the compiled table alone answers trk/400, so this case is red until a night has run."
+		},
+		{
+			"name": "unique-art-representative-of-an-unreleased-set-plain",
+			"method": "GET",
+			"path": "/cards/search?q=%21%22Overgrown+Tomb%22+e%3Atrk&unique=art&include_extras=true",
+			"note": "2026-10-10. trk/289 and trk/399: the same set, day and pair of treatments, and here the plain showcase printing is kept, not the surge foil trk/494."
 		}
 	]
 }

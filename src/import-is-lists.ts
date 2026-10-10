@@ -43,6 +43,18 @@
 //                                              IS_LISTS_RECENT_DAYS before the compiled table was
 //                                              measured and takes the rest as they stand.
 //
+//   the artwork representatives                NOT A LIST OF A VALUE: which printing `unique=art`
+//                                              answers each artwork with, Scryfall's record of it
+//                                              (engine/builder/src/art_reps.tsv, `bun run
+//                                              art-reps`, 313 pages). The record is every row of
+//                                              `year>=1993 unique=art`, and asked NEWEST RELEASE
+//                                              FIRST its top pages are the rows the compiled
+//                                              table cannot know: the night reads down to
+//                                              ART_REPS_MARGIN_DAYS before the day that table was
+//                                              written (5 pages on 2026-10-10) when the record's
+//                                              size moved, and once a week. See THE ARTWORK
+//                                              REPRESENTATIVES below.
+//
 // A change in a set whose count did NOT move — Scryfall re-tiering an old printing — is not read.
 // It is SEEN: three more first pages give tonight's size of `is:covered lang:en`,
 // `-is:covered lang:en` and `is:related`, the sets read tonight explain some of the movement since
@@ -52,11 +64,15 @@
 //
 // ── WHAT A NIGHT COSTS (the free plan) ─────────────────────────────────────────────────────────
 //
-//   typical     12 requests: seven list probes, one for the foreign rows, three sizes, /sets
+//   typical     13 requests: seven list probes, one for the foreign rows, three sizes, the
+//               first page of the artwork representatives, /sets
 //   a set moved +3 to +30 each (a 300-printing set is ~7; Secret Lair's 2,833 is ~30)
 //   worst case  IS_LISTS_NIGHT_REQUESTS (240), whatever moved: what does not fit waits a night.
 //               86 of them are the fixed part on the night everything is refetched whole
-//               (16 of the 86 are `old_artist`), which leaves 154 for sets that moved.
+//               (16 of the 86 are `old_artist`), and the artwork representatives are
+//               ART_REPS_MAX_PAGES (60) at the very most — 5 the day their table is written,
+//               one more for every 175 artworks printed since, about 27 a year — which leaves
+//               the sets that moved at least 94 and, with a table a quarter old, about 140.
 //   variations  cost no request: 122 rows of the corpus, 36 of them in `misprint` (491 rows where a
 //               default search shows 455, three pages either way) and none a row of another
 //               language that is not covered; and a set's cost was already reckoned from
@@ -68,6 +84,41 @@
 //   storage     one Durable Object row an alarm (the work in progress) and two at the end; one KV
 //               read and one KV write a night (IS_LISTS_KV_KEY, the state every later night and
 //               every deploy reads).
+//
+// ── THE ARTWORK REPRESENTATIVES ────────────────────────────────────────────────────────────────
+//
+// `unique=art` answers each artwork with ONE printing Scryfall keeps for it, and the builder marks
+// that printing from a compiled copy of the whole record (art_reps.rs). A printing released after
+// the copy was written falls back to "released the day the artwork debuted", which is wrong
+// wherever that day holds several printings — every new set's showcase and promo twins.
+//
+// THE RECORD CANNOT BE READ SET BY SET. `e:S unique=art` answers the representative only where S
+// holds it and the first of the card's own order where it does not, and nothing in the answer
+// says which: read against the whole record on 2026-10-10, `e:ptla`, `e:pspm` and `e:pecl` were
+// 80, 68 and 80 rows of which NONE is a representative (their artworks' are in the main set, of
+// the same day), `e:eoc` 128 of 171, `e:tle` 4 of 242. Over the corpus 51,026 of the 103,554
+// (set, artwork) pairs have their representative in another set, and for 6,689 of them the set
+// holds a printing of the very day the representative was released, so no date rule sorts them
+// either.
+//
+// IT CAN BE READ FROM ITS NEWEST END. The whole-corpus answer is one row an artwork and those
+// rows ARE the record; `order=released&dir=desc` returns them by their own release day, newest
+// first (20 pages read 2026-10-10: 3,500 rows, never a later day after an earlier one, and
+// exactly the compiled table's 3,015 rows released after the last day read — none missing, none
+// extra). So the night reads from the top until it passes a day — ART_REPS_MARGIN_DAYS before the
+// compiled table's `@written`, because printings are still being catalogued for weeks around a
+// release — and hands the builder those rows under that day: for a row released on or after it
+// the night's rows are the whole answer, and before it the compiled table is (is_lists.rs
+// `ART_REP_LINE`). The first page is the probe: the record's size is its `total_cards`.
+//
+// What this does not see: a printing catalogued late with an OLD release date that brings an
+// artwork of its own (a promo of years ago, newly added) has no representative until `bun run
+// art-reps` reads the whole record, and answers the first of its card's order meanwhile; and a
+// representative Scryfall moves without the record's size moving waits for the weekly read.
+// Committing a new art_reps.tsv moves the window's start with it.
+//
+// The blob says which table it compiles (`art_reps_written`): a blob without that export is one
+// that would refuse the lines, so the night neither reads the record nor hands them over.
 //
 // ── NO GENERATION, AND WHAT A DEPLOY USES ──────────────────────────────────────────────────────
 //
@@ -153,6 +204,23 @@ export const IS_LISTS_STATE_MAX_BYTES = 1_500_000;
 /** Scryfall's page size, for estimating what a set costs. */
 export const SCRYFALL_PAGE_ROWS = 175;
 
+/** The search that matches every card — nothing was printed before 1993 — whose `unique=art` answer is the record of artwork representatives. */
+export const ART_REPS_QUERY = "year>=1993";
+/** The first word of the override's lines that carry them (is_lists.rs `ART_REP_LINE`). */
+export const ART_REP_LINE = "art_rep";
+/** How far before the compiled table's `@written` day the night's read of the record reaches. */
+export const ART_REPS_MARGIN_DAYS = 30;
+/** Pages of the record one night may read: 10,500 artworks, two years of printing. Past it the read is refused. */
+export const ART_REPS_MAX_PAGES = 60;
+
+const DAY_RE = /^\d{4}-\d{2}-\d{2}$/;
+
+/** The day the night's read of the record reaches back to, for a compiled table written on `written`. */
+export function artRepsFrom(written: string): string {
+	if (!DAY_RE.test(written)) refuse(`the artwork representatives' table was written on ${JSON.stringify(written)}`);
+	return dayOf(Date.parse(`${written}T00:00:00Z`) - ART_REPS_MARGIN_DAYS * 86_400_000);
+}
+
 // ── the answer checks, shared with scripts/generate-is-lists.ts ────────────────────────────────
 
 /** A list that may not be used: the answer was not the shape a list has. */
@@ -210,6 +278,7 @@ export interface ApiCard {
 	set: string;
 	collector_number: string;
 	lang: string;
+	released_at?: string;
 	card_faces?: { oracle_id?: string }[];
 	all_parts?: unknown[];
 }
@@ -223,9 +292,21 @@ export interface ApiCard {
  * none here, and a set's read was short of `/sets`' `card_count` by its variations (`e:mkm` 440
  * rows against 451; 451 with them). Every request of the night and of `bun run is-lists` is built
  * here, so a list, its size probe and a set's read are all the same scope.
+ *
+ * `released` orders the answer by each row's own release day, in that direction — what the read
+ * of the artwork representatives needs, and nothing else asks for.
  */
-export function searchQuery(q: string, unique: "prints" | "cards" = "prints", page = 1): string {
+export function searchQuery(
+	q: string,
+	unique: "prints" | "cards" | "art" = "prints",
+	page = 1,
+	released?: "asc" | "desc",
+): string {
 	const params = new URLSearchParams({ q, unique, include_extras: "true", include_variations: "true" });
+	if (released) {
+		params.set("order", "released");
+		params.set("dir", released);
+	}
 	if (page > 1) params.set("page", String(page));
 	return `?${params}`;
 }
@@ -279,7 +360,9 @@ export function checkSearchPage(q: string, answer: SearchAnswer): SearchPage {
 /** A list being read, page by page: resumable, because a night's alarm may end between two pages. */
 export interface ListProgress<Row> {
 	q: string;
-	unique: "prints" | "cards";
+	unique: "prints" | "cards" | "art";
+	/** Asked newest release first: the read of the artwork representatives. */
+	newest?: true;
 	/** The next page to ask for, from 1. */
 	page: number;
 	/** The list's size, as its first page said; null before it. */
@@ -288,7 +371,7 @@ export interface ListProgress<Row> {
 	done: boolean;
 }
 
-export function newList<Row>(q: string, unique: "prints" | "cards" = "prints"): ListProgress<Row> {
+export function newList<Row>(q: string, unique: "prints" | "cards" | "art" = "prints"): ListProgress<Row> {
 	return { q, unique, page: 1, total: null, rows: [], done: false };
 }
 
@@ -313,6 +396,45 @@ export function acceptPage<Row>(list: ListProgress<Row>, page: SearchPage, pick:
 		refuse(`${list.q}: ${list.rows.length} rows received of ${page.total}`);
 	}
 	list.done = true;
+}
+
+/**
+ * Take one checked page of a list asked NEWEST RELEASE FIRST into a read that ends at a day: the
+ * rows released on or after `from` are kept, and the first row released before it ends the read —
+ * the list goes on for hundreds of pages nobody asked for. REFUSED when the list moved while it
+ * was read, when a row carries no release day, when a row is newer than the row before it (the
+ * answer is not in the order the read depends on: a row past the end could be inside the window)
+ * and when the read has taken `maxPages` without reaching the day.
+ */
+export function acceptNewestPage<Row extends { d?: string }>(
+	list: ListProgress<Row>,
+	page: SearchPage,
+	from: string,
+	maxPages: number,
+	pick: (card: ApiCard) => Row,
+): void {
+	if (list.done) refuse(`${list.q}: a page after the last`);
+	if (list.total !== null && page.total !== list.total) {
+		refuse(`${list.q}: the list moved while it was read (${list.total} rows, then ${page.total})`);
+	}
+	list.total = page.total;
+	let last = list.rows.at(-1)?.d ?? "9999-99-99";
+	for (const card of page.rows) {
+		const day = card.released_at;
+		if (typeof day !== "string" || !DAY_RE.test(day)) {
+			refuse(`${list.q}: ${card.set}/${card.collector_number} has no release day`);
+		}
+		if (day > last) refuse(`${list.q}: not newest first (${day} after ${last})`);
+		last = day;
+		if (day >= from) list.rows.push({ ...pick(card), d: day });
+		else list.done = true;
+	}
+	list.page += 1;
+	if (list.done) return;
+	if (!page.hasMore) list.done = true;
+	else if (list.page > maxPages) {
+		refuse(`${list.q}: ${maxPages} pages read and still on ${last}, not back to ${from}`);
+	}
 }
 
 /** REFUSE a finished list that holds a row twice (a page served twice hides a row not served). */
@@ -428,6 +550,17 @@ export interface SetState {
 	lines?: string[];
 }
 
+/** The newest end of the record of artwork representatives, as last read. */
+export interface ArtRepsState {
+	/** The whole record's size (`total_cards`) when it was read: what the night's probe compares. */
+	total: number;
+	/** The night (YYYY-MM-DD) it was read. */
+	fetched: string;
+	/** The day it was read back to: the lines are every representative released on or after it. */
+	from: string;
+	lines: string[];
+}
+
 export interface IsListsState {
 	v: 1;
 	/** The compiled table this refines (its fingerprint and day). Another table starts over. */
@@ -445,6 +578,8 @@ export interface IsListsState {
 	sizes?: { night: string; coveredEn: number; uncoveredEn: number; related: number; off: [number, number, number] };
 	/** Every set /sets has named. Empty before the first night that read /sets. */
 	sets: Record<string, SetState>;
+	/** The artwork representatives released since a day. Absent until a night has read them. */
+	art?: ArtRepsState;
 }
 
 export function freshState(base: CompiledBase): IsListsState {
@@ -459,12 +594,16 @@ export function usableState(stored: unknown, base: CompiledBase): IsListsState |
 	return s as IsListsState;
 }
 
-/** Whether the state says anything the compiled table does not. */
-export function refines(state: IsListsState): boolean {
+/**
+ * Whether the state says anything the compiled table does not — to a builder that reads the
+ * artwork representatives' lines (`artReps`), or to one that would refuse them.
+ */
+export function refines(state: IsListsState, artReps = true): boolean {
 	return (
 		Object.keys(state.lists).length > 0 ||
 		state.foreign !== undefined ||
-		Object.values(state.sets).some((s) => s.lines !== undefined)
+		Object.values(state.sets).some((s) => s.lines !== undefined) ||
+		(artReps && state.art !== undefined)
 	);
 }
 
@@ -480,15 +619,25 @@ export interface IsListsNote {
 	/** Sets whose English `covered` and `related` lines were read from Scryfall, and the latest such night. */
 	sets?: number;
 	sets_fetched?: string;
+	/**
+	 * The artwork representatives the store was marked from beside the compiled table: the day the
+	 * night's read reached back to, the night it was read, and how many rows it held.
+	 */
+	art_reps?: { from: string; fetched: string; rows: number };
 }
 
-export function noteOf(state: IsListsState | null, baseDate: string | null): IsListsNote {
-	if (!state || !refines(state)) return { base: baseDate, source: "compiled", checked: state?.checked ?? null };
+export function noteOf(state: IsListsState | null, baseDate: string | null, artReps = true): IsListsNote {
+	if (!state || !refines(state, artReps)) {
+		return { base: baseDate, source: "compiled", checked: state?.checked ?? null };
+	}
 	const fetched: Record<string, string> = {};
 	for (const [tag, list] of Object.entries(state.lists)) if (list) fetched[tag] = list.fetched;
 	if (state.foreign) fetched["covered-foreign"] = state.foreign.fetched;
 	const read = Object.values(state.sets).filter((s) => s.lines !== undefined && s.fetched);
 	const note: IsListsNote = { base: state.baseDate, source: "nightly", checked: state.checked, fetched };
+	if (artReps && state.art) {
+		note.art_reps = { from: state.art.from, fetched: state.art.fetched, rows: membersOf(state.art.lines).size };
+	}
 	if (read.length > 0) {
 		note.sets = read.length;
 		note.sets_fetched = read
@@ -508,7 +657,10 @@ export function describeNote(note: IsListsNote): string {
 	return (
 		`the nightly's refresh of ${note.checked ?? "an unfinished night"} over the compiled table of ${note.base}` +
 		(lists ? ` (read whole: ${lists})` : "") +
-		(note.sets ? `; ${note.sets} set(s) read for covered and related, the latest ${note.sets_fetched}` : "")
+		(note.sets ? `; ${note.sets} set(s) read for covered and related, the latest ${note.sets_fetched}` : "") +
+		(note.art_reps
+			? `; ${note.art_reps.rows} artwork representatives released since ${note.art_reps.from}, read ${note.art_reps.fetched}`
+			: "")
 	);
 }
 
@@ -521,11 +673,15 @@ export function describeNote(note: IsListsNote): string {
  *   covered, foreign  replaces the compiled `covered` lines of every language but English
  *   a set read        its `covered` lines replace the compiled English ones of that set; its
  *                     `related` lines are added, and being by printing they win over a card's
+ *   the artwork representatives   their own lines after every list's, under the day they were
+ *                     read back to (`# art-reps-from`) — only for a builder that reads them:
+ *                     `artReps` false is an import blob without `art_reps_written`, which would
+ *                     refuse the whole table for one such line
  */
-export function composeOverride(compiledTsv: string, state: IsListsState): string | null {
+export function composeOverride(compiledTsv: string, state: IsListsState, artReps = true): string | null {
 	const { base, lines } = readCompiled(compiledTsv);
 	if (state.base !== base.fingerprint) refuse(`the state refines table ${state.base}, not ${base.fingerprint}`);
-	if (!refines(state)) return null;
+	if (!refines(state, artReps)) return null;
 	const out: Record<ListTag, string[]> = { ...lines };
 	for (const tag of [...ROW_LISTS, ...CARD_LISTS]) {
 		const list = state.lists[tag];
@@ -552,15 +708,25 @@ export function composeOverride(compiledTsv: string, state: IsListsState): strin
 		}
 	}
 	out.related = [...related];
-	const note = noteOf(state, base.date);
+	const note = noteOf(state, base.date, artReps);
+	const art = artReps ? state.art : undefined;
+	if (art && (!DAY_RE.test(art.from) || art.lines.some((line) => !line.startsWith(`${ART_REP_LINE}\trow\t`)))) {
+		refuse("the stored artwork representatives are not rows under a day");
+	}
 	const header = [
 		`# OVERRIDE of is_lists.tsv (${base.date}), composed by src/import-is-lists.ts; checked ${state.checked ?? "never"}.`,
 		`# base ${base.fingerprint}`,
 		`# print_tiers.tsv ${base.tiers}`,
 		`# meta ${JSON.stringify(note)}`,
+		...(art ? [`# art-reps-from ${art.from}`] : []),
 	];
-	const body = LIST_TAGS.flatMap((tag) => out[tag]).map(checkLine);
+	const body = [...LIST_TAGS.flatMap((tag) => out[tag]), ...(art?.lines ?? [])].map(checkLine);
 	return `${[...header, ...body].join("\n")}\n`;
+}
+
+/** The data lines of a table: what the builder counts when it installs one. */
+export function tableLines(table: string): number {
+	return table.split("\n").filter((line) => line !== "" && !line.startsWith("#")).length;
 }
 
 // ── a night's work ─────────────────────────────────────────────────────────────────────────────
@@ -569,6 +735,7 @@ type Unit =
 	| { kind: "list"; tag: SmallList }
 	| { kind: "foreign" }
 	| { kind: "sizes" }
+	| { kind: "art" }
 	| { kind: "sets" }
 	| { kind: "set"; code: string; count: number; fresh: boolean };
 
@@ -583,6 +750,8 @@ interface Got {
 	/** Its oracle ids (the front's first) and name, where a line names the card. */
 	o?: string[];
 	m?: string;
+	/** Its release day, in a read that ends at one. */
+	d?: string;
 }
 
 const keyOf = (g: Got) => `${g.s}\t${g.n}\t${g.l}`;
@@ -594,6 +763,8 @@ export interface NightWork {
 	night: string;
 	startedMs: number;
 	base: CompiledBase;
+	/** The day the artwork representatives are read back to; null where the importer cannot take them. */
+	artFrom?: string | null;
 	/** The state as the finished units have left it. */
 	state: IsListsState;
 	queue: Unit[];
@@ -623,8 +794,19 @@ function daysBetween(from: string, to: string): number {
 	return Math.round((Date.parse(`${to}T00:00:00Z`) - Date.parse(`${from}T00:00:00Z`)) / 86_400_000);
 }
 
-/** Begin a night over `compiledTsv`, from the state KV held (null: none, or one for another table). */
-export function beginNight(compiledTsv: string, stored: unknown, nowMs: number): NightWork {
+/**
+ * Begin a night over `compiledTsv`, from the state KV held (null: none, or one for another table).
+ * `artFrom` is the day to read the artwork representatives back to (`artRepsFrom` of the day the
+ * importer's own table of them was written), or null for an importer that cannot take them.
+ */
+export function beginNight(
+	compiledTsv: string,
+	stored: unknown,
+	nowMs: number,
+	artFrom: string | null = null,
+): NightWork {
+	if (artFrom !== null && !DAY_RE.test(artFrom))
+		refuse(`the artwork representatives cannot be read back to ${artFrom}`);
 	const { base } = readCompiled(compiledTsv);
 	const held = usableState(stored, base);
 	const state = held ?? freshState(base);
@@ -632,7 +814,10 @@ export function beginNight(compiledTsv: string, stored: unknown, nowMs: number):
 	// built before the list existed would refuse a table that names it — so it is not asked.
 	const known = [...ROW_LISTS, ...CARD_LISTS].filter((tag) => base.totals[tag] !== undefined);
 	const queue: Unit[] = known.map((tag) => ({ kind: "list", tag }));
-	if (base.refinable) queue.push({ kind: "foreign" }, { kind: "sizes" }, { kind: "sets" });
+	if (base.refinable) queue.push({ kind: "foreign" }, { kind: "sizes" });
+	// Before the sets: what the budget does not reach waits a night, and a set can.
+	if (artFrom !== null) queue.push({ kind: "art" });
+	if (base.refinable) queue.push({ kind: "sets" });
 	const notes: string[] = [];
 	if (stored && !held)
 		notes.push(`the stored lists refine another table than this build's (${base.date}): starting over`);
@@ -642,6 +827,7 @@ export function beginNight(compiledTsv: string, stored: unknown, nowMs: number):
 		night: dayOf(nowMs),
 		startedMs: nowMs,
 		base,
+		artFrom,
 		state,
 		queue,
 		lists: null,
@@ -677,6 +863,8 @@ function listsOf(unit: Unit): ListProgress<Got>[] {
 			return [newList("-is:covered -lang:en")];
 		case "sizes":
 			return [newList("is:covered lang:en"), newList("-is:covered lang:en"), newList("is:related")];
+		case "art":
+			return [{ ...newList<Got>(ART_REPS_QUERY, "art"), newest: true }];
 		case "set":
 			return [
 				newList(`e:${unit.code} is:covered`),
@@ -763,6 +951,20 @@ function applyForeign(work: NightWork, list: ListProgress<Got>): void {
 	const lines = rowLines("covered", "not-row", list.rows).map(checkLine);
 	work.notes.push(`covered-foreign ${moved(work.state.foreign?.lines, lines)} (${list.rows.length})`);
 	work.state.foreign = { total: list.rows.length, fetched: work.night, lines };
+}
+
+/** The newest end of the record of artwork representatives, read back to the night's day, into the state. */
+function applyArt(work: NightWork, list: ListProgress<Got>): void {
+	const from = work.artFrom as string;
+	// Printings not yet released are always in the record: none since `from` is not an answer.
+	if (list.rows.length === 0) refuse(`${list.q}: no artwork representative released since ${from}`);
+	refuseRepeats(list, keyOf);
+	const lines = rowLines(ART_REP_LINE, "row", list.rows).map(checkLine);
+	const before = work.state.art;
+	work.notes.push(
+		`art reps ${moved(before?.lines, lines)} (${list.rows.length} released since ${from}, of ${list.total})`,
+	);
+	work.state.art = { total: list.total as number, fetched: work.night, from, lines };
 }
 
 /** One set, read whole: every printing of it written in or out of `covered` (English) and `related`. */
@@ -911,7 +1113,14 @@ export async function runSlice(work: NightWork, env: SliceEnv): Promise<boolean>
 			work.queue.shift();
 			continue;
 		}
-		const label = unit.kind === "list" ? unit.tag : unit.kind === "set" ? `e:${unit.code}` : unit.kind;
+		const label =
+			unit.kind === "list"
+				? unit.tag
+				: unit.kind === "set"
+					? `e:${unit.code}`
+					: unit.kind === "art"
+						? "art reps"
+						: unit.kind;
 		try {
 			if (unit.kind === "sets") {
 				const answer = await ask("/sets");
@@ -926,9 +1135,31 @@ export async function runSlice(work: NightWork, env: SliceEnv): Promise<boolean>
 				// A size already read, when the slice before this one ended between two of them.
 				if (unit.kind === "sizes" && list.total !== null) continue;
 				while (!list.done) {
-					const answer = await ask(`/cards/search${searchQuery(list.q, list.unique, list.page)}`);
+					const answer = await ask(
+						`/cards/search${searchQuery(list.q, list.unique, list.page, list.newest ? "desc" : undefined)}`,
+					);
 					if (answer === null) return false;
-					acceptPage(list, checkSearchPage(list.q, answer), (card) => pick(unit, card));
+					const page = checkSearchPage(list.q, answer);
+					if (unit.kind === "art") {
+						acceptNewestPage(list, page, work.artFrom as string, ART_REPS_MAX_PAGES, (card) => pick(unit, card));
+						// The first page is the probe: the record the same size as when its newest
+						// end was last read, back to the same day and recently enough, is left alone.
+						const held = work.state.art;
+						if (
+							list.page === 2 &&
+							!list.done &&
+							held &&
+							held.total === list.total &&
+							held.from === work.artFrom &&
+							daysBetween(held.fetched, work.night) < IS_LISTS_REFETCH_DAYS
+						) {
+							work.notes.push(`art reps = (${list.total})`);
+							unchanged = true;
+							break;
+						}
+						continue;
+					}
+					acceptPage(list, page, (card) => pick(unit, card));
 					// The sizes are their first pages' totals; nothing else of them is read.
 					if (unit.kind === "sizes") break;
 					// A list's first page is its probe: the same size as when it was last read
@@ -953,6 +1184,7 @@ export async function runSlice(work: NightWork, env: SliceEnv): Promise<boolean>
 				if (unit.kind === "list") applyList(work, unit.tag, work.lists[0] as ListProgress<Got>);
 				else if (unit.kind === "foreign") applyForeign(work, work.lists[0] as ListProgress<Got>);
 				else if (unit.kind === "sizes") work.sizes = work.lists.map((l) => l.total ?? 0);
+				else if (unit.kind === "art") applyArt(work, work.lists[0] as ListProgress<Got>);
 				else applySet(work, unit, work.lists);
 			}
 		} catch (err) {

@@ -15,6 +15,11 @@
 //      compiled table has it.
 //   3. BOTH BUILDERS AGREE. The native builder (the deploy path), handed the same table with
 //      `--is-lists`, tags the same rows with each of the eight values, id for id.
+//   3a. THE ARTWORK REPRESENTATIVES. The night read the newest end of the fake Scryfall's record
+//      of them, back to HARNESS_ART_FROM; the native builder under the run's table marks, of the
+//      rows released since that day, exactly the rows the record names; and the store the nightly
+//      published answers `unique=art` with the named row for every artwork whose printings are
+//      all inside the window with one of them named.
 //   4. THE NIGHTS AFTER, each a fresh coordinator over the same KV, run as far as the first dump:
 //      nothing moved → first pages only and the same table; a list grew → the table carries the
 //      new member; a read failing midway and a malformed page → that list as last night had it;
@@ -32,6 +37,8 @@ import { gunzipSync } from "node:zlib";
 import { chunkKey, formatManifestKey } from "../../src/engine/store-kv";
 import type { StoreManifest } from "../../src/engine/types";
 import {
+	ART_REP_LINE,
+	ART_REPS_QUERY,
 	composeOverride,
 	IS_LISTS_KV_KEY,
 	IS_LISTS_SLICE_REQUESTS,
@@ -42,6 +49,7 @@ import {
 	oraclesOf,
 	readCompiled,
 	type SmallList,
+	tableLines,
 } from "../../src/import-is-lists";
 import type { Corpus } from "./corpus";
 import { type FakeCard, FakeScryfall } from "./fake-scryfall";
@@ -58,7 +66,17 @@ interface CorpusRow {
 	set: string;
 	number: string;
 	lang: string;
+	released: string;
+	/** The printing's one illustration; null for a faced or art-less row, which (3a) leaves alone. */
+	illustration: string | null;
 }
+
+/**
+ * The day the harness's night reads the artwork representatives back to (the coordinator's
+ * test-only `ART_REPS_FROM`). The corpus is dated 1996 to 2025, years before any compiled table
+ * of them, so the day production would use holds none of its rows.
+ */
+export const HARNESS_ART_FROM = "2002-01-01";
 
 export interface ListsWorld {
 	fake: FakeScryfall;
@@ -94,11 +112,21 @@ export function listsWorld(corpus: Corpus): ListsWorld {
 			collector_number: string;
 			lang: string;
 			oracle_id?: string;
+			released_at?: string;
+			illustration_id?: string;
 			card_faces?: { oracle_id?: string }[];
 			all_parts?: unknown[];
 		};
 		const oracles = oraclesOf(c);
-		rows.push({ id: c.id, oracles, set: c.set, number: c.collector_number, lang: c.lang });
+		rows.push({
+			id: c.id,
+			oracles,
+			set: c.set,
+			number: c.collector_number,
+			lang: c.lang,
+			released: c.released_at ?? "",
+			illustration: c.card_faces || !c.illustration_id ? null : c.illustration_id,
+		});
 		const key = `${c.set}/${c.collector_number}/${c.lang}`;
 		if (held.has(key) || oracles.length === 0) continue;
 		held.add(key);
@@ -120,6 +148,9 @@ export function listsWorld(corpus: Corpus): ListsWorld {
 			collector_number: c.collector_number,
 			lang: c.lang,
 			is,
+			released_at: c.released_at ?? "1993-08-05",
+			// The record of artwork representatives: one row in four, of any day.
+			rep: hash(`rep ${key}`) % 4 === 1,
 		};
 		if (Array.isArray(c.all_parts) && c.all_parts.length > 0) card.all_parts = c.all_parts;
 		// One row in nineteen is a VARIATION, which the fake Scryfall answers only to a request
@@ -292,15 +323,31 @@ export async function checkIsLists(
 	if (!line.includes(`${world.failing} REFUSED`)) return fail(`the failing list was not refused: ${line}`);
 	if (state.lists[world.failing as keyof typeof state.lists]) return fail("a list whose read failed is in the state");
 	const compiled = blob.isListsCompiled() as string;
-	if (composeOverride(compiled, state) !== table)
+	const artReps = blob.artRepsWritten() !== null;
+	if (composeOverride(compiled, state, artReps) !== table)
 		return fail("the table the run installed is not the one its state composes");
+	if (artReps) {
+		const art = state.art;
+		if (!art || art.from !== HARNESS_ART_FROM)
+			return fail(`the night's artwork representatives are ${JSON.stringify(art)?.slice(0, 120)}`);
+		if (!table.includes(`\n# art-reps-from ${HARNESS_ART_FROM}\n`) || !table.includes(`\n${ART_REP_LINE}\trow\t`))
+			return fail("the table the run installed carries no artwork representatives");
+		if (manifest.is_lists?.art_reps?.from !== HARNESS_ART_FROM)
+			return fail(
+				`the manifest does not say which artwork representatives it was marked from: ${JSON.stringify(manifest.is_lists)}`,
+			);
+	} else {
+		lines.push(
+			"is lists: the artwork representatives NOT CHECKED — the committed import blob predates them (`bun run build`)",
+		);
+	}
 	const note = manifest.is_lists;
 	if (note?.source !== "nightly" || note.checked !== state.checked || note.sets !== world.readSets.length) {
 		return fail(`the manifest's is_lists is ${JSON.stringify(note)}`);
 	}
 	lines.push(`is lists: ${line.slice("Is lists: ".length, 300)}…`);
 	lines.push(
-		`is lists: state in KV (${JSON.stringify(state).length} bytes), table of ${table.split("\n").length - 5} lines installed, ` +
+		`is lists: state in KV (${JSON.stringify(state).length} bytes), table of ${tableLines(table)} lines installed, ` +
 			`manifest says ${JSON.stringify(note).slice(0, 160)}`,
 	);
 
@@ -407,7 +454,112 @@ export async function checkIsLists(
 		"is lists: the native builder, handed the same table (--is-lists), tags the same rows id for id — " +
 			LIST_TAGS.map((tag) => `${tag} ${(native.get(tag) as Set<string>).size}`).join(", "),
 	);
+
+	// ── 3a. the artwork representatives ────────────────────────────────────
+	if (!artReps) return { ok: true, lines };
+	const named = keysOf(
+		(world.fake.rows(ART_REPS_QUERY, "art") as FakeCard[]).filter((c) => (c.released_at ?? "") >= HARNESS_ART_FROM),
+	);
+	const since = idsWhere((r) => r.released >= HARNESS_ART_FROM);
+	const wantMarked = idsWhere((r) => r.released >= HARNESS_ART_FROM && named.has(rowKey(r)));
+	const marked = await nativeMarked(nativeDir, since);
+	if (wantMarked.size < 100 || wantMarked.size * 2 > since.size)
+		return fail(
+			`the record names ${wantMarked.size} of ${since.size} rows since ${HARNESS_ART_FROM} — the check would prove nothing`,
+		);
+	const offMarked = differ(marked, wantMarked);
+	if (offMarked)
+		return fail(
+			`artwork representatives: the native builder's marks since ${HARNESS_ART_FROM} are not the record's rows (${offMarked} of ${wantMarked.size})`,
+		);
+	// Through the store the nightly published: an artwork whose English printings are all inside
+	// the window, exactly one of them named, answers that one. (A faced or art-less printing, and
+	// an artwork with a printing before the day — which the compiled record or the debut rule
+	// may mark — are left out: the claim is the window's alone.)
+	const groups = new Map<string, CorpusRow[]>();
+	for (const r of world.rows) {
+		if (r.lang !== "en" || r.illustration === null || r.oracles.length === 0) continue;
+		const key = `${r.oracles[0]}\t${r.illustration}`;
+		groups.set(key, [...(groups.get(key) ?? []), r]);
+	}
+	const answered = await publishedArtworks(kv, manifest);
+	let [asked, wrong] = [0, 0];
+	for (const group of groups.values()) {
+		if (group.length < 2 || group.some((r) => r.released < HARNESS_ART_FROM)) continue;
+		const namedHere = group.filter((r) => named.has(rowKey(r)));
+		if (namedHere.length !== 1) continue;
+		asked++;
+		if (!answered.has((namedHere[0] as CorpusRow).id)) wrong++;
+	}
+	if (asked < 20)
+		return fail(`only ${asked} artworks of the corpus can be asked about — the check would prove nothing`);
+	if (wrong > 0)
+		return fail(`unique=art: ${wrong} of ${asked} artworks inside the window do not answer the row the record names`);
+	lines.push(
+		`is lists, the artwork representatives: ${state.art?.total} in the fake record, read back to ${HARNESS_ART_FROM} ` +
+			`(${membersOf(state.art?.lines ?? []).size} rows); the native builder under the run's table marks exactly the ${wantMarked.size} ` +
+			`named rows of the ${since.size} released since; and the published store answers unique=art with the named printing ` +
+			`for ${asked} of ${asked} artworks whose printings are all inside the window`,
+	);
 	return { ok: true, lines };
+}
+
+/** Every key a table's `row` lines name. */
+function membersOf(tableRows: readonly string[]): Set<string> {
+	const out = new Set<string>();
+	for (const line of tableRows) {
+		const [, , set, lang, numbers] = line.split("\t");
+		for (const n of (numbers ?? "").split(" ")) out.add(`${set}/${n}/${lang}`);
+	}
+	return out;
+}
+
+/** The ids, among `within`, of the native builder's rows that carry the artwork-representative mark. */
+async function nativeMarked(nativeDir: string, within: Set<string>): Promise<Set<string>> {
+	const out = new Set<string>();
+	const rows = createInterface({
+		input: createReadStream(join(nativeDir, "rows.jsonl")),
+		crlfDelay: Number.POSITIVE_INFINITY,
+	});
+	for await (const line of rows) {
+		if (!line) continue;
+		const row = JSON.parse(line) as { scryfall_id: string; card_is_tags?: Record<string, unknown> };
+		// card_engine's ART_DEBUT_TAG: what the engine's build turns into the bit `unique=art` reads.
+		if (row.card_is_tags?.art_debut && within.has(row.scryfall_id)) out.add(row.scryfall_id);
+	}
+	return out;
+}
+
+/** The ids of every row the published store answers `unique=art` with, over every printing. */
+async function publishedArtworks(kv: FakeKV, manifest: StoreManifest): Promise<Set<string>> {
+	const { engineFor } = await import("../../src/engine/wasm-shim");
+	const engine = engineFor("harness-is-lists");
+	const out = new Set<string>();
+	const opts = JSON.stringify({
+		unique: "artwork",
+		orderby: "name",
+		direction: "asc",
+		limit: 10_000_000,
+		offset: 0,
+		fields: ["scryfall_id"],
+	});
+	// Every printing: none carries a tag of this name.
+	const everything = JSON.stringify({ node_type: "NotNode", kwargs: { operand: isNode("no-such-tag") } });
+	for (const part of manifest.partitions ?? []) {
+		const pieces: Buffer[] = [];
+		for (let seq = 0; seq < part.chunk_count; seq++) {
+			pieces.push(
+				gunzipSync(new Uint8Array((await kv.get(chunkKey(part.store_key, seq), "arrayBuffer")) as ArrayBuffer)),
+			);
+		}
+		const archive = new Uint8Array(Buffer.concat(pieces));
+		engine.begin_store_load(archive.byteLength);
+		engine.store_load_chunk(archive);
+		engine.finish_store_load();
+		const answer = JSON.parse(engine.query(everything, opts)) as { rows: { scryfall_id: string }[] };
+		for (const row of answer.rows) out.add(row.scryfall_id);
+	}
+	return out;
 }
 
 // ── (4) the nights after ───────────────────────────────────────────────────────────────────────

@@ -13,6 +13,10 @@
 // way (`card_count` does: `e:mkm` is 440 rows by default and 451 with variations, and 451 is the
 // count). A refresh that stops sending the parameter reads lists short of those rows here too.
 //
+// THE RECORD OF ARTWORK REPRESENTATIVES is `year>=1993` with `unique=art`: the rows marked `rep`,
+// one an artwork, and with `order=released` in the direction asked, by each row's own
+// `released_at` — which is how the refresh reads the record's newest end.
+//
 // A term it does not know is answered with a WARNING, as Scryfall answers one, so a query this
 // file was not taught fails the refresh's own check instead of matching everything.
 
@@ -30,6 +34,9 @@ export interface FakeCard {
 	variation?: boolean;
 	/** The `is:` values this row is in — and `old_artist`, for a row `new:artist` leaves out. */
 	is: string[];
+	released_at?: string;
+	/** The row `unique=art` answers its artwork with when every card is in scope. */
+	rep?: boolean;
 }
 
 export interface FakeSet {
@@ -59,10 +66,17 @@ export class FakeScryfall {
 	}
 
 	/** The rows `q` answers, in a stable order — every one of them, or without the variations. */
-	rows(q: string, unique: string, includeVariations = true): FakeCard[] | { warning: string } {
+	rows(
+		q: string,
+		unique: string,
+		includeVariations = true,
+		released?: "asc" | "desc",
+	): FakeCard[] | { warning: string } {
 		let rows = includeVariations ? [...this.cards] : this.cards.filter((c) => !c.variation);
 		let lang: string | null = null;
 		for (const term of q.split(" ").filter(Boolean)) {
+			// Every card: nothing was printed before 1993.
+			if (term === "year>=1993") continue;
 			const negated = term.startsWith("-");
 			const [key, value] = (negated ? term.slice(1) : term).split(":") as [string, string | undefined];
 			if (!value) return { warning: `Invalid expression “${term}” was ignored.` };
@@ -102,6 +116,19 @@ export class FakeScryfall {
 			const seen = new Set<string>();
 			rows = rows.filter((c) => !seen.has(c.oracle_id) && seen.add(c.oracle_id));
 		}
+		// One row an artwork: the one Scryfall keeps for it.
+		if (unique === "art") rows = rows.filter((c) => c.rep === true);
+		if (released) {
+			const sign = released === "asc" ? 1 : -1;
+			// Stable: rows of one day keep the order above.
+			rows = rows
+				.map((c, i) => ({ c, i }))
+				.sort((a, b) => {
+					const [x, y] = [a.c.released_at ?? "", b.c.released_at ?? ""];
+					return x === y ? a.i - b.i : x < y ? -sign : sign;
+				})
+				.map(({ c }) => c);
+		}
 		return rows;
 	}
 
@@ -131,10 +158,12 @@ export class FakeScryfall {
 		}
 		if (url.pathname !== "/cards/search") return { status: 404, body: { object: "error", code: "not_found" } };
 		const q = url.searchParams.get("q") ?? "";
+		const dir = url.searchParams.get("dir") === "desc" ? "desc" : "asc";
 		const rows = this.rows(
 			q,
 			url.searchParams.get("unique") ?? "cards",
 			url.searchParams.get("include_variations") === "true",
+			url.searchParams.get("order") === "released" ? dir : undefined,
 		);
 		if (!Array.isArray(rows)) {
 			return {
@@ -154,7 +183,7 @@ export class FakeScryfall {
 				object: "list",
 				total_cards: rows.length,
 				has_more: page * this.pageRows < rows.length,
-				data: data.map(({ is: _is, variation, ...card }) => ({
+				data: data.map(({ is: _is, rep: _rep, variation, ...card }) => ({
 					object: "card",
 					...card,
 					variation: variation === true,

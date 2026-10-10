@@ -24,6 +24,19 @@
 //! is not of the debut's day — and is what this port answered before for an artwork the new
 //! printing brings. So the table goes stale by one release at a time and only for that release's
 //! own artworks, until `bun run art-reps` reads them.
+//!
+//! AND THE NIGHTLY IMPORT READS THOSE EVERY NIGHT THEY MOVE (since 2026-10-10). The record cannot
+//! be read set by set — `e:S unique=art` answers the first of the card's order wherever S does not
+//! hold the representative, and nothing in the answer says which (all 80 rows of `e:ptla`, 128 of
+//! `e:eoc`'s 171) — but the whole-corpus answer asked newest release first is the record from its
+//! newest end, so the night reads its top pages down to a month before `@written` and installs
+//! them beside the lists it refreshes ([`crate::is_lists::ART_REP_LINE`]). [`verdict`] asks that
+//! first: a row released on or after the day it reaches back to is a representative exactly when
+//! the night's rows name it, so Star Trek's shock lands, dated five weeks after this table, are
+//! the surge foil trk/495 for Sacred Foundry and the plain trk/399 for Overgrown Tomb as Scryfall
+//! has them, where the debut rule answers the plain printing of both. What is left to this
+//! table is every printing released before that day. src/import-is-lists.ts has the measurement
+//! and what the read costs.
 
 use std::collections::HashMap;
 use std::sync::LazyLock;
@@ -88,8 +101,22 @@ fn parse(text: &'static str) -> Table {
 /// Whether this row represents its artwork on Scryfall — `None` for a set the table does not name
 /// and for a printing released (`released_at`, `YYYY-MM-DD`) after the table was written, where
 /// the caller's rule stands.
+///
+/// THE NIGHT'S READ OF THE RECORD'S NEWEST END IS ASKED FIRST. The nightly import reads the
+/// whole-corpus answer newest release first, down to a day safely before this table was written,
+/// and installs those rows with the lists it refreshes ([`crate::is_lists::art_rep_verdict`]):
+/// for a row released on or after that day they are the whole answer, so a set released since
+/// `bun run art-reps` last ran is answered by Scryfall's record and not by the debut rule. With
+/// no override installed this is the compiled table alone.
 pub fn verdict(set: &str, collector_number: &str, lang: &str, released_at: &str) -> Option<bool> {
-    verdict_in(&ART_REPS, set, collector_number, lang, released_at)
+    crate::is_lists::art_rep_verdict(set, collector_number, lang, released_at)
+        .or_else(|| verdict_in(&ART_REPS, set, collector_number, lang, released_at))
+}
+
+/// The day the compiled table was read (`@written`), as `YYYY-MM-DD`: the last release day it
+/// speaks for, and what the nightly's refresh counts its window back from.
+pub fn written() -> &'static str {
+    ART_REPS.written
 }
 
 fn verdict_in(table: &Table, set: &str, collector_number: &str, lang: &str, released_at: &str) -> Option<bool> {

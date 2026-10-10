@@ -13,6 +13,11 @@
 // So the deploy reads the same value, composes the same table with the same code
 // (`composeOverride`) and hands it to the builder (`sylvan-store-builder --is-lists`).
 //
+// The same table carries what the nightly read of the ARTWORK REPRESENTATIVES — which printing
+// `unique=art` answers each artwork with, for printings released since the compiled copy of that
+// record (art_reps.tsv) was written — so a deploy marks a new set's artworks as the nightly did
+// and does not fall back to the debut rule for them.
+//
 // It asks Scryfall NOTHING: a deploy's lists are the last night's, never fresher, so the store a
 // deploy publishes and the store the nightly published differ only by the dumps between them.
 //
@@ -28,7 +33,14 @@
 
 import { readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { composeOverride, IS_LISTS_KV_KEY, noteOf, readCompiled, usableState } from "../src/import-is-lists";
+import {
+	composeOverride,
+	IS_LISTS_KV_KEY,
+	noteOf,
+	readCompiled,
+	tableLines,
+	usableState,
+} from "../src/import-is-lists";
 import { kvTargetArgs } from "./kv-target";
 import { wranglerArgv } from "./wrangler-cmd";
 
@@ -82,7 +94,8 @@ try {
 	const note = noteOf(state, base.date);
 	console.log(
 		`is: lists: ${OUT} — the last nightly's table over ${base.date}'s (checked ${note.checked ?? "never"}; ` +
-			`${Object.keys(note.fetched ?? {}).length} lists and ${note.sets ?? 0} sets read; ${table.split("\n").length - 5} lines).`,
+			`${Object.keys(note.fetched ?? {}).length} lists and ${note.sets ?? 0} sets read; ${tableLines(table)} lines` +
+			`${note.art_reps ? `; ${note.art_reps.rows} artwork representatives released since ${note.art_reps.from}` : ""}).`,
 	);
 } catch (err) {
 	rmSync(OUT, { force: true });

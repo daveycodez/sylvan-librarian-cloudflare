@@ -6,7 +6,8 @@
 // natively, engine/wasm-import/driver.ts's sixth argument in wasm — and the table has to be one the
 // nightly could have composed, touching every kind of line it writes: a card list by oracle id, a
 // row list by row (and the ninth list, the rows `new:artist` leaves out, which the builders turn
-// into a mark the engine's build reads), the foreign rows out of `covered`, and one set written absolutely for `covered`
+// into a mark the engine's build reads), the artwork representatives released since a day, the
+// foreign rows out of `covered`, and one set written absolutely for `covered`
 // (English rows in and out) and `related` (printings in and out, and a card by its oracle id). So
 // it is composed by the nightly's own `composeOverride` (src/import-is-lists.ts) over the
 // committed table, from a state cut out of the bulk file's first rows.
@@ -15,7 +16,15 @@
 
 import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { composeOverride, freshState, numberLines, oraclesOf, readCompiled } from "../src/import-is-lists";
+import {
+	ART_REP_LINE,
+	composeOverride,
+	freshState,
+	numberLines,
+	oraclesOf,
+	readCompiled,
+	tableLines,
+} from "../src/import-is-lists";
 
 const [bulkPath, outPath] = process.argv.slice(2);
 if (!bulkPath || !outPath) {
@@ -29,6 +38,7 @@ interface Row {
 	lang: string;
 	oracle: string;
 	name: string;
+	released: string;
 }
 
 // The head of the file is enough, and the file is ~200MB: read a slice, drop the cut line.
@@ -48,9 +58,17 @@ const rows: Row[] = head
 			lang: string;
 			name: string;
 			oracle_id?: string;
+			released_at?: string;
 			card_faces?: { oracle_id?: string }[];
 		};
-		return { set: c.set, number: c.collector_number, lang: c.lang, oracle: oraclesOf(c)[0] ?? "", name: c.name };
+		return {
+			set: c.set,
+			number: c.collector_number,
+			lang: c.lang,
+			oracle: oraclesOf(c)[0] ?? "",
+			name: c.name,
+			released: c.released_at ?? "",
+		};
 	})
 	.filter((r) => r.oracle && !/\s/.test(r.set + r.number + r.lang) && !/[\t\n]/.test(r.name));
 if (rows.length < 500) throw new Error(`${bulkPath}: ${rows.length} usable rows in its first 24MB — not a bulk file?`);
@@ -134,13 +152,33 @@ state.sets[set] = {
 		`related\toracle\t${loose.oracle}\t${loose.name}`,
 	],
 };
+// The artwork representatives: every row released on or after the day half the rows are older
+// than is marked by these lines alone — one row in five of them — and the older half by the
+// compiled record and the debut rule, as with no override.
+const days = rows
+	.map((r) => r.released)
+	.filter((d) => /^\d{4}-\d{2}-\d{2}$/.test(d))
+	.sort();
+const artFrom = days[Math.floor(days.length / 2)] as string;
+const artRows = rows.filter((r) => r.released >= artFrom).filter((_, i) => i % 5 === 0);
+if (artRows.length < 20) throw new Error(`${bulkPath}: ${artRows.length} rows to mark as artwork representatives`);
+state.art = {
+	total: artRows.length,
+	fetched: night,
+	from: artFrom,
+	lines: numberLines(
+		ART_REP_LINE,
+		"row",
+		grouped(artRows, (r) => `${r.set}\t${r.lang}`),
+	),
+};
 state.checked = night;
 
 const table = composeOverride(compiled, state);
 if (table === null) throw new Error("the state refines nothing");
 writeFileSync(outPath, table);
 console.log(
-	`${outPath}: ${table.split("\n").length - 5} lines — 3 spellbook and 3 spikey cards, ${introRows.length} intro rows, ` +
-		`${oldArtistRows.length} rows out of new:artist, ` +
+	`${outPath}: ${tableLines(table)} lines — 3 spellbook and 3 spikey cards, ${introRows.length} intro rows, ` +
+		`${oldArtistRows.length} rows out of new:artist, ${artRows.length} artwork representatives since ${artFrom}, ` +
 		`${uncovered.length} foreign rows out of covered, ${numbers.length} printings of ${set} in or out of covered and related`,
 );

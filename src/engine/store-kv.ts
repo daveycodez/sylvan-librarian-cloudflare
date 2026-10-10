@@ -2398,8 +2398,55 @@ export async function gzipBytes(bytes: Uint8Array): Promise<Uint8Array> {
  *      this code reading one would answer `new:artist` with nothing. No SORT_KEY_VERSION: no sort
  *      key reads the bit. The committed table changed, so the nightly's stored state
  *      (`is-lists:state`) starts over from it.
+ *
+ * 95 — THE NIGHTLY READS THE NEWEST ARTWORK REPRESENTATIVES. Generation 93 marks the printing
+ *      `unique=art` answers each artwork with from a compiled copy of Scryfall's record
+ *      (art_reps.tsv), which speaks for printings released by the day it was written; a later
+ *      one fell back to the debut rule, wrong wherever an artwork's first day holds several
+ *      printings — every new set's showcase and promo twins — until someone ran `bun run
+ *      art-reps` (313 pages) and committed the table.
+ *
+ *      SET BY SET IT CANNOT BE READ. `e:S unique=art` answers the representative only where S
+ *      holds it and the first of the card's own order where it does not, and nothing in the
+ *      answer says which: read against the whole record on 2026-10-10, `e:ptla`, `e:pspm` and
+ *      `e:pecl` are 80, 68 and 80 rows of which none is a representative, `e:eoc` 128 of 171,
+ *      `e:tle` 4 of 242; over the corpus 51,026 of the 103,554 (set, artwork) pairs have theirs
+ *      in another set, and for 6,689 of those the set holds a printing of the very day the
+ *      representative was released, so no date rule sorts them.
+ *
+ *      FROM ITS NEWEST END IT CAN. The whole-corpus answer is one row an artwork and those rows
+ *      are the record; asked `order=released&dir=desc` they come by their own release day,
+ *      newest first (20 pages read: 3,500 rows, never a later day after an earlier one, and
+ *      exactly the compiled table's 3,015 rows released after the last day read). So the phase
+ *      that refreshes the `is:` lists reads the record from the top down to 30 days before the
+ *      compiled table's `@written` day — 5 pages on the day the table is written, one more for
+ *      every 175 artworks printed since — when the record's size moved (its first page says so:
+ *      one request a night) and once a week, and hands the builder the rows in the table it
+ *      already hands over (`art_rep` lines under `# art-reps-from`). `art_reps::verdict` asks
+ *      them first: a row released on or after that day is a representative exactly when the
+ *      night names it, and a row before it is the compiled table's, as it was.
+ *
+ *      Star Trek, dated 2026-11-13, prints each shock land twice with one artwork, showcase and
+ *      surge foil: Scryfall keeps the surge foil trk/495 for Sacred Foundry and the plain trk/399
+ *      for Overgrown Tomb. The compiled table alone answers the plain printing of both.
+ *
+ *      A typical night goes from 12 requests to 13; the fixed part of the worst night from 86 to
+ *      146 of the 240 only if nobody regenerates the table for two years (60 pages, after which
+ *      the read is refused and last night's rows stand); with a table a quarter old it is about
+ *      100. Same caps, same failure rule: a read that fails or is not the record's newest end
+ *      leaves last night's rows, and nothing in the phase can stop the build. A deploy's native
+ *      build reads the same rows from the same KV value (scripts/is-lists-override.ts).
+ *
+ *      What it does not reach — a printing catalogued late under an OLD release date that brings
+ *      an artwork of its own, a representative Scryfall moves in an older set — is still
+ *      `bun run art-reps`'s, which shares the request and its checks with the night.
+ *
+ *      GENERATION-ONLY: the bit (11 of `new_flags`) means what it meant and the reader is the
+ *      same; the builder's answer for a printing released since the day changes. No format
+ *      version, no layout, neither row grows. The importer gains one wasm export,
+ *      `art_reps_written`; a blob without it is handed no such line and builds as before.
  */
-export const STORE_CONTENT_GENERATION = 94;
+export const STORE_CONTENT_GENERATION = 95;
 
 /**
  * Chunk key for a store. Keyed by store_key, so publishes never collide.

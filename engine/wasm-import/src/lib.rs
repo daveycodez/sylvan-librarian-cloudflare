@@ -453,6 +453,16 @@ pub extern "C" fn is_lists_override(ptr: *mut u8, len: usize) -> i64 {
     }
 }
 
+/// The day this blob's table of artwork representatives was read (`art_reps::written`), as the
+/// number `YYYYMMDD` — and, by existing at all, the sign that `is_lists_override` reads
+/// `art_rep` lines (`is_lists::ART_REP_LINE`). The coordinator counts the window its nightly read
+/// of that record covers back from this day, and hands no such line to a blob without the export:
+/// one built before it would refuse the whole table, and every list's refresh with it.
+#[unsafe(no_mangle)]
+pub extern "C" fn art_reps_written() -> i64 {
+    sylvan_store_builder::art_reps::written().replace('-', "").parse().unwrap_or(-1)
+}
+
 // ─── phase: transform ────────────────────────────────────────────────────────
 
 /// Newline-separated bulk-card JSONL lines → transform each; drafts leave as
