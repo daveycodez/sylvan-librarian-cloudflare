@@ -81,6 +81,12 @@
 //               ten a second), IS_LISTS_SLICE_REQUESTS (30) an alarm — under the 50 subrequests
 //               an invocation gets — so at most 8 alarms and ~6 minutes of wall time, ~15 s on a
 //               typical night; CPU is the JSON parse of each page, ~10 ms.
+//   a 429       ends the SLICE, not the night: the unit in flight starts over from its first page
+//               in the next alarm, which the coordinator schedules no sooner than Retry-After
+//               (IS_LISTS_RETRY_AFTER_DEFAULT_S when it names none) — an alarm that is not awake
+//               for the wait, rather than one billed for sleeping through it. The night waits out
+//               IS_LISTS_MAX_THROTTLES − 1 of them, at most IS_LISTS_RETRY_AFTER_MAX_S each, so
+//               ~6 minutes at the very most on top of the asking, inside IS_LISTS_DEADLINE_MS.
 //   storage     one Durable Object row an alarm (the work in progress) and two at the end; one KV
 //               read and one KV write a night (IS_LISTS_KV_KEY, the state every later night and
 //               every deploy reads).
@@ -141,9 +147,12 @@
 // A list is applied only WHOLE: every page of it answered, the totals agreeing page to page, as
 // many rows as the total, no row twice, every key the shape the table can hold. Anything else —
 // a failed request, a warning, a row without a set — refuses that one list and leaves it as it
-// was last night (or as compiled), and the others go on. Three refusals, a 429, the request
-// budget or the clock end the night's refresh; the build then runs with what was whole. Nothing
-// in here can fail the import: the phase catches everything and moves on (stepIsLists).
+// was last night (or as compiled), and the others go on. A 429 refuses nothing: the list it
+// came in is dropped half-read and asked again from its first page after Retry-After, so what
+// is applied is still one whole reading. Three refusals, the third 429, a Retry-After longer than
+// the night waits, the request budget or the clock end the night's refresh; the build then runs
+// with what was whole. Nothing in here can fail the import: the phase catches everything and
+// moves on (stepIsLists).
 
 /** The values the table may name, in the builder's order (is_lists.rs `LIST_TAGS`). */
 export const LIST_TAGS = [
@@ -195,6 +204,20 @@ export const IS_LISTS_SLICE_MS = 120_000;
 export const IS_LISTS_DEADLINE_MS = 15 * 60_000;
 /** Refused lists after which the night stops asking. */
 export const IS_LISTS_MAX_REFUSALS = 3;
+/**
+ * 429s after which the night stops asking: the ones before it are waited out (each ends its
+ * slice, and the next slice comes after Retry-After), the last is taken as Scryfall's answer for
+ * the night. 2026-10-14: the paid account's first request of the night drew a 429 (Retry-After
+ * 53s), and when a 429 ended the night it missed what the other account read that morning.
+ */
+export const IS_LISTS_MAX_THROTTLES = 3;
+/** Seconds waited after a 429 that names no usable Retry-After (Scryfall's said 53 on 2026-10-14). */
+export const IS_LISTS_RETRY_AFTER_DEFAULT_S = 60;
+/**
+ * The longest Retry-After the night waits out. A longer one stops the night rather than asking
+ * sooner than Scryfall said to: two waits of it and the asking still fit IS_LISTS_DEADLINE_MS.
+ */
+export const IS_LISTS_RETRY_AFTER_MAX_S = 180;
 /** A small list is refetched whole at least this often, moved or not. */
 export const IS_LISTS_REFETCH_DAYS = 7;
 /** On the first night: sets released this long before the compiled table was measured are read. */
@@ -225,6 +248,9 @@ export function artRepsFrom(written: string): string {
 
 /** A list that may not be used: the answer was not the shape a list has. */
 export class ListRefused extends Error {}
+
+/** A 429 the night waits out: the slice ends, and the unit in flight is asked again from its start. */
+class Throttled extends Error {}
 
 export function refuse(message: string): never {
 	throw new ListRefused(message);
@@ -775,6 +801,13 @@ export interface NightWork {
 	refusals: number;
 	/** Why the night stopped asking before its queue was empty. */
 	stopped: string | null;
+	/**
+	 * 429s waited out so far, and the seconds waited for them; and the instant the last one's
+	 * Retry-After runs out, before which no slice asks. Absent on work begun before they existed.
+	 */
+	throttles?: number;
+	waitedS?: number;
+	resumeAtMs?: number;
 	/** What each unit came to, for the night's one log line. */
 	notes: string[];
 	/** Tonight's sizes, and what the sets read tonight moved by. */
@@ -835,6 +868,8 @@ export function beginNight(
 		slices: 0,
 		refusals: 0,
 		stopped: null,
+		throttles: 0,
+		waitedS: 0,
 		notes,
 		sizes: [],
 		explained: { cov: 0, unc: 0, rel: 0, unknown: [] },
@@ -1080,11 +1115,40 @@ function setCost(count: number): number {
 }
 
 /**
+ * A 429 at `nowMs`: waited out (Throttled: the slice ends, and `resumeAtMs` says when the next may
+ * ask) or, the night's last, or longer than the night waits, or past its clock, the night's end
+ * (ListRefused with `stopped` set). Throws either way.
+ */
+function throttle(work: NightWork, retryAfter: number | undefined, nowMs: number): never {
+	const said = `Scryfall answered 429 (Retry-After ${retryAfter ?? "?"}s)`;
+	const waitS =
+		retryAfter !== undefined && Number.isFinite(retryAfter) && retryAfter > 0
+			? Math.ceil(retryAfter)
+			: IS_LISTS_RETRY_AFTER_DEFAULT_S;
+	const throttles = work.throttles ?? 0;
+	if (throttles + 1 >= IS_LISTS_MAX_THROTTLES) {
+		work.stopped = `${said}, ${throttles + 1} of them tonight`;
+	} else if (waitS > IS_LISTS_RETRY_AFTER_MAX_S) {
+		work.stopped = `${said}, longer than the night waits (${IS_LISTS_RETRY_AFTER_MAX_S}s)`;
+	} else if (nowMs + waitS * 1000 - work.startedMs > IS_LISTS_DEADLINE_MS) {
+		work.stopped = `${said}, and the wait would pass the night's ${IS_LISTS_DEADLINE_MS / 60_000} minutes`;
+	}
+	if (work.stopped !== null) throw new ListRefused(work.stopped);
+	work.throttles = throttles + 1;
+	work.waitedS = (work.waitedS ?? 0) + waitS;
+	work.resumeAtMs = nowMs + waitS * 1000;
+	throw new Throttled(said);
+}
+
+/**
  * Run the night forward until its queue is empty, it stops, or this slice's requests or time are
- * spent. Returns true when the night is over. Never throws for anything a request answered: a
- * refused list is counted, noted and left as it was.
+ * spent, or a 429 ends it. Returns true when the night is over; false when the next slice goes on
+ * from here — no sooner than `work.resumeAtMs` where a 429 set it, and a slice called before then
+ * asks nothing. Never throws for anything a request answered: a refused list is counted, noted
+ * and left as it was.
  */
 export async function runSlice(work: NightWork, env: SliceEnv): Promise<boolean> {
+	if (work.resumeAtMs !== undefined && env.now() < work.resumeAtMs) return false;
 	work.slices += 1;
 	let asked = 0;
 	const ask = async (path: string): Promise<SearchAnswer | null> => {
@@ -1100,10 +1164,7 @@ export async function runSlice(work: NightWork, env: SliceEnv): Promise<boolean>
 		asked += 1;
 		work.requests += 1;
 		const answer = await env.get(path);
-		if (answer.status === 429) {
-			work.stopped = `Scryfall answered 429 (Retry-After ${answer.retryAfter ?? "?"}s)`;
-			throw new ListRefused(work.stopped);
-		}
+		if (answer.status === 429) throttle(work, answer.retryAfter, env.now());
 		return answer;
 	};
 	while (work.queue.length > 0 && work.stopped === null) {
@@ -1188,6 +1249,12 @@ export async function runSlice(work: NightWork, env: SliceEnv): Promise<boolean>
 				else applySet(work, unit, work.lists);
 			}
 		} catch (err) {
+			if (err instanceof Throttled) {
+				// Nothing of the unit in flight is kept — a list half-read, a size or two of three:
+				// the next slice asks it again from its first page, and only that reading is applied.
+				work.lists = null;
+				return false;
+			}
 			if (work.stopped === null) {
 				work.refusals += 1;
 				work.notes.push(`${label} REFUSED (${String(err instanceof Error ? err.message : err).slice(0, 160)})`);
@@ -1274,8 +1341,10 @@ export function closeNight(work: NightWork): { state: IsListsState; line: string
 	const sizes = reconcile(work);
 	if (sizes) parts.push(sizes);
 	if (ended) state.checked = work.night;
+	const throttles = work.throttles ?? 0;
 	const line =
 		`Is lists: ${work.requests} requests in ${work.slices} slice(s)` +
+		(throttles > 0 ? `, ${throttles} 429(s) waited out (${work.waitedS ?? 0}s)` : "") +
 		(work.stopped ? `, STOPPED (${work.stopped}; what was read whole is used, the rest is as it was)` : "") +
 		` — ${parts.join("; ") || "nothing asked"}`;
 	return { state, line };

@@ -256,6 +256,7 @@ import {
 	composeOverride,
 	IS_LISTS_GAP_MS,
 	IS_LISTS_KV_KEY,
+	IS_LISTS_MAX_THROTTLES,
 	IS_LISTS_SLICE_MS,
 	IS_LISTS_SLICE_REQUESTS,
 	type IsListsNote,
@@ -2092,6 +2093,9 @@ export class ImportCoordinator extends DurableObject<Env> {
 	//   - every request and KV call is raced against IS_LISTS_IO_TIMEOUT_MS (isListsIo), a slice stops asking
 	//     after IS_LISTS_SLICE_MS and the night after IS_LISTS_DEADLINE_MS, so the alarm watchdog
 	//     has nothing here to fire on;
+	//   - a 429 ends the slice and the next alarm is set no sooner than its Retry-After (stepDelayMs,
+	//     as the listing's pool wait does), so the wait is never inside an alarm; the third 429
+	//     ends the night (IS_LISTS_MAX_THROTTLES);
 	//   - the FIRST thing the first slice does is put LAST NIGHT's table in `is_lists_table`
 	//     (the state every finished night leaves in KV, IS_LISTS_KV_KEY), so moving on from any
 	//     point builds with the last good table — and with the compiled one when there is none.
@@ -2163,6 +2167,7 @@ export class ImportCoordinator extends DurableObject<Env> {
 					return { status: res.status, body, retryAfter };
 				});
 			};
+			const throttled = work.throttles ?? 0;
 			const over = await runSlice(work, {
 				get,
 				now: () => Date.now(),
@@ -2170,8 +2175,18 @@ export class ImportCoordinator extends DurableObject<Env> {
 				deadlineMs: Date.now() + IS_LISTS_SLICE_MS,
 			});
 			if (!over) {
-				// The alarm's requests are spent: bank the progress, and the next alarm goes on from it.
+				// The alarm's requests are spent, or a 429 ended it: bank the progress, and the next
+				// alarm goes on from it — after a 429, no sooner than Scryfall's Retry-After. The wait
+				// is the alarm's, not this invocation's: nothing is awake (or billed) through it.
 				this.metaSet("is_lists_work", JSON.stringify(work));
+				const waitMs = (work.resumeAtMs ?? 0) - Date.now();
+				if (waitMs > 0) this.stepDelayMs = waitMs;
+				if ((work.throttles ?? 0) > throttled) {
+					console.warn(
+						`Is lists: Scryfall answered 429; the slice ends and the next asks in ${Math.ceil(waitMs / 1000)}s ` +
+							`(${work.throttles} of the ${IS_LISTS_MAX_THROTTLES - 1} the night waits out), the unit in flight from its start`,
+					);
+				}
 				return;
 			}
 			await this.closeIsLists(work);

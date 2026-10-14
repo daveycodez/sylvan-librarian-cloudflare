@@ -25,7 +25,10 @@ import {
 	fnv1a64,
 	IS_LISTS_DEADLINE_MS,
 	IS_LISTS_GAP_MS,
+	IS_LISTS_MAX_THROTTLES,
 	IS_LISTS_NIGHT_REQUESTS,
+	IS_LISTS_RETRY_AFTER_DEFAULT_S,
+	IS_LISTS_RETRY_AFTER_MAX_S,
 	IS_LISTS_SLICE_MS,
 	IS_LISTS_SLICE_REQUESTS,
 	IS_LISTS_STATE_MAX_BYTES,
@@ -125,7 +128,11 @@ interface Ran {
 	asked: string[];
 }
 
-/** One night, every alarm of it: the work goes through JSON between slices, as it does through storage. */
+/**
+ * One night, every alarm of it: the work goes through JSON between slices, as it does through
+ * storage, and the clock stands still except where a 429 asked for a wait — the next alarm then
+ * comes when the coordinator sets it, at `resumeAtMs`.
+ */
 async function runNight(
 	fake: FakeScryfall,
 	compiled: string,
@@ -135,17 +142,19 @@ async function runNight(
 	artFrom: string | null = null,
 ): Promise<Ran> {
 	const from = fake.asked.length;
+	let clock = nowMs;
 	let work = beginNight(compiled, stored && structuredClone(stored), nowMs, artFrom);
 	for (let slices = 0; ; slices++) {
 		if (slices > 500) throw new Error("the night does not end");
 		const over = await runSlice(work, {
 			get: async (path) => fake.answer(path),
-			now: () => nowMs,
+			now: () => clock,
 			maxRequests: perSlice,
-			deadlineMs: nowMs + 60_000,
+			deadlineMs: clock + 60_000,
 		});
 		if (over) break;
 		work = JSON.parse(JSON.stringify(work)) as NightWork;
+		if (work.resumeAtMs !== undefined && work.resumeAtMs > clock) clock = work.resumeAtMs;
 	}
 	const { state, line } = closeNight(work);
 	return { state, line, work, asked: fake.asked.slice(from) };
@@ -251,6 +260,13 @@ describe("what a night may cost on the free plan", () => {
 		expect((IS_LISTS_NIGHT_REQUESTS * (IS_LISTS_GAP_MS + 500)) / 60_000).toBeLessThanOrEqual(6);
 		expect(IS_LISTS_SLICE_MS).toBeLessThanOrEqual(120_000);
 		expect(IS_LISTS_DEADLINE_MS).toBeLessThanOrEqual(15 * 60_000);
+		// The 429s waited out, each at the longest Retry-After the night takes, and that slow night
+		// besides: still inside the clock, so a wait never turns into a night stopped by its deadline.
+		expect(IS_LISTS_RETRY_AFTER_DEFAULT_S).toBeLessThanOrEqual(IS_LISTS_RETRY_AFTER_MAX_S);
+		expect(
+			(IS_LISTS_MAX_THROTTLES - 1) * IS_LISTS_RETRY_AFTER_MAX_S * 1000 +
+				IS_LISTS_NIGHT_REQUESTS * (IS_LISTS_GAP_MS + 500),
+		).toBeLessThan(IS_LISTS_DEADLINE_MS);
 		// One KV value (25 MiB) and one Durable Object row (2 MB), with room.
 		expect(IS_LISTS_STATE_MAX_BYTES).toBeLessThan(2_000_000);
 	});
@@ -476,7 +492,7 @@ describe("a night of the refresh", () => {
 		expect(ran.line).toMatch(/jumpstart REFUSED \(is:jumpstart lang:any: jmp\/\d+\/en is in the answer twice\)/);
 	});
 
-	test("three refusals, a 429 or the clock end the night's asking; what was read whole stands", async () => {
+	test("three refusals, three 429s or the clock end the night's asking; what was read whole stands", async () => {
 		const fake = world();
 		const compiled = compiledFor(fake);
 		fake.fault = (path) => (path.includes("/cards/search") ? { status: 500, body: null } : null);
@@ -487,12 +503,15 @@ describe("a night of the refresh", () => {
 		expect(composeOverride(compiled, dead.state)).toBeNull();
 
 		const limited = world();
-		limited.fault = (_path, nth) => (nth === 3 ? { status: 429, body: null, retryAfter: 30 } : null);
+		limited.fault = (_path, nth) => (nth >= 3 ? { status: 429, body: null, retryAfter: 30 } : null);
 		const slowed = await runNight(limited, compiled, null, night(1));
-		expect(slowed.asked).toHaveLength(3);
-		expect(slowed.line).toContain("STOPPED (Scryfall answered 429 (Retry-After 30s)");
+		expect(slowed.asked).toHaveLength(5);
+		expect(slowed.line).toContain(
+			"2 429(s) waited out (60s), STOPPED (Scryfall answered 429 (Retry-After 30s), 3 of them tonight;",
+		);
 		// The two lists read before it are in the table.
 		expect(Object.keys(slowed.state.lists)).toEqual(["intro", "invitational"]);
+		expect(slowed.state.checked).toBeNull();
 
 		const late = world();
 		const work = beginNight(compiled, null, night(1));
@@ -619,6 +638,142 @@ describe("a night of the refresh", () => {
 // The ninth list is not an `is:` value: `old_artist`, the rows `new:artist` leaves out, which the
 // builder turns into a bit on every OTHER row (card_engine `NEW_ARTIST`). It is asked as
 // `-new:artist lang:any` and is otherwise a row list like `misprint`.
+describe("a 429 ends the slice, not the night", () => {
+	const at = (fake: FakeScryfall, nowMs: number) => ({
+		get: async (path: string) => fake.answer(path),
+		now: () => nowMs,
+		maxRequests: 30,
+		deadlineMs: nowMs + 60_000,
+	});
+	const jump = (n: number): FakeCard => ({
+		id: uuid(500 + n),
+		oracle_id: uuid(9100 + n),
+		name: `Jump ${n}`,
+		set: "jmp",
+		collector_number: String(n),
+		lang: "en",
+		is: ["jumpstart"],
+	});
+
+	test("a 429 on the first request: the next slice asks it again after Retry-After, and the night is the night without it", async () => {
+		const compiled = compiledFor(world());
+		const clean = await runNight(world(), compiled, null, night(1));
+		const fake = world();
+		fake.fault = (_path, nth) => (nth === 1 ? { status: 429, body: null, retryAfter: 53 } : null);
+		const t = night(1);
+		const work = beginNight(compiled, null, t);
+		expect(await runSlice(work, at(fake, t))).toBe(false);
+		expect(fake.asked).toHaveLength(1);
+		expect(work.stopped).toBeNull();
+		expect(work.resumeAtMs).toBe(t + 53_000);
+		expect(work.queue[0]).toEqual({ kind: "list", tag: "intro" });
+		expect(work.lists).toBeNull();
+		// An alarm woken before Retry-After has run out asks nothing.
+		const resumed = JSON.parse(JSON.stringify(work)) as NightWork;
+		expect(await runSlice(resumed, at(fake, t + 52_000))).toBe(false);
+		expect(fake.asked).toHaveLength(1);
+		expect(await runSlice(resumed, at(fake, t + 53_000))).toBe(true);
+		expect(fake.asked[1]).toBe(fake.asked[0] as string);
+		expect(fake.asked.slice(1)).toEqual(clean.asked);
+		const { state, line } = closeNight(resumed);
+		expect(state).toEqual(clean.state);
+		expect(state.checked).toBe("2026-10-10");
+		expect(line).toStartWith(
+			`Is lists: ${clean.asked.length + 1} requests in 2 slice(s), 1 429(s) waited out (53s) — `,
+		);
+		expect(line).not.toContain("STOPPED");
+	});
+
+	test("three 429s stop the night; the waits between them default when no Retry-After is named, and what was read whole stands", async () => {
+		const fake = world();
+		const compiled = compiledFor(fake);
+		// intro, invitational (429, then read), jumpstart (429, then its probe), misprint (429: the third).
+		fake.fault = (_path, nth) => (nth === 2 || nth === 4 || nth === 6 ? { status: 429, body: null } : null);
+		const ran = await runNight(fake, compiled, null, night(1));
+		expect(queries(ran.asked)).toEqual([
+			"is:intro lang:any",
+			"is:invitational lang:any",
+			"is:invitational lang:any",
+			"is:jumpstart lang:any",
+			"is:jumpstart lang:any",
+			"is:misprint lang:any",
+		]);
+		expect(ran.line).toContain(
+			`2 429(s) waited out (${2 * IS_LISTS_RETRY_AFTER_DEFAULT_S}s), STOPPED (Scryfall answered 429 (Retry-After ?s), 3 of them tonight;`,
+		);
+		expect(ran.line).toContain("jumpstart = (12)");
+		expect(Object.keys(ran.state.lists)).toEqual(["intro", "invitational"]);
+		expect(ran.work.refusals).toBe(0);
+		expect(ran.state.checked).toBeNull();
+	});
+
+	test("a list half-read when the 429 came is read again whole after the wait, never applied partial", async () => {
+		const fake = world();
+		const compiled = compiledFor(fake);
+		fake.cards.push(jump(13));
+		let limited = false;
+		fake.fault = (path) => {
+			if (limited || !path.includes("jumpstart") || !path.includes("page=2")) return null;
+			limited = true;
+			// The list moves while the night waits: a reading resumed at page 2 could not be whole.
+			fake.cards.push(jump(14));
+			return { status: 429, body: null, retryAfter: 20 };
+		};
+		const t = night(1);
+		const work = beginNight(compiled, null, t);
+		expect(await runSlice(work, at(fake, t))).toBe(false);
+		// The two pages read are dropped with the unit: nothing of them is in the state.
+		expect(work.queue[0]).toEqual({ kind: "list", tag: "jumpstart" });
+		expect(work.lists).toBeNull();
+		expect(work.state.lists.jumpstart).toBeUndefined();
+		expect(work.refusals).toBe(0);
+		const resumed = JSON.parse(JSON.stringify(work)) as NightWork;
+		expect(await runSlice(resumed, at(fake, resumed.resumeAtMs as number))).toBe(true);
+		const pages = fake.asked
+			.filter((path) => path.includes("jumpstart"))
+			.map((path) => /page=(\d+)/.exec(path)?.[1] ?? "1");
+		expect(pages).toEqual(["1", "2", "1", "2", "3"]);
+		const { state, line } = closeNight(resumed);
+		expect(state.lists.jumpstart?.total).toBe(14);
+		expect(composeOverride(compiled, state)).toContain("jumpstart\trow\tjmp\ten\t1 2 3 4 5 6 7 8 9 10 11 12 13 14\n");
+		expect(line).toContain("1 429(s) waited out (20s)");
+		expect(line).toContain("jumpstart first read (14)");
+		expect(line).not.toContain("REFUSED");
+		expect(state.checked).toBe("2026-10-10");
+	});
+
+	test("a Retry-After longer than the night waits, or one past its clock, stops the night at once", async () => {
+		const compiled = compiledFor(world());
+		const long = world();
+		long.fault = (_path, nth) =>
+			nth === 1 ? { status: 429, body: null, retryAfter: IS_LISTS_RETRY_AFTER_MAX_S + 1 } : null;
+		const ran = await runNight(long, compiled, null, night(1));
+		expect(ran.asked).toHaveLength(1);
+		expect(ran.line).toContain(
+			`STOPPED (Scryfall answered 429 (Retry-After ${IS_LISTS_RETRY_AFTER_MAX_S + 1}s), longer than the night waits (${IS_LISTS_RETRY_AFTER_MAX_S}s);`,
+		);
+		expect(ran.line).not.toContain("waited out");
+
+		const late = world();
+		late.fault = (_path, nth) => (nth === 1 ? { status: 429, body: null, retryAfter: 60 } : null);
+		const work = beginNight(compiled, null, night(1));
+		expect(await runSlice(work, at(late, night(1) + IS_LISTS_DEADLINE_MS - 30_000))).toBe(true);
+		expect(late.asked).toHaveLength(1);
+		expect(closeNight(work).line).toContain("and the wait would pass the night's 15 minutes");
+	});
+
+	test("work begun before the 429 counters existed takes its first 429 as the first", async () => {
+		const fake = world();
+		const compiled = compiledFor(fake);
+		const work = beginNight(compiled, null, night(1));
+		delete work.throttles;
+		delete work.waitedS;
+		fake.fault = (_path, nth) => (nth === 1 ? { status: 429, body: null, retryAfter: 5 } : null);
+		expect(await runSlice(work, at(fake, night(1)))).toBe(false);
+		expect(work).toMatchObject({ throttles: 1, waitedS: 5, resumeAtMs: night(1) + 5_000, stopped: null });
+	});
+});
+
 describe("the rows new:artist leaves out are the ninth list", () => {
 	/** `world()` with five rows out of `new:artist` — a translation among them. */
 	function artistWorld(): FakeScryfall {
