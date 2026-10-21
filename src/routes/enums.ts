@@ -41,10 +41,11 @@ export const UNIQUE_ON = {
  * variant: Sheltered Thicket answers pip/508), then any other frame variant (a frame effect or the
  * Future frame; Innkeeper's Talent answers the plain blb/180 over its Secret Lair poster), then the colorshifted
  * Planar Chaos frame (Essence Warden answers plc/145), then the retro 1997 frame (Kiki-Jiki,
- * Mirror Breaker answers the Secret Lair sld/1659), then the plain printings. Inside a tier a printing with a text box ranks above a full-art one (Iron Man, Titan of
- * Innovation answers the Secret Lair sld/1731 over the full-art mar/91, both borderless), a black
- * border above a white one (Blood Pet answers its black-bordered foil 7ed/121★, the white
- * 7ed/121 being no candidate at all), among the borderless any other set above a Secret Lair (Terror of the Peaks
+ * Mirror Breaker answers the Secret Lair sld/1659). A printing with none of those treatments — plain,
+ * textless, or no candidate at all — takes the no-preference order, with no key and no art rule: Mr.
+ * Spock, Science Officer answers trk/74 while Star Trek's borderless printings are still untagged,
+ * not the autograph card trk/1702. Inside a tier a printing with a text box ranks above a full-art one (Iron Man, Titan of
+ * Innovation answers the Secret Lair sld/1731 over the full-art mar/91, both borderless), among the borderless any other set above a Secret Lair (Terror of the Peaks
  * answers the Spotlight Series pspl/1 over sld/2650; the frame tiers are exempt), among the
  * borderless a plain frame above a showcase frame (Gandalf the White answers ltr/442), a real scan above a placeholder or low-resolution image, a
  * nonfoil printing above a foil-only one where the set sold both or the foil names a treatment
@@ -74,8 +75,8 @@ export const UNIQUE_ON = {
  * its tiers decide as usual. The reader's language leads everything, paper included — English
  * paper, English digital, then any other language. A serialized printing is preferred last of all (Urabrask, the Great
  * Work answers mom/299 over the serialized mom/341).
- * Two more rules, both about being able to READ the answer: a textless printing ranks below the
- * plain ones (Moonshaker Cavalry answers its extended-art woe/325, not the Store Championship
+ * Two more rules, both about being able to READ the answer: a textless printing earns no tier
+ * (Moonshaker Cavalry answers its extended-art woe/325, not the Store Championship
  * full-art sch/17), and every English printing ranks above every non-English one, so a
  * Japanese-only promo answers only under `lang:ja` (Aven Interrupter answers otj/309, not
  * pwcs/2024-08). Scryfall's own `prefer:atypical` answers the Japanese promo there, so that

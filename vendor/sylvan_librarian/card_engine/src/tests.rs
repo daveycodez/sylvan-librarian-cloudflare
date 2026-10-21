@@ -18322,23 +18322,26 @@ fn prefer_borderless_never_answers_a_white_bordered_printing() {
         p.card_is_tags = vec![];
     }
     assert_eq!(representative(&data, "borderless", "name", "asc"), 1, "all plain and black: the default pick");
-    // The default pick turns white: the next black printing answers.
+    // The default pick turns white: with no treatment anywhere the default order decides alone,
+    // white or not (Mr. Spock's rule: no marked treatment, no opinion).
     data.printings[0].card_border_id = white;
-    assert_eq!(representative(&data, "borderless", "name", "asc"), 2, "black over white in the plain tier");
+    assert_eq!(representative(&data, "borderless", "name", "asc"), 1, "no treatment anywhere: the default pick");
     // Retro tier, Blood Pet's own shape: ids 1 and 2 retro, id 1 white — id 2 answers.
     data.printings[0].card_frame_data = vec![retro];
     data.printings[1].card_frame_data = vec![retro];
     assert_eq!(representative(&data, "borderless", "name", "asc"), 2, "black over white in the retro tier");
     // Whatever its tier: id 1 keeps the retro frame and id 2 goes back to plain, and the white
-    // retro is STILL no candidate — a key would have lifted it here, an exclusion does not.
+    // retro is STILL no candidate — the retro tier is empty, so the default order decides alone
+    // and its pick, the white id 1, answers as the canonical printing.
     data.printings[1].card_frame_data = data.printings[2].card_frame_data.clone();
-    assert_eq!(representative(&data, "borderless", "name", "asc"), 2, "a white retro is excluded, not merely ranked down");
-    // ...and it loses even to a TEXTLESS printing, the bottom tier.
+    assert_eq!(representative(&data, "borderless", "name", "asc"), 1, "a white retro is excluded: no treatment left, the default pick");
+    // TEXTLESS is no marked look either: textless printings join the same band, and the default
+    // order still answers the white id 1.
     data.printings[0].card_frame_data = data.printings[2].card_frame_data.clone();
     data.printings[1].compat.flags = COMPAT_TEXTLESS;
     data.printings[2].compat.flags = COMPAT_TEXTLESS;
     data.printings[3].compat.flags = COMPAT_TEXTLESS;
-    assert_eq!(representative(&data, "borderless", "name", "asc"), 2, "a textless candidate over a white-bordered one");
+    assert_eq!(representative(&data, "borderless", "name", "asc"), 1, "textless takes the default order too");
     // EVERY printing white: all excluded, and the default order answers — the canonical printing.
     for p in &mut data.printings {
         p.compat.flags = 0;
@@ -18495,8 +18498,8 @@ fn prefer_borderless_never_answers_a_digital_printing_and_reads_the_1993_frame()
 /// THE ART RULE inside one set and one tier: a higher-numbered printing sharing a lower one's
 /// illustration is a finish twin and yields (Stomping Ground eoe/283 over its galaxy-foil
 /// eoe/378); one carrying its own illustration is the later sheet and wins (Singularity Rupture's
-/// buy-a-box eoe/398 over its extended-art eoe/350). Across sets, and across tiers, the rule is
-/// silent and the default order decides.
+/// buy-a-box eoe/398 over its extended-art eoe/350). Across sets, across tiers, and in the plain
+/// tier, the rule is silent and the default order decides.
 #[test]
 fn prefer_borderless_breaks_same_set_ties_by_art() {
     let mut data = class_prefer_store();
@@ -18554,21 +18557,21 @@ fn prefer_borderless_breaks_same_set_ties_by_art() {
     // Another tier: silent too — a plain later sheet does not touch an extended art.
     data.printings[2].compat.frame_effects = vec![legendary];
     assert_eq!(representative(&data, "borderless", "name", "asc"), 2, "across tiers the rule is silent");
-    // THE PLAIN TIER TOO, and still never across sets — Relic Seeker's shape: ids 2 and 3 plain in
-    // one set with different arts, id 1 plain in ANOTHER set and first by default. The group ranks
-    // by its own best default score, so the canonical printing still answers...
+    // NOT THE PLAIN TIER: a printing with no marked treatment falls back to the default order,
+    // in its own set as across sets — Mr. Spock's untagged Star Trek printings answer trk/74, not
+    // the highest-numbered autograph card trk/1702. Ids 2 and 3 plain in one set with different
+    // arts, id 1 plain in ANOTHER set and first by default: id 1 answers...
     data.printings[1].compat.frame_effects = vec![legendary];
     data.printings[0].card_set_code = InlineStr::from_str("cmr");
     data.printings[1].collector_number_int = Some(29);
     data.printings[2].collector_number_int = Some(30);
     assert_eq!(representative(&data, "borderless", "name", "asc"), 1, "a plain group never outranks another set's better default");
-    // ...while inside ONE set the higher-numbered art leads the plain tier, which is how an
-    // untagged preview-set alternate reads (Vraska, Soul of Stone's fra/318 over fra/277): join
-    // id 1 to the set as its lowest number, with an art of its own, and id 3 answers.
+    // ...and joined to the set as its lowest number, with an art of its own, it still answers: the
+    // higher-numbered art does not lead a plain set.
     data.printings[0].card_set_code = InlineStr::from_str("eoe");
     data.printings[0].collector_number_int = Some(28);
     data.printings[0].artwork_group_id = 3;
-    assert_eq!(representative(&data, "borderless", "name", "asc"), 3, "in the plain tier the higher-numbered art leads its set");
+    assert_eq!(representative(&data, "borderless", "name", "asc"), 1, "in the plain tier the default order decides");
     data.printings[0].card_set_code = InlineStr::from_str("cmr");
     // WITHIN THE SET ONLY, in a variant tier: make ids 1-3 extended arts, id 1 in another set and
     // first by default, id 3 the later sheet of its set — id 3 must not climb past id 1...
@@ -18584,9 +18587,9 @@ fn prefer_borderless_breaks_same_set_ties_by_art() {
     assert_eq!(representative(&data, "borderless", "name", "asc"), 3, "inside the set the later sheet leads");
 }
 
-/// A real scan ranks above a placeholder or low-resolution image inside a tier, and never across
-/// one: a scanned plain printing beats an unscanned plain one, and an unscanned borderless still
-/// beats them both.
+/// A real scan ranks above a placeholder or low-resolution image inside a MARKED tier, and never
+/// across one: plain printings take the default order whatever their scans, an unscanned
+/// borderless beats them all, and a scanned borderless beats an unscanned one.
 #[test]
 fn prefer_borderless_ranks_a_real_scan_above_a_placeholder_inside_a_tier() {
     let mut data = class_prefer_store();
@@ -18602,9 +18605,13 @@ fn prefer_borderless_ranks_a_real_scan_above_a_placeholder_inside_a_tier() {
     }
     assert_eq!(representative(&data, "borderless", "name", "asc"), 1, "all plain, none scanned: the default pick");
     data.printings[1].compat.flags = COMPAT_HIGHRES_IMAGE;
-    assert_eq!(representative(&data, "borderless", "name", "asc"), 2, "a scanned plain over an unscanned one");
+    assert_eq!(representative(&data, "borderless", "name", "asc"), 1, "plain printings ignore the scan");
     data.printings[2].card_border_id = borderless;
     assert_eq!(representative(&data, "borderless", "name", "asc"), 3, "an unscanned borderless still beats a scanned plain");
+    data.printings[1].card_border_id = borderless;
+    data.printings[1].compat.flags = 0;
+    data.printings[2].compat.flags = COMPAT_HIGHRES_IMAGE;
+    assert_eq!(representative(&data, "borderless", "name", "asc"), 3, "a scanned borderless over an unscanned one");
 }
 
 /// Among the BORDERLESS printings any other set ranks above a SECRET LAIR — Terror of the Peaks'

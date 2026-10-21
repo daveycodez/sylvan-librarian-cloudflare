@@ -12546,12 +12546,16 @@ fn prefer_score(card: &AOracleCard, p: &APrinting, prefer: Prefer, strings: &ASt
     // non-member, and inside each half the store's own prefer_score decides — which is what makes
     // `prefer:atypical` answer the store's BEST atypical printing rather than its first one.
     const CLASS_BONUS: f64 = 1.0e9;
-    // `prefer:borderless`'s language step. Larger than everything an English printing can lose —
-    // digital (64) plus the non-candidates' band (32), 96 — by more than the tier span, so the
-    // reader's language decides before paper does: an English Magic Online printing ranks above a
-    // paper printing in another language. It was 16, under the digital offset, which answered a
-    // Japanese paper card to an English search wherever the English printing was digital.
-    const LANGUAGE_OFFSET: f64 = -128.0;
+    // `prefer:borderless`'s demotions, each clearing everything above it: the treatments span
+    // under seven steps and the default band sits 32 below them, so a crossover (64) lands under
+    // every in-universe printing, the default band included; serialized (128) under every
+    // crossover; digital (256) under every paper printing; another language (512) under all of it,
+    // so the reader's language decides before paper does (Battra, Dark Destroyer answers the
+    // English Magic Online prm/80935 over the Japanese paper iko/386).
+    const UNIVERSE_OFFSET: f64 = -64.0;
+    const SERIALIZED_OFFSET: f64 = -128.0;
+    const DIGITAL_OFFSET: f64 = -256.0;
+    const LANGUAGE_OFFSET: f64 = -512.0;
     let default_score = || p.prefer_score.as_ref().map(|v| f32::from(*v)).unwrap_or(0.0) as f64;
     let class_score = |member: bool| if member { CLASS_BONUS + default_score() } else { default_score() };
     match prefer {
@@ -12587,6 +12591,15 @@ fn prefer_score(card: &AOracleCard, p: &APrinting, prefer: Prefer, strings: &ASt
         Prefer::Borderless(ids) => {
             let lang = u16::from(p.compat.lang_id);
             let foreign = ids.lang_en != VOCAB_NONE && lang != VOCAB_NONE && lang != ids.lang_en;
+            // The no-preference order, below every treatment, keeping only English first and paper
+            // first (see the comment at the first use).
+            let demotions = || {
+                (if foreign { LANGUAGE_OFFSET } else { 0.0 })
+                    + (if printing_is_universes_beyond(p, &ids) { UNIVERSE_OFFSET } else { 0.0 })
+                    + (if printing_is_serialized(p, &ids) { SERIALIZED_OFFSET } else { 0.0 })
+                    + (if compat_flag(&p.compat, COMPAT_DIGITAL) { DIGITAL_OFFSET } else { 0.0 })
+            };
+            let default_band = || default_score() + (demotions() - 32.0) * CLASS_BONUS;
             // Below every same-named printing in EVERY language — a `lang:ja` pool must still put
             // its own crossovers last — hence further down than the language offset reaches. Two
             // keys say "sold as something else": a flavor name, and — on an ENGLISH printing — a
@@ -12603,15 +12616,22 @@ fn prefer_score(card: &AOracleCard, p: &APrinting, prefer: Prefer, strings: &ASt
                 // of Brokkos, Apex of Forever that carry that flavor name — and with the band
                 // flat the default order answered the Magic Online prm/80909 over the paper
                 // Godzilla card iko/378. No tiers in this band, by design (a card printed only in
-                // white borders answers its canonical printing); only the digital offset — and
-                // the LANGUAGE offset above it, the same as in the candidates' band: "Battra, Dark
+                // white borders answers its canonical printing); only the demotions the
+                // candidates' band takes, digital and language among them: "Battra, Dark
                 // Destroyer" was printed in paper only in Japan (iko/386) and in English only on
                 // Magic Online (prm/80935), and an English search answers the English one.
-                let digital = if compat_flag(&p.compat, COMPAT_DIGITAL) { -64.0 } else { 0.0 };
-                let language = if foreign { LANGUAGE_OFFSET } else { 0.0 };
-                return default_score() + (language + digital - 32.0) * CLASS_BONUS;
+                return default_band();
             }
             let frame_tier = borderless_frame_tier(p, siblings, &ids, strings);
+            // NO MARKED TREATMENT, NO OPINION. A printing on the plain rung — or the textless one
+            // under it — carries nothing Scryfall has marked as a look, and this prefer does not
+            // guess one: it takes the excluded printings' band, where the no-preference order
+            // decides alone, with no key and no art rule. Star Trek's printings of Mr. Spock were
+            // all untagged in preview, and the art rule answered the highest number, the autograph
+            // card trk/1702, over the canonical trk/74.
+            if frame_tier <= 1.0 {
+                return default_band();
+            }
             // INSIDE a tier, a printing with a text box outranks a full-art one: Iron Man, Titan
             // of Innovation has two borderless printings, the full-art mar/91 and the Secret Lair
             // sld/1731 with its text box, and the readable one answers. A HALF step, so it splits
@@ -12676,36 +12696,32 @@ fn prefer_score(card: &AOracleCard, p: &APrinting, prefer: Prefer, strings: &ASt
             // the rest. The tiers still order the non-English rows among themselves for a
             // `lang:` query, whose pool is one language and takes the offset uniformly.
             let language_offset = if foreign { LANGUAGE_OFFSET } else { 0.0 };
-            // A UNIVERSES BEYOND printing ranks below every in-universe one — eight steps, clear of
-            // the tiers and every key above, so any in-universe printing of the card answers before
+            // A UNIVERSES BEYOND printing ranks below every in-universe one — the default band
+            // included, clear of the tiers and every key above, so any in-universe printing of the card answers before
             // any crossover does (Farewell answers Kamigawa's extended-art neo/436 over Fallout's
             // borderless pip/353). NOT an exclusion: a card printed only in Universes Beyond sets
             // has a uniform offset and its tiers decide as usual, which is how Iron Man, Titan of
             // Innovation and Nick Fury still answer a borderless printing of their own.
-            let universe_offset = if printing_is_universes_beyond(p, &ids) { -8.0 } else { 0.0 };
-            // A SERIALIZED printing is preferred LAST — twenty-four steps, below every tier, every
-            // key, every language and every crossover, so any other candidate answers before a
+            let universe_offset = if printing_is_universes_beyond(p, &ids) { UNIVERSE_OFFSET } else { 0.0 };
+            // A SERIALIZED printing is preferred LAST — below every tier, every key, the default band
+            // and every crossover, so any other candidate answers before a
             // numbered insert does. Urabrask, the Great Work's serialized double-rainbow mom/341
             // is borderless with no showcase frame, so the plain-frame key had it beating the
             // ordinary showcase mom/299. Still not an exclusion: a card printed only in serialized
             // form takes the offset uniformly and its tiers decide.
-            let serialized_offset = if printing_is_serialized(p, &ids) { -24.0 } else { 0.0 };
+            let serialized_offset = if printing_is_serialized(p, &ids) { SERIALIZED_OFFSET } else { 0.0 };
             // A DIGITAL-ONLY printing is never this prefer's answer while any paper printing of
             // ITS LANGUAGE exists — below every tier and every crossover, above every other language. Tropical Island's
             // three retro-frame printings were all Magic Online (prm/43620, me3, me4) and it
             // answered one; its paper retro printings are Alpha through Revised. The tiers still
             // order the digital rows among THEMSELVES, so a card that exists only digitally (an
             // Alchemy card) still answers its borderless or extended-art printing.
-            let digital_offset = if compat_flag(&p.compat, COMPAT_DIGITAL) { -64.0 } else { 0.0 };
+            let digital_offset = if compat_flag(&p.compat, COMPAT_DIGITAL) { DIGITAL_OFFSET } else { 0.0 };
             // The base under the keys: the set group's best default score with the art rule
             // ordering the group (see `same_set_group_base`), or the printing's own when its set
-            // printed the card once in this tier. EVERY tier, the plain one included — a set that
-            // prints a card twice with different art has made the higher number the alternate
-            // treatment whether or not Scryfall has tagged it yet, which is how a preview set
-            // reads before its tags land (Vraska, Soul of Stone answers Reality Fracture's
-            // fra/318 over fra/277). This cannot lift a promo past a canonical printing the way
-            // ee8e14b's absolute bonus did: the group's base is its best member's default score,
-            // so Relic Seeker's pori pair still ranks by that pair's best and cmr/382's pin wins.
+            // printed the card once in this tier. Marked treatments only: the plain rung returned
+            // above. This cannot lift a promo past a canonical printing the way ee8e14b's absolute
+            // bonus did: the group's base is its best member's default score.
             let base = same_set_group_base(p, siblings, frame_tier, &ids, strings).unwrap_or_else(default_score);
             (frame_tier + text_box + set_key + plain_frame + scan + finish + featured + language_offset + universe_offset + serialized_offset + digital_offset) * CLASS_BONUS + base
         }
