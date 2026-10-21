@@ -73,6 +73,9 @@ let gatherStore: {
 	ops: unknown;
 } | null = null;
 
+/** How far the fake clock moves while the names index plans (its printed names' KV read). */
+let planIoMs = 0;
+
 /** x22: what this object's names index plans for a fuzzy needle (null: it cannot plan). */
 let fuzzyPlanAnswer: { partitions: number[]; everywhere: boolean; stage: string; builtAt: string } | null = null;
 
@@ -101,6 +104,8 @@ mock.module("../../src/engine/store", () => ({
 	autocompleteFromNames: async () => [],
 	// n15: the fuzzy plan's; x22's suite sets what it answers.
 	namesFuzzyPlan: async () => {
+		// The plan's I/O (the printed names' KV read), on the fake clock: what a wake's `endedAt` moves by.
+		clock += planIoMs;
 		if (fuzzyPlanAnswer === null) throw new Error("no names index");
 		return fuzzyPlanAnswer;
 	},
@@ -1589,6 +1594,42 @@ describe("the routed partition answers its bundle and, unranked, the plan in one
 		} finally {
 			warn.mockRestore();
 		}
+	});
+});
+
+describe("a call that found no store loaded carries the object's own clock readings back (EngineWake)", () => {
+	type RoutedDo = {
+		scryfallNamedFuzzyRouted(
+			folded: string,
+			words: string[],
+			limit: number,
+			baseUrl: string,
+			reportedShards?: number,
+		): Promise<{ wake?: { startedAt: number; endedAt: number } }>;
+	};
+	const routedDo = () => makeDo() as unknown as RoutedDo;
+
+	afterEach(() => {
+		objectIsWarm = true;
+		fuzzyPlanAnswer = null;
+		planIoMs = 0;
+		bundlesAsked.length = 0;
+	});
+
+	test("cold: when the call began here and when it returned, by this object's clock; warm: nothing", async () => {
+		// The 2026-10-20 miss: unranked bundle, then the plan, whose printed names wait 24ms on KV.
+		fuzzyPlanAnswer = { partitions: [], everywhere: false, stage: "miss", builtAt: "1" };
+		planIoMs = 24;
+		objectIsWarm = false;
+		const began = clock;
+		const cold = await routedDo().scryfallNamedFuzzyRouted("cards that give banding", ["cards"], 2, "https://x", 1);
+		expect(cold.wake).toEqual({ startedAt: began, endedAt: began + 24 });
+
+		// A warm call's reply keeps exactly the shape it had: an isolate on the build before the
+		// rider reads every key it knows and finds no new one.
+		objectIsWarm = true;
+		const warm = await routedDo().scryfallNamedFuzzyRouted("cards that give banding", ["cards"], 2, "https://x", 1);
+		expect("wake" in warm).toBe(false);
 	});
 });
 

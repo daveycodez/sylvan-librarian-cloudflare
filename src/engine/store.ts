@@ -1459,15 +1459,18 @@ async function loadStore(env: Env, ctx?: LoadContext, known?: StoreManifest, fen
 			),
 		);
 	}
-	// The `in NNNms` is I/O WAIT ONLY — Workers freeze the clock during
-	// synchronous execution, so it cannot see the decompression or the copy into
-	// wasm. Judge this path by cpuTimeMs from the invocation's own event; the
+	// The `after NNNms of I/O wait` is I/O WAIT ONLY — Workers freeze the clock
+	// during synchronous execution, so it cannot see the decompression or the copy
+	// into wasm, and a local-cache load reads "0ms" (it said "in 0ms" until
+	// 2026-10-21, beside a wake whose call took 2667ms). Judge this path by cpuTimeMs
+	// from the invocation's own event, or by the router's `engine rpc took` line,
+	// which splits a wake's wall time by where it went (EngineWake); the
 	// linear-memory figure is the honest one here, and is a high-water mark.
 	const isolate = noteIsolateLoad();
 	(isolate.crowded ? console.warn : console.log)(
 		`${tag(ctx)}store loaded from ${cached ? `local cache (${format})` : "KV"}: ${source.storeKey} (${source.cardCount} cards, ` +
 			`${source.storeBytes} bytes${!cached && source.gzipBytes ? ` from ${source.gzipBytes} gzipped` : ""}, ` +
-			`built ${manifest.built_at}) in ${Date.now() - started}ms from ${pieces} pieces in ${blocks} blocks ` +
+			`built ${manifest.built_at}) after ${Date.now() - started}ms of I/O wait, from ${pieces} pieces in ${blocks} blocks ` +
 			`(linear memory ${(w.linearMemoryBytes() / 1048576).toFixed(1)}MB); ${isolate.text}`,
 	);
 	return engine;
@@ -1990,11 +1993,15 @@ async function loadPrintedNames(
 			throw new Error(`${printed.key} is ${buf.byteLength} bytes, the manifest says ${printed.bytes}`);
 		}
 		const fetched = Date.now();
+		// No `decode` time beside the KV wait: the inflate and parse are synchronous, and under
+		// Workers' frozen clock it read "decode 0ms" on every production line (~15-20ms of V8 CPU
+		// here, measured 2026-10-21). The router's `engine rpc took` line carries it, in the
+		// term after the object's last I/O.
 		const count = current.handle.load_printed_names(new Uint8Array(buf));
 		current.printed = printed.key;
 		console.log(
 			`${tag(ctx)}printed names loaded from KV: ${printed.key} (${count} printed names, ${printed.bytes} bytes gzipped, ` +
-				`KV ${fetched - started}ms, decode ${Date.now() - fetched}ms, ` +
+				`KV ${fetched - started}ms, ` +
 				`${(current.handle.printed_names_heap_bytes() / 1048576).toFixed(1)}MB in wasm; ` +
 				`linear memory ${(current.handle.linearMemoryBytes() / 1048576).toFixed(1)}MB)`,
 		);

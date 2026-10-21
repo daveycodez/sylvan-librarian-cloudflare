@@ -18,6 +18,7 @@ import type {
 	EngineSearchOptions,
 	EngineSearchResult,
 	EngineSerializedResult,
+	EngineWake,
 	ExactNameProbe,
 	FuzzyCandidateWire,
 	NamedFuzzyBundle,
@@ -42,7 +43,7 @@ import {
 } from "./types";
 
 /** Riders the DO attaches to a search result for the shard controller. */
-type Telemetry = { acquireMs?: number; load?: number; rate?: number; shards?: number };
+type Telemetry = { acquireMs?: number; load?: number; rate?: number; shards?: number; wake?: EngineWake };
 
 /** Structural stub type: the SearchEngine DO's RPC surface. The riders are
  * optional only for one deploy's worth of rolling-update skew (new isolate, old
@@ -618,6 +619,23 @@ function raceNeighbour<T>(
 }
 
 /**
+ * A wake's wall time in its three terms (EngineWake), for the router's `engine rpc took` line:
+ * `2249ms before the object began, 41ms on its clock, 377ms after its clock last moved (CPU its
+ * clock did not see, the trip back)`. Under Workers the middle term is the object's I/O waits
+ * alone, its clock standing still through CPU, and the CPU lands in the last term; under local
+ * workerd, whose clock runs, the middle term is the object's whole time and the last is the trip
+ * back. The terms sum to `repliedAt - calledAt` by construction; the first and last each come from
+ * two machines' clocks, so one inside their skew can read a few ms below zero, and is printed as it
+ * reads.
+ */
+export function wakeSplit(calledAt: number, wake: EngineWake, repliedAt: number): string {
+	return (
+		`${wake.startedAt - calledAt}ms before the object began, ${wake.endedAt - wake.startedAt}ms on its clock, ` +
+		`${repliedAt - wake.endedAt}ms after its clock last moved (CPU its clock did not see, the trip back)`
+	);
+}
+
+/**
  * Run one engine RPC, retrying failures the runtime flags as transient.
  *
  * Every deploy RESETS every DO, and an RPC landing during the reset is
@@ -920,8 +938,8 @@ export class RemoteEngine implements Engine {
 	): Promise<Omit<T, keyof Telemetry>> {
 		const rpcStart = Date.now();
 		const { value, from } = await this.read(method, call);
-		const { acquireMs, load, rate, shards, ...result } = value;
-		if (from === "primary") this.feedAutoscaler(rpcStart, { acquireMs, load, rate, shards });
+		const { acquireMs, load, rate, shards, wake, ...result } = value;
+		if (from === "primary") this.feedAutoscaler(rpcStart, { acquireMs, load, rate, shards, wake });
 		return result as Omit<T, keyof Telemetry>;
 	}
 
@@ -933,12 +951,20 @@ export class RemoteEngine implements Engine {
 	 * — which for /cards/search would mean the controller losing sight of the very route whose
 	 * ceiling DO_CEILING_RATE is calibrated against.
 	 */
-	private feedAutoscaler(rpcStart: number, { acquireMs, load, rate, shards }: Telemetry): void {
-		if (acquireMs) {
+	private feedAutoscaler(rpcStart: number, { acquireMs, load, rate, shards, wake }: Telemetry): void {
+		// A wake is a reply carrying `wake` (EngineWake) or, from an object on the build before it,
+		// a nonzero `acquireMs`. Only the first is certain: `acquireMs` is the acquisition's I/O, and
+		// a store read from the object's own SQLite (synchronous) and decoded in wasm takes none — a
+		// wake could report 0, and was then logged nowhere and fed to the latency signal as warm.
+		const woke = Boolean(acquireMs) || wake !== undefined;
+		if (woke) {
 			// Wake observability: logged only when the DO that answered had to
-			// acquire its engine.
+			// acquire its engine. `wake` splits the rest of the wall time by where it went —
+			// `acquireMs` alone named 17ms of 2667ms on 2026-10-20.
+			const tookMs = Date.now() - rpcStart;
 			console.log(
-				`[${this.region}] engine rpc took ${Date.now() - rpcStart}ms, of which ${acquireMs}ms was the DO acquiring its store`,
+				`[${this.region}] engine rpc took ${tookMs}ms, of which ${acquireMs ?? 0}ms was the DO acquiring its store` +
+					(wake ? `; ${wakeSplit(rpcStart, wake, rpcStart + tookMs)}` : ""),
 			);
 		}
 		// The rendezvous: adopt a fan-out this region already reached, so an
@@ -951,12 +977,12 @@ export class RemoteEngine implements Engine {
 		// RATE is still reported — arrivals are demand whether or not the store was loaded — so
 		// real overload during a wake still expands on the rate bar, and on depth in the warm
 		// replies that follow it.
-		if (load !== undefined && !acquireMs) reportEngineLoad(this.region, load);
+		if (load !== undefined && !woke) reportEngineLoad(this.region, load);
 		if (rate !== undefined) reportEngineRate(this.region, rate);
 		// Wake-carrying calls are excluded from the latency signal: their wall time
 		// is legitimately inflated by the load, so reporting them would let every
 		// expansion argue for the next.
-		if (!acquireMs) {
+		if (!woke) {
 			const rpcMs = Date.now() - rpcStart;
 			reportEngineLatency(this.region, rpcMs);
 			sampleWarmRpc(this.region, this.colo, rpcMs, this.aliased);

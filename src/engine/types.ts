@@ -118,6 +118,44 @@ export interface EngineSerializedResult {
 	widened?: boolean;
 }
 
+/**
+ * A wake's own clock readings, carried back by an engine RPC that found no store loaded in its
+ * object: `startedAt` when the object began the call, `endedAt` when it returned — both
+ * `Date.now()` in the object. The caller holds the other two readings (when it called, when the
+ * reply arrived), and the four split the call's wall time into what the router's line could not
+ * tell apart (RemoteEngine.feedAutoscaler):
+ *
+ *   - startedAt − call:    before the object ran a line of the call — the trip there, the object's
+ *                          start (a fresh isolate, its placement, an old instance's teardown), a retry;
+ *   - endedAt − startedAt: how far the object's clock moved — under Workers its I/O waits alone (the
+ *                          store's acquisition among them), the clock standing still through CPU;
+ *   - reply − endedAt:     what the object's clock did not see — under Workers its CPU — and the trip back.
+ *
+ * WHY THE SPLIT, AND WHY IT IS THE ONLY HONEST ONE. Workers stop `Date.now()` during synchronous
+ * execution: it moves only across I/O, so an object's own timers see I/O wait and nothing else, and
+ * a wake whose decompression, index builds and first queries take hundreds of milliseconds logs
+ * "0ms" for every one of them (the store, names and printed-names lines). Logged 2026-10-20 on the
+ * paid account, a cold `/cards/named?fuzzy=cards+that+give+banding` (weur-p3, isolate load #1):
+ * the router's `engine rpc took 2667ms, of which 17ms was the DO acquiring its store`, the remaining
+ * 2650ms with no name. The object's own log stamps place it. They are its frozen clock, not wall
+ * time: the store and names lines both read 04.783 with the names index's ~35-45ms parse between
+ * them. Its clock first read ~2249ms after the call (04.766: `acquireMs` is 17 and the store line,
+ * inside the acquisition, reads 04.783, and that clock never runs ahead of real time), moved 41ms
+ * (the acquisition's 17, the printed names' KV read's 24), and the reply landed 377ms after it last
+ * moved. Measured 2026-10-21: locally, under workerd (whose clock runs) on the same LZ4 local-cache path,
+ * the whole wake — store read and feed, the routed bundle, the names index, the plan, the printed
+ * names — is a 127-136ms RPC, SQLite and KV included; V8 alone puts its wasm work at ~105ms. So
+ * the 2249ms was spent before the call reached this code (the script's own startup is 4-12ms,
+ * wrangler.jsonc), and the 377ms is the wake's CPU on production's cores plus the trip back.
+ *
+ * The two machines' clocks are not one clock: across a Cloudflare network the skew is small
+ * against what this is for (telling 2s from 0.3s), and the three terms always sum to the total.
+ */
+export interface EngineWake {
+	startedAt: number;
+	endedAt: number;
+}
+
 export interface EngineCatalog {
 	/** Card type → count, as the engine reports it (pre-alias massaging). */
 	types: Record<string, number>;

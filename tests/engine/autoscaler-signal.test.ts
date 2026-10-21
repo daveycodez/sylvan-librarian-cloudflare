@@ -22,7 +22,7 @@
 // it passed only on file-ordering luck, and renaming this file broke it. The
 // marker now lives in types.ts beside the error it encodes.
 
-import { afterEach, beforeEach, describe, expect, mock, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, mock, spyOn, test } from "bun:test";
 
 const reportEngineLoad = mock((_region: string, _depth: number) => {});
 const reportEngineRate = mock((_region: string, _rate: number) => {});
@@ -44,7 +44,7 @@ mock.module("../../src/engine/shard-controller", () => ({
 	foldWidthAnnouncement: realController.foldWidthAnnouncement,
 }));
 
-const { RemoteEngine, resetEngineCoolingForTests, setEngineHedgeForTests } = await import(
+const { RemoteEngine, resetEngineCoolingForTests, setEngineHedgeForTests, wakeSplit } = await import(
 	"../../src/engine/remote-engine"
 );
 
@@ -123,6 +123,60 @@ describe("what a sample reports", () => {
 		expect(reportEngineLoad).not.toHaveBeenCalled();
 		expect(reportEngineRate).toHaveBeenCalledWith("wnam", 60);
 		expect(reportEngineLatency).not.toHaveBeenCalled();
+	});
+
+	test("a wake whose acquisition read 0ms is still a wake: logged, split, and kept out of depth and latency", async () => {
+		// A store read from the object's own SQLite and decoded in wasm waits on no I/O, so Workers'
+		// frozen clock times its acquisition at 0 — and such a wake used to be fed in as a warm sample
+		// and logged nowhere. The object's own clock readings (EngineWake) say it woke, and where the
+		// call's time went: the 2026-10-20 shape, 2249ms before the object began.
+		const log = spyOn(console, "log").mockImplementation(() => {});
+		const realNow = Date.now;
+		let clock = 1_000_000;
+		Date.now = () => clock;
+		try {
+			const stub = {
+				searchCardsAsObjects: async () => {
+					const reply = {
+						totalCards: 0,
+						cards: [],
+						acquireMs: 0,
+						load: 4,
+						rate: 9,
+						wake: { startedAt: clock + 2_249, endedAt: clock + 2_249 + 41 },
+					};
+					clock += 2_667;
+					return reply;
+				},
+			} as unknown as Stub;
+			const result = await new RemoteEngine(stub, "weur").searchCardsAsObjects({ limit: 10 } as never);
+			expect(Object.keys(result).sort()).toEqual(["cards", "totalCards"]);
+			expect(reportEngineLoad).not.toHaveBeenCalled();
+			expect(reportEngineLatency).not.toHaveBeenCalled();
+			expect(reportEngineRate).toHaveBeenCalledWith("weur", 9);
+			const line = log.mock.calls.map((c) => String(c[0])).find((l) => l.includes("engine rpc took"));
+			expect(line).toBe(
+				"[weur] engine rpc took 2667ms, of which 0ms was the DO acquiring its store; 2249ms before the object began, " +
+					"41ms on its clock, 377ms after its clock last moved (CPU its clock did not see, the trip back)",
+			);
+		} finally {
+			Date.now = realNow;
+			log.mockRestore();
+		}
+	});
+
+	test("the wake split's three terms always sum to the call's wall time", () => {
+		const cases: [number, { startedAt: number; endedAt: number }, number][] = [
+			[100, { startedAt: 2_349, endedAt: 2_390 }, 2_767],
+			// Skew between the two machines' clocks can put the object's reading before the call.
+			[100, { startedAt: 98, endedAt: 130 }, 160],
+		];
+		for (const [calledAt, wake, repliedAt] of cases) {
+			const terms = [...wakeSplit(calledAt, wake, repliedAt).matchAll(/(-?\d+)ms/g)].map((m) => Number(m[1]));
+			expect(terms).toHaveLength(3);
+			expect(terms.reduce((a, b) => a + b, 0)).toBe(repliedAt - calledAt);
+		}
+		expect(wakeSplit(100, { startedAt: 98, endedAt: 130 }, 160)).toStartWith("-2ms before the object began");
 	});
 
 	test("overload during a wake still reaches the controller: rate on the wake, depth right after it", async () => {

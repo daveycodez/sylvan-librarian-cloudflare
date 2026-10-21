@@ -118,6 +118,7 @@ import type {
 	EngineSearchOptions,
 	EngineSearchResult,
 	EngineSerializedResult,
+	EngineWake,
 	Env,
 	ExactNameProbe,
 	FuzzyCandidateWire,
@@ -163,6 +164,8 @@ interface SearchTelemetry {
 	rate: number;
 	/** Widest fan-out any caller has reported lately — the rendezvous. */
 	shards: number;
+	/** Present only on a call that found no store loaded here — see EngineWake. */
+	wake?: EngineWake;
 }
 
 /**
@@ -525,11 +528,16 @@ export class SearchEngine extends DurableObject<Env> {
 			// the calling isolate's cold-path breakdown. Date.now() only advances
 			// across I/O in Workers, which is what a load spends. Warm calls
 			// report ~0.
+			// A call that finds no store here also carries its own two clock readings back
+			// (EngineWake): the acquisition's I/O is all `acquireMs` can see, and a wake's cost is
+			// mostly CPU, which no timer here sees, or a delay before this line ran at all.
+			const woke = tryGetLoadedEngine(this.label) === null;
 			const acquireStart = Date.now();
 			const engine = await this.engine();
 			const acquireMs = Date.now() - acquireStart;
 			try {
-				return { ...(await run(engine)), acquireMs, load, rate, shards };
+				const reply = { ...(await run(engine)), acquireMs, load, rate, shards };
+				return woke ? { ...reply, wake: { startedAt: now, endedAt: Date.now() } } : reply;
 			} catch (err) {
 				rethrowForRpc(err);
 			}
