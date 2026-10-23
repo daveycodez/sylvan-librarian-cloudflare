@@ -13,7 +13,9 @@
 //   - alone and ANDed with the filters the lanes send (`t:`, `otag:`, `atag:`, `o:/…/`, `id<=`), and
 //     nested (two lists ANDed, a list inside an OR with an unrestricted term, which must not narrow);
 //   - unique cards/prints/art, several orders and directions, page 2, include_extras,
-//     include_multilingual, and both the card-object (`/cards/search`) and row (`/search`) shapes.
+//     include_multilingual, and both the card-object (`/cards/search`) and row (`/search`) shapes;
+//   - every name the filter seals as a SERVED PAIR (a classic spell and the `prepare` card printing
+//     it as a face: `Channel`, `Lightning Bolt`), alone and in lists, gated and not (2026-10-23).
 //
 // It also reports the partitions mtg-seeker-shaped lists (1-25 served names ANDed with a lane's
 // filter) ask, by list size — before this, always N.
@@ -37,6 +39,7 @@ import {
 import { nameKey, RoutingFilter } from "../../src/engine/routing-filter";
 import type { EngineSearchOptions, StoreManifest } from "../../src/engine/types";
 import { canonicalStringify, type FilterValue, parseScryfallQueryWithDirectives } from "../../src/parser";
+import { collateName, foldAccents } from "../../src/parser/pystr";
 import { applyExtrasGate } from "../../src/routes/extras-gate";
 import { newEngine, type TestEngine } from "./wasm-engine";
 
@@ -107,11 +110,11 @@ describe.skipIf(!readable)(`card-list searches vs the full gather, on ${STORE_DI
 			});
 			if ("reason" in parsed) throw new Error(parsed.reason);
 			const filter = parsed.filter;
-			// PartitionedEngine.nameHintOf, exactly.
+			// PartitionedEngine.namePlacementOf, exactly — what its list restriction reads.
 			const hintOf = (collated: string) => {
 				if (!filter.hasNameKeys) return null;
 				const key = nameKey(collated);
-				return key === null ? null : filter.lookupName(key);
+				return key === null ? null : filter.lookupNamePlacement(key);
 			};
 
 			// ── the corpus's names, by kind ──
@@ -142,6 +145,17 @@ describe.skipIf(!readable)(`card-list searches vs the full gather, on ${STORE_DI
 					}
 				}
 			}
+			// Served names the filter seals as a pair: the case served pairs exist for, asked on purpose
+			// below (one in ~500 served names, so a random pick would rarely reach one).
+			const pairNames = [
+				...new Set(
+					served.filter((name) => {
+						const placement = hintOf(collateName(foldAccents(name.toLowerCase())));
+						return placement !== null && "servedPair" in placement;
+					}),
+				),
+			];
+			console.log(`${pairNames.length} served names sealed as a served pair, e.g. ${pairNames.slice(0, 8).join("; ")}`);
 			const pairs = readFileSync(join(STORE_DIR, "oracle-pairs.bin"));
 			const oracleIds: string[] = [];
 			for (let at = 0; at + 32 <= pairs.byteLength; at += 32 * 97) {
@@ -227,6 +241,16 @@ describe.skipIf(!readable)(`card-list searches vs the full gather, on ${STORE_DI
 					{ unique: "art", order: "released" },
 				]);
 				queries.push({ q: `${pick(FILTERS)} (${names})`.trim(), params, rows: false, lane: size });
+			}
+			// Served pairs: each list holds one, among served names; alone too. Every PARAMS row, so the
+			// ungated (include_extras) and widened (include_multilingual) ones prove the fallback.
+			for (let i = 0; pairNames.length > 0 && i < 600; i++) {
+				const size = pick([1, 1, 3, 8, 25]);
+				const names = [
+					`!"${pick(pairNames)}"`,
+					...Array.from({ length: size - 1 }, () => `!"${random() < 0.3 ? pick(pairNames) : pick(served)}"`),
+				].join(" or ");
+				queries.push({ q: `${pick(FILTERS)} (${names})`.trim(), params: pick(PARAMS), rows: random() < 0.2 });
 			}
 			for (let i = 0; i < 3000; i++) {
 				const size = pick(SIZES);
