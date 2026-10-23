@@ -9,6 +9,7 @@
 
 import { afterEach, describe, expect, test } from "bun:test";
 import { edgeCacheUrl } from "../../src/engine/edge-cache";
+import { encodeOracleTagPartitions, OracleTagPartitions } from "../../src/engine/oracle-tag-partitions";
 import { gatherPartitionOf, partitionOfOracleId } from "../../src/engine/partition";
 import {
 	beatsExactRank,
@@ -2598,7 +2599,11 @@ describe("a card-list search asks only the partitions its cards live in (y1)", (
 	const idIn = (p: number) => idsIn(p, 1)[0] as string;
 	const ENVELOPE = { pretty: false, pageOffset: 0, noMatchDetails: "" };
 
-	function recording(routing: RoutingFilter | null, stuck: number[] = []) {
+	function recording(
+		routing: RoutingFilter | null,
+		stuck: number[] = [],
+		oracleTags: (() => Promise<OracleTagPartitions | null>) | null = null,
+	) {
 		const seen: { call: string; opts: Record<string, unknown> }[] = [];
 		const answer = { totalCards: 0, cardsBytes: new Uint8Array(), rowCount: 0 };
 		const engine = new PartitionedEngine(
@@ -2636,6 +2641,8 @@ describe("a card-list search asks only the partitions its cards live in (y1)", (
 			manifestOf(N),
 			async () => manifestOf(N),
 			routing,
+			null,
+			oracleTags,
 		);
 		return { engine, seen };
 	}
@@ -2699,12 +2706,95 @@ describe("a card-list search asks only the partitions its cards live in (y1)", (
 		expect(seen[0]?.opts.gatherPartitions).toEqual({ build: "100", partitions: [0, 3] });
 	});
 
-	test("names ANDed apart (no partition) gather everywhere: an empty set cannot be checked against a build", async () => {
+	test("names ANDed apart (no partition) ask ONE partition as a gather of one, checked against the build", async () => {
 		const { engine, seen } = recording(FILTER);
-		await engine.searchCardsAsJson(optsOf(and(typed, or(and(bang("bolt"), bang("counterspell"))))), "rows");
-		expect(seen.length).toBe(1);
-		expect(seen[0]?.opts.gatherPartitions).toBeUndefined();
-		expect(engine.listPartitions).toBeNull();
+		const tree = and(typed, or(and(bang("bolt"), bang("counterspell"))));
+		await engine.searchCardsAsJson(optsOf(tree), "rows");
+		const owner = gatherPartitionOf(JSON.stringify(tree), N);
+		expect(seen.map((s) => s.call)).toEqual([`gatherSearchAsJson:${owner}`]);
+		expect(seen[0]?.opts.gatherPartitions).toEqual({ build: "100", partitions: [owner] });
+		expect(engine.listPartitions).toBe(`0/${N}`);
+	});
+
+	// ── oracle tags (oracle-tag-partitions.ts) ──
+	const otag = (slug: string, op = ":") => ({
+		node_type: "CardBinaryOperatorNode",
+		kwargs: {
+			lhs: {
+				node_type: "CardAttributeNode",
+				kwargs: { attribute_name: "card_oracle_tags", original_attribute: "otag" },
+			},
+			op,
+			rhs: [slug],
+		},
+	});
+	const TAGS = OracleTagPartitions.parse(
+		encodeOracleTagPartitions(
+			[new TextEncoder().encode("1\tramp\n2\tramp\n3\tsynergy-sliver\n")],
+			N,
+			manifestOf(N).partition_hash as string,
+		),
+		{ partitionCount: N, partitionHash: manifestOf(N).partition_hash as string },
+	);
+
+	test("an otag: search asks only its tag's partitions, as a gather carrying the build", async () => {
+		let asked = 0;
+		const { engine, seen } = recording(null, [], async () => {
+			asked++;
+			return TAGS;
+		});
+		const opts = optsOf(and(otag("ramp"), notTag("extra")));
+		await engine.searchCardsAsJson(opts, "rows");
+		expect(seen.map((s) => s.call)).toEqual([
+			`gatherSearchAsJson:${[1, 2][gatherPartitionOf(opts.filterTreeJson, 2)]}`,
+		]);
+		expect(seen[0]?.opts.gatherPartitions).toEqual({ build: "100", partitions: [1, 2] });
+		expect(engine.listPartitions).toBe(`2/${N}`);
+		expect(asked).toBe(1);
+		// A tag in ONE partition is a gather of one there — the blob is its build's word, never a pin.
+		const one = recording(null, [], async () => TAGS);
+		await one.engine.scryfallSearchPage(optsOf(otag("synergy-sliver")), "https://x", ENVELOPE, {});
+		expect(one.seen.map((s) => s.call)).toEqual(["scryfallSearchPage[cards2]:3"]);
+		expect(one.seen[0]?.opts.gatherPartitions).toEqual({ build: "100", partitions: [3] });
+	});
+
+	test("an unknown tag is a 404 from ONE partition, as a gather of one checked against the build", async () => {
+		const { engine, seen } = recording(null, [], async () => TAGS);
+		const tree = otag("synergy-nothing");
+		await engine.scryfallSearchPage(optsOf(tree), "https://x", ENVELOPE, {});
+		const owner = gatherPartitionOf(JSON.stringify(tree), N);
+		expect(seen.map((s) => s.call)).toEqual([`scryfallSearchPage[cards2]:${owner}`]);
+		expect(seen[0]?.opts.gatherPartitions).toEqual({ build: "100", partitions: [owner] });
+		expect(engine.listPartitions).toBe(`0/${N}`);
+	});
+
+	test("no blob, a negated tag, or a tag ORed with anything else: every partition, as before", async () => {
+		const none = recording(null, [], async () => null);
+		await none.engine.searchCardsAsJson(optsOf(otag("ramp")), "rows");
+		expect(none.seen[0]?.opts.gatherPartitions).toBeUndefined();
+		expect(none.engine.listPartitions).toBeNull();
+		const negated = { node_type: "NotNode", kwargs: { operand: otag("ramp") } };
+		for (const tree of [negated, and(typed, negated), or(otag("ramp"), typed), otag("ramp", "<=")]) {
+			const { engine, seen } = recording(null, [], async () => TAGS);
+			await engine.searchCardsAsJson(optsOf(tree), "rows");
+			expect(seen[0]?.opts.gatherPartitions).toBeUndefined();
+		}
+		// A query with no otag: term never asks for the blob at all.
+		let asked = 0;
+		const plain = recording(null, [], async () => {
+			asked++;
+			return TAGS;
+		});
+		await plain.engine.searchCardsAsJson(optsOf(typed), "rows");
+		expect(asked).toBe(0);
+	});
+
+	test("a tag ANDed with a list of names asks their intersection", async () => {
+		const { engine, seen } = recording(FILTER, [], async () => TAGS);
+		await engine.searchCardsAsJson(optsOf(and(otag("ramp"), or(bang("bolt"), bang("counterspell")))), "rows");
+		// bolt in 1, counterspell in 3; ramp in 1 and 2.
+		expect(seen.map((s) => s.call)).toEqual(["gatherSearchAsJson:1"]);
+		expect(seen[0]?.opts.gatherPartitions).toEqual({ build: "100", partitions: [1] });
 	});
 
 	test("a served name places only under the extras gate", async () => {

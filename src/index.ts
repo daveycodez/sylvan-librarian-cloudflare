@@ -5,6 +5,7 @@
 import { WorkerEntrypoint } from "cloudflare:workers";
 import { BUILD_COMMIT } from "./build-info.gen";
 import { engineName, placeEngineStub } from "./engine/engine-namespace";
+import { oracleTagPartitionsSoon } from "./engine/oracle-tag-partitions";
 import {
 	livePartitionedManifest,
 	liveRoutingFilter,
@@ -187,6 +188,9 @@ async function resolveEngine(
 		// On a cold isolate, a ROUTED lookup may still get them from the colo's cache — at most
 		// ROUTING_WAIT_MS, never a KV read (backlog n1).
 		() => routingFilterSoon(env, manifest, (p) => ctx.waitUntil(p)),
+		// An `otag:` search asks only the partitions holding its tag, when the isolate has the build's
+		// oracle-tags blob or the colo can hand it over within ORACLE_TAGS_WAIT_MS; else every partition.
+		() => oracleTagPartitionsSoon(env, manifest, (p) => ctx.waitUntil(p)),
 	);
 }
 

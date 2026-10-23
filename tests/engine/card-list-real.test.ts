@@ -27,6 +27,7 @@
 import { describe, expect, test } from "bun:test";
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
+import { oracleTagsFromBuildDir } from "../../scripts/oracle-tags-build";
 import { routingFilterFromBuildDir } from "../../scripts/routing-filter-build";
 import { cardRestrictionOf } from "../../src/engine/card-restriction";
 import {
@@ -36,6 +37,7 @@ import {
 	ROWS_GATHER,
 	runTwoPhase,
 } from "../../src/engine/gather";
+import { OracleTagPartitions } from "../../src/engine/oracle-tag-partitions";
 import { nameKey, RoutingFilter } from "../../src/engine/routing-filter";
 import type { EngineSearchOptions, StoreManifest } from "../../src/engine/types";
 import { canonicalStringify, type FilterValue, parseScryfallQueryWithDirectives } from "../../src/parser";
@@ -110,6 +112,14 @@ describe.skipIf(!readable)(`card-list searches vs the full gather, on ${STORE_DI
 			});
 			if ("reason" in parsed) throw new Error(parsed.reason);
 			const filter = parsed.filter;
+			// The build's oracle-tags blob, when it has one: the lanes' `otag:` filters then narrow too,
+			// as the router reads them (PartitionedEngine.restriction).
+			const otags = oracleTagsFromBuildDir(STORE_DIR, m);
+			const tagBlob =
+				otags === null
+					? null
+					: OracleTagPartitions.parse(otags.raw, { partitionCount: n, partitionHash: m.partition_hash as string });
+			const tagsOf = tagBlob === null ? null : (slug: string) => tagBlob.partitionsOf(slug);
 			// PartitionedEngine.namePlacementOf, exactly — what its list restriction reads.
 			const hintOf = (collated: string) => {
 				if (!filter.hasNameKeys) return null;
@@ -302,7 +312,13 @@ describe.skipIf(!readable)(`card-list searches vs the full gather, on ${STORE_DI
 					fields: rows ? ["name", "set", "collector_number", "oracle_id"] : [],
 					includeMultilingual: params.include_multilingual === "true",
 				};
-				const restriction = cardRestrictionOf(opts.filterTreeJson, n, hintOf, opts.includeMultilingual === true);
+				const restriction = cardRestrictionOf(
+					opts.filterTreeJson,
+					n,
+					hintOf,
+					opts.includeMultilingual === true,
+					tagsOf,
+				);
 				if (lane !== undefined) {
 					const list = touched.get(lane) ?? [];
 					list.push(restriction === null ? n : restriction.partitions.length);

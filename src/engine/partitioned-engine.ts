@@ -111,6 +111,7 @@ import { emptyCollectionAnswer } from "./collection-batch";
 import { edgeCacheUrl, readThroughEdgeCache } from "./edge-cache";
 import { nameReplySettles } from "./name-settle";
 import { NAMED_CONTAINMENT_LIMIT, resolveNamedFuzzyStaged, weakWinnerOrContained } from "./named-fuzzy";
+import type { OracleTagPartitions } from "./oracle-tag-partitions";
 import { gatherPartitionOf, partitionOfOracleId } from "./partition";
 import { pinnedExactName, pinnedOracleId, pinnedScryfallId } from "./pinned-oracle";
 import { EngineCallTimeoutError, isTransientEngineFailure, type RemoteEngine } from "./remote-engine";
@@ -781,6 +782,10 @@ export class PartitionedEngine implements Engine {
 		/** When `routing` is null (a fresh isolate): the colo copy, waited on for at most
 		 * ROUTING_WAIT_MS by the first ROUTED lookup of this request (routingFilterSoon). */
 		private awaitRouting: (() => Promise<RoutingFilter | null>) | null = null,
+		/** The build's oracle-tags blob (oracle-tag-partitions.ts), as soon as the isolate can have it
+		 * — null when it cannot in time, or the build has none: every `otag:` term is then ALL. Asked
+		 * only by a search whose filter carries an `otag:` term. */
+		private readonly awaitOracleTags: (() => Promise<OracleTagPartitions | null>) | null = null,
 	) {}
 
 	/**
@@ -965,16 +970,23 @@ export class PartitionedEngine implements Engine {
 	 * routing filter (none yet: every name is unplaced), oracle ids by its modulus.
 	 */
 	private async restriction(opts: EngineSearchOptions): Promise<CardRestriction | null> {
-		// Cheap before any wait: a tree without a `!"name"` or an oracle id cannot be restricted.
+		// Cheap before any wait: a tree without a `!"name"`, an oracle id or an oracle tag cannot be restricted.
 		const names = opts.filterTreeJson.includes('"ExactNameNode"');
-		if (!names && !opts.filterTreeJson.includes('"oracle_id"')) return null;
-		if (names) await this.routed();
-		// Without a filter every name reads null (ALL); a list of oracle ids needs none.
+		const tags = this.awaitOracleTags !== null && opts.filterTreeJson.includes('"card_oracle_tags"');
+		if (!names && !tags && !opts.filterTreeJson.includes('"oracle_id"')) return null;
+		// Both waits are bounded (the colo's copy, ROUTING_WAIT_MS / ORACLE_TAGS_WAIT_MS) and run together.
+		const [, oracleTags] = await Promise.all([
+			names ? this.routed() : undefined,
+			tags ? (this.awaitOracleTags as () => Promise<OracleTagPartitions | null>)() : null,
+		]);
+		// Without a filter every name reads null (ALL); without a blob every tag does; a list of
+		// oracle ids needs neither.
 		const restriction = cardRestrictionOf(
 			opts.filterTreeJson,
 			this.n,
 			(collated) => this.namePlacementOf(collated),
 			opts.includeMultilingual === true,
+			oracleTags ? (slug) => oracleTags.partitionsOf(slug) : null,
 		);
 		return restriction !== null && restriction.partitions.length < this.n ? restriction : null;
 	}
@@ -1016,7 +1028,7 @@ export class PartitionedEngine implements Engine {
 				restricted = await this.restriction(opts);
 			}
 		}
-		if (restricted !== null && restricted.names === 0 && restricted.partitions.length <= 1) {
+		if (restricted !== null && restricted.names === 0 && restricted.tags === 0 && restricted.partitions.length <= 1) {
 			// Oracle ids alone, all in one partition — or in none (two different ids ANDed), and then
 			// any one partition answers the empty page the gather would. Pinned like one id: an id's
 			// partition is the modulus's, whatever build the owner has loaded.
@@ -1033,10 +1045,19 @@ export class PartitionedEngine implements Engine {
 				this.listPartitions = null;
 			}
 		}
-		// A NAMED restriction is its build's filter's word, so even one partition is asked as a gather
-		// of one, which keeps the page only if it answered from that build — never as a pin, which
-		// checks the modulus alone. None at all (names ANDed apart) cannot be checked: ask everyone.
-		const only = restricted !== null && restricted.partitions.length > 0 ? restricted.partitions : null;
+		// A NAMED or TAGGED restriction is its build's filter's or blob's word, so even one partition
+		// is asked as a gather of one, which keeps the page only if it answered from that build — never
+		// as a pin, which checks the modulus alone. NONE at all (an `otag:` no card of the build
+		// carries, names ANDed apart) is a query no partition of that build holds a row of: it is asked
+		// of ONE partition — the one the full gather would have coordinated from — as a gather of one,
+		// so the empty page it answers is kept only when that partition is on the build that said so,
+		// and it is the full gather's page (every partition contributes an empty key stream).
+		const only =
+			restricted === null
+				? null
+				: restricted.partitions.length > 0
+					? restricted.partitions
+					: [gatherPartitionOf(opts.filterTreeJson, this.n)];
 		// The coordinator comes from the query text, among the partitions that will be asked.
 		const candidates = only ?? Array.from({ length: this.n }, (_, i) => i);
 		const at = gatherPartitionOf(opts.filterTreeJson, candidates.length);
@@ -1052,7 +1073,8 @@ export class PartitionedEngine implements Engine {
 				...gatherOpts,
 				gatherPartitions: { build: String(this.manifest.built_at ?? ""), partitions: only },
 			};
-			this.listPartitions = `${only.length}/${this.n}`;
+			// `0/N` for an empty restriction, though one partition answers it.
+			this.listPartitions = `${restricted?.partitions.length ?? only.length}/${this.n}`;
 		}
 		try {
 			return await gathered(this.at(coordinator), gatherOpts);

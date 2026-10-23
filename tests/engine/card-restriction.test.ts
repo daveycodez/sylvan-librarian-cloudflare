@@ -74,6 +74,7 @@ describe("the restriction rule", () => {
 			partitions: [2, 7],
 			members: 3,
 			names: 3,
+			tags: 0,
 		});
 	});
 
@@ -86,7 +87,7 @@ describe("the restriction rule", () => {
 
 	test("an AND of two lists is their intersection — and may be empty", () => {
 		expect(at(and(or(bang("bolt"), bang("counterspell")), or(bang("island"), bang("bolt"))))?.partitions).toEqual([2]);
-		expect(at(and(bang("bolt"), bang("counterspell")))).toEqual({ partitions: [], members: 2, names: 2 });
+		expect(at(and(bang("bolt"), bang("counterspell")))).toEqual({ partitions: [], members: 2, names: 2, tags: 0 });
 	});
 
 	test("oracle ids, alone, mixed with names, and upper-cased", () => {
@@ -96,6 +97,7 @@ describe("the restriction rule", () => {
 			partitions: [...new Set([ps[0] as number, 2])].sort((a, b) => a - b),
 			members: 2,
 			names: 1,
+			tags: 0,
 		});
 		expect(at(oracle((IDS[1] as string).toUpperCase(), "="))?.partitions).toEqual([ps[1] as number]);
 	});
@@ -137,7 +139,7 @@ describe("the restriction rule", () => {
 	test("a SERVED PAIR places a name in both partitions, under the same gate a served hint needs", () => {
 		const list = or(bang("bolt"), bang("channel"));
 		expect(at(list)).toBeNull();
-		expect(at(gated(list))).toEqual({ partitions: [2, 3, 9], members: 2, names: 2 });
+		expect(at(gated(list))).toEqual({ partitions: [2, 3, 9], members: 2, names: 2, tags: 0 });
 		expect(at(gated(bang("channel")))?.partitions).toEqual([3, 9]);
 		// ANDed with a sole name: the intersection, which may be empty.
 		expect(at(gated(and(bang("channel"), bang("bolt"))))?.partitions).toEqual([]);
@@ -178,6 +180,74 @@ describe("the restriction rule", () => {
 		expect(cardRestrictionOf("{", N, hint, false)).toBeNull();
 		// A hint out of range (a filter of another width) is no placement.
 		expect(cardRestrictionOf(JSON.stringify(bang("x")), N, () => ({ sole: N }), false)).toBeNull();
+	});
+});
+
+// ── oracle tags ─────────────────────────────────────────────────────────────
+
+const otag = (slug: unknown, op = ":"): Tree => ({
+	node_type: "CardBinaryOperatorNode",
+	kwargs: {
+		lhs: { node_type: "CardAttributeNode", kwargs: { attribute_name: "card_oracle_tags", original_attribute: "otag" } },
+		op,
+		rhs: Array.isArray(slug) ? slug : [slug],
+	},
+});
+/** A build's oracle-tags blob: `removal` everywhere but 5, `ramp` in 1 and 6, `synergy-sliver` in 8. */
+const TAG_HOLDERS: Record<string, number[]> = {
+	removal: [0, 1, 2, 3, 4, 6, 7, 8, 9],
+	ramp: [1, 6],
+	"synergy-sliver": [8],
+};
+const tagHolders = (slug: string) => TAG_HOLDERS[slug] ?? [];
+const tagged = (tree: Tree, multilingual = false) =>
+	cardRestrictionOf(JSON.stringify(tree), N, hint, multilingual, tagHolders);
+
+describe("the restriction rule: oracle tags", () => {
+	test("an `otag:` term is its tag's partitions, under every request flag", () => {
+		expect(tagged(otag("ramp"))).toEqual({ partitions: [1, 6], members: 1, names: 0, tags: 1 });
+		// No gate needed and none read: the blob covers every row class, so extras and widening do not matter.
+		expect(tagged(gated(otag("ramp")))?.partitions).toEqual([1, 6]);
+		expect(tagged(otag("ramp"), true)?.partitions).toEqual([1, 6]);
+		expect(tagged(and(otag("ramp"), isTag("localizedname")))?.partitions).toEqual([1, 6]);
+	});
+
+	test("`=`, `>=` and `>` need the tag too; `<`, `<=` and `!=` do not, and restrict nothing", () => {
+		for (const op of ["=", ">=", ">"]) expect(tagged(otag("ramp", op))?.partitions).toEqual([1, 6]);
+		for (const op of ["<", "<=", "!="]) expect(tagged(otag("ramp", op))).toBeNull();
+	});
+
+	test("a tag no card carries is the empty set — a 404 any one partition of the build can answer", () => {
+		expect(tagged(otag("synergy-nothing"))).toEqual({ partitions: [], members: 1, names: 0, tags: 1 });
+		expect(tagged(or(otag("synergy-nothing"), otag("synergy-sliver")))?.partitions).toEqual([8]);
+	});
+
+	test("the algebra: AND intersects, OR unions, and an unrestricted operand absorbs the OR", () => {
+		expect(tagged(and(otag("removal"), otag("ramp")))?.partitions).toEqual([1, 6]);
+		expect(tagged(or(otag("ramp"), otag("synergy-sliver")))?.partitions).toEqual([1, 6, 8]);
+		expect(tagged(and(typed("creature"), or(otag("ramp"), otag("synergy-sliver"))))?.partitions).toEqual([1, 6, 8]);
+		expect(tagged(or(otag("ramp"), typed("elf")))).toBeNull();
+		// With a list of names: `otag:ramp (!"bolt" or !"counterspell")` holds nothing — bolt is in 2.
+		expect(tagged(and(otag("ramp"), or(bang("bolt"), bang("counterspell"))))).toEqual({
+			partitions: [],
+			members: 3,
+			names: 2,
+			tags: 1,
+		});
+		// `removal` is in nine of ten: still a restriction, the router asks those nine.
+		expect(tagged(otag("removal"))?.partitions).toHaveLength(9);
+	});
+
+	test("a negated tag, a regex, a malformed value or no blob restricts nothing", () => {
+		expect(tagged(not(otag("ramp")))).toBeNull();
+		expect(tagged(and(typed("creature"), not(otag("ramp"))))).toBeNull();
+		expect(tagged(otag({ node_type: "RegexValueNode", kwargs: { value: "^ram" } }))).toBeNull();
+		expect(tagged(otag(["ramp", "removal"]))).toBeNull();
+		expect(tagged(otag([7]))).toBeNull();
+		expect(tagged(otag([]))).toBeNull();
+		expect(at(otag("ramp"))).toBeNull();
+		// A blob naming a partition past the modulus is not this build's: ask everyone.
+		expect(cardRestrictionOf(JSON.stringify(otag("x")), N, hint, false, () => [N])).toBeNull();
 	});
 });
 
@@ -320,5 +390,127 @@ describe("soundness: no matching row lives outside the restriction", () => {
 		expect(narrowedMatches).toBeGreaterThan(1000);
 		// ...and the corpora hold served pairs for the trees to read.
 		expect(pairNames).toBeGreaterThan(50);
+	}, 120_000);
+});
+
+describe("soundness with oracle tags: no matching row lives outside the restriction", () => {
+	test("20,000 random trees over a random tagged corpus, every operator, negations and unknown tags", () => {
+		const random = rng(0x07a9);
+		const pick = <T>(xs: readonly T[]) => xs[Math.floor(random() * xs.length)] as T;
+		const hex = (k: number) => Array.from({ length: k }, () => Math.floor(random() * 16).toString(16)).join("");
+		const uuid = () => `${hex(8)}-${hex(4)}-${hex(4)}-${hex(4)}-${hex(12)}`;
+		const NAMES = Array.from({ length: 40 }, (_, i) => `name${i}`);
+		const TAGS = Array.from({ length: 30 }, (_, i) => `tag${i}`);
+		const OPS = [":", "=", ">=", ">", "<", "<=", "!="];
+		// The engine's CollectionCmp over a card's tag set against the one-value query {v} (filter.rs).
+		const cmp = (tags: string[], op: string, v: string): boolean => {
+			const has = tags.includes(v);
+			if (op === ":" || op === ">=") return has;
+			if (op === "=") return tags.length === 1 && has;
+			if (op === ">") return has && tags.length > 1;
+			if (op === "<=") return tags.every((t) => t === v);
+			if (op === "<") return tags.length === 0;
+			return !(tags.length === 1 && has);
+		};
+		interface TaggedRow {
+			partition: number;
+			oracleId: string;
+			names: string[];
+			tags: string[];
+			type: string;
+			extra: boolean;
+			foreign: boolean;
+		}
+		let restricted = 0;
+		let narrowedMatches = 0;
+		let empty = 0;
+		for (let corpus = 0; corpus < 20; corpus++) {
+			const rows: TaggedRow[] = [];
+			const ids: string[] = [];
+			for (let c = 0; c < 60; c++) {
+				const oracleId = uuid();
+				ids.push(oracleId);
+				const partition = partitionOfOracleId(oracleId, N);
+				const names = [pick(NAMES)];
+				const type = pick(["creature", "instant"]);
+				// A card's tags are its own: every row of it carries them, in every class. Some cards have
+				// none, and tags 20-29 no card carries (a slug the blob does not list).
+				const tags = [...new Set(Array.from({ length: Math.floor(random() * 4) }, () => pick(TAGS.slice(0, 20))))];
+				for (let i = 0; i < 1 + Math.floor(random() * 3); i++) {
+					rows.push({ partition, oracleId, names, tags, type, extra: random() < 0.3, foreign: random() < 0.15 });
+				}
+			}
+			// The blob, as the engine lists it: every partition holding a card that carries the tag.
+			const holders = new Map<string, number[]>();
+			for (const t of TAGS) {
+				const ps = new Set(rows.filter((r) => r.tags.includes(t)).map((r) => r.partition));
+				holders.set(
+					t,
+					[...ps].sort((a, b) => a - b),
+				);
+			}
+			const hints = new Map<string, NamePlacement | null>();
+			for (const name of NAMES) {
+				const all = new Set(rows.filter((r) => r.names.includes(name)).map((r) => r.partition));
+				hints.set(name, all.size === 1 ? { sole: [...all][0] as number } : null);
+			}
+			type Node = Tree & { eval: (r: TaggedRow) => boolean };
+			const gen = (depth: number): Node => {
+				const roll = random();
+				if (depth > 3 || roll < 0.35) {
+					const leaf = random();
+					if (leaf < 0.55) {
+						const t = pick(TAGS);
+						const op = random() < 0.6 ? ":" : pick(OPS);
+						return { ...otag(t, op), eval: (r) => cmp(r.tags, op, t) };
+					}
+					if (leaf < 0.7) {
+						const name = pick(NAMES);
+						return { ...bang(name), eval: (r) => r.names.includes(name) };
+					}
+					if (leaf < 0.85) {
+						const id = random() < 0.8 ? pick(ids) : uuid();
+						return { ...oracle(id), eval: (r) => r.oracleId === id };
+					}
+					const type = pick(["creature", "instant"]);
+					return { ...typed(type), eval: (r) => r.type === type };
+				}
+				const k = 1 + Math.floor(random() * 5);
+				const kids = Array.from({ length: k }, () => gen(depth + 1));
+				if (roll < 0.6) return { ...and(...kids), eval: (r) => kids.every((c) => c.eval(r)) };
+				if (roll < 0.88) return { ...or(...kids), eval: (r) => kids.some((c) => c.eval(r)) };
+				const kid = kids[0] as Node;
+				return { ...not(kid), eval: (r) => !kid.eval(r) };
+			};
+			for (let q = 0; q < 1000; q++) {
+				const tree = gen(0);
+				const withGate = random() < 0.6;
+				const multilingual = random() < 0.3;
+				const wire = withGate ? gated(tree) : tree;
+				const matches = rows.filter((r) => tree.eval(r) && (!withGate || !r.extra) && (multilingual || !r.foreign));
+				const restriction = cardRestrictionOf(
+					JSON.stringify(wire),
+					N,
+					(c) => hints.get(c) ?? null,
+					multilingual,
+					(slug) => holders.get(slug) ?? [],
+				);
+				if (restriction === null) continue;
+				restricted++;
+				if (restriction.partitions.length === 0) empty++;
+				if (matches.length > 0 && restriction.partitions.length < N) narrowedMatches++;
+				for (const r of matches) {
+					if (!restriction.partitions.includes(r.partition)) {
+						throw new Error(
+							`${JSON.stringify(wire)} matches a row in partition ${r.partition}, restricted to ${restriction.partitions}`,
+						);
+					}
+				}
+			}
+		}
+		// Not vacuous: many trees restrict, many of those still match rows, and many name no partition.
+		expect(restricted).toBeGreaterThan(4000);
+		expect(narrowedMatches).toBeGreaterThan(1000);
+		expect(empty).toBeGreaterThan(200);
 	}, 120_000);
 });
