@@ -824,7 +824,34 @@ fn archive_section_stats(d: &CardData) -> StoreStats {
         autocomplete_names: Vec::new(), // likewise: autocomplete_names_of, at the same two sites
         name_records: Vec::new(),       // and names_index::name_records_of (n15)
         printed_records: Vec::new(),    // and names_index::printed_records_of (x24)
+        oracle_tags: Vec::new(),        // and oracle_tags_of
     }
+}
+
+/// LOCAL PATCH (sylvan-librarian-cloudflare): every `otag:` value a card of this store carries — the
+/// distinct `coll_vocab` strings of every card's `card_oracle_tags`, sorted.
+///
+/// `otag:x` is a `CollectionCmp` on `OracleCard::card_oracle_tags` and nothing else (filter.rs), so
+/// a partition whose cards carry no `x` holds no row of `otag:x` in ANY mode — canonical, extras,
+/// variations, the foreign annex — since every row of every space belongs to one of these cards.
+/// The port publishes the union of these lists per build (src/engine/oracle-tag-partitions.ts), and
+/// a bare `otag:` search asks only the partitions that hold its tag. Read off the SAME structures the
+/// archive was just serialized from, so the list is the engine's own stored tags — ancestors
+/// included, aliases absent — never a re-derivation of them.
+fn oracle_tags_of(d: &CardData) -> Vec<String> {
+    let mut seen = vec![false; d.coll_vocab.len()];
+    for card in &d.cards {
+        for &v in &card.card_oracle_tags {
+            if let Some(slot) = seen.get_mut(v as usize) {
+                *slot = true;
+            }
+        }
+    }
+    let mut out: Vec<String> =
+        seen.iter().enumerate().filter(|&(_, &s)| s).map(|(v, _)| d.coll_vocab[v].clone()).collect();
+    out.sort_unstable();
+    out.dedup();
+    out
 }
 
 /// LOCAL PATCH (sylvan-librarian-cloudflare, backlog n8): every name `BufferStore::autocomplete`
@@ -937,6 +964,9 @@ pub struct StoreStats {
     /// foreign printed name the fuzzy containment stage's printed tier could read — see
     /// `names_index::printed_records_of`.
     pub printed_records: Vec<PrintedRecord>,
+    /// LOCAL PATCH (sylvan-librarian-cloudflare): every oracle tag a card of this store carries —
+    /// see `oracle_tags_of`.
+    pub oracle_tags: Vec<String>,
 }
 
 /// Non-python twin of the pyo3 staged-reload surface: `new()` ≙ reload_begin
@@ -1004,6 +1034,7 @@ impl StoreBuilder {
         stats.autocomplete_names = autocomplete_names_of(&built.card_data);
         stats.name_records = names_index::name_records_of(&built.card_data);
         stats.printed_records = names_index::printed_records_of(&built.card_data);
+        stats.oracle_tags = oracle_tags_of(&built.card_data);
         Ok(stats)
     }
 }
@@ -1167,6 +1198,7 @@ impl SpillingStoreBuilder {
         stats.autocomplete_names = autocomplete_names_of(&built.card_data);
         stats.name_records = names_index::name_records_of(&built.card_data);
         stats.printed_records = names_index::printed_records_of(&built.card_data);
+        stats.oracle_tags = oracle_tags_of(&built.card_data);
         Ok(stats)
     }
 }
@@ -4941,6 +4973,55 @@ mod tests {
         b.finish_to_writer(&mut bytes).expect("build store");
         let store = BufferStore::from_bytes(&bytes).expect("load store");
         (bytes, store)
+    }
+
+    /// LOCAL PATCH (sylvan-librarian-cloudflare): `StoreStats::oracle_tags` is every `otag:` value a
+    /// card of the store carries — a card with only foreign printings' tags included, a tag on no
+    /// card absent, other collections' vocabulary (the `is:` tags, keywords) never in it — on both
+    /// build paths, and exactly the values `otag:` finds rows for.
+    #[test]
+    fn oracle_tags_are_every_tag_a_card_carries() {
+        let mut a = annex_row("Shock", "oracle-a", "row-a", "en", 100.0);
+        a["card_oracle_tags"] = json!({"burn": true, "removal": true});
+        a["card_is_tags"] = json!({"extra": true});
+        let mut b = annex_row("Opt", "oracle-b", "row-b", "en", 100.0);
+        b["card_oracle_tags"] = json!({"cantrip": true});
+        let mut c_ja = annex_row("Ponder", "oracle-c", "row-c-ja", "ja", 100.0);
+        c_ja["card_oracle_tags"] = json!({"cantrip": true, "library-manipulation": true});
+        let c = annex_row("Ponder", "oracle-c", "row-c", "en", 90.0);
+        let mut c_ja2 = c_ja.clone();
+        c_ja2["scryfall_id"] = json!("row-c-ja2");
+        c_ja2["is_canonical"] = json!(false);
+        c_ja["is_canonical"] = json!(false);
+        let rows = [a, b, c, c_ja, c_ja2];
+        let mut builder = StoreBuilder::new();
+        for r in &rows {
+            builder.add_card(r).expect("stage row");
+        }
+        let mut bytes = Vec::new();
+        let stats = builder.finish_to_writer(&mut bytes).expect("build");
+        assert_eq!(stats.oracle_tags, ["burn", "cantrip", "library-manipulation", "removal"]);
+        // The spill path, the one both publishers build through.
+        let mut sb = SpillingStoreBuilder::new();
+        let blobs: Vec<Vec<u8>> = rows.iter().map(|r| sb.add_card(r).expect("stage")).collect();
+        let order = sb.sorted_order();
+        let mut spilled = Vec::new();
+        let spill_stats = sb
+            .finish_from_sorted(order.iter().map(|&i| blobs[i as usize].clone()), &mut spilled)
+            .expect("spill build");
+        assert_eq!(spill_stats.oracle_tags, stats.oracle_tags);
+        let store = BufferStore::from_bytes(&bytes).expect("load");
+        let otag = |tag: &str| {
+            json!({"node_type": "CardBinaryOperatorNode", "kwargs": {
+                "lhs": {"node_type": "CardAttributeNode", "kwargs": {"attribute_name": "card_oracle_tags"}},
+                "op": ":", "rhs": [tag]}})
+        };
+        for tag in &stats.oracle_tags {
+            let out = store.query_value(&otag(tag), &opts_with("printing", true)).expect("otag");
+            assert!(out.total > 0, "otag:{tag} finds no row though a card carries it");
+        }
+        let out = store.query_value(&otag("extra"), &opts_with("printing", true)).expect("otag:extra");
+        assert_eq!(out.total, 0, "an `is:` tag is no oracle tag");
     }
 
     /// The grouping loop's vectors are allocated at their final length, on both build paths — the

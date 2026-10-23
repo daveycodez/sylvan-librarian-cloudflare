@@ -592,6 +592,7 @@ async function deployPublish(
 		store_key: rename(source.store_key),
 		partitions: source.partitions?.map((p) => ({ ...p, store_key: rename(p.store_key) })),
 		...(source.names_key ? { names_key: rename(source.names_key) } : {}),
+		...(source.otags_key ? { otags_key: rename(source.otags_key) } : {}),
 	};
 	// seed-remote-kv.ts: the manifest this one replaces is its own format's, else the newest live one.
 	const live = await deployUpload.readPublishedManifests<StoreManifest>(dkv);
@@ -870,7 +871,11 @@ async function cannotAnswer(reader: Reader, kv: KVNamespace): Promise<string | n
 	const has = (key: string) => (kv as unknown as { has(k: string): boolean }).has(key);
 	const missing = storeKv
 		.missingManifestChunks(m, [])
-		.concat([storeKv.routingFilterKeyFor(m) ?? "", ...(m.names_key ? [m.names_key] : [])])
+		.concat([
+			storeKv.routingFilterKeyFor(m) ?? "",
+			...(m.names_key ? [m.names_key] : []),
+			...(m.otags_key ? [m.otags_key] : []),
+		])
 		.filter((k) => k && !has(k));
 	return missing.length
 		? `${reader.name}: build ${m.built_at} is missing ${missing.length} key(s), e.g. ${missing[0]}`
@@ -917,6 +922,7 @@ async function reformat(kv: FakeKV, from: number, to: number, perFormatKey: bool
 		store_key: rename(live.store_key),
 		partitions: live.partitions?.map((p) => ({ ...p, store_key: rename(p.store_key) })),
 		...(live.names_key ? { names_key: rename(live.names_key) } : {}),
+		...(live.otags_key ? { otags_key: rename(live.otags_key) } : {}),
 	};
 	await kv.delete(storeKv.formatManifestKey(from));
 	await kv.put(storeKv.MANIFEST_KEY, JSON.stringify(manifest));

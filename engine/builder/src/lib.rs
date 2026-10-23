@@ -473,6 +473,14 @@ pub fn build_store_partitioned_spilled<W: Write>(
         std::fs::File::create(&printed_path).map_err(|e| format!("create {}: {e}", names::PRINTED_NAMES_FILE))?,
     );
     let mut printed_count = 0usize;
+    // The oracle-tag partitions blob's input (names::partition_oracle_tags_tsv): each partition's
+    // oracle tags as the engine read them off the archive it just built, the same way.
+    let otags_path = out_dir.join(names::ORACLE_TAGS_FILE);
+    let mut otags_out = BufWriter::with_capacity(
+        1 << 20,
+        std::fs::File::create(&otags_path).map_err(|e| format!("create {}: {e}", names::ORACLE_TAGS_FILE))?,
+    );
+    let mut otags_count = 0usize;
     let artist_entities = aggregates.artist_entities();
     let mut accum = PartitionAccum::new(built_at, n);
     for k in 0..n as usize {
@@ -538,6 +546,10 @@ pub fn build_store_partitioned_spilled<W: Write>(
             .write_all(&names::partition_printed_tsv(k, &stats.printed_records).map_err(|e| format!("partition {k}: {e}"))?)
             .map_err(|e| format!("write {}: {e}", names::PRINTED_NAMES_FILE))?;
         printed_count += stats.printed_records.len();
+        otags_out
+            .write_all(&names::partition_oracle_tags_tsv(k, &stats.oracle_tags).map_err(|e| format!("partition {k}: {e}"))?)
+            .map_err(|e| format!("write {}: {e}", names::ORACLE_TAGS_FILE))?;
+        otags_count += stats.oracle_tags.len();
         accum.record(k, store_key, counter.written, &stats, projected.get(k).copied());
         routing_count += routing_here.get();
         oracle_count += oracle_here.get();
@@ -552,6 +564,8 @@ pub fn build_store_partitioned_spilled<W: Write>(
     eprintln!("wrote {} ({names_count} name records, per partition)", names_path.display());
     printed_out.flush().map_err(|e| format!("flush {}: {e}", names::PRINTED_NAMES_FILE))?;
     eprintln!("wrote {} ({printed_count} cards' printed names, per partition)", printed_path.display());
+    otags_out.flush().map_err(|e| format!("flush {}: {e}", names::ORACLE_TAGS_FILE))?;
+    eprintln!("wrote {} ({otags_count} oracle tags, per partition)", otags_path.display());
     Ok(accum.finish())
 }
 

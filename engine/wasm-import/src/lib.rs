@@ -193,6 +193,11 @@ const EMIT_PRINTED: u32 = 14;
 /// The compiled `is:` lists table (`is_lists::compiled_tsv`), whole, in one emit: what the
 /// coordinator composes the night's override over (src/import-is-lists.ts).
 const EMIT_IS_LISTS: u32 = 15;
+/// One partition build's oracle tags (`StoreStats::oracle_tags`, one slug per line, no partition
+/// lead), the SAME slugs the native builder appends to `oracle-tags.tsv`; the coordinator leads
+/// each with the partition when it stages them, and one encoder (src/engine/oracle-tag-partitions.ts)
+/// publishes both builders' blobs.
+const EMIT_ORACLE_TAGS: u32 = 16;
 
 /// The chunk every streamed snapshot export is cut into: the coordinator's STAGE_BLOB_BYTES, so
 /// each emit is exactly one staged row — the same cut the host used to make itself by slicing one
@@ -1574,6 +1579,18 @@ pub extern "C" fn build_store_stream() -> i64 {
                     return -1;
                 }
             }
+            // The partition's oracle tags (a few thousand slugs): which `otag:` values any of its
+            // cards carries, read off the same structures — see card_engine `oracle_tags_of`.
+            let mut tags = String::with_capacity(stats.oracle_tags.iter().map(|t| t.len() + 1).sum());
+            for tag in &stats.oracle_tags {
+                if tag.contains('\n') || tag.contains('\t') {
+                    log(&format!("build_store_stream: oracle tag {tag:?} cannot be spelled as a line"));
+                    return -1;
+                }
+                tags.push_str(tag);
+                tags.push('\n');
+            }
+            emit_bytes(EMIT_ORACLE_TAGS, tags.as_bytes());
             emit_stats(serde_json::json!({
                 "card_count": stats.card_count,
                 "printing_count": stats.printing_count,

@@ -897,6 +897,16 @@ export interface StoreManifest {
 	printed_key?: string;
 	printed_bytes?: number;
 
+	/**
+	 * This build's oracle-tags blob (src/engine/oracle-tag-partitions.ts) — which partitions hold a
+	 * card carrying each `otag:` value — which lets an `otag:` search ask only those partitions, and
+	 * an unknown tag's 404 ask one. Per BUILD, never carried forward, and read-tolerant
+	 * (oracleTagsOf): absent — a build published before it, or a run that could not build it — every
+	 * `otag:` search asks every partition, as it always did.
+	 */
+	otags_key?: string;
+	otags_bytes?: number;
+
 	// ── Blocks the nightly decides and every later publish carries forward ─────
 	//
 	// Neither describes the store's bytes, so neither is a format change: a reader that predates

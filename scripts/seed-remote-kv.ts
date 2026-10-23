@@ -48,6 +48,7 @@ import { join } from "node:path";
 import { gzipSync } from "node:zlib";
 import { cardNamesKey } from "../src/engine/card-names";
 import { kvBytesMetadata, replacedManifest, withPreviousBuiltAt } from "../src/engine/kv-retention";
+import { oracleTagsKey } from "../src/engine/oracle-tag-partitions";
 import { printedNamesKey } from "../src/engine/printed-names";
 import {
 	ARCHIVE_FORMAT_VERSION,
@@ -67,6 +68,7 @@ import { CARD_NAMES_FILE, cardNamesFromBuildDir } from "./card-names-build";
 import { beginDeployUpload, deployStillHoldsLease, finishDeployUpload, readPublishedManifests } from "./deploy-upload";
 import { wranglerDeployKv } from "./kv-prune";
 import { requireDeployEnvironment } from "./kv-target";
+import { ORACLE_TAGS_FILE, oracleTagsFromBuildDir } from "./oracle-tags-build";
 import { PRINTED_NAMES_FILE, printedNamesFromBuildDir } from "./printed-names-build";
 import { kvName } from "./project-config";
 import { ROUTING_KEYS_FILE, routingFilterFromBuildDir } from "./routing-filter-build";
@@ -220,13 +222,16 @@ const cardNames = cardNamesFromBuildDir(dir);
 const cardNamesStored = cardNames ? gzip(cardNames.raw) : null;
 const printedNames = printedNamesFromBuildDir(dir);
 const printedNamesStored = printedNames ? gzip(printedNames.raw) : null;
+const oracleTags = oracleTagsFromBuildDir(dir, manifest);
+const oracleTagsStored = oracleTags ? gzip(oracleTags.raw) : null;
 const builtAt = String(manifest.built_at);
 const incomingBytes =
 	chunksByPartition.reduce((n, pieces) => n + pieces.reduce((m, c) => m + c.length, 0), 0) +
 	(routing?.bytes.byteLength ?? 0) +
 	aliasesBytes +
 	(cardNamesStored?.byteLength ?? 0) +
-	(printedNamesStored?.byteLength ?? 0);
+	(printedNamesStored?.byteLength ?? 0) +
+	(oracleTagsStored?.byteLength ?? 0);
 
 // Before the family's FIRST key: the fence, the lease, the sweep by role and the byte guard.
 const deployKv = wranglerDeployKv(true);
@@ -343,6 +348,27 @@ if (printedNamesStored) {
 	);
 } else {
 	console.warn(`No ${PRINTED_NAMES_FILE} in ${dir}: a fuzzy miss will ask every partition.`);
+}
+
+// The oracle-tags blob, the same way (oracleTagsKey, store:card-otags-…). Optional: without it every
+// `otag:` search asks every partition, as before.
+if (oracleTagsStored) {
+	const otagsKey = oracleTagsKey(manifest.format_version, String(manifest.built_at));
+	const otagsPath = join(tmpdir(), "sylvan-store-oracle-tags.bin");
+	await writeFile(otagsPath, oracleTagsStored);
+	try {
+		await kv(["key", "put", otagsKey, "--path", otagsPath, ...sized(oracleTagsStored.byteLength), "--remote"]);
+	} finally {
+		await unlink(otagsPath).catch(() => {});
+	}
+	manifest.otags_key = otagsKey;
+	manifest.otags_bytes = oracleTagsStored.byteLength;
+	console.log(
+		`  oracle tags uploaded: ${oracleTags?.count} tags, ${((oracleTags?.raw.byteLength ?? 0) / 1024).toFixed(0)}KB raw -> ` +
+			`${(oracleTagsStored.byteLength / 1024).toFixed(0)}KB gzip (an otag: search asks only its tag's partitions)`,
+	);
+} else {
+	console.warn(`No ${ORACLE_TAGS_FILE} in ${dir}: every otag: search will ask every partition.`);
 }
 
 // The blocks the nightly decides — r3's cache codec, gated on the Durable Objects pool, and g1's

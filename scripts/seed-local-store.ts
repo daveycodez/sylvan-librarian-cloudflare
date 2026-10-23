@@ -17,6 +17,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { gzipSync } from "node:zlib";
 import { cardNamesKey } from "../src/engine/card-names";
+import { oracleTagsKey } from "../src/engine/oracle-tag-partitions";
 import { printedNamesKey } from "../src/engine/printed-names";
 import {
 	chunkForKv,
@@ -30,6 +31,7 @@ import {
 import { tagAliasesKey } from "../src/engine/tag-aliases";
 import type { StoreManifest, StoreManifestPartition } from "../src/engine/types";
 import { CARD_NAMES_FILE, cardNamesFromBuildDir } from "./card-names-build";
+import { ORACLE_TAGS_FILE, oracleTagsFromBuildDir } from "./oracle-tags-build";
 import { PRINTED_NAMES_FILE, printedNamesFromBuildDir } from "./printed-names-build";
 import { ROUTING_KEYS_FILE, routingFilterFromBuildDir } from "./routing-filter-build";
 import { TAG_ALIASES_FILE, tagAliasesFileFromBuildDir } from "./tag-aliases-build";
@@ -188,6 +190,24 @@ if (printedNames) {
 	console.log(`Printed names seeded: ${printedNames.count} cards (a fuzzy miss asks one partition).`);
 } else {
 	console.warn(`No ${PRINTED_NAMES_FILE} in ${dir}: a fuzzy miss will ask every partition.`);
+}
+// The oracle-tags blob, likewise.
+const oracleTags = oracleTagsFromBuildDir(dir, manifest);
+if (oracleTags) {
+	const stored = gzipSync(oracleTags.raw);
+	const otagsKey = oracleTagsKey(manifest.format_version, String(manifest.built_at));
+	const otagsTmp = join(tmpdir(), "sylvan-local-oracle-tags.bin");
+	await writeFile(otagsTmp, stored);
+	try {
+		await localKvPut(otagsKey, otagsTmp);
+	} finally {
+		await unlink(otagsTmp).catch(() => {});
+	}
+	manifest.otags_key = otagsKey;
+	manifest.otags_bytes = stored.byteLength;
+	console.log(`Oracle tags seeded: ${oracleTags.count} tags (an otag: search asks only its tag's partitions).`);
+} else {
+	console.warn(`No ${ORACLE_TAGS_FILE} in ${dir}: every otag: search will ask every partition.`);
 }
 // The manifest LAST, at the keys seed-remote-kv.ts publishes it to — this format's
 // `store:manifest:v<fmt>` and the legacy mirror (x19): dev reads through the

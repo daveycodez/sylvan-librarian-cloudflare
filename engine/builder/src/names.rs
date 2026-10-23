@@ -34,6 +34,26 @@ pub fn partition_printed_tsv(k: usize, records: &[card_engine::PrintedRecord]) -
     card_engine::printed_records_tsv(&format!("{k}\t"), records)
 }
 
+/// The native builder's oracle-tags sidecar: every partition's oracle tags (card_engine
+/// `StoreStats::oracle_tags`, the distinct `otag:` values its cards carry), partition after
+/// partition, one `<partition>\t<slug>` line each — the slugs the nightly emits per build
+/// (`EMIT_ORACLE_TAGS`) and its coordinator leads the same way, handed to the one encoder both
+/// publish with (src/engine/oracle-tag-partitions.ts).
+pub const ORACLE_TAGS_FILE: &str = "oracle-tags.tsv";
+
+/// Partition `k`'s oracle tags as sidecar lines, each led by `k\t`. A slug that cannot be one line
+/// is refused: the encoder would split it into two tags.
+pub fn partition_oracle_tags_tsv(k: usize, tags: &[String]) -> Result<Vec<u8>, String> {
+    let mut out = Vec::with_capacity(tags.iter().map(|t| t.len() + 8).sum());
+    for tag in tags {
+        if tag.contains('\n') || tag.contains('\t') {
+            return Err(format!("oracle tag {tag:?} cannot be spelled as a line"));
+        }
+        out.extend_from_slice(format!("{k}\t{tag}\n").as_bytes());
+    }
+    Ok(out)
+}
+
 #[cfg(test)]
 mod tests {
     use super::partition_names_tsv;
@@ -66,6 +86,15 @@ mod tests {
              3\t1f0\ttitanothrex\tTitanoth Rex\t\t\tgodzillaprimevalchampion:10\n"
         );
         assert_eq!(partition_names_tsv(0, &[]).expect("empty"), Vec::<u8>::new());
+    }
+
+    #[test]
+    fn spells_one_oracle_tag_line_per_slug_led_by_its_partition() {
+        let tags = vec!["mana-dork".to_owned(), "removal".to_owned()];
+        let got = String::from_utf8(super::partition_oracle_tags_tsv(7, &tags).expect("spellable")).expect("utf-8");
+        assert_eq!(got, "7\tmana-dork\n7\tremoval\n");
+        assert!(super::partition_oracle_tags_tsv(0, &["a\nb".to_owned()]).is_err());
+        assert_eq!(super::partition_oracle_tags_tsv(0, &[]).expect("empty"), Vec::<u8>::new());
     }
 
     #[test]

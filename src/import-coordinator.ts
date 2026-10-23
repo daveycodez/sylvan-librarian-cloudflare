@@ -127,6 +127,7 @@ import {
 	oracleIndexCurrentPrefix,
 	planOracleIndexPublish,
 } from "./engine/oracle-index";
+import { encodeOracleTagPartitions, writeOracleTags } from "./engine/oracle-tag-partitions";
 import {
 	continentOfColo,
 	effectiveRegion,
@@ -444,6 +445,11 @@ function cardNamesMetaKey(partition: number): string {
 /** x24: the meta row holding partition `k`'s printed-name lines until the manifest step encodes them. */
 function printedNamesMetaKey(partition: number): string {
 	return `printed_names_p${partition}`;
+}
+
+/** The meta row holding partition `k`'s oracle tags until the manifest step encodes them. */
+function oracleTagsMetaKey(partition: number): string {
+	return `oracle_tags_p${partition}`;
 }
 
 /** Meta keys under this prefix are day-scoped and survive a run reset. */
@@ -4138,6 +4144,8 @@ export class ImportCoordinator extends DurableObject<Env> {
 		const names: { lines: Uint8Array | null } = { lines: null };
 		// x24: its printed records too (a few hundred KB), for the printed-names blob, the same way.
 		const printed: { lines: Uint8Array | null } = { lines: null };
+		// Its oracle tags too (a few thousand slugs, ~50KB), for the oracle-tags blob, the same way.
+		const oracleTags: { lines: Uint8Array | null } = { lines: null };
 		wasm.setHandlers({
 			pullRow: lookup,
 			onChunk: (b) => {
@@ -4148,6 +4156,9 @@ export class ImportCoordinator extends DurableObject<Env> {
 			},
 			onPrinted: (b) => {
 				printed.lines = b;
+			},
+			onOracleTags: (b) => {
+				oracleTags.lines = b;
 			},
 			onStats: (s) => {
 				built.card_count = s.card_count ?? 0;
@@ -4192,6 +4203,12 @@ export class ImportCoordinator extends DurableObject<Env> {
 					ledByPartition(pp.partition, new TextDecoder().decode(printed.lines)),
 				);
 			}
+			if (oracleTags.lines) {
+				this.metaSet(
+					oracleTagsMetaKey(pp.partition),
+					ledByPartition(pp.partition, new TextDecoder().decode(oracleTags.lines)),
+				);
+			}
 			this.metaSet("phase", "publish");
 		});
 		if (!names.lines) {
@@ -4199,6 +4216,9 @@ export class ImportCoordinator extends DurableObject<Env> {
 		}
 		if (!printed.lines) {
 			console.warn(`Build (partition ${pp.partition}): the wasm emitted no printed names; this build publishes none`);
+		}
+		if (!oracleTags.lines) {
+			console.warn(`Build (partition ${pp.partition}): the wasm emitted no oracle tags; this build publishes none`);
 		}
 		// Release the wasm group NOW rather than after this partition's publish
 		// slices (plan B3: dropGroupWasm after each build(p), §5.5
@@ -4419,6 +4439,13 @@ export class ImportCoordinator extends DurableObject<Env> {
 			manifest.printed_key = printed.key;
 			manifest.printed_bytes = printed.bytes;
 		}
+		// The oracle-tags blob, likewise. Absent, every `otag:` search asks every partition on this
+		// build, as every build before it did.
+		const otags = await this.publishOracleTags(formatVersion, builtAt, pp.partitions.length);
+		if (otags) {
+			manifest.otags_key = otags.key;
+			manifest.otags_bytes = otags.bytes;
+		}
 		// The blocks the nightly decides and every publish carries (StoreManifest.cache, .placement):
 		// read the live manifest once, decide from it and tonight's measurements, write them in. The same read
 		// names the rollback role (previous_built_at) — the family this manifest replaces.
@@ -4580,6 +4607,41 @@ export class ImportCoordinator extends DurableObject<Env> {
 			`Printed names published: ${published.key} (${published.count} cards, ${published.raw} bytes raw -> ` +
 				`${published.bytes} gzipped)`,
 		);
+		return published;
+	}
+
+	/**
+	 * Encode every partition's staged oracle tags into the build's oracle-tags blob
+	 * (oracle-tag-partitions.ts, the encoder scripts/seed-remote-kv.ts uses on the native builder's
+	 * sidecar) and put it — one KV write. Null — publish without one — when a partition staged none
+	 * or the lines do not encode, as publishCardNames: a missing blob only costs the fan-out, and a
+	 * blob missing a partition's tags would place them in too few partitions. A partition that holds
+	 * no tagged card stages an EMPTY value, which is not "none".
+	 */
+	private async publishOracleTags(
+		formatVersion: number,
+		builtAt: string,
+		partitions: number,
+	): Promise<{ key: string; bytes: number } | null> {
+		const encoder = new TextEncoder();
+		const parts: Uint8Array[] = [];
+		for (let k = 0; k < partitions; k++) {
+			const lines = this.metaGet(oracleTagsMetaKey(k));
+			if (lines === null) {
+				console.warn(`Oracle tags NOT published for build ${builtAt}: partition ${k}'s build staged none`);
+				return null;
+			}
+			parts.push(encoder.encode(lines));
+		}
+		let raw: Uint8Array;
+		try {
+			raw = encodeOracleTagPartitions(parts, partitions, PARTITION_HASH_ALGO);
+		} catch (err) {
+			console.warn(`Oracle tags NOT published for build ${builtAt}: ${err}`);
+			return null;
+		}
+		const published = await writeOracleTags(this.env.STORE_KV, formatVersion, builtAt, raw);
+		console.log(`Oracle tags published: ${published.key} (${published.raw} bytes raw -> ${published.bytes} gzipped)`);
 		return published;
 	}
 

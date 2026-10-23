@@ -41,6 +41,10 @@ export interface ImportEmitHandlers {
 	 * same text the native builder appends to `printed-names.tsv` (src/engine/printed-names.ts).
 	 * Emitted by buildStoreStream once, right after onNames. */
 	onPrinted?(bytes: Uint8Array): void;
+	/** One partition build's oracle tags: one slug per line, the slugs the native builder appends to
+	 * `oracle-tags.tsv` (src/engine/oracle-tag-partitions.ts). Emitted by buildStoreStream once,
+	 * right after onPrinted. */
+	onOracleTags?(bytes: Uint8Array): void;
 	/** The resumable inflater's raw output: one emit per inflateFeed call. */
 	onInflate?(bytes: Uint8Array): void;
 	/** The compiled `is:` lists table, whole (isListsCompiled). */
@@ -66,6 +70,7 @@ const EMIT = {
 	NAMES: 13,
 	PRINTED: 14,
 	IS_LISTS: 15,
+	ORACLE_TAGS: 16,
 } as const;
 
 interface ImportExports {
@@ -178,6 +183,9 @@ export class ImportWasm {
 						return;
 					case EMIT.PRINTED:
 						h.onPrinted?.(view(ptr, len).slice());
+						return;
+					case EMIT.ORACLE_TAGS:
+						h.onOracleTags?.(view(ptr, len).slice());
 						return;
 					case EMIT.TAG_ALIASES:
 						h.onTagAliases?.(view(ptr, len).slice());

@@ -68,6 +68,7 @@ import {
 	writeRunTable,
 } from "./is-lists-check";
 import { checkOracleIndex, type OracleIndexCheck } from "./oracle-index-check";
+import { checkOracleTags } from "./oracle-tags-check";
 import { checkPrintedNames } from "./printed-names-check";
 import { checkRoutingFilter } from "./routing-filter-check";
 import { checkSharedArt, type SharedArtCheck } from "./shared-art-check";
@@ -762,6 +763,16 @@ async function main(): Promise<number> {
 	for (const line of printed.lines) console.log(line);
 	if (!printed.ok) {
 		console.error("\nFAILED: the printed-names check (above)");
+		return 1;
+	}
+
+	// The oracle-tags blob — published, exact against every partition's own archive, and the native
+	// builder's byte for byte. Before the card-names check, which removes the build.
+	const otags = await checkOracleTags(kv, oracle.nativeDir ?? null);
+	console.log("");
+	for (const line of otags.lines) console.log(line);
+	if (!otags.ok) {
+		console.error("\nFAILED: the oracle-tags check (above)");
 		return 1;
 	}
 
