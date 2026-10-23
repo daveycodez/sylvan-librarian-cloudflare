@@ -595,6 +595,135 @@ describe("a cold gather wakes every partition at once", () => {
 		const page = await engine.gatherSearchAsJson(OPTS, "rows");
 		expect(page.acquireMs).toBe(900);
 	});
+
+	describe("a cold coordinator at twelve partitions asks all eleven siblings in one wave (sibling-split.ts)", () => {
+		const WIDTH = 12;
+		const TWELVE = {
+			store_key: "card-store-v1-7.store",
+			store_bytes: 10 * WIDTH,
+			built_at: "7",
+			card_count: WIDTH,
+			partition_count: WIDTH,
+			format_version: ARCHIVE_FORMAT_VERSION,
+			partitions: Array.from({ length: WIDTH }, (_, p) => ({
+				store_key: `card-store-v1-7-p${p}.store`,
+				store_bytes: 10,
+				chunk_count: 1,
+				card_count: 1,
+			})),
+		};
+
+		/**
+		 * The coordinator engine-wnam-p0 and eleven siblings that each answer only once all eleven have
+		 * been asked, or after `patienceMs` — so the most ever open at once says whether the gather sent
+		 * them in one wave (eleven) or two (six, then the rest as slots free).
+		 */
+		function twelveWide(coordinatorCold: boolean, patienceMs = 60) {
+			const events: string[] = [];
+			gatherStore = {
+				ownLoad: Promise.resolve(),
+				loaded: !coordinatorCold,
+				ownLoadMs: 0,
+				events,
+				manifest: TWELVE,
+				ops: {
+					storeKey: "card-store-v1-7-p0.store",
+					sortKeyVersion: () => 1,
+					queryKeys: () => packet(0, 0),
+					fetchRows: () => encodeRowPacket([row(0)]),
+				},
+			};
+			const asked = new Set<number>();
+			let open = 0;
+			let maxOpen = 0;
+			let releaseAll = () => {};
+			const everyoneAsked = new Promise<void>((resolve) => {
+				releaseAll = resolve;
+			});
+			const sibling = (p: number) => ({
+				async searchKeys(_opts: unknown, inline: number, shaping: { shape: string }) {
+					events.push(`p${p}:searchKeys`);
+					asked.add(p);
+					open += 1;
+					maxOpen = Math.max(maxOpen, open);
+					if (asked.size === WIDTH - 1) releaseAll();
+					await Promise.race([everyoneAsked, new Promise((resolve) => setTimeout(resolve, patienceMs))]);
+					open -= 1;
+					return {
+						packed: packet(p, inline),
+						storeKey: `card-store-v1-7-p${p}.store`,
+						sortKeyVersion: 1,
+						shape: shaping.shape,
+						acquireMs: 0,
+					};
+				},
+				async fetchRows() {
+					return { rowsBytes: encodeRowPacket([row(p)]), shape: "rows" };
+				},
+			});
+			const live = JSON.stringify(TWELVE);
+			const storage = {
+				sql: {
+					exec(query: string) {
+						if (query.trim().startsWith("SELECT json FROM live_manifest")) return { toArray: () => [{ json: live }] };
+						return { toArray: () => [] };
+					},
+				},
+			};
+			const groups: number[][] = [];
+			const selfId = { name: "engine-wnam-p0" };
+			let engine: GatherDo & {
+				searchKeysGroup(o: unknown, i: number, s: unknown, partitions: number[], width: number): Promise<unknown>;
+			};
+			const env = {
+				SEARCH_ENGINE: {
+					idFromName: (name: string) => name,
+					get: (id: string | typeof selfId) => {
+						// The coordinator's call to ITSELF: another invocation of the same object.
+						if (id === selfId) {
+							return {
+								searchKeysGroup: (o: unknown, i: number, s: unknown, partitions: number[], width: number) => {
+									groups.push(partitions);
+									return engine.searchKeysGroup(o, i, s, partitions, width);
+								},
+							};
+						}
+						const m = /^engine-wnam-p(\d+)$/.exec(id as string);
+						if (!m) throw new Error(`unexpected object ${String(id)}`);
+						return sibling(Number(m[1]));
+					},
+				},
+			};
+			engine = new SearchEngine({ waitUntil: () => {}, storage, id: selfId } as never, env as never) as never;
+			return { engine, events, groups, maxOpen: () => maxOpen };
+		}
+
+		const expectedPage = `[${Array.from({ length: 2 }, (_, p) => `{"name":"p${p}"}`).join(",")}]`;
+
+		beforeEach(() => resetSiblingMemoryForTests());
+		afterEach(() => {
+			gatherStore = null;
+		});
+
+		test("cold, with no sibling heard from: five asked here, six by its second invocation, all eleven at once", async () => {
+			const { engine, events, groups, maxOpen } = twelveWide(true);
+			const page = await engine.gatherSearchAsJson(OPTS, "rows");
+			expect(groups).toEqual([[6, 7, 8, 9, 10, 11]]);
+			expect(maxOpen()).toBe(WIDTH - 1);
+			expect(events.filter((e) => e.endsWith(":searchKeys"))).toHaveLength(WIDTH - 1);
+			expect(page.totalCards).toBe(WIDTH);
+			expect(new TextDecoder().decode(page.cardsBytes)).toBe(expectedPage);
+		});
+
+		test("warm, the same gather is one invocation: six open, the rest as slots free, the same page", async () => {
+			const { engine, groups, maxOpen } = twelveWide(false, 5);
+			const page = await engine.gatherSearchAsJson(OPTS, "rows");
+			expect(groups).toEqual([]);
+			expect(maxOpen()).toBe(6);
+			expect(page.totalCards).toBe(WIDTH);
+			expect(new TextDecoder().decode(page.cardsBytes)).toBe(expectedPage);
+		});
+	});
 });
 
 describe("a gather awaiting its siblings is concurrency, not queue depth", () => {

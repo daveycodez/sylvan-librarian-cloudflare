@@ -461,6 +461,15 @@ export function siblingStub(env: Env, label: string, partition: number): EngineS
 }
 
 /**
+ * A stub to the engine object that is RUNNING this code, by its own id — for a split gather's call to
+ * its own second invocation (sibling-split.ts). It cannot bring an object into existence: the id is
+ * the caller's own, and the caller exists.
+ */
+export function ownStub(env: Env, id: DurableObjectId): EngineStub {
+	return env.SEARCH_ENGINE.get(id);
+}
+
+/**
  * Create-or-get the engine object for `region`, PLACING it there if this is the
  * first time anyone has addressed the name.
  *

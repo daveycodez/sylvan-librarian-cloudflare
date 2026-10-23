@@ -60,7 +60,7 @@ import { concatBytes, encodeUtf8 } from "./bytes";
 import { mayBeNameOnly } from "./card-names";
 import { collectionPacketRanks } from "./collection-batch";
 import { assembleColumnar, columnKeys, columnsGather } from "./columnar";
-import { parseEngineName, placeEngineStub, siblingStub } from "./engine-namespace";
+import { ownStub, parseEngineName, placeEngineStub, siblingStub } from "./engine-namespace";
 import {
 	decodeRowPacket,
 	type FetchRowsReply,
@@ -89,6 +89,7 @@ import {
 	siblingMemoryOf,
 } from "./sibling-hedge";
 import { SiblingLimiter, type SiblingLoad } from "./sibling-limit";
+import { type GroupedKeys, planSplit, type SearchKeysGroupReply, splitClients } from "./sibling-split";
 import {
 	autocompleteFromNames,
 	collectionPacketOf,
@@ -1033,10 +1034,11 @@ export class SearchEngine extends DurableObject<Env> {
 		count: number,
 		trace: SiblingCallTiming[],
 		cold: StoreManifest | null = null,
-	): PartitionClient[] {
 		// x44: at most six sibling calls outstanding per gather — see sibling-limit.ts. One limiter
-		// for both phases of the gather these clients serve.
-		const limiter = new SiblingLimiter(this.siblingLoad);
+		// for both phases of the gather these clients serve (and for a split gather's call to its
+		// own second invocation, which is passed the same one: see fullGatherClients).
+		limiter: SiblingLimiter = new SiblingLimiter(this.siblingLoad),
+	): PartitionClient[] {
 		// x53: a call still out when its phase's other calls have long answered is sent once more —
 		// see sibling-hedge.ts. One phase per method: the calls judged against each other.
 		const phases = { searchKeys: new HedgePhase(), fetchRows: new HedgePhase() };
@@ -1228,6 +1230,101 @@ export class SearchEngine extends DurableObject<Env> {
 	}
 
 	/**
+	 * A full gather's clients — split when more of its siblings may be waking than one wave of calls
+	 * holds (sibling-split.ts): five siblings asked here, the rest by ONE call to this object's own
+	 * second invocation (searchKeysGroup), which has six calls of its own to send them with. That
+	 * call takes a slot of THIS gather's limiter like any sibling call; nothing else changes.
+	 */
+	private fullGatherClients(width: number, trace: SiblingCallTiming[], cold: StoreManifest | null): PartitionClient[] {
+		const limiter = new SiblingLimiter(this.siblingLoad);
+		const clients = this.partitionClients(width, trace, cold, limiter);
+		// Only a COLD coordinator splits (`cold` is the manifest it found with no store loaded): it was
+		// idle long enough to be evicted, and every full gather asks every partition, so its siblings
+		// most likely were too. A warm coordinator's memory says little about siblings it has only been
+		// a sibling beside — the region's gathers are spread over twelve coordinators by query text —
+		// and a split it did not need would be one more Durable Object request for nothing.
+		if (cold === null) return clients;
+		const memory = siblingMemoryOf(this.label);
+		const now = Date.now();
+		const plan = planSplit(width, parseEngineName(this.label)?.partition, (p) => memory.mayBeWaking(p, now));
+		if (plan === null) return clients;
+		console.log(
+			`[${this.label}] split gather: ${plan.direct.length} siblings asked here, ${plan.grouped.length} by its second ` +
+				`invocation (${plan.waking} of ${width - 1} may be waking)`,
+		);
+		type SelfStub = {
+			searchKeysGroup(
+				opts: EngineSearchOptions,
+				inlineRows: number,
+				shaping: RowShaping,
+				partitions: number[],
+				width: number,
+			): Promise<SearchKeysGroupReply>;
+		};
+		const connect = () => ownStub(this.env, this.ctx.id) as unknown as SelfStub;
+		return splitClients(
+			clients,
+			plan.grouped,
+			(opts, inlineRows, shaping) =>
+				limiter.run(() =>
+					// The shape and base URL alone: a gather's shaping also carries its `reshape` function,
+					// which a partition never reads (store.ts queryKeys) and an RPC would turn into a stub.
+					siblingCall(`grouped searchKeys (${plan.grouped.join(",")})`, connect, (self) =>
+						self.searchKeysGroup(
+							opts,
+							inlineRows,
+							{ shape: shaping.shape, baseUrl: shaping.baseUrl },
+							plan.grouped,
+							width,
+						),
+					),
+				),
+			(entry) => {
+				if (entry.timing) trace.push(entry.timing);
+			},
+		);
+	}
+
+	/**
+	 * The second invocation of a split gather (sibling-split.ts): ask `partitions` — siblings of this
+	 * object, never itself — for their phase-1 keys exactly as the gather would have, through a
+	 * gather's own clients (limiter, hedges, neighbour, retry), and hand back each reply with the
+	 * timing this invocation measured. Called only by this object's own coordinating invocation.
+	 *
+	 * Refuses a width this object does not gather at, or a partition outside it: the caller then asks
+	 * every partition itself.
+	 */
+	async searchKeysGroup(
+		opts: EngineSearchOptions,
+		inlineRows: number,
+		shaping: RowShaping,
+		partitions: number[],
+		width: number,
+	): Promise<SearchKeysGroupReply> {
+		const own = parseEngineName(this.label)?.partition;
+		const { width: here, manifest } = await this.gatherWidth();
+		if (here !== width || partitions.some((p) => !Number.isInteger(p) || p < 0 || p >= width || p === own)) {
+			rethrowForRpc(
+				new Error(`${this.label} gathers at ${here} partitions; cannot ask ${partitions.join(",")} of ${width}`),
+			);
+		}
+		const trace: SiblingCallTiming[] = [];
+		const clients = this.partitionClients(width, trace, manifest);
+		const settled = await Promise.allSettled(
+			partitions.map((p) => (clients[p] as PartitionClient).searchKeys(opts, inlineRows, shaping)),
+		);
+		return {
+			calls: settled.map((outcome, i): GroupedKeys => {
+				const partition = partitions[i] as number;
+				const timing = trace.find((t) => t.partition === partition && t.method === "searchKeys") ?? null;
+				return outcome.status === "fulfilled"
+					? { partition, ok: true, reply: outcome.value, timing }
+					: { partition, ok: false, error: String(outcome.reason), timing };
+			}),
+		};
+	}
+
+	/**
 	 * Both phases, started BEFORE this object has its own store (see instrumentedGather).
 	 *
 	 * The fan-out needs only the partition COUNT, and that is known without loading anything: from
@@ -1306,7 +1403,7 @@ export class SearchEngine extends DurableObject<Env> {
 		// Nothing awaits between this and the fan-out below: the growth must land before any
 		// sibling call is issued, not merely before the load (see reserveOwnStore).
 		if (manifest) this.reserveOwnStore(manifest, width);
-		let page = await runTwoPhase(this.partitionClients(width, trace, manifest), opts, shaping);
+		let page = await runTwoPhase(this.fullGatherClients(width, trace, manifest), opts, shaping);
 		// Free when the fan-out included this partition, which it always does at a correct width.
 		await this.engine();
 		const loaded = currentManifest(this.label);
