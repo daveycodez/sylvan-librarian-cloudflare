@@ -4,7 +4,7 @@
 
 import { describe, expect, test } from "bun:test";
 import { MAX_QUERY_UTF8_BYTES, QUERY_TOO_LONG_MESSAGE } from "../../src/parser";
-import { paginationCeiling } from "../../src/routes/search";
+import { paginationCeiling, searchShapeLine } from "../../src/routes/search";
 import { FakeEngine, FakeParseError, installFakeParser, json, makeCtx, testDispatch, useFakeParser } from "./harness";
 
 useFakeParser();
@@ -350,5 +350,66 @@ describe("search failure modes", () => {
 describe("FakeParseError sanity", () => {
 	test("fake parse error is not a plain Error match", () => {
 		expect(new FakeParseError("x")).toBeInstanceOf(Error);
+	});
+});
+
+describe("search shape line (one per engine search, values-free)", () => {
+	const capture = async (run: () => Promise<unknown>): Promise<string[]> => {
+		const lines: string[] = [];
+		const log = console.log;
+		console.log = (...args: unknown[]) => {
+			lines.push(args.map(String).join(" "));
+		};
+		try {
+			await run();
+		} finally {
+			console.log = log;
+		}
+		return lines.filter((l) => l.startsWith("search: via="));
+	};
+
+	test("a /search writes one line: the shape, the resolved options, the outcome — never the query", async () => {
+		const lines = await capture(() =>
+			testDispatch(makeCtx(), "/search?q=secretword&unique=printing&orderby=name&direction=desc&limit=5&offset=10"),
+		);
+		expect(lines).toHaveLength(1);
+		const line = lines[0] as string;
+		expect(line).toMatch(
+			/^search: via=api shape=\S+ unique=printing prefer=default order=name dir=desc limit=5 offset=10 fields=\d+ out=rows pin=0 list=- calls=-?\d+ total=17 status=ok$/,
+		);
+		expect(line).not.toContain("secretword");
+	});
+
+	test("an engine failure is still one line, with its status; a parse failure (no engine search) is none", async () => {
+		const engine = new FakeEngine();
+		engine.searchError = new Error("wasm trap");
+		expect(await capture(() => testDispatch(makeCtx({ engine }), "/search?q=elf"))).toEqual([
+			expect.stringMatching(/ total=- status=error$/),
+		]);
+		expect(await capture(() => testDispatch(makeCtx(), "/search?q=PARSE_FAIL(("))).toEqual([]);
+	});
+
+	test("limit=None is spelled none, not the engine's million", () => {
+		const line = searchShapeLine({
+			via: "page",
+			shape: "and(card_name:coll*2)",
+			opts: {
+				filterTreeJson: "{}",
+				unique: "card",
+				prefer: "default",
+				orderby: "edhrec",
+				direction: "asc",
+				limit: 1_000_000,
+				offset: 0,
+				fields: [],
+			},
+			out: "columnar",
+			engine: { partitionCalls: 1, pinnedAnswer: true, listPartitions: "1/12" },
+			totalCards: 3,
+			status: "ok",
+		});
+		expect(line).toBe(
+			"search: via=page shape=and(card_name:coll*2) unique=card prefer=default order=edhrec dir=asc limit=none offset=0 fields=0 out=columnar pin=1 list=1/12 calls=1 total=3 status=ok",
+		);
 	});
 });

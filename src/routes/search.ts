@@ -29,6 +29,7 @@ import { bindParams, enumParam, intParam, pyRepr, strListParam, strParam } from 
 import { loadParser } from "./parser-bridge";
 import { arithmeticNotComparedMessage, usesValueAsPredicate } from "./query-validation";
 import type { RouteContext } from "./registry";
+import { queryShape } from "./scryfall-compat/query-shape";
 import { Timer } from "./timer";
 
 // Public field name -> magic.cards column vocabulary for `fields=` (upstream
@@ -247,6 +248,87 @@ export interface RunSearchOptions {
 	/** Results to skip, in the query's sort order. Defaults to DEFAULT_OFFSET (0). */
 	offset?: number;
 	fields?: readonly string[] | null;
+	/**
+	 * Which of the site's surfaces asked, for the per-search shape line (searchShapeLine): `api` for
+	 * `/search` itself, `page` for the server-rendered results page, `card` / `printings` for a card
+	 * page's embedded lookups. Defaults to `api`.
+	 */
+	via?: SearchVia;
+}
+
+/** The surfaces that run a `/search`-contract engine search — the `via=` of searchShapeLine. */
+export type SearchVia = "api" | "page" | "card" | "card-addr" | "printings";
+
+/**
+ * ONE LINE PER ENGINE SEARCH on the site's `/search` contract — `/search` itself, the results page
+ * and the card page's embedded lookups — the counterpart of `/cards/search`'s per-miss line
+ * (scryfall-compat/routes.ts), so a day of the site's own traffic can be ranked by shape the way
+ * the Scryfall surface's is. Every request that reaches a search here missed the edge cache in
+ * front of the Worker, so a line is a computed answer. Grep "search: via=".
+ *
+ * VALUES-FREE: `shape` is query-shape.ts's — node types, attribute names, operators and value
+ * kinds, never a value, a name or a word the user typed. Everything else is an enum, a number, or
+ * the engine's own routing outcome (`pin`, `list`, `calls`: see PartitionedEngine). A card page
+ * writes two or three lines (`card-addr`, then `card` only when the address could not be routed,
+ * then `printings`), one per engine search it ran.
+ *
+ * VOLUME (measured 2026-10-23): the free account's Worker served 150-350 requests a day in all, so
+ * this adds at most a few hundred of its 200,000 daily Workers Logs events (it logged ~3,200 in the
+ * 24 hours to 18:00 UTC); DeckGen's served 45,000-110,000 a day, 37,500 of them `/cards/search`
+ * (already a line each), so this adds well under 70,000 to its ~154,000 a day, inside a paid
+ * allowance of 20M a month. No sampling on either.
+ */
+export function searchShapeLine(fields: {
+	via: SearchVia;
+	shape: string;
+	opts: EngineSearchOptions;
+	out: ResponseShape;
+	engine: unknown;
+	totalCards: number | null;
+	status: SearchLineStatus;
+}): string {
+	const { via, shape, opts, out, engine, totalCards, status } = fields;
+	const routed = engine as { partitionCalls?: number; pinnedAnswer?: boolean; listPartitions?: string | null };
+	return (
+		`search: via=${via} shape=${shape} unique=${opts.unique} prefer=${opts.prefer} order=${opts.orderby} ` +
+		`dir=${opts.direction} limit=${opts.limit >= 1_000_000 ? "none" : opts.limit} offset=${opts.offset} ` +
+		`fields=${opts.fields.length} out=${out} pin=${routed.pinnedAnswer ? 1 : 0} ` +
+		`list=${routed.listPartitions ?? "-"} calls=${routed.partitionCalls ?? -1} ` +
+		`total=${totalCards ?? "-"} status=${status}`
+	);
+}
+
+/**
+ * `ok`; `none` for an address search the routing filter could not place (the caller then runs the
+ * whole search, which writes its own line); `error` for an engine fault (a 500, or a page without
+ * results); `unavailable` for no engine at all (a 503).
+ */
+export type SearchLineStatus = "ok" | "none" | "error" | "unavailable";
+
+/** The status word of searchShapeLine for an engine search that threw. */
+function failedStatus(err: unknown): SearchLineStatus {
+	return err instanceof EngineUnavailableError ? "unavailable" : "error";
+}
+
+/** Write searchShapeLine for one engine search of `prep`. */
+function logSearchShape(
+	prep: PreparedSearch,
+	via: SearchVia,
+	out: ResponseShape,
+	totalCards: number | null,
+	status: SearchLineStatus,
+): void {
+	console.log(
+		searchShapeLine({
+			via,
+			shape: prep.userShape,
+			opts: prep.engineOpts,
+			out,
+			engine: prep.engine,
+			totalCards,
+			status,
+		}),
+	);
 }
 
 /**
@@ -272,6 +354,9 @@ interface PreparedSearch {
 	timer: Timer;
 	query: string;
 	queryExplanation: string;
+	/** The query's shape as the user wrote it, before the extras gate (query-shape.ts). */
+	userShape: string;
+	via: SearchVia;
 }
 
 /**
@@ -327,6 +412,9 @@ async function prepareSearch(ctx: RouteContext, opts: RunSearchOptions): Promise
 	// The EXPLANATION describes the query the user typed, so it is taken before the gate wraps the
 	// tree — "the name contains Bolt" and not "…and it is not an extra and it is not a variation".
 	const queryExplanation = query ? explainWireTree(filterTree) : "";
+	// Likewise the shape the per-search line records (searchShapeLine): the user's query, without
+	// the gate's `NOT is:extra` conjuncts — the rule `/cards/search`'s line follows.
+	const userShape = queryShape(filterTree);
 
 	// SCRYFALL'S TWO DEFAULT-LANE EXCLUSIONS, shared with `/cards/search` — see extras-gate.ts.
 	//
@@ -380,6 +468,8 @@ async function prepareSearch(ctx: RouteContext, opts: RunSearchOptions): Promise
 		},
 		timer,
 		query,
+		userShape,
+		via: opts.via ?? "api",
 	};
 }
 
@@ -461,8 +551,10 @@ export async function runSearchParts(
 	try {
 		result = await prep.timer.time("engine_query", () => prep.engine.searchCardsAsJson(prep.engineOpts, shape));
 	} catch (err) {
+		logSearchShape(prep, prep.via, shape, null, failedStatus(err));
 		engineFailure(prep.query, err);
 	}
+	logSearchShape(prep, prep.via, shape, result.totalCards, "ok");
 	// Upstream's engine_collect span materialized the row list; nothing is
 	// materialized here, but the span still has to appear in the timings tree.
 	prep.timer.time("engine_collect", () => {});
@@ -490,8 +582,10 @@ export async function runSearchPartsAtAddress(
 	try {
 		result = await prep.timer.time("engine_query", () => atAddress(prep.engineOpts, shape, addressKey));
 	} catch (err) {
+		logSearchShape(prep, "card-addr", shape, null, failedStatus(err));
 		engineFailure(prep.query, err);
 	}
+	logSearchShape(prep, "card-addr", shape, result?.totalCards ?? null, result === null ? "none" : "ok");
 	if (result === null) return null;
 	const tail = JSON.stringify(metadataFor(prep, result.totalCards)).slice(1);
 	return { cardsBytes: result.cardsBytes, tail: `,${tail}`, totalCards: result.totalCards };

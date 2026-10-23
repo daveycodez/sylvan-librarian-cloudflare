@@ -86,6 +86,7 @@ export async function rootHandler(
 					direction: (bound.direction as SortDirection | null) ?? "asc",
 					unique: (bound.unique as UniqueOn | null) ?? "card",
 					prefer: (bound.prefer as PreferOrder | null) ?? "default",
+					via: "page",
 				},
 				"rows",
 			);

@@ -142,7 +142,7 @@ export async function cardJsAnswers(ctx: RouteContext): Promise<{ answers: Embed
 		if (target === null) return { answers, transient: false };
 		const { collectorNumber } = target;
 		const isExact = (c: CardRow): boolean => c.collector_number === collectorNumber;
-		const opts = searchOptionsOf(target.cardUrl);
+		const opts: RunSearchOptions = { ...searchOptionsOf(target.cardUrl), via: "card" };
 		const routed = await runSearchPartsAtAddress(ctx, opts, "rows", setNumberKey(target.setCode, collectorNumber));
 		card = routed === null ? undefined : rowsOf(routed.cardsBytes).find(isExact);
 		if (card === undefined) {
@@ -157,7 +157,7 @@ export async function cardJsAnswers(ctx: RouteContext): Promise<{ answers: Embed
 	try {
 		const url = card === undefined ? null : printingsUrl(card);
 		if (url === null) return { answers, transient: false };
-		const found = await runSearchParts(ctx, searchOptionsOf(url), "rows");
+		const found = await runSearchParts(ctx, { ...searchOptionsOf(url), via: "printings" }, "rows");
 		answers.push({ url, cards: found.cardsBytes });
 	} catch (err) {
 		return { answers, transient: noteFailure("printings", err) };
