@@ -17,6 +17,9 @@ import {
 	hedgeNeighbourOf,
 	PhaseBuild,
 	SIBLING_AWAKE_MS,
+	SIBLING_COOLING_FLOOR_MS,
+	SIBLING_COOLING_MS,
+	SIBLING_COOLING_STRIKES,
 	SIBLING_HEDGE_CROSS_AFTER_MS,
 	SIBLING_HEDGE_CROSS_REGION_ENABLED,
 	SIBLING_HEDGE_ENABLED,
@@ -836,5 +839,204 @@ describe("siblingHedgeLine", () => {
 		expect(
 			siblingHedgeLine("engine-enam-p2", 7, "searchKeys", { ms: 2_840, hedge: { ...hedge, won: "original" } }, 2_810),
 		).toContain("won by original at 2840ms, its load 2810ms (8 of 10");
+	});
+});
+
+// ── cooling: a sibling the neighbour keeps answering for is asked of it sooner ──────────────────
+//
+// DeckGen 2026-10-23, wnam: engine-wnam-p8-e1 held calls 4–18s and reloaded every 15–40s, and every
+// coordinator waited out the hedge for it in gather after gather — `fired at 900ms to enam; won by
+// hedge to enam at 966ms`, again and again from the same coordinators within minutes.
+describe("cooling: a sibling the neighbour answered for twice in a row", () => {
+	const T = 1_000_000;
+
+	test("the tuning production runs with: two rescues, two minutes, the neighbour at 100ms", () => {
+		expect(SIBLING_COOLING_STRIKES).toBe(2);
+		expect(SIBLING_COOLING_MS).toBe(120_000);
+		expect(SIBLING_COOLING_FLOOR_MS).toBe(100);
+		// Between a warm sibling call and the ordinary floor, so a cooled sibling that answers in time
+		// sends nothing.
+		expect(SIBLING_COOLING_FLOOR_MS).toBeLessThan(SIBLING_HEDGE_FLOOR_MS);
+	});
+
+	test("one rescue is a wake that ran long; two in a row cool the sibling, and no other", () => {
+		const memory = new SiblingMemory();
+		memory.rescued(8, T);
+		expect(memory.cooling(8, T)).toBe(false);
+		memory.rescued(8, T + 5_000);
+		expect(memory.cooling(8, T + 5_000)).toBe(true);
+		expect(memory.cooling(7, T + 5_000)).toBe(false);
+	});
+
+	test("an original that lands in time ends it; one that lands late does not", () => {
+		const memory = new SiblingMemory();
+		memory.rescued(8, T);
+		memory.rescued(8, T + 1);
+		// Late even net of its load: still cooling.
+		memory.answered(8, T + 2, SIBLING_HEDGE_FLOOR_MS);
+		expect(memory.cooling(8, T + 3)).toBe(true);
+		// A wake whose load accounted for the wait is in time.
+		memory.answered(8, T + 4, SIBLING_HEDGE_FLOOR_MS - 1);
+		expect(memory.cooling(8, T + 5)).toBe(false);
+		// ...and the count starts again from nothing.
+		memory.rescued(8, T + 6);
+		expect(memory.cooling(8, T + 6)).toBe(false);
+	});
+
+	test("it lasts two minutes from the last rescue, and one more rescue after that re-arms it", () => {
+		const memory = new SiblingMemory();
+		memory.rescued(8, T);
+		memory.rescued(8, T + 10_000);
+		expect(memory.cooling(8, T + 10_000 + SIBLING_COOLING_MS)).toBe(true);
+		expect(memory.cooling(8, T + 10_000 + SIBLING_COOLING_MS + 1)).toBe(false);
+		memory.rescued(8, T + 500_000);
+		expect(memory.cooling(8, T + 500_000)).toBe(true);
+	});
+
+	describe("a cooling sibling's call", () => {
+		beforeEach(() => {
+			restore();
+			restore = setSiblingHedgeForTests({ floorMs: 200, wakingFloorMs: 400, crossAfterMs: 30, coolingFloorMs: 20 });
+		});
+
+		function neighbour<T>(answer: () => Promise<T>, refuse?: (value: T) => string | null) {
+			const state = { sent: 0 };
+			const cross = (): CrossTarget<T> => ({
+				region: "enam",
+				send: () => {
+					state.sent += 1;
+					return answer();
+				},
+				...(refuse ? { refuse } : {}),
+			});
+			return { state, cross };
+		}
+
+		test("is asked of the neighbour alone at the cooling floor, not of the same object twice", async () => {
+			const phase = new HedgePhase();
+			const stuck = sibling(() => after(400, "rows"));
+			const there = neighbour(() => after(5, "rows"));
+			const [, , call] = await Promise.all([
+				phase.run(quick("a").send),
+				phase.run(quick("b").send),
+				phase.run(stuck.send, undefined, { cross: there.cross, cooling: () => true, mayBeWaking: () => true }),
+			]);
+			expect(stuck.state.sent).toBe(1);
+			expect(there.state.sent).toBe(1);
+			expect(call).toMatchObject({
+				ok: true,
+				value: "rows",
+				hedge: { won: "hedge", cross: { region: "enam", direct: true, cooled: true, won: true } },
+			});
+			// At the cooling floor, not the ordinary (200ms) or waking (400ms) one.
+			expect(call.hedge?.firedAtMs).toBeGreaterThanOrEqual(18);
+			expect(call.ms).toBeLessThan(150);
+			await after(420, null);
+		});
+
+		test("that answers before the cooling floor sends nothing at all", async () => {
+			const phase = new HedgePhase();
+			const recovered = sibling(() => after(5, "rows"));
+			const there = neighbour(() => after(0, "rows"));
+			const [, , call] = await Promise.all([
+				phase.run(quick("a").send),
+				phase.run(quick("b").send),
+				phase.run(recovered.send, undefined, { cross: there.cross, cooling: () => true }),
+			]);
+			expect(call).toMatchObject({ ok: true, value: "rows", hedge: null });
+			await after(60, null);
+			expect(there.state.sent).toBe(0);
+		});
+
+		test("waits for one of the phase's other answers before the neighbour is asked", async () => {
+			const phase = new HedgePhase();
+			const stuck = sibling(() => after(400, "rows"));
+			const there = neighbour(() => after(0, "rows"));
+			const [, call] = await Promise.all([
+				phase.run(sibling(() => after(80, "a")).send),
+				phase.run(stuck.send, undefined, { cross: there.cross, cooling: () => true }),
+			]);
+			expect(call.ok).toBe(true);
+			expect(there.state.sent).toBe(1);
+			// Not at 20ms, when nothing had answered: only once the 80ms answer was in.
+			expect(call.hedge?.firedAtMs).toBeGreaterThanOrEqual(78);
+			await after(420, null);
+		});
+
+		test("takes an answer from another build from no one: the original is waited for", async () => {
+			const phase = new HedgePhase();
+			const stuck = sibling(() => after(150, "build 7"));
+			const there = neighbour(
+				() => after(0, "build 8"),
+				(value) => (value === "build 7" ? null : "build 8 where 7 is pinned"),
+			);
+			const [, , call] = await Promise.all([
+				phase.run(quick("a").send),
+				phase.run(quick("b").send),
+				phase.run(stuck.send, undefined, { cross: there.cross, cooling: () => true }),
+			]);
+			expect(call).toMatchObject({
+				ok: true,
+				value: "build 7",
+				hedge: { won: "original", cross: { cooled: true, discarded: "build 8 where 7 is pinned" } },
+			});
+		});
+
+		test("with no neighbour, is hedged as any other call", async () => {
+			const phase = new HedgePhase();
+			const late = sibling(
+				() => after(400, "first"),
+				() => after(5, "second"),
+			);
+			const [, , call] = await Promise.all([
+				phase.run(quick("a").send),
+				phase.run(quick("b").send),
+				phase.run(late.send, undefined, { cross: () => null, cooling: () => true }),
+			]);
+			expect(late.state.sent).toBe(2);
+			expect(call).toMatchObject({ ok: true, value: "second", hedge: { won: "hedge" } });
+			expect(call.hedge?.firedAtMs).toBeGreaterThanOrEqual(195);
+			await after(420, null);
+		});
+
+		test("the neighbour switched off, cooling changes nothing", async () => {
+			restore();
+			restore = setSiblingHedgeForTests({
+				floorMs: 200,
+				wakingFloorMs: 200,
+				coolingFloorMs: 20,
+				crossRegion: false,
+			});
+			const phase = new HedgePhase();
+			const late = sibling(
+				() => after(400, "first"),
+				() => after(5, "second"),
+			);
+			const there = neighbour(() => after(0, "third"));
+			const [, , call] = await Promise.all([
+				phase.run(quick("a").send),
+				phase.run(quick("b").send),
+				phase.run(late.send, undefined, { cross: there.cross, cooling: () => true }),
+			]);
+			expect(there.state.sent).toBe(0);
+			expect(call).toMatchObject({ ok: true, value: "second" });
+			expect(call.hedge?.firedAtMs).toBeGreaterThanOrEqual(195);
+			await after(420, null);
+		});
+	});
+
+	test("the line says the neighbour was asked because the sibling is cooling", () => {
+		const hedge = {
+			firedAtMs: 101,
+			won: "hedge" as const,
+			originalMs: null,
+			answered: 10,
+			issued: 11,
+			peerMedianMs: 22,
+		};
+		const cross = { region: "enam", firedAtMs: 101, direct: true, cooled: true as const, won: true as const };
+		expect(siblingHedgeLine("engine-wnam-p3", 8, "searchKeys", { ms: 178, hedge: { ...hedge, cross } }, 0)).toBe(
+			"[engine-wnam-p3] sibling hedge p8 searchKeys: fired at 101ms to enam (cooling); won by hedge to enam at 178ms (10 of 11 answered, median 22ms)",
+		);
 	});
 });

@@ -1116,6 +1116,7 @@ export class SearchEngine extends DurableObject<Env> {
 					? { scheduleHedge: (task) => limiter.run(task, true) }
 					: {
 							mayBeWaking: () => memory.mayBeWaking(partition, Date.now()),
+							cooling: () => memory.cooling(partition, Date.now()),
 							cross: hedging.cross,
 							free: () => limiter.free,
 							scheduleHedge: (task) => limiter.run(task, true),
@@ -1128,6 +1129,9 @@ export class SearchEngine extends DurableObject<Env> {
 			);
 			const acquireMs = call.ok ? acquireMsOf(call.value) : 0;
 			const { hedge } = call;
+			// Cooling: the neighbour answered for this region's sibling, which was later still — two in
+			// a row and its calls go to the neighbour at the cooling floor (SiblingMemory.cooling).
+			if (hedging !== null && hedge?.cross?.won) memory.rescued(partition, Date.now());
 			if (hedge) console.warn(siblingHedgeLine(this.label, partition, method, { ms: call.ms, hedge }, acquireMs));
 			trace.push({ partition, method, ms: call.ms, acquireMs, failed: !call.ok, ...(hedge ? { hedge } : {}) });
 			if (!call.ok) throw call.error;

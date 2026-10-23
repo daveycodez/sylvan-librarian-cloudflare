@@ -159,6 +159,44 @@ export const SIBLING_HEDGE_QUORUM = 0.5;
  */
 export const SIBLING_HEDGE_CROSS_AFTER_MS = 150;
 
+/**
+ * COOLING: a sibling whose answer the neighbour supplied this many gathers in a row is COOLING — see
+ * SiblingMemory.cooling — and its calls are asked of the neighbour SIBLING_COOLING_FLOOR_MS after
+ * they are sent instead of at the ordinary or waking floor.
+ *
+ * WHY (DeckGen, 2026-10-23 08:45–09:05 UTC, the paid wnam region). engine-wnam-p8-e1 (SJC) held
+ * calls 4–18s and reloaded its store every 15–40s while gathers arrived every second or two; every
+ * coordinator kept asking it first and waited for the hedge each time — `fired at 900ms to enam;
+ * won by hedge to enam at 966ms`, `fired at 500ms, to enam at 650ms; won by hedge to enam at
+ * 1062ms`, in gather after gather from p3, p5, p6, p7 and p10-e1, the same coordinators within
+ * minutes. 186 sibling hedges in wnam that day, 127 of them answered by enam, a median 983ms into
+ * the gather (p90 1,312ms); a bench run at 08:45 had every gather wait 900ms behind that one object.
+ * The Worker's own hedge (remote-engine.ts ENGINE_COOLING_STRIKES) already learns this per
+ * isolate; the coordinator forgot it at every gather — `mayBeWaking` sends a sibling it has not
+ * heard from (a stalled one never answers) to the 900ms floor, and the stuck memory is only set
+ * by an original that LANDS ≥2.5s late, which an instance that dies ("this Durable Object instance
+ * is no longer active", 17.6s) never does.
+ *
+ * Two in a row, as the Worker's: a single rescue is a wake that ran long. The period runs from the
+ * LAST rescue, and any original that lands within SIBLING_HEDGE_FLOOR_MS of being sent (its load
+ * taken off) ends it at once — so the object is still asked every gather, which is how its
+ * recovery is seen, and what keeps the region's own copy warm.
+ */
+export const SIBLING_COOLING_STRIKES = 2;
+
+/** How long after its last rescue a cooling sibling stays cooled — the Worker's ENGINE_COOLING_MS. */
+export const SIBLING_COOLING_MS = 120_000;
+
+/**
+ * When a cooling sibling's call goes to the neighbour, once at least one other sibling of the phase
+ * has answered (the neighbour's keys are taken only from the build those answers name — PhaseBuild).
+ * Above a warm sibling call (median 10–59ms in wnam's gather lines of 2026-10-23), well below the
+ * 500ms floor: a cooled sibling that answers in time sends no hedge and ends its cooling, and one
+ * still out is answered by the neighbour a round trip later (wnam → enam, 66–80ms) instead of at
+ * 650–1,100ms.
+ */
+export const SIBLING_COOLING_FLOOR_MS = 100;
+
 const tuning = {
 	enabled: SIBLING_HEDGE_ENABLED,
 	crossRegion: SIBLING_HEDGE_CROSS_REGION_ENABLED,
@@ -167,6 +205,7 @@ const tuning = {
 	peerFactor: SIBLING_HEDGE_PEER_FACTOR,
 	quorum: SIBLING_HEDGE_QUORUM,
 	crossAfterMs: SIBLING_HEDGE_CROSS_AFTER_MS,
+	coolingFloorMs: SIBLING_COOLING_FLOOR_MS,
 };
 
 /** For tests: change the hedge's tuning; the returned function puts it back. */
@@ -203,11 +242,31 @@ export const SIBLING_STUCK_MEMORY_MS = 15 * 60_000;
 export class SiblingMemory {
 	private readonly heard = new Map<number, number>();
 	private stuckAt = Number.NEGATIVE_INFINITY;
+	/** Cooling: per partition, gathers in a row the neighbour answered for it, and when it last did. */
+	private readonly rescues = new Map<number, { strikes: number; lastAt: number }>();
 
 	/** A call to `partition` in this region answered at `now`, `netMs` after it was sent (its own load taken off). */
 	answered(partition: number, now: number, netMs: number): void {
 		this.heard.set(partition, now);
 		if (netMs >= SIBLING_STUCK_MS) this.stuckAt = now;
+		// In time: whatever held it up is over, and so is its cooling.
+		if (netMs < SIBLING_HEDGE_FLOOR_MS) this.rescues.delete(partition);
+	}
+
+	/** Cooling: the neighbour's answer stood in for a call to `partition` at `now` — the original was later still. */
+	rescued(partition: number, now: number): void {
+		const rescue = this.rescues.get(partition) ?? { strikes: 0, lastAt: now };
+		rescue.strikes += 1;
+		rescue.lastAt = now;
+		this.rescues.set(partition, rescue);
+	}
+
+	/** Whether calls to `partition` go to the neighbour at the cooling floor (SIBLING_COOLING_STRIKES). */
+	cooling(partition: number, now: number): boolean {
+		const rescue = this.rescues.get(partition);
+		return (
+			rescue !== undefined && rescue.strikes >= SIBLING_COOLING_STRIKES && now - rescue.lastAt <= SIBLING_COOLING_MS
+		);
 	}
 
 	/** Whether a call to `partition` that is late at `now` may be late because the object is starting up. */
@@ -313,6 +372,8 @@ export interface HedgeNote {
 		firedAtMs: number;
 		/** True when it was the only hedge: no second call went to the same object. */
 		direct: boolean;
+		/** True when it was sent at the cooling floor: the sibling is cooling (SiblingMemory.cooling). */
+		cooled?: true;
 		/** True when ITS answer is the one the gather used (`won` is then "hedge"). */
 		won?: true;
 		/** Why its answer was thrown away, when it was: it came from another store build. */
@@ -340,6 +401,12 @@ export interface CrossTarget<T> {
 export interface HedgeOptions<T> {
 	/** Whether the sibling may be starting up (SiblingMemory.mayBeWaking), asked when the call is late. */
 	mayBeWaking?: () => boolean;
+	/**
+	 * Whether the sibling is cooling (SiblingMemory.cooling), asked when the call is sent and when it
+	 * is looked at: then the neighbour alone is asked, at the cooling floor, once any other call of
+	 * the phase has answered. Ignored where there is no neighbour or the neighbour switch is off.
+	 */
+	cooling?: () => boolean;
 	/** The neighbour's copy, resolved only when a hedge is due; null where there is none. */
 	cross?: () => CrossTarget<T> | null;
 	/** Slots the gather's limiter has free right now. */
@@ -426,13 +493,14 @@ export class HedgePhase {
 				target: CrossTarget<T> | null,
 				direct: boolean,
 				then?: () => void,
+				cooled = false,
 			) => {
 				call.out += 1;
 				scheduleHedge(() => {
 					if (call.landed || call.settled) return Promise.reject(new HedgeNotSentError());
 					const firedAtMs = sinceSent();
 					call.note ??= { firedAtMs, won: "neither", originalMs: null, ...seen };
-					if (target) call.note.cross = { region: target.region, firedAtMs, direct };
+					if (target) call.note.cross = { region: target.region, firedAtMs, direct, ...(cooled ? { cooled } : {}) };
 					then?.();
 					return target ? target.send() : send();
 				}).then((value) => {
@@ -458,9 +526,32 @@ export class HedgePhase {
 				}, hedgeOver);
 			};
 
+			/** Cooling: the neighbour's copy to ask at the cooling floor, or null to hedge as usual. */
+			const coolTarget = (): CrossTarget<T> | null =>
+				tuning.crossRegion && (options.cooling?.() ?? false) ? (options.cross?.() ?? null) : null;
+
 			const consider = () => {
 				timer = undefined;
 				if (call.settled || call.landed || call.asked) return;
+				if (options.cooling?.() && tuning.crossRegion) {
+					// A cooling sibling: the neighbour alone, once its answer can be judged — it stands in
+					// only for the build the phase's other answers name, so one of them must be in hand.
+					const out = sinceSent();
+					if (this.answers.length === 0 || out < tuning.coolingFloorMs) {
+						timer = setTimeout(consider, Math.max(1, tuning.coolingFloorMs - out));
+						return;
+					}
+					const target = coolTarget();
+					if (target) {
+						call.asked = true;
+						this.unhedged -= 1;
+						const sorted = [...this.answers].sort((a, b) => a - b);
+						const peerMedianMs = sorted[Math.floor((sorted.length - 1) / 2)] as number;
+						hedge({ answered: this.answers.length, issued: this.issued, peerMedianMs }, target, true, undefined, true);
+						return;
+					}
+					// No neighbour to ask after all: hedged as any other call.
+				}
 				// Too few answers to judge by. Looked at again a floor later, NOT when the next answer
 				// arrives: when most of a phase is late together, the first late answer would
 				// otherwise hedge the rest in the very millisecond they are landing.
@@ -504,7 +595,10 @@ export class HedgePhase {
 			schedule(() => {
 				call.sentAt = this.now();
 				this.unhedged += 1;
-				if (tuning.enabled || tuning.crossRegion) timer = setTimeout(consider, tuning.floorMs);
+				if (tuning.enabled || tuning.crossRegion) {
+					const cooled = tuning.crossRegion && (options.cooling?.() ?? false);
+					timer = setTimeout(consider, cooled ? tuning.coolingFloorMs : tuning.floorMs);
+				}
 				const sent = send();
 				// Registered before the limiter's own continuation, so it runs before the slot is
 				// handed on: a hedge waiting for THIS slot sees that the call has landed.
@@ -550,11 +644,11 @@ export function hedgeVerdict(hedge: HedgeNote): string {
 	return `won by ${hedge.won}${hedge.won === "hedge" && hedge.cross?.won ? ` to ${hedge.cross.region}` : ""}`;
 }
 
-/** `fired at 502ms`, `fired at 502ms to enam`, or `fired at 502ms, to enam at 655ms`. */
+/** `fired at 502ms`, `fired at 502ms to enam`, `fired at 101ms to enam (cooling)`, or `fired at 502ms, to enam at 655ms`. */
 export function hedgeFired(hedge: HedgeNote, at = "fired at "): string {
 	const { cross } = hedge;
 	if (!cross) return `${at}${hedge.firedAtMs}ms`;
-	if (cross.direct) return `${at}${hedge.firedAtMs}ms to ${cross.region}`;
+	if (cross.direct) return `${at}${hedge.firedAtMs}ms to ${cross.region}${cross.cooled ? " (cooling)" : ""}`;
 	return `${at}${hedge.firedAtMs}ms, to ${cross.region} at ${cross.firedAtMs}ms`;
 }
 
