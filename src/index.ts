@@ -31,10 +31,11 @@ import { adminUnauthorized, isAdminPath } from "./routes/admin";
 import { httpError, optionsResponse, securityHeaders } from "./routes/http";
 import { resolveProxyOrigin } from "./routes/proxy-origin";
 import { enforceRateLimit, isRateLimitedRoute, isTrustedRequest, RateLimiter } from "./routes/rate-limit";
-import { answerInTime } from "./routes/request-deadline";
+import { answerInTime, REQUEST_DEADLINE_MS, RequestStages } from "./routes/request-deadline";
 import { prepareScryfallQueryParams } from "./routes/scryfall-compat/query-input";
 import { scryfallHttpError } from "./routes/scryfall-compat/respond";
 import { NOT_FOUND_DETAILS } from "./routes/scryfall-compat/routes";
+import { noteRequestStart, reportIfSlow } from "./routes/slow-request";
 
 export { ImportCoordinator, PlacementProbe, RateLimiter, SearchEngine };
 
@@ -193,7 +194,17 @@ async function resolveEngine(
 // plumbing and are stripped from client query params before binding.
 const DISALLOWED_QUERY_ARGS = new Set(["falcon_response", "request_host"]);
 
-async function handle(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
+/**
+ * What dispatch learned about a request, for the slow-request line `fetch` writes after the answer
+ * (slow-request.ts): the route key once resolved, the stages it tracked, and which engine answered.
+ */
+interface DispatchRecord {
+	route: string;
+	stages: RequestStages | null;
+	engine: { tag: string };
+}
+
+async function handle(request: Request, env: Env, ctx: ExecutionContext, record: DispatchRecord): Promise<Response> {
 	const url = new URL(request.url);
 	const path = url.pathname.replace(/^\/+|\/+$/g, "") || "_root";
 
@@ -219,6 +230,7 @@ async function handle(request: Request, env: Env, ctx: ExecutionContext): Promis
 	if (!resolved) return securityHeaders(scryfallHttpError("not_found", 404, NOT_FOUND_DETAILS));
 	const entry = routes[resolved.key];
 	if (!entry) return securityHeaders(scryfallHttpError("not_found", 404, NOT_FOUND_DETAILS));
+	record.route = resolved.key;
 	/** Whether this path is on the Scryfall-compatible surface, which picks the error shape. */
 	const scryfallSurface = SCRYFALL_SURFACE_ROUTES.has(resolved.key);
 	// CORS PREFLIGHT, answered before the method check — which is what makes it work at all: no
@@ -296,7 +308,7 @@ async function handle(request: Request, env: Env, ctx: ExecutionContext): Promis
 	// Observability: which engine answered (empty when the route never asked).
 	// Cached responses replay the header from generation time; pair it with
 	// cf-cache-status to distinguish edge cache hits.
-	const engineSource = { tag: "" };
+	const engineSource = record.engine;
 	const rateLimitOutcome = { tag: "" };
 	const finish = (response: Response): Response => {
 		const out = securityHeaders(response);
@@ -308,11 +320,18 @@ async function handle(request: Request, env: Env, ctx: ExecutionContext): Promis
 		return out;
 	};
 
+	// Every await from here on is tracked, so a slow request's line can say where its time went.
+	const stages = new RequestStages();
+	record.stages = stages;
+
 	try {
 		// Per-IP rate limit on engine-computing routes only; requests carrying
 		// the trusted key (server-to-server callers on shared egress IPs) skip
 		// it. Cache hits never reach this code at all.
-		if (isRateLimitedRoute(resolved.key, params) && !(await isTrustedRequest(env, request))) {
+		if (
+			isRateLimitedRoute(resolved.key, params) &&
+			!(await stages.track("trusted-key", () => isTrustedRequest(env, request)))
+		) {
 			const { outcome, response: limited } = enforceRateLimit(env, request, (p) => ctx.waitUntil(p));
 			rateLimitOutcome.tag = outcome;
 			if (limited) return finish(limited);
@@ -322,26 +341,34 @@ async function handle(request: Request, env: Env, ctx: ExecutionContext): Promis
 		// deadlines; the reads in front of them carried none, and two requests waited on one until the
 		// edge answered 524 for us at 100s. `stages` is what the deadline's log line names: the
 		// manifest read, the alias read, and every engine call, each open until it settles.
-		const response = await answerInTime({ method: request.method, key: resolved.key, scryfallSurface }, (stages) =>
-			entry.handler(
-				{
-					env,
-					getEngine: () =>
-						stages.track("manifest", () => resolveEngine(request, env, ctx, engineSource)).then((e) => stages.watch(e)),
-					// The same manifest the engine is pinned to (isolate-cached for 60s), so the parse
-					// resolves aliases against the build that will answer it.
-					tagAliases: () =>
-						stages.track("tag-aliases", () =>
-							livePartitionedManifest(env).then((manifest) => liveTagAliases(env, manifest)),
-						),
-					request,
-					requestHost,
-					requestScheme,
-					waitUntil: (p) => ctx.waitUntil(p),
-				},
-				resolved.positionalArgs,
-				params,
-			),
+		const response = await answerInTime(
+			{ method: request.method, key: resolved.key, scryfallSurface },
+			(stages) =>
+				entry.handler(
+					{
+						env,
+						getEngine: () =>
+							stages
+								.track("manifest", () => resolveEngine(request, env, ctx, engineSource))
+								.then((e) => stages.watch(e)),
+						// The same manifest the engine is pinned to (isolate-cached for 60s), so the parse
+						// resolves aliases against the build that will answer it.
+						tagAliases: () =>
+							stages.track("tag-aliases", () =>
+								livePartitionedManifest(env).then((manifest) => liveTagAliases(env, manifest)),
+							),
+						// The KV-only routes' reads (catalog, sets, rulings, the oracle index) as stages too.
+						track: (label, work) => stages.track(label, work),
+						request,
+						requestHost,
+						requestScheme,
+						waitUntil: (p) => ctx.waitUntil(p),
+					},
+					resolved.positionalArgs,
+					params,
+				),
+			REQUEST_DEADLINE_MS,
+			stages,
 		);
 		return finish(response);
 	} catch (err) {
@@ -385,8 +412,26 @@ async function handle(request: Request, env: Env, ctx: ExecutionContext): Promis
  * handlers the runtime knows about.
  */
 export default class SylvanLibrarian extends WorkerEntrypoint<Env> {
-	override fetch(request: Request): Promise<Response> {
-		return handle(request, this.env, this.ctx);
+	override async fetch(request: Request): Promise<Response> {
+		const start = noteRequestStart();
+		const record: DispatchRecord = { route: "-", stages: null, engine: { tag: "" } };
+		let status = 0;
+		try {
+			const response = await handle(request, this.env, this.ctx, record);
+			status = response.status;
+			return response;
+		} finally {
+			// One line when the answer took SLOW_REQUEST_MS or more; nothing otherwise. Status 0 = threw.
+			reportIfSlow({
+				method: request.method,
+				route: record.route,
+				ms: Date.now() - start.at,
+				status,
+				stages: record.stages,
+				start,
+				engine: record.engine.tag,
+			});
+		}
 	}
 
 	// Two crons (wrangler.jsonc triggers.crons). The watchdog's checks the nightly run and replaces

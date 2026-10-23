@@ -284,10 +284,10 @@ describe("dispatch", () => {
 	test("every handler runs under the request deadline, with its stages tracked", () => {
 		expect(source.match(/entry\.handler\(/g)?.length).toBe(1);
 		expect(source).toMatch(
-			/await answerInTime\(\{ method: request\.method, key: resolved\.key, scryfallSurface \}, \(stages\) =>\s+entry\.handler\(/,
+			/await answerInTime\(\s*\{ method: request\.method, key: resolved\.key, scryfallSurface \},\s*\(stages\) =>\s+entry\.handler\(/,
 		);
 		expect(source).toMatch(
-			/stages\.track\("manifest", \(\) => resolveEngine\(request, env, ctx, engineSource\)\)\.then\(\(e\) => stages\.watch\(e\)\)/,
+			/stages\s*\.track\("manifest", \(\) => resolveEngine\(request, env, ctx, engineSource\)\)\s*\.then\(\(e\) => stages\.watch\(e\)\)/,
 		);
 		expect(source).toMatch(/stages\.track\("tag-aliases", \(\) =>/);
 	});

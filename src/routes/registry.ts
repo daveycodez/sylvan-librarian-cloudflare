@@ -29,6 +29,18 @@ export interface RouteContext {
 	/** The scheme those URLs use, from the same allowlisted proxy or the request. */
 	requestScheme: string;
 	waitUntil(p: Promise<unknown>): void;
+	/**
+	 * Run `work` as a named stage of this request (request-deadline.ts RequestStages), so the
+	 * deadline's line and the slow-request line can say it was waiting there. Dispatch always
+	 * provides it; optional for contexts built by hand (tests, tooling), where `tracked` runs the
+	 * work untracked.
+	 */
+	track?<T>(label: string, work: () => Promise<T>): Promise<T>;
+}
+
+/** `work` as the stage `label` of `ctx`'s request — or just `work`, when nothing tracks stages. */
+export function tracked<T>(ctx: RouteContext, label: string, work: () => Promise<T>): Promise<T> {
+	return ctx.track ? ctx.track(label, work) : work();
 }
 
 export interface RouteEntry {

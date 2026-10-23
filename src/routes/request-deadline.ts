@@ -33,19 +33,29 @@ export function setRequestDeadlineForTests(ms: number): void {
 	REQUEST_DEADLINE_MS = ms;
 }
 
-/** What a request is waiting on: every tracked call that has started and not settled. */
+/**
+ * What a request is waiting on: every tracked call that has started and not settled — and, for the
+ * slow-request line (slow-request.ts), how long the settled ones took, per label.
+ */
 export class RequestStages {
 	private readonly open = new Map<number, { label: string; since: number }>();
+	/** Settled stages per label, in order of first settling: summed ms (not wall — overlap counts twice) and calls. */
+	private readonly settled = new Map<string, { ms: number; calls: number }>();
 	private opened = 0;
 	private last: string | null = null;
 
 	/** Run `work` as the stage `label`: open from now until its promise settles either way. */
 	track<T>(label: string, work: () => Promise<T>): Promise<T> {
 		const id = this.opened++;
-		this.open.set(id, { label, since: Date.now() });
+		const since = Date.now();
+		this.open.set(id, { label, since });
 		const close = () => {
 			this.open.delete(id);
 			this.last = label;
+			const spent = this.settled.get(label) ?? { ms: 0, calls: 0 };
+			spent.ms += Date.now() - since;
+			spent.calls += 1;
+			this.settled.set(label, spent);
 		};
 		let running: Promise<T>;
 		try {
@@ -94,6 +104,21 @@ export class RequestStages {
 			waiting.length > 0 ? `waiting on ${waiting.join(", ")}` : "no tracked call open (the handler's own awaits)";
 		return `${on}; last finished: ${this.last ?? "none"}`;
 	}
+
+	/**
+	 * Where the time went, for the slow-request line: every settled label with its summed ms (and
+	 * the call count when more than one), then every stage still open. Empty when nothing was tracked.
+	 *
+	 *   kv.reference 7980ms, manifest 3ms; open: engine.scryfallSearchPage for 4012ms
+	 */
+	spent(now: number = Date.now()): string {
+		const done = [...this.settled].map(([label, s]) => `${label} ${s.ms}ms${s.calls > 1 ? ` (${s.calls} calls)` : ""}`);
+		const open = [...this.open.values()]
+			.sort((a, b) => a.since - b.since)
+			.map((s) => `${s.label} for ${now - s.since}ms`);
+		const parts = [done.join(", "), open.length > 0 ? `open: ${open.join(", ")}` : ""].filter((p) => p !== "");
+		return parts.join("; ");
+	}
 }
 
 /** The line the deadline logs. `route` is the route key and never the query: only its shape is logged anywhere. */
@@ -137,8 +162,9 @@ export function answerInTime(
 	route: { method: string; key: string; scryfallSurface: boolean },
 	run: (stages: RequestStages) => Promise<Response> | Response,
 	ms: number = REQUEST_DEADLINE_MS,
+	// Dispatch passes its own, so the slow-request line reads the same record after the answer.
+	stages: RequestStages = new RequestStages(),
 ): Promise<Response> {
-	const stages = new RequestStages();
 	return answerWithin((async () => run(stages))(), ms, () => {
 		console.error(requestDeadlineLine(route.method, route.key, ms, stages));
 		return route.scryfallSurface

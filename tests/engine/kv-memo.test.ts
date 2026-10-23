@@ -128,3 +128,41 @@ describe("readKvBytesMemo with an edgeKey (a key rewritten in place, named by it
 		expect(entries.has(edgeCacheUrl("rulings:v2:1f@new"))).toBe(true);
 	});
 });
+
+// 2026-10-23: mtgseeker timed out at 8s on `/catalog/ability-words` and `/cards/:id/rulings`, routes
+// whose only await is this memo. The question was whether one stuck `get` could hold every caller
+// for that key in the isolate. It cannot, and this pins why: the memo holds SETTLED values only —
+// there is no shared in-flight promise to join — and a failure is never remembered.
+describe("readKvBytesMemo never pins a caller to another caller's read", () => {
+	test("a read that never settles does not hold a later caller for the same key", async () => {
+		let calls = 0;
+		const kv = {
+			get(_key: string) {
+				calls++;
+				// The first read hangs forever; every later one answers.
+				return calls === 1 ? new Promise(() => {}) : Promise.resolve(new Uint8Array([1, 2, 3]).buffer);
+			},
+		} as unknown as KVNamespace;
+		void readKvBytesMemo(kv, "catalog:ability-words");
+		const second = await readKvBytesMemo(kv, "catalog:ability-words");
+		expect(second).toEqual(new Uint8Array([1, 2, 3]));
+		expect(calls).toBe(2);
+		// And the answer it got is what the next caller is served from.
+		await readKvBytesMemo(kv, "catalog:ability-words");
+		expect(calls).toBe(2);
+	});
+
+	test("a failed read is not memoised: the next caller asks KV again", async () => {
+		let calls = 0;
+		const kv = {
+			async get(_key: string) {
+				calls++;
+				if (calls === 1) throw new Error("KV GET failed: 500");
+				return new Uint8Array([9]).buffer;
+			},
+		} as unknown as KVNamespace;
+		await expect(readKvBytesMemo(kv, "catalog:card-types")).rejects.toThrow("KV GET failed");
+		expect(await readKvBytesMemo(kv, "catalog:card-types")).toEqual(new Uint8Array([9]));
+		expect(calls).toBe(2);
+	});
+});

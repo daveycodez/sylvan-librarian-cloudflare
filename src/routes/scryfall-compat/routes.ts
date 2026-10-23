@@ -52,7 +52,7 @@ import { applyExtrasGate } from "../extras-gate";
 import { NO_STORE_HEADER } from "../http";
 import { loadParser } from "../parser-bridge";
 import { arithmeticNotComparedMessage, usesValueAsPredicate } from "../query-validation";
-import type { RouteContext } from "../registry";
+import { type RouteContext, tracked } from "../registry";
 import { applyDirectives } from "../search";
 import {
 	badRequestError,
@@ -1925,10 +1925,12 @@ async function oracleIdFromIndex(ctx: RouteContext, scryfallId: string): Promise
 	if (bucket === null) return null;
 	let value: Uint8Array | null;
 	try {
-		value = await readKvBytesMemo(ctx.env.STORE_KV, oracleIndexBucketKey(bucket), {
-			...ORACLE_INDEX_READ,
-			defer: (p) => ctx.waitUntil(p),
-		});
+		value = await tracked(ctx, "kv.oracle-index", () =>
+			readKvBytesMemo(ctx.env.STORE_KV, oracleIndexBucketKey(bucket), {
+				...ORACLE_INDEX_READ,
+				defer: (p) => ctx.waitUntil(p),
+			}),
+		);
 	} catch (err) {
 		console.warn(`Oracle index: KV read failed, asking the engine: ${err}`);
 		return null;
@@ -1955,7 +1957,9 @@ async function rulingsForOracle(ctx: RouteContext, oracleId: string, pretty: boo
 		// Memoized per isolate and read through the colo's cache under the current publish's version
 		// (readRulingsBucket): a new publish is a miss, and a colo pays one metered read per bucket
 		// per publish rather than one per request.
-		value = await readRulingsBucket(ctx.env.STORE_KV, bucket, (p) => ctx.waitUntil(p));
+		value = await tracked(ctx, "kv.rulings", () =>
+			readRulingsBucket(ctx.env.STORE_KV, bucket, (p) => ctx.waitUntil(p)),
+		);
 	} catch (err) {
 		console.error("Rulings: KV read failed", err);
 		return scryfallJson(errorObject("internal_error", 500, RULINGS_UNREADABLE_DETAILS), pretty, NO_STORE_HEADER);

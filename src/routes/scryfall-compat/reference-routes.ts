@@ -29,7 +29,7 @@ import {
 	symbologyKey,
 } from "../../engine/reference-kv";
 import { NO_STORE_HEADER } from "../http";
-import type { RouteContext } from "../registry";
+import { type RouteContext, tracked } from "../registry";
 import { ManaCostError, parseManaCost } from "./mana";
 import { errorObject, notFoundError } from "./objects";
 import { asBool, scryfallCatalogJson, scryfallJson, scryfallListJson } from "./respond";
@@ -131,7 +131,8 @@ function unreadable(what: string, err: unknown, pretty: boolean): Response {
  * already the contract, and a per-request metered KV read for a 600KB value was not.
  */
 async function readValue(ctx: RouteContext, key: string): Promise<Uint8Array | null> {
-	return readKvBytesMemo(ctx.env.STORE_KV, key);
+	// A stage, so a slow `/catalog` or `/sets` says whether its time went to this read.
+	return tracked(ctx, "kv.reference", () => readKvBytesMemo(ctx.env.STORE_KV, key));
 }
 
 // ─── GET /sets ───────────────────────────────────────────────────────────────
