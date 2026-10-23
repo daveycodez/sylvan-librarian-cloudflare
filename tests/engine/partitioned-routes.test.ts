@@ -28,6 +28,7 @@ import {
 	illustrationIdKey,
 	nameKey,
 	ROUTING_FEATURE_NAME_KEYS,
+	ROUTING_FEATURE_NAME_SERVED_PAIRS,
 	ROUTING_FEATURE_NAME_TIERS,
 	RoutingFilter,
 	scryfallIdKey,
@@ -2713,6 +2714,46 @@ describe("a card-list search asks only the partitions its cards live in (y1)", (
 		const gated = recording(FILTER);
 		await gated.engine.searchCardsAsJson(optsOf(and(or(bang("bolt"), bang("brainstorm")), notTag("extra"))), "rows");
 		expect(gated.seen[0]?.opts.gatherPartitions).toEqual({ build: "100", partitions: [1, 2] });
+	});
+
+	// 2026-10-23: `Channel` is served in two partitions — the card's and Yavimaya Bloomsage // Channel's
+	// — so it sealed to 255 and every list holding it gathered all N. A filter that spells served pairs
+	// places it in both, under the same gate a served name needs.
+	test("a name served in TWO partitions places in both under the extras gate, from a filter with pairs", async () => {
+		const entries = [
+			{ key: "ns:bolt", partition: 1 },
+			{ key: "ns:channel", partition: 0 },
+			{ key: "ns:channel", partition: 3 },
+			{ key: "na:channel", partition: 2 },
+		];
+		const paired = filterOf(
+			entries,
+			ROUTING_FEATURE_NAME_KEYS | ROUTING_FEATURE_NAME_TIERS | ROUTING_FEATURE_NAME_SERVED_PAIRS,
+		);
+		const gatedList = and(or(bang("bolt"), bang("channel")), notTag("extra"));
+		const list = recording(paired);
+		await list.engine.searchCardsAsJson(optsOf(gatedList), "rows");
+		expect(list.seen.length).toBe(1);
+		expect(list.seen[0]?.opts.gatherPartitions).toEqual({ build: "100", partitions: [0, 1, 3] });
+		expect(list.engine.listPartitions).toBe(`3/${N}`);
+		// A lone `!"Channel"` is no pin (no SOLE partition): a gather of the two, never a pin.
+		const lone = recording(paired);
+		const loneOpts = optsOf(and(bang("channel"), notTag("extra")));
+		await lone.engine.scryfallSearchPage(loneOpts, "https://x", ENVELOPE, {});
+		expect(lone.seen.map((s) => s.call)).toEqual([
+			`scryfallSearchPage[cards2]:${[0, 3][gatherPartitionOf(loneOpts.filterTreeJson, 2)]}`,
+		]);
+		expect(lone.seen[0]?.opts.gatherPartitions).toEqual({ build: "100", partitions: [0, 3] });
+		expect(lone.engine.pinnedAnswer).toBe(false);
+		// Without the gate (include_extras), the art series in 2 can match: the full gather.
+		const bare = recording(paired);
+		await bare.engine.searchCardsAsJson(optsOf(or(bang("bolt"), bang("channel"))), "rows");
+		expect(bare.seen[0]?.opts.gatherPartitions).toBeUndefined();
+		// The same keys in a filter without pairs: 255, the full gather — every filter before this.
+		const unpaired = recording(named(entries));
+		await unpaired.engine.searchCardsAsJson(optsOf(gatedList), "rows");
+		expect(unpaired.seen[0]?.opts.gatherPartitions).toBeUndefined();
+		expect(unpaired.engine.listPartitions).toBeNull();
 	});
 
 	test("an OR mixing in an unrestricted term, or no filter for its names: the full gather", async () => {

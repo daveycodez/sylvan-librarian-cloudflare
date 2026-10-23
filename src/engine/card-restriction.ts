@@ -43,7 +43,13 @@
  * text, which can only err towards "widened". (`is:flavorname` was a third until 2026-10-04, when
  * it was measured NOT to widen on api.scryfall.com; card_engine's `FlavorNamePresent` has it.)
  *
- * A served hint without the gate (include_extras) or on a widened query, an undecidable one (255),
+ * (c) a SERVED PAIR (routing-filter.ts, a filter with ROUTING_FEATURE_NAME_SERVED_PAIRS) is a name
+ *     exactly two partitions emitted SERVED — a classic spell and the `prepare` card printing it as
+ *     a face (`Channel`, `Yavimaya Bloomsage // Channel`). By (b), under the gate on a query not
+ *     widened, those two are every partition a row of `!"x"` can come from, exactly as one served
+ *     partition is for a served hint; every other holder holds x only as an extra.
+ *
+ * A served hint or pair without the gate (include_extras) or on a widened query, an undecidable one (255),
  * a key that reads null, a non-ASCII name (`nameKey` refuses it) or a filter without name keys: ALL.
  *
  * An EMPTY set is a query that matches nothing (two disjoint lists ANDed).
@@ -56,7 +62,7 @@
  */
 
 import { partitionOfOracleId } from "./partition";
-import type { NameHint } from "./routing-filter";
+import type { NamePlacement } from "./routing-filter";
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
@@ -122,7 +128,7 @@ function rootConjuncts(node: unknown, out: unknown[], depth = 0): void {
 export function cardRestrictionOf(
 	filterTreeJson: string,
 	n: number,
-	nameHint: (collated: string) => NameHint | null,
+	nameHint: (collated: string) => NamePlacement | null,
 	/** The request's include_multilingual. */
 	multilingual: boolean,
 ): CardRestriction | null {
@@ -143,7 +149,12 @@ export function cardRestrictionOf(
 		const hint = nameHint(value);
 		if (hint === null) return null;
 		if ("sole" in hint) return hint.sole >= 0 && hint.sole < n ? new Set([hint.sole]) : null;
-		return servedExact && hint.served >= 0 && hint.served < n ? new Set([hint.served]) : null;
+		if (!servedExact) return null;
+		if ("servedPair" in hint) {
+			const [a, b] = hint.servedPair;
+			return a >= 0 && a < n && b >= 0 && b < n ? new Set([a, b]) : null;
+		}
+		return hint.served >= 0 && hint.served < n ? new Set([hint.served]) : null;
 	};
 
 	const walk = (node: unknown, depth: number): Restricted => {

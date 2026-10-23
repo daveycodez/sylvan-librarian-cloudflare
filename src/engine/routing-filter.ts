@@ -148,7 +148,22 @@ export function externalIdKey(namespace: string, id: number): string {
 //                            series (the engine's TIER_* values) — in a filter with
 //                            ROUTING_FEATURE_NAME_TIERS; one without it spells this N + s, tier
 //                            unknown
+//   5N + pair(a, b)          exactly TWO partitions a < b hold a SERVED card of it (any others hold
+//   (< 5N + N(N-1)/2)        it as extras only), in a filter with ROUTING_FEATURE_NAME_SERVED_PAIRS
+//                            — see `servedPairIndex`. A reader without that bit reads it as 255.
 //   255                      no single partition decides it; ask them all
+//
+// WHY SERVED PAIRS (2026-10-23). Secrets of Strixhaven's `prepare` cards print a classic spell as
+// their back face — `Emeritus of Conflict // Lightning Bolt`, `Yavimaya Bloomsage // Channel`,
+// `Emeritus of Abundance // Regrowth`, 72 of them, staples among them (Swords to Plowshares,
+// Demonic Tutor, Brainstorm, Reanimate, Sign in Blood) — so the classic card's name is SERVED in two
+// partitions, its own and the prepare card's, and sealed to 255. A `!"Name"` list holding one of
+// them restricted nothing (card-restriction.ts): on DeckGen 2026-10-23, 135 `or(!name*k)` searches a
+// day gathered all twelve partitions for want of one such name (`!"Channel"`, `!"Regrowth"`,
+// `!"Exsanguinate"` each probed list=- gathered=12). Under the router's extras gate the two served
+// holders are every partition a row can come from (card-restriction.ts invariant b), so the list
+// asks those two. Nothing else reads the pair: `lookupName` still answers null for it, so
+// `/cards/named`, collection names and the fuzzy plan ask everyone exactly as they did for 255.
 //
 // and `lookupName` hands the router which of those it is. Both are HINTS in the same sense an id's
 // value is: a key never built in reads garbage, so the router trusts a reply only when the reply
@@ -195,6 +210,44 @@ export const ROUTING_FEATURE_NAME_KEYS = 1;
 /** Header features bit: a served name key's value carries the other partitions' extras tier
  * (`N + 4s + t`), so `lookupName` answers `{ served, rival }`. Only with ROUTING_FEATURE_NAME_KEYS. */
 export const ROUTING_FEATURE_NAME_TIERS = 2;
+/** Header features bit: a name SERVED in exactly two partitions is sealed `5N + pair(a, b)` rather than
+ * 255, so `lookupNamePlacement` answers `{ servedPair }`. Only with ROUTING_FEATURE_NAME_TIERS, and only
+ * where every pair fits below 255 (`servedPairsFit`). */
+export const ROUTING_FEATURE_NAME_SERVED_PAIRS = 4;
+
+/** How many served-name values a tiered filter spells before the pairs begin: `N + 4s + t` < 5N. */
+function pairBase(partitionCount: number): number {
+	return partitionCount + NAME_RIVALS * partitionCount;
+}
+
+/**
+ * Whether a filter over `partitionCount` partitions can spell every served pair below 255 — 5N plus
+ * N(N-1)/2 values: true up to N = 18. Past it a publisher leaves ROUTING_FEATURE_NAME_SERVED_PAIRS off
+ * and such names seal to 255, as every filter before pairs did.
+ */
+export function servedPairsFit(partitionCount: number): boolean {
+	return (
+		Number.isInteger(partitionCount) &&
+		partitionCount >= 2 &&
+		pairBase(partitionCount) + (partitionCount * (partitionCount - 1)) / 2 < NAME_AMBIGUOUS
+	);
+}
+
+/** The index of the pair `a < b` among all pairs of `[0, n)`, in (a, b) lexicographic order. */
+export function servedPairIndex(a: number, b: number, n: number): number {
+	return a * n - (a * (a + 1)) / 2 + (b - a - 1);
+}
+
+/** The pair `a < b` at `index` (`servedPairIndex`'s inverse), or null past the last one. */
+export function servedPairAt(index: number, n: number): readonly [number, number] | null {
+	let at = index;
+	for (let a = 0; a < n - 1; a++) {
+		const span = n - 1 - a;
+		if (at < span) return [a, a + 1 + at];
+		at -= span;
+	}
+	return null;
+}
 
 /** The name-key value meaning "no single partition decides this name". */
 const NAME_AMBIGUOUS = 255;
@@ -234,6 +287,14 @@ export function nameKey(folded: string): string | null {
  * namespace), which a whole-name served reply must carry to settle (`nameReplySettles`).
  */
 export type NameHint = { sole: number } | { served: number; rival?: number; needle?: string };
+
+/**
+ * What `lookupNamePlacement` knows: a `NameHint`, or the TWO partitions (ascending) holding the name
+ * served — from a filter with ROUTING_FEATURE_NAME_SERVED_PAIRS. Only a list restriction under the
+ * extras gate reads a pair (card-restriction.ts); every other route asks `lookupName`, which answers
+ * null for one.
+ */
+export type NamePlacement = NameHint | { servedPair: readonly [number, number] };
 
 /** How many rival values a served name key's value spells (0-3): `N + 4s + t`. */
 const NAME_RIVALS = 4;
@@ -372,6 +433,9 @@ export class NameRun {
 	private owner = -1;
 	private owners = 0;
 	private served = -1;
+	/** The second distinct served partition, when `serveds` reached 2. */
+	private served2 = -1;
+	/** Distinct served partitions seen: 0, 1, 2, or 3 for "three or more". */
 	private serveds = 0;
 	/** Per tier (index = tier, 1-3), the first extras partition seen, and whether a second differed. */
 	private readonly tierOwner = [-1, -1, -1, -1];
@@ -381,6 +445,7 @@ export class NameRun {
 		this.owner = -1;
 		this.owners = 0;
 		this.served = -1;
+		this.served2 = -1;
 		this.serveds = 0;
 		this.tierOwner.fill(-1);
 		this.tierOwners.fill(0);
@@ -397,7 +462,12 @@ export class NameRun {
 			if (this.serveds === 0) {
 				this.served = partition;
 				this.serveds = 1;
-			} else if (partition !== this.served) this.serveds = 2;
+			} else if (this.serveds === 1) {
+				if (partition !== this.served) {
+					this.served2 = partition;
+					this.serveds = 2;
+				}
+			} else if (this.serveds === 2 && partition !== this.served && partition !== this.served2) this.serveds = 3;
 		}
 		for (let t = 1; t < NAME_RIVALS; t++) {
 			if ((flags & (FLAG_EXTRA_TIER[t] as number)) === 0) continue;
@@ -408,9 +478,16 @@ export class NameRun {
 		}
 	}
 
-	/** The sealed value: `p`, `N + 4s + t` (tiered) or `N + s`, else NAME_AMBIGUOUS. */
-	value(partitionCount: number, tiers: boolean): number {
+	/** The sealed value: `p`, `N + 4s + t` (tiered) or `N + s`, `5N + pair(a, b)` (with `pairs`, which
+	 * needs `tiers`), else NAME_AMBIGUOUS. */
+	value(partitionCount: number, tiers: boolean, pairs = false): number {
 		if (this.owners === 1) return this.owner;
+		if (this.serveds === 2 && pairs && tiers) {
+			const a = Math.min(this.served, this.served2);
+			const b = Math.max(this.served, this.served2);
+			const value = pairBase(partitionCount) + servedPairIndex(a, b, partitionCount);
+			return value < NAME_AMBIGUOUS ? value : NAME_AMBIGUOUS;
+		}
 		if (this.serveds !== 1) return NAME_AMBIGUOUS;
 		if (!tiers) return partitionCount + this.served < NAME_AMBIGUOUS ? partitionCount + this.served : NAME_AMBIGUOUS;
 		// The highest tier any partition OTHER than the served one holds it on — every other holder
@@ -607,9 +684,11 @@ export class RoutingKeyAccumulator {
 	/**
 	 * Sorted, deduplicated hash columns: an id key's LOWEST partition; a name key's one partition,
 	 * `partitionCount + 4s + t` for its one SERVED partition `s` and the other partitions' highest
-	 * extras tier `t` (with `tiers`; `partitionCount + s` without), or 255 (see the name-key
-	 * section). `partitionCount` is required once any name key was added. `tiers` is whether every
-	 * batch spelled its extras' tiers (`NAME_TIERS_STAMP`) — the filter's ROUTING_FEATURE_NAME_TIERS.
+	 * extras tier `t` (with `tiers`; `partitionCount + s` without), `5N + pair(a, b)` for exactly two
+	 * served partitions (with `pairs`), or 255 (see the name-key section). `partitionCount` is
+	 * required once any name key was added. `tiers` is whether every batch spelled its extras' tiers
+	 * (`NAME_TIERS_STAMP`) — the filter's ROUTING_FEATURE_NAME_TIERS; `pairs` is its
+	 * ROUTING_FEATURE_NAME_SERVED_PAIRS, and needs `tiers` and a count `servedPairsFit` admits.
 	 *
 	 * IN PLACE, and that is the point (backlog x2). The comparator sort this replaced boxed an index
 	 * per line into a JS array and sorted THAT — 35/75/111MB of JS heap at 1×/2×/3× the corpus on
@@ -624,8 +703,13 @@ export class RoutingKeyAccumulator {
 	 * released as its successor lands, so the filter build that follows holds 9 bytes per DISTINCT
 	 * key (1.45M of 1.95M lines today) rather than 10 per line.
 	 */
-	seal(partitionCount?: number, tiers = false): SealedRoutingKeys {
+	seal(partitionCount?: number, tiers = false, pairs = false): SealedRoutingKeys {
 		if (this.sealed) throw new Error("routing filter: the accumulator is already sealed");
+		if (pairs && (!tiers || partitionCount === undefined || !servedPairsFit(partitionCount))) {
+			throw new Error(
+				`routing filter: served pairs need a tiered seal at a partition count they fit (got ${partitionCount}, tiers ${tiers})`,
+			);
+		}
 		this.sealed = true;
 		const n = this.n;
 		const lo = this.lo;
@@ -646,7 +730,7 @@ export class RoutingKeyAccumulator {
 			if (m === 0 || !runName) return;
 			nameKeys++;
 			if (partitionCount === undefined) throw new Error("routing filter: name keys need the partition count to seal");
-			values[m - 1] = run.value(partitionCount, tiers);
+			values[m - 1] = run.value(partitionCount, tiers, pairs);
 		};
 		for (let i = 0; i < n; i++) {
 			const l = lo[i] as number;
@@ -889,7 +973,11 @@ export function buildRoutingFilter(
 		acc.add(e.key, e.partition);
 	}
 	return buildRoutingFilterFromHashes(
-		acc.seal(identity.partitionCount, (features & ROUTING_FEATURE_NAME_TIERS) !== 0),
+		acc.seal(
+			identity.partitionCount,
+			(features & ROUTING_FEATURE_NAME_TIERS) !== 0,
+			(features & ROUTING_FEATURE_NAME_SERVED_PAIRS) !== 0,
+		),
 		identity,
 		features,
 	);
@@ -920,7 +1008,8 @@ export function buildRoutingFilterFromHashes(
 	identity: RoutingFilterIdentity,
 	/** The header's features word — `ROUTING_FEATURE_NAME_KEYS` only when EVERY input batch carried
 	 * `NAME_KEYS_STAMP` or `NAME_TIERS_STAMP`, and `ROUTING_FEATURE_NAME_TIERS` too only when every
-	 * one carried the second (see there). The seal's `tiers` must agree with the second bit. */
+	 * one carried the second (see there). The seal's `tiers` must agree with the second bit, and its
+	 * `pairs` with ROUTING_FEATURE_NAME_SERVED_PAIRS. */
 	features = 0,
 ): Uint8Array {
 	if (identity.partitionCount > VALUE_MASK) {
@@ -1214,13 +1303,29 @@ export class RoutingFilter {
 	 * name it does not settle).
 	 */
 	lookupName(key: string): NameHint | null {
+		const placement = this.lookupNamePlacement(key);
+		return placement === null || "servedPair" in placement ? null : placement;
+	}
+
+	/**
+	 * `lookupName`, and for a filter with ROUTING_FEATURE_NAME_SERVED_PAIRS also the name SERVED in
+	 * exactly two partitions (`servedPair`, ascending) — which `lookupName` reads as null. The same kind
+	 * of HINT: a name never built in can read a pair as easily as anything else, so only a reader for
+	 * whom an absent name's partitions answer nothing may use one (a list restriction, card-restriction.ts).
+	 */
+	lookupNamePlacement(key: string): NamePlacement | null {
 		if (!this.hasNameKeys) return null;
 		const value = this.valueOf(key);
 		const n = this.identity.partitionCount;
 		if (value < n) return { sole: value };
 		if (value === NAME_AMBIGUOUS) return null;
 		if ((this.features & ROUTING_FEATURE_NAME_TIERS) !== 0) {
-			if (value >= n + NAME_RIVALS * n) return null;
+			const base = pairBase(n);
+			if (value >= base) {
+				if ((this.features & ROUTING_FEATURE_NAME_SERVED_PAIRS) === 0 || !servedPairsFit(n)) return null;
+				const pair = servedPairAt(value - base, n);
+				return pair === null ? null : { servedPair: pair };
+			}
 			const at = value - n;
 			return { served: Math.floor(at / NAME_RIVALS), rival: at % NAME_RIVALS };
 		}

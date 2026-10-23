@@ -118,6 +118,7 @@ import {
 	externalIdKey,
 	illustrationIdKey,
 	type NameHint,
+	type NamePlacement,
 	nameKey,
 	RoutingFilter,
 	scryfallIdKey,
@@ -972,7 +973,7 @@ export class PartitionedEngine implements Engine {
 		const restriction = cardRestrictionOf(
 			opts.filterTreeJson,
 			this.n,
-			(collated) => this.nameHintOf(collated),
+			(collated) => this.namePlacementOf(collated),
 			opts.includeMultilingual === true,
 		);
 		return restriction !== null && restriction.partitions.length < this.n ? restriction : null;
@@ -1417,6 +1418,13 @@ export class PartitionedEngine implements Engine {
 		const hint = this.routing.lookupName(key);
 		// A served route carries the collated needle, which its whole-name reply must BE to settle.
 		return hint !== null && "served" in hint ? { ...hint, needle: key.slice(key.indexOf(":") + 1) } : hint;
+	}
+
+	/** `nameHintOf` for a LIST restriction alone, which may also read a served pair (card-restriction.ts). */
+	private namePlacementOf(folded: string): NamePlacement | null {
+		if (this.routing === null || !this.routing.hasNameKeys) return null;
+		const key = nameKey(folded);
+		return key === null ? null : this.routing.lookupNamePlacement(key);
 	}
 
 	/** The best rank any partition holds — the whole store's answer, for an Engine asked directly. */

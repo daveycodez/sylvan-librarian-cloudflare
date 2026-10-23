@@ -25,6 +25,9 @@ import {
 	RoutingKeyAccumulator,
 	routingHash,
 	type SealedRoutingKeys,
+	servedPairAt,
+	servedPairIndex,
+	servedPairsFit,
 } from "../../src/engine/routing-filter";
 import { ReferenceAccumulator, referenceBuild } from "./routing-filter-reference";
 
@@ -52,6 +55,7 @@ function expectSameBuild(
 	partitionCount = IDENTITY.partitionCount,
 	features = 0,
 	tiers = false,
+	pairs = false,
 ): SealedRoutingKeys {
 	const identity = { ...IDENTITY, partitionCount };
 	const ref = new ReferenceAccumulator(16);
@@ -60,8 +64,8 @@ function expectSameBuild(
 		ref.add(key, p);
 		acc.add(key, p);
 	}
-	const want = ref.seal(partitionCount, tiers);
-	const got = acc.seal(partitionCount, tiers);
+	const want = ref.seal(partitionCount, tiers, pairs);
+	const got = acc.seal(partitionCount, tiers, pairs);
 	expect(got.lo.length).toBe(want.lo.length);
 	expect(got.nameKeys).toBe(want.nameKeys);
 	expect(Buffer.from(got.lo.buffer, got.lo.byteOffset, got.lo.byteLength).equals(bytesOf(want.lo))).toBe(true);
@@ -244,8 +248,89 @@ describe("the rewritten build publishes the reference's bytes", () => {
 		] as const) {
 			expectSameBuild(syntheticLines(count, seed, IDENTITY.partitionCount));
 			expectSameBuild(syntheticLines(count, seed, IDENTITY.partitionCount), IDENTITY.partitionCount, 3, true);
+			expectSameBuild(syntheticLines(count, seed, IDENTITY.partitionCount), IDENTITY.partitionCount, 7, true, true);
+			expectSameBuild(syntheticLines(count, seed, 12), 12, 7, true, true);
 		}
 	}, 120_000);
+
+	// Served pairs (2026-10-23): a name SERVED in exactly two partitions a < b — a classic spell and the
+	// `prepare` card printing it as a face — seals to `5N + k`, k the pair's index, when the filter
+	// spells pairs; three served holders, or a seal without pairs, stay 255.
+	test("the served-pair rule: exactly two served partitions, extras elsewhere or not", () => {
+		const N = 12;
+		const lines: Line[] = [
+			// `channel`: the card in 3, Yavimaya Bloomsage // Channel in 9 → pair (3, 9)
+			[9, "ns:channel"],
+			[3, "ns:channel"],
+			// `exsanguinate`: two served holders, and an art series in a third → still the pair (2, 5)
+			[5, "ns:exsanguinate"],
+			[2, "ns:exsanguinate"],
+			[7, "na:exsanguinate"],
+			[7, "nw:exsanguinate"],
+			// the two served partitions in the highest pair → (10, 11)
+			[11, "ns:last"],
+			[10, "ns:last"],
+			[10, "ns:last"],
+			// `peerreview`: three prepare cards serve it → 255
+			[1, "ns:peerreview"],
+			[4, "ns:peerreview"],
+			[8, "ns:peerreview"],
+			// sole and one-served names are what they always were
+			[4, "nw:sole"],
+			[4, "ns:sole"],
+			[5, "ns:chaos"],
+			[2, "nw:chaos"],
+			// two owners, none served → 255
+			[0, "nm:noneserved"],
+			[6, "nm:noneserved"],
+		];
+		const paired = expectSameBuild(lines, N, 7, true, true);
+		expectSameBuild([...lines].reverse(), N, 7, true, true);
+		const unpaired = expectSameBuild(lines, N, 3, true, false);
+		const sealedValue = (sealed: SealedRoutingKeys, key: string) => {
+			const { lo, hi } = routingHash(key);
+			for (let i = 0; i < sealed.lo.length; i++)
+				if (sealed.lo[i] === lo && sealed.hi[i] === hi) return sealed.values[i];
+			throw new Error(`no ${key}`);
+		};
+		const base = 5 * N;
+		expect(sealedValue(paired, "nm:channel")).toBe(base + servedPairIndex(3, 9, N));
+		expect(sealedValue(paired, "nm:exsanguinate")).toBe(base + servedPairIndex(2, 5, N));
+		expect(sealedValue(paired, "nm:last")).toBe(base + (N * (N - 1)) / 2 - 1);
+		expect(sealedValue(paired, "nm:peerreview")).toBe(255);
+		expect(sealedValue(paired, "nm:sole")).toBe(4);
+		expect(sealedValue(paired, "nm:chaos")).toBe(N + 4 * 5 + 3);
+		expect(sealedValue(paired, "nm:noneserved")).toBe(255);
+		// Without pairs, every two-served name seals as it always did.
+		expect(sealedValue(unpaired, "nm:channel")).toBe(255);
+		expect(sealedValue(unpaired, "nm:exsanguinate")).toBe(255);
+		// The index is a bijection onto [0, N(N-1)/2), and servedPairAt inverts it.
+		const seen = new Set<number>();
+		for (let a = 0; a < N; a++)
+			for (let b = a + 1; b < N; b++) {
+				const k = servedPairIndex(a, b, N);
+				seen.add(k);
+				expect(servedPairAt(k, N)).toEqual([a, b]);
+			}
+		expect(seen.size).toBe((N * (N - 1)) / 2);
+		expect(Math.max(...seen)).toBe((N * (N - 1)) / 2 - 1);
+		expect(servedPairAt((N * (N - 1)) / 2, N)).toBeNull();
+	});
+
+	test("served pairs fit a byte up to eighteen partitions, and a seal past that refuses them", () => {
+		expect(servedPairsFit(1)).toBe(false);
+		expect(servedPairsFit(2)).toBe(true);
+		expect(servedPairsFit(12)).toBe(true);
+		expect(servedPairsFit(18)).toBe(true);
+		expect(servedPairsFit(19)).toBe(false);
+		expect(servedPairsFit(48)).toBe(false);
+		const acc = new RoutingKeyAccumulator(4);
+		acc.add("ns:x", 0);
+		expect(() => acc.seal(19, true, true)).toThrow(/served pairs/);
+		const untiered = new RoutingKeyAccumulator(4);
+		untiered.add("ns:x", 0);
+		expect(() => untiered.seal(12, false, true)).toThrow(/served pairs/);
+	});
 
 	test("a cell holding more keys than a byte counts takes the wide counter, and the same bytes", () => {
 		// 300 keys share their `lo` half, so their first cell is the SAME cell under every seed — past

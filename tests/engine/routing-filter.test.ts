@@ -22,6 +22,7 @@ import {
 	illustrationIdKey,
 	nameKey,
 	ROUTING_FEATURE_NAME_KEYS,
+	ROUTING_FEATURE_NAME_SERVED_PAIRS,
 	ROUTING_FEATURE_NAME_TIERS,
 	ROUTING_FILTER_MAGIC_V1,
 	type RoutingEntry,
@@ -420,6 +421,62 @@ describe("name keys (backlog n6)", () => {
 		const untiered = named(entries);
 		expect(untiered.lookupName("nm:chaos")).toEqual({ served: 5 });
 		expect(untiered.lookupName("nm:illusion")).toEqual({ served: 8 });
+	});
+
+	// Served pairs (2026-10-23): a name served in exactly two partitions — `Channel` and `Yavimaya
+	// Bloomsage // Channel` — reads as the pair through `lookupNamePlacement`, in a filter whose header
+	// says it spells pairs; `lookupName` and a filter without the bit read it as they read 255: null.
+	test("served pairs: lookupNamePlacement reads the two served partitions, lookupName reads null", () => {
+		const identity = { ...IDENTITY, partitionCount: 12 };
+		const entries: RoutingEntry[] = [
+			{ key: "ns:channel", partition: 9 },
+			{ key: "ns:channel", partition: 3 },
+			{ key: "ns:exsanguinate", partition: 2 },
+			{ key: "ns:exsanguinate", partition: 5 },
+			{ key: "na:exsanguinate", partition: 7 },
+			{ key: "ns:last", partition: 11 },
+			{ key: "ns:last", partition: 10 },
+			{ key: "ns:first", partition: 0 },
+			{ key: "ns:first", partition: 1 },
+			{ key: "ns:peerreview", partition: 1 },
+			{ key: "ns:peerreview", partition: 4 },
+			{ key: "ns:peerreview", partition: 8 },
+			{ key: "ns:chaos", partition: 5 },
+			{ key: "nw:chaos", partition: 2 },
+			{ key: "nw:sole", partition: 6 },
+		];
+		const features = ROUTING_FEATURE_NAME_KEYS | ROUTING_FEATURE_NAME_TIERS | ROUTING_FEATURE_NAME_SERVED_PAIRS;
+		const filter = parse(buildRoutingFilter(entries, identity, features), identity);
+		expect(filter.lookupNamePlacement("nm:channel")).toEqual({ servedPair: [3, 9] });
+		expect(filter.lookupNamePlacement("nm:exsanguinate")).toEqual({ servedPair: [2, 5] });
+		expect(filter.lookupNamePlacement("nm:last")).toEqual({ servedPair: [10, 11] });
+		expect(filter.lookupNamePlacement("nm:first")).toEqual({ servedPair: [0, 1] });
+		expect(filter.lookupNamePlacement("nm:peerreview")).toBeNull();
+		expect(filter.lookupNamePlacement("nm:chaos")).toEqual({ served: 5, rival: 3 });
+		expect(filter.lookupNamePlacement("nm:sole")).toEqual({ sole: 6 });
+		// Every other route reads a pair as it read 255.
+		expect(filter.lookupName("nm:channel")).toBeNull();
+		expect(filter.lookupName("nm:last")).toBeNull();
+		expect(filter.lookupName("nm:chaos")).toEqual({ served: 5, rival: 3 });
+		expect(filter.lookupName("nm:sole")).toEqual({ sole: 6 });
+
+		// The same keys sealed without pairs: what every filter before them published.
+		const tiered = parse(
+			buildRoutingFilter(entries, identity, ROUTING_FEATURE_NAME_KEYS | ROUTING_FEATURE_NAME_TIERS),
+			identity,
+		);
+		expect(tiered.lookupNamePlacement("nm:channel")).toBeNull();
+		expect(tiered.lookupNamePlacement("nm:chaos")).toEqual({ served: 5, rival: 3 });
+
+		// A reader that does not know the bit (any deployed before this) reads a paired filter's pair
+		// values as garbage: the old lookupName's rule, null at and past 5N.
+		const bytes = buildRoutingFilter(entries, identity, features);
+		const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+		view.setUint32(28, ROUTING_FEATURE_NAME_KEYS | ROUTING_FEATURE_NAME_TIERS, true);
+		const blind = parse(bytes, identity);
+		expect(blind.lookupNamePlacement("nm:channel")).toBeNull();
+		expect(blind.lookupNamePlacement("nm:last")).toBeNull();
+		expect(blind.lookupName("nm:chaos")).toEqual({ served: 5, rival: 3 });
 	});
 
 	test("tiers: every name spelling hashes as `nm:`", () => {

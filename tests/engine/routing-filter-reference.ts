@@ -11,6 +11,10 @@
 // face, `nf:` flavor; `na:` an art series, no tier), and a TIERED seal values a served name
 // `N + 4s + t`, t the highest tier (3/2/1, 0 for none) any other partition's extras hold it on. The
 // untiered seal — every filter before x26 — is unchanged.
+//
+// CHANGED ON PURPOSE, served pairs (2026-10-23): a `pairs` seal (tiered only) values a name served in
+// exactly TWO partitions a < b as `5N + k`, k the pair's position when every pair of [0, N) is listed
+// in (a, b) order. Every seal without `pairs` is unchanged.
 
 const ROUTING_FILTER_MAGIC = 0x53524632; // "SRF2"
 
@@ -207,7 +211,7 @@ export class ReferenceAccumulator {
 	 * t the other partitions' highest extras tier), or 255 (see the name-key section).
 	 * `partitionCount` is required once any name key was added.
 	 */
-	seal(partitionCount?: number, tiers = false): SealedRoutingKeys {
+	seal(partitionCount?: number, tiers = false, pairs = false): SealedRoutingKeys {
 		const order = new Uint32Array(this.n);
 		for (let i = 0; i < this.n; i++) order[i] = i;
 		const lo = this.lo;
@@ -231,6 +235,8 @@ export class ReferenceAccumulator {
 		let owners = 0;
 		let served = -1;
 		let serveds = 0;
+		// Every partition a SERVED entry of the run named — the pairs rule reads it whole.
+		let servedSet = new Set<number>();
 		// Every (partition, tier) an extras entry of the run carried, decided when the run closes.
 		let extras: [number, number][] = [];
 		const closeRun = () => {
@@ -238,7 +244,18 @@ export class ReferenceAccumulator {
 			nameKeys++;
 			if (partitionCount === undefined) throw new Error("routing filter: name keys need the partition count to seal");
 			if (owners === 1) outValues[m - 1] = owner;
-			else if (serveds !== 1) outValues[m - 1] = NAME_AMBIGUOUS;
+			else if (pairs && tiers && servedSet.size === 2) {
+				const [a, b] = [...servedSet].sort((x, y) => x - y) as [number, number];
+				let k = 0;
+				search: for (let x = 0; x < partitionCount; x++) {
+					for (let y = x + 1; y < partitionCount; y++) {
+						if (x === a && y === b) break search;
+						k++;
+					}
+				}
+				const value = 5 * partitionCount + k;
+				outValues[m - 1] = value < NAME_AMBIGUOUS ? value : NAME_AMBIGUOUS;
+			} else if (serveds !== 1) outValues[m - 1] = NAME_AMBIGUOUS;
 			else if (!tiers)
 				outValues[m - 1] = partitionCount + served < NAME_AMBIGUOUS ? partitionCount + served : NAME_AMBIGUOUS;
 			else {
@@ -255,6 +272,7 @@ export class ReferenceAccumulator {
 				owners = 1;
 			} else if (v !== owner) owners = 2;
 			if ((f & FLAG_SERVED) !== 0) {
+				servedSet.add(v);
 				if (serveds === 0) {
 					served = v;
 					serveds = 1;
@@ -283,6 +301,7 @@ export class ReferenceAccumulator {
 			owners = 0;
 			served = -1;
 			serveds = 0;
+			servedSet = new Set();
 			extras = [];
 			noteName(v, f);
 		}

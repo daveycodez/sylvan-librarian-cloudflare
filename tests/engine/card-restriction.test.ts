@@ -9,7 +9,7 @@
 import { describe, expect, test } from "bun:test";
 import { cardRestrictionOf } from "../../src/engine/card-restriction";
 import { partitionOfOracleId } from "../../src/engine/partition";
-import type { NameHint } from "../../src/engine/routing-filter";
+import { type NameHint, type NamePlacement, servedPairAt } from "../../src/engine/routing-filter";
 
 // The CPU-bound tests in this file carry an explicit 120 s timeout (the `120_000` closing them).
 // bun's default is 5 s, which they pass in under a second on a quiet machine and failed on a
@@ -50,10 +50,12 @@ const not = (operand: Tree): Tree => ({ node_type: "NotNode", kwargs: { operand 
 /** The router's extras gate (extras-gate.ts `withoutIsTags`): the user's tree ANDed with `NOT is:extra`. */
 const gated = (tree: Tree): Tree => and(tree, not(isTag("extra")), not(isTag("variation")));
 
-const HINTS: Record<string, NameHint | null> = {
+const HINTS: Record<string, NamePlacement | null> = {
 	bolt: { sole: 2 },
 	counterspell: { sole: 7 },
 	brainstorm: { served: 4, rival: 0 },
+	// The card in 3, Yavimaya Bloomsage // Channel in 9: served in exactly two partitions.
+	channel: { servedPair: [3, 9] },
 	fire: null,
 	island: { sole: 2 },
 };
@@ -132,6 +134,21 @@ describe("the restriction rule", () => {
 		expect(at(and(list, isTag("extra")))).toBeNull();
 	});
 
+	test("a SERVED PAIR places a name in both partitions, under the same gate a served hint needs", () => {
+		const list = or(bang("bolt"), bang("channel"));
+		expect(at(list)).toBeNull();
+		expect(at(gated(list))).toEqual({ partitions: [2, 3, 9], members: 2, names: 2 });
+		expect(at(gated(bang("channel")))?.partitions).toEqual([3, 9]);
+		// ANDed with a sole name: the intersection, which may be empty.
+		expect(at(gated(and(bang("channel"), bang("bolt"))))?.partitions).toEqual([]);
+		// Not under an OR of the gate, not excluding another tag, not on a widened query.
+		expect(at(or(and(list, not(isTag("extra"))), and(list, typed("elf"))))).toBeNull();
+		expect(at(and(list, not(isTag("variation"))))).toBeNull();
+		expect(cardRestrictionOf(JSON.stringify(gated(list)), N, hint, true)).toBeNull();
+		// A pair outside the filter's width is no placement.
+		expect(cardRestrictionOf(JSON.stringify(gated(bang("x"))), N, () => ({ servedPair: [1, N] }), false)).toBeNull();
+	});
+
 	test("a WIDENED query trusts sole hints alone: include_multilingual, `lang:`, is:localizedname", () => {
 		const list = gated(or(bang("bolt"), bang("brainstorm")));
 		const sole = gated(or(bang("bolt"), bang("counterspell")));
@@ -198,6 +215,7 @@ describe("soundness: no matching row lives outside the restriction", () => {
 		const TYPES = ["creature", "instant", "land"];
 		let restricted = 0;
 		let narrowedMatches = 0;
+		let pairNames = 0;
 
 		for (let corpus = 0; corpus < 20; corpus++) {
 			// Cards: each an oracle id and a partition by the modulus; its rows share its names, some extra.
@@ -225,19 +243,32 @@ describe("soundness: no matching row lives outside the restriction", () => {
 			// The filter's seal, from what each partition holds (all) and holds served (the canonical rows
 			// that are not extras): invariants (a) and (b) hold by construction, and a foreign row's name
 			// need not be keyed served. A name no card has reads garbage.
-			const hints = new Map<string, NameHint | null>();
+			const hints = new Map<string, NamePlacement | null>();
 			for (const name of NAMES) {
 				const all = new Set(rows.filter((r) => r.names.includes(name)).map((r) => r.partition));
 				const served = new Set(
 					rows.filter((r) => !r.extra && !r.foreign && r.names.includes(name)).map((r) => r.partition),
 				);
-				let h: NameHint | null;
+				let h: NamePlacement | null;
 				if (all.size === 0) {
+					// Garbage reads ANY value, the served pairs' among them (routing-filter.ts lookupNamePlacement).
 					const garbage = Math.floor(random() * 256);
-					h = garbage < N ? { sole: garbage } : garbage < 5 * N ? { served: Math.floor((garbage - N) / 4) } : null;
+					const pair = garbage >= 5 * N ? servedPairAt(garbage - 5 * N, N) : null;
+					h =
+						garbage < N
+							? { sole: garbage }
+							: garbage < 5 * N
+								? { served: Math.floor((garbage - N) / 4) }
+								: pair !== null
+									? { servedPair: pair }
+									: null;
 				} else if (all.size === 1) h = { sole: [...all][0] as number };
 				else if (served.size === 1) h = { served: [...served][0] as number, rival: 0 };
-				else h = null;
+				else if (served.size === 2) {
+					const [a, b] = [...served].sort((x, y) => x - y) as [number, number];
+					h = { servedPair: [a, b] };
+					pairNames++;
+				} else h = null;
 				hints.set(name, h);
 			}
 
@@ -287,5 +318,7 @@ describe("soundness: no matching row lives outside the restriction", () => {
 		// The property is not vacuous: many trees restrict, and many of those still match rows.
 		expect(restricted).toBeGreaterThan(4000);
 		expect(narrowedMatches).toBeGreaterThan(1000);
+		// ...and the corpora hold served pairs for the trees to read.
+		expect(pairNames).toBeGreaterThan(50);
 	}, 120_000);
 });

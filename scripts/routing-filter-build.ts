@@ -17,8 +17,10 @@ import {
 	NAME_KEYS_STAMP,
 	NAME_TIERS_STAMP,
 	ROUTING_FEATURE_NAME_KEYS,
+	ROUTING_FEATURE_NAME_SERVED_PAIRS,
 	ROUTING_FEATURE_NAME_TIERS,
 	RoutingKeyAccumulator,
+	servedPairsFit,
 } from "../src/engine/routing-filter";
 import type { StoreManifest } from "../src/engine/types";
 
@@ -65,7 +67,9 @@ export function routingFilterFromBuildDir(
 		at = end + 1;
 		line++;
 	}
-	const sealed = acc.seal(n, tiered);
+	// The nightly's rule (import-coordinator.ts), so the two filters stay byte-identical.
+	const pairs = tiered && servedPairsFit(n);
+	const sealed = acc.seal(n, tiered, pairs);
 	const bytes = buildRoutingFilterFromHashes(
 		sealed,
 		{
@@ -73,7 +77,9 @@ export function routingFilterFromBuildDir(
 			partitionCount: n,
 			partitionHash: manifest.partition_hash as string,
 		},
-		(stamped ? ROUTING_FEATURE_NAME_KEYS : 0) | (tiered ? ROUTING_FEATURE_NAME_TIERS : 0),
+		(stamped ? ROUTING_FEATURE_NAME_KEYS : 0) |
+			(tiered ? ROUTING_FEATURE_NAME_TIERS : 0) |
+			(pairs ? ROUTING_FEATURE_NAME_SERVED_PAIRS : 0),
 	);
 	return { bytes, keys: sealed.lo.length, nameKeys: stamped ? sealed.nameKeys : 0 };
 }

@@ -161,8 +161,10 @@ import { REGION_HINTS } from "./engine/region";
 import {
 	buildRoutingFilterFromHashes,
 	ROUTING_FEATURE_NAME_KEYS,
+	ROUTING_FEATURE_NAME_SERVED_PAIRS,
 	ROUTING_FEATURE_NAME_TIERS,
 	RoutingKeyAccumulator,
+	servedPairsFit,
 } from "./engine/routing-filter";
 import {
 	encodeRulingsBucket,
@@ -3337,7 +3339,10 @@ export class ImportCoordinator extends DurableObject<Env> {
 			// accumulator's columns — see `seal` and backlog x2 for the memory this phase holds.
 			const names = batches > 0 && stampedBatches === batches;
 			const tiers = names && tieredBatches === batches;
-			const sealed = acc.seal(pp.partitions.length, tiers);
+			// A name served in exactly two partitions (a classic spell and the `prepare` card printing
+			// it) seals to its pair wherever the pairs fit in a byte — routing-filter.ts.
+			const pairs = tiers && servedPairsFit(pp.partitions.length);
+			const sealed = acc.seal(pp.partitions.length, tiers, pairs);
 			const bytes = buildRoutingFilterFromHashes(
 				sealed,
 				{
@@ -3345,7 +3350,9 @@ export class ImportCoordinator extends DurableObject<Env> {
 					partitionCount: pp.partitions.length,
 					partitionHash: PARTITION_HASH_ALGO,
 				},
-				(names ? ROUTING_FEATURE_NAME_KEYS : 0) | (tiers ? ROUTING_FEATURE_NAME_TIERS : 0),
+				(names ? ROUTING_FEATURE_NAME_KEYS : 0) |
+					(tiers ? ROUTING_FEATURE_NAME_TIERS : 0) |
+					(pairs ? ROUTING_FEATURE_NAME_SERVED_PAIRS : 0),
 			);
 			// The family is in flight from its FIRST key in KV, and this is that key: the lease was taken
 			// above (beginFamilyUpload). It used to be set at partition 0's first chunk, hours from
@@ -3356,7 +3363,8 @@ export class ImportCoordinator extends DurableObject<Env> {
 			console.log(
 				`Routing filter published: ${sealed.lo.length} keys (${names ? sealed.nameKeys : 0} names` +
 					`${names ? "" : `, name routing OFF: ${stampedBatches}/${batches} batches stamped`}` +
-					`${names && !tiers ? `, name tiers OFF: ${tieredBatches}/${batches} batches tiered` : ""}) from ${lines} ` +
+					`${names && !tiers ? `, name tiers OFF: ${tieredBatches}/${batches} batches tiered` : ""}` +
+					`${tiers && !pairs ? ", served pairs OFF: they do not fit this partition count" : ""}) from ${lines} ` +
 					`rows (sized for ${counted}, ${acc.grows} grows), ` +
 					`${(bytes.byteLength / 1024).toFixed(0)}KB — bare-id routes ask ONE of ` +
 					`${pp.partitions.length} partitions.`,
