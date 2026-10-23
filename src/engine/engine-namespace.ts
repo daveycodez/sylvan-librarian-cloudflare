@@ -265,6 +265,16 @@ export const ABANDONED_ENGINES: readonly AbandonedEngine[] = [
 		since: "2026-10-04T19:00:00Z",
 		why: "x56: 205 slow gathers in 16.5 h on 10-04 after engine-wnam-p8 left its isolate (p8-e1: 9; every other wnam coordinator 7–26); 1,470 of its 4,073 gathers stalled on 10-03",
 	},
+	// DeckGen's engine-wnam-p8-e1, p8's first replacement (x99). By 10-23 it held calls for 4–18s and
+	// reloaded every 15–40s while gathers reached it every second or two; 127 of wnam's 186 sibling
+	// hedges in the 24 hours to 09:00 UTC were enam answering for it (median 983ms). The name moves
+	// to engine-wnam-p8-e2. Deleting this entry returns the name to this object.
+	{
+		id: "f37f9cc1df8bb62e7001ae53e878a40a81eb3cd9b8dbb461a2e07b2c8448573e",
+		name: "engine-wnam-p8-e1",
+		since: "2026-10-23T12:00:00Z",
+		why: "x99: held calls 4–18s and reloaded every 15–40s under steady traffic; 127 of wnam's 186 sibling hedges on 10-22/23 were enam answering for it",
+	},
 ];
 
 /** No name is followed past this many abandoned objects: a longer chain is a list gone wrong. */
