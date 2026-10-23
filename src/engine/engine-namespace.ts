@@ -31,6 +31,7 @@
 // then built for the name's next EPOCH (`engine-wnam-p10-e1`) — a different id, so a different
 // object, placed afresh by whoever addresses it first. See ABANDONED_ENGINES.
 
+import type { EngineMoveRecord, PlacementBlock } from "./placement-policy";
 import { REGION_HINTS } from "./region";
 import type { Env } from "./types";
 
@@ -221,6 +222,15 @@ export function siblingEngineName(label: string, partition: number): string | nu
 //      releases it (supersededEngine).
 //
 // To move an object AGAIN, list the replacement's id as well; the name then resolves to `-e2`.
+//
+// x100: THE NIGHTLY MAKES THE SAME MOVE BY ITSELF (engine-moves.ts), with no deploy: the manifest's
+// placement block carries, per epoch-0 name, the epoch the name resolves to AT LEAST
+// (`placement.engines["engine-wnam-p11"].e`). currentEngine starts there and follows this list's id
+// chain from it, so the two levers compose: a hand entry still moves a name one epoch further, and
+// an automatic move of a name the list already moved goes past the list's last epoch. The order of
+// a move above is unchanged — step 1 is the manifest's publish instead of a deploy (every isolate
+// re-reads it within its 60s memo, every object is pushed it at notify), step 3 dates the release
+// by the record's `since`, step 4's undo is a pin (engine-moves.ts PLACEMENT_PINS_KV_KEY).
 
 /** One object this deployment has stopped using. */
 export interface AbandonedEngine {
@@ -300,9 +310,27 @@ export function setAbandonedEnginesForTests(list: readonly AbandonedEngine[] = A
 }
 
 /**
+ * x100: the nightly's record for an epoch-0 name in a manifest's placement block, or undefined. A
+ * plain property read — no id is hashed — so a block with no `engines` costs nothing.
+ */
+export function engineMoveRecord(placement: PlacementBlock | undefined, name: string): EngineMoveRecord | undefined {
+	if (placement?.v !== 1 || !placement.engines || !Object.hasOwn(placement.engines, name)) return undefined;
+	return placement.engines[name];
+}
+
+/** The epoch an epoch-0 name starts at under `placement` (x100): its record's `e`, bounded; else 0. */
+export function epochFloorOf(placement: PlacementBlock | undefined, name: string): number {
+	const e = engineMoveRecord(placement, name)?.e;
+	return Number.isInteger(e) && (e as number) > 0 ? Math.min(e as number, MAX_ENGINE_EPOCH) : 0;
+}
+
+/**
  * The object that holds a name today: the name's own, or — when that one is abandoned — its next
  * epoch's, and so on. With nothing abandoned this is `idFromName` and nothing else: no string is
  * made of the id and no lookup runs, so an empty list costs the hot path nothing.
+ *
+ * x100: the walk STARTS at the manifest's epoch for the name (epochFloorOf), which is 0 for every
+ * name the nightly never moved — one property lookup, no hashing.
  */
 function currentEngine(
 	env: Env,
@@ -310,11 +338,13 @@ function currentEngine(
 	shard: number,
 	partition: number | undefined,
 	generation: number,
+	placement?: PlacementBlock,
 ): { id: DurableObjectId; name: string } {
-	let name = engineName(region, shard, partition, generation);
+	const floor = partition === undefined ? 0 : epochFloorOf(placement, engineName(region, shard, partition, generation));
+	let name = engineName(region, shard, partition, generation, floor);
 	let id = env.SEARCH_ENGINE.idFromName(name);
 	if (abandonedById.size === 0) return { id, name };
-	for (let epoch = 1; epoch <= MAX_ENGINE_EPOCH; epoch++) {
+	for (let epoch = floor + 1; epoch <= MAX_ENGINE_EPOCH; epoch++) {
 		const entry = abandonedById.get(id.toString());
 		if (!entry) break;
 		if (entry.name !== name && !misnamed.has(entry.id)) {
@@ -337,8 +367,10 @@ export function currentEngineName(
 	shard: number,
 	partition?: number,
 	generation = 0,
+	/** The manifest's placement block: x100's per-name epochs (epochFloorOf). */
+	placement?: PlacementBlock,
 ): string {
-	return currentEngine(env, region, shard, partition, generation).name;
+	return currentEngine(env, region, shard, partition, generation, placement).name;
 }
 
 /**
@@ -351,23 +383,54 @@ export function currentEngineName(
  *     the entry that made it was deleted — an undone move's replacement. `entry` is null: nothing
  *     dates it, so it is released as soon as it is unused.
  *
- * A name with no epoch, on a deployment with nothing listed, is answered without hashing anything.
+ * A name with no epoch, on a deployment with nothing listed and no automatic move recorded for
+ * it, is answered without hashing anything.
+ *
+ * x100: and a third — the nightly moved the name past it (`placement`'s record for the name has an
+ * epoch above this one's). `entry` is then made from the record, dated by the move's `since`, so
+ * the release waits exactly as a listed entry's does (ABANDONED_RELEASE_AFTER_MS). A record with no
+ * readable `since` never comes due, the conservative failure, as for a listed entry.
  */
-export function supersededEngine(env: Env, name: string): { by: string; entry: AbandonedEngine | null } | null {
+export function supersededEngine(
+	env: Env,
+	name: string,
+	placement?: PlacementBlock,
+): { by: string; entry: AbandonedEngine | null } | null {
 	const parsed = parseEngineName(name);
 	if (!parsed) return null;
-	if (parsed.epoch === undefined && abandonedById.size === 0) return null;
+	const generation = parsed.generation ?? 0;
+	const name0 =
+		parsed.partition === undefined
+			? null
+			: engineName(parsed.region as DurableObjectLocationHint, parsed.shard, parsed.partition, generation);
+	const record = name0 === null ? undefined : engineMoveRecord(placement, name0);
+	if (parsed.epoch === undefined && abandonedById.size === 0 && record === undefined) return null;
 	const by = currentEngine(
 		env,
 		parsed.region as DurableObjectLocationHint,
 		parsed.shard,
 		parsed.partition,
-		parsed.generation ?? 0,
+		generation,
+		placement,
 	).name;
 	if (by === name) return null;
-	const entry =
+	const listed =
 		abandonedById.size === 0 ? null : (abandonedById.get(env.SEARCH_ENGINE.idFromName(name).toString()) ?? null);
-	return { by, entry };
+	if (listed) return { by, entry: listed };
+	// Below the manifest's floor: an automatic move left it behind. At or above it: an undone move's
+	// replacement (a pin lowered the floor, or a list entry was deleted) — nothing dates it.
+	if (name0 !== null && (parsed.epoch ?? 0) < epochFloorOf(placement, name0)) {
+		return {
+			by,
+			entry: {
+				id: env.SEARCH_ENGINE.idFromName(name).toString(),
+				name,
+				since: record?.since ?? "",
+				why: `x100: moved automatically${record?.why ? ` — ${record.why}` : ""}`,
+			},
+		};
+	}
+	return { by, entry: null };
 }
 
 /** Whether an abandoned object is old enough to give its storage back (ABANDONED_RELEASE_AFTER_MS). */
@@ -457,7 +520,13 @@ export async function sweepAbandonedEngines(
  * The sibling is the object that holds its name TODAY (currentEngine), so a coordinator and the
  * Worker always agree on which object is partition k — both resolve it here, from the same list.
  */
-export function siblingStub(env: Env, label: string, partition: number): EngineStub | null {
+export function siblingStub(
+	env: Env,
+	label: string,
+	partition: number,
+	/** The placement block of the manifest this object serves (x100's per-name epochs). */
+	placement?: PlacementBlock,
+): EngineStub | null {
 	const parsed = parseEngineName(label);
 	if (!parsed) return null;
 	const { id } = currentEngine(
@@ -466,8 +535,32 @@ export function siblingStub(env: Env, label: string, partition: number): EngineS
 		parsed.shard,
 		partition,
 		parsed.generation ?? 0,
+		placement,
 	);
 	return env.SEARCH_ENGINE.get(id);
+}
+
+/**
+ * x100: the stub through which an engine object CREATES a moved sibling's replacement — the
+ * nightly's seed of an automatic move (engine-moves.ts, SearchEngine.seedSibling).
+ *
+ * The point of seeding from a sibling is where the new object lands. Built like siblingStub, with
+ * no hint, so an object this call creates is created near the CALLER — the host the nightly picked
+ * because it runs in its replica's home colo — and not near whichever caller happens to be first (a
+ * Worker isolate elsewhere in the hint, or a neighbour region's hedge, which passes this region's
+ * hint from the neighbour's side of the continent).
+ *
+ * Only a sibling of `label` — same region, replica and generation, a partition object, not `label`
+ * itself — and only an epoch above 0: the call exists to create a replacement, and an epoch-0 name
+ * is an original. Null for anything else, which the caller refuses.
+ */
+export function seedSiblingStub(env: Env, label: string, name: string): EngineStub | null {
+	const own = parseEngineName(label);
+	const target = parseEngineName(name);
+	if (!own || !target || target.partition === undefined || (target.epoch ?? 0) === 0 || name === label) return null;
+	if (target.region !== own.region || target.shard !== own.shard) return null;
+	if ((target.generation ?? 0) !== (own.generation ?? 0)) return null;
+	return env.SEARCH_ENGINE.get(env.SEARCH_ENGINE.idFromName(name));
 }
 
 /**
@@ -509,9 +602,12 @@ export function placeEngineStub(
 	partition?: number,
 	/** The region's current generation (placement-policy.ts generationOf); 0 is the plain name. */
 	generation = 0,
+	/** The manifest's placement block: x100's per-name epochs (epochFloorOf). */
+	placement?: PlacementBlock,
 ): EngineStub {
-	// x56: the object that holds this name today — an abandoned one's next epoch (currentEngine).
-	const { id } = currentEngine(env, region, shard, partition, generation);
+	// x56: the object that holds this name today — an abandoned one's next epoch (currentEngine),
+	// starting from x100's manifest epoch for it.
+	const { id } = currentEngine(env, region, shard, partition, generation, placement);
 	// The hint only applies at creation, so passing it on every get() is free and
 	// makes placement explicit rather than "wherever the first caller happened to
 	// be".

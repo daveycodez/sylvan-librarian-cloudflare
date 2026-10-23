@@ -78,9 +78,18 @@
 
 import { DurableObject } from "cloudflare:workers";
 import { encodeCardNames, ledByPartition, writeCardNames } from "./engine/card-names";
+import type { EngineReport } from "./engine/engine-health";
+import {
+	type EngineMove,
+	gatherEngineReports,
+	judgeEngines,
+	PLACEMENT_PINS_KV_KEY,
+	seedMoves,
+} from "./engine/engine-moves";
 import {
 	ABANDONED_QUIET_MS,
 	addressAnnouncedEngine,
+	currentEngineName,
 	engineName,
 	parseEngineName,
 	replicaGroupOf,
@@ -135,6 +144,7 @@ import {
 	notifyRetireReason,
 	type PlacementBlock,
 	routableRegions,
+	UNSERVED_SEED,
 	unreachableEngine,
 } from "./engine/placement-policy";
 import { probeHints } from "./engine/placement-probe";
@@ -4673,7 +4683,95 @@ export class ImportCoordinator extends DurableObject<Env> {
 					REGION_HINTS.map((h) => `${h} ${(probes[h] ?? []).join(",") || "-"}`).join("; "),
 			);
 		}
+		// x100: every announced partition object's colo and yesterday's health counters, and the
+		// hand-written pins — the evidence placementGate judges each name on (engine-moves.ts). One KV
+		// list, one KV read, one DO request per object (rows read, none written). Kept in meta like
+		// the probes, so a retried slice asks no one twice; never fails the run.
+		if (this.metaGet("engine_reports") === null) {
+			const t0 = Date.now();
+			let reports: EngineReport[] = [];
+			let failed: string[] = [];
+			let pins: unknown = null;
+			try {
+				const announced = [...(await this.listAllKeys(REGION_LIVE_PREFIX))].map((key) =>
+					key.slice(REGION_LIVE_PREFIX.length),
+				);
+				({ reports, failed } = await gatherEngineReports(announced, (name) =>
+					(
+						addressAnnouncedEngine(this.env, name) as unknown as { placementReport(): Promise<EngineReport> }
+					).placementReport(),
+				));
+				pins = await this.env.STORE_KV.get(PLACEMENT_PINS_KV_KEY, { type: "json" }).catch((err) => {
+					console.warn(`Engine placement: ${PLACEMENT_PINS_KV_KEY} is not readable JSON (${err}); no pins tonight`);
+					return null;
+				});
+			} catch (err) {
+				console.warn(`Engine placement: could not gather the objects' reports (${err}); nothing moves tonight`);
+			}
+			this.metaSet("engine_reports", JSON.stringify({ reports, pins }));
+			console.log(
+				`Engine reports: ${reports.length} answered, ${failed.length} did not in ${Date.now() - t0}ms` +
+					(failed.length > 0 ? ` (${failed.slice(0, 5).join(", ")}${failed.length > 5 ? ", …" : ""})` : ""),
+			);
+		}
 		this.metaSet("phase", "manifest");
+	}
+
+	/**
+	 * x100: tonight's per-name epochs (`placement.engines`), judged from the reports stepPlacement
+	 * gathered against the PREVIOUS manifest's placement — the one every report's name was resolved
+	 * under — and tonight's moves stashed for stepNotify to seed. See engine-moves.ts.
+	 */
+	private judgeEnginePlacement(
+		placement: PlacementBlock | undefined,
+		manifest: StoreManifest,
+		before: PlacementBlock | undefined,
+	): PlacementBlock | undefined {
+		let stored: { reports?: EngineReport[]; pins?: unknown } = {};
+		try {
+			stored = JSON.parse(this.metaGet("engine_reports") ?? "{}");
+		} catch {
+			stored = {};
+		}
+		const routable = new Set<string>(REGION_HINTS.map((h) => effectiveRegion(h, placement)));
+		const result = judgeEngines({
+			previous: before?.v === 1 ? before.engines : undefined,
+			reports: stored.reports ?? [],
+			pins: stored.pins ?? null,
+			currentNameOf: (name0) => {
+				const p = parseEngineName(name0);
+				return p === null
+					? name0
+					: currentEngineName(
+							this.env,
+							p.region as DurableObjectLocationHint,
+							p.shard,
+							p.partition,
+							p.generation ?? 0,
+							before,
+						);
+			},
+			served: (name0) => {
+				const p = parseEngineName(name0);
+				return (
+					p !== null &&
+					p.partition !== undefined &&
+					routable.has(p.region) &&
+					!unreachableEngine(p, placement) &&
+					p.partition < (manifest.partition_count ?? 0)
+				);
+			},
+			nowMs: Date.now(),
+		});
+		for (const line of result.lines) console.log(line);
+		this.metaSet("engine_moves", JSON.stringify(result.moves));
+		if (placement === undefined && result.engines === undefined) return undefined;
+		// A copy: `placement` may be the previous manifest's own block (a held night), and that object
+		// must keep describing the previous manifest.
+		const block: PlacementBlock = { ...(placement ?? UNSERVED_SEED) };
+		if (result.engines) block.engines = result.engines;
+		else delete block.engines;
+		return block;
 	}
 
 	/**
@@ -4722,7 +4820,7 @@ export class ImportCoordinator extends DurableObject<Env> {
 			`Placement: ${decision.held ? "held" : "decided"}; aliases ${aliases || "none"}` +
 				`${decision.changes.length ? ` — ${decision.changes.join("; ")}` : ""}`,
 		);
-		return decision.placement;
+		return this.judgeEnginePlacement(decision.placement, manifest, before);
 	}
 
 	/**
@@ -4878,11 +4976,13 @@ export class ImportCoordinator extends DurableObject<Env> {
 		// ABANDONED_RELEASE_AFTER_MS past its entry and has gone ABANDONED_QUIET_MS without a call
 		// (the object itself checks). Until then it is notified below like any live object, so a
 		// straggler that still reaches it is answered from this build. With the list empty and no
-		// `-e<k>` name announced this is no call at all.
+		// `-e<k>` name announced this is no call at all. x100: likewise an object the nightly moved
+		// its name away from (the published manifest's `placement.engines`), dated by the move.
+		const publishedPlacement = (published as StoreManifest | null)?.placement;
 		const abandoned = await sweepAbandonedEngines(
 			announced.filter((name) => !reasons.has(name)),
 			{
-				superseded: (name) => supersededEngine(this.env, name),
+				superseded: (name) => supersededEngine(this.env, name, publishedPlacement),
 				release: (name) =>
 					(
 						addressAnnouncedEngine(this.env, name) as unknown as {
@@ -4978,6 +5078,26 @@ export class ImportCoordinator extends DurableObject<Env> {
 			results.flatMap((r) => (r.status === "rejected" ? [String(r.reason)] : [])),
 		);
 		const acked = results.flatMap((r) => (r.status === "fulfilled" ? [r.value] : []));
+
+		// x100: tonight's automatic moves (engine-moves.ts), now that every object holds the manifest
+		// that names them: each replacement is created by a sibling in its replica's home colo, and
+		// loads its partition now rather than in front of its first user. Never fails the publish.
+		let moves: EngineMove[] = [];
+		try {
+			moves = JSON.parse(this.metaGet("engine_moves") ?? "[]") as EngineMove[];
+		} catch {
+			moves = [];
+		}
+		if (moves.length > 0) {
+			await seedMoves(moves, (host, to) =>
+				(
+					addressAnnouncedEngine(this.env, host) as unknown as {
+						seedSibling(name: string, manifest?: unknown): Promise<{ cards: number; ms: number }>;
+					}
+				).seedSibling(to, published),
+			);
+			this.metaSet("engine_moves", "[]");
+		}
 
 		// Widths are reported by each region's shard 0, which is the rendezvous every isolate in that
 		// region reports to and therefore the only object that knows the fan-out. Partitioned names

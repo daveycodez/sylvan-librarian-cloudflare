@@ -283,7 +283,8 @@ the same one, or another data center of the hint — the nightly probes for `wna
 DEN and DFW, and the free account's `engine-wnam-p*` live in DFW, DEN and SJC. In another data center
 every sibling call to and from it pays that round trip, on every gather of the region. And the
 platform that moved p8 onto the bad machine can move a replacement there too. So this is a manual
-re-roll that you check, not a fix, and nothing pulls it automatically.
+re-roll that you check, not a fix. (Since x100 the nightly pulls the same lever on measured
+evidence, within limits, and seeds the replacement from the replica's home colo: §6.)
 
 ### Pulling it
 
@@ -357,16 +358,52 @@ Each nightly publish before the release also prefetches the new build into the a
 not objects, so it does not see the second copy; at ~20 MB against a 5 GB pool that is 0.4% per
 object in transit.
 
-### An automatic rule is not built
+## 6. The nightly moves objects by itself (x100, 2026-10-23)
 
-The evidence does not make one safe. A coordinator has stalled for hours and recovered untouched
-(p9 on 09-29, p1 on 10-02); a healthy one was moved into the stall by the platform (p8); and a
-replacement that lands in another data center is slower on every gather, not just the stalled ones.
-A rule would have to tell those apart from inside one object. If one is wanted later, its shape is:
-the per-object epoch rides the manifest's `placement` block (written by the nightly, the one writer
-the manifest has, and pushed to every object by the publish), set when one coordinator's stalled
-share of its own gathers exceeds ten times the region's median for two consecutive nights, at most
-one object per region per night, and never again for a name within seven days.
+§5 needs a person and a deploy. Since x100 the nightly makes the same move on its own: the per-name
+epoch rides the manifest's `placement` block (`placement.engines["engine-wnam-p11"].e`), written by
+the nightly — the manifest's one writer — and read by every stub builder (`currentEngine` starts at
+that epoch and follows `ABANDONED_ENGINES`' id chain from there). The rules, limits and costs are in
+the header of `src/engine/engine-moves.ts`; in short:
+
+- **Evidence.** Each announced object answers `placementReport()` at the placement phase: its colo
+  (the `placement` row, §2) and yesterday's counters from one row of its own SQLite
+  (`src/engine/engine-health.ts`) — store loads, and per sibling partition the hedges it won around
+  that sibling while coordinating a gather. Rows read, none written; one DO request per object.
+- **Misplaced** — colo more than 1,000 km from its replica's home colo (the medoid of the replica's
+  colos), in a replica with a clear home. One night is enough: the colo is a fact of creation.
+- **Sick** — hedged around at least max(50, 5× the replica's median) times, or loaded at least
+  max(1,500, 4× the median) times, on two consecutive nights.
+- **Limits.** Three moves a night per account, one per replica; a name is not moved again within
+  three days; after three automatic moves, or at `MAX_ENGINE_EPOCH`, the nightly gives up on it and
+  logs that every night instead.
+- **Seeding.** After the commit, a sibling in the replica's home colo makes the replacement's first
+  call with no hint (`SearchEngine.seedSibling`), so it is created next to that sibling and loads its
+  partition at night.
+- **Release** is §5 step 3 unchanged, dated by the move's `since`.
+
+Every decision is one log line: `Engine placement: moved … / kept … / gave up on … / pinned …`, then a
+summary naming each replica's home (`homes wnam SEA 11/12, …`). Grep `Engine placement:`.
+
+**Undo, with no deploy:** the store namespace's `placement:pins` key —
+
+```bash
+bunx wrangler kv key put --namespace-id <id> --remote placement:pins '{"engine-wnam-p11": 0}'
+```
+
+pins a name at an epoch from the next nightly on, and holds it there while the key names it; `"auto"`
+clears a pin or a give-up. The replacement a pin abandons is released like an undone §5 move.
+
+**What the first night does** (colos of 2026-10-21…23): on DeckGen it moves `engine-wnam-p11` (DFW,
+2,668 km from SEA), `engine-apac-p10` (SIN, 4,628 km from ICN) and `engine-enam-p4` (ATL, 1,199 km
+from EWR), and `engine-apac-p11` the night after; eeur (WAW/VIE/FRA), weur (AMS/LHR/CDG), apac-ne
+(KIX/NRT/ICN) and oc (SYD/BNE/MEL) are scattered within 1,000 km and are left alone. On the free
+account it moves `engine-wnam-p2` (SJC) and `engine-enam-p10` (MIA), then over the following nights
+wnam p0 (DEN) and enam p0, p1, p4 (ATL) and p8 (ORD). It does NOT move the free account's ten wnam
+objects in DFW: DFW is that replica's home, and the cost of a replica split across colos falls on
+every gather, where DFW's distance from the LAX isolates that carry its traffic (~1,990 km, against
+DeckGen's ~1,540 km from LAX to SEA) costs one round trip per request. Re-homing a whole replica is a
+generation's job, not an epoch's.
 
 ## See also
 
@@ -382,3 +419,6 @@ one object per region per night, and never again for a name within seven days.
 - `tests/engine/engine-naming.test.ts` — the name grammar, pinned
 - `tests/engine/abandoned-engines.test.ts` — §5's lever: who resolves a name to which object, and
   when an abandoned one is released
+- `src/engine/engine-moves.ts`, `src/engine/engine-health.ts`, `tests/engine/engine-moves.test.ts` —
+  §6: the nightly's judge, the evidence the objects keep, and the move's round trip through the
+  manifest

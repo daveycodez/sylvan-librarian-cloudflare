@@ -60,7 +60,8 @@ import { concatBytes, encodeUtf8 } from "./bytes";
 import { mayBeNameOnly } from "./card-names";
 import { collectionPacketRanks } from "./collection-batch";
 import { assembleColumnar, columnKeys, columnsGather } from "./columnar";
-import { ownStub, parseEngineName, placeEngineStub, siblingStub } from "./engine-namespace";
+import { type EngineReport, healthReport, noteHealth } from "./engine-health";
+import { ownStub, parseEngineName, placeEngineStub, seedSiblingStub, siblingStub } from "./engine-namespace";
 import {
 	decodeRowPacket,
 	type FetchRowsReply,
@@ -197,6 +198,13 @@ let isolateFirstGatherAt = 0;
  * is not.
  */
 const lastServedAt = new Map<string, number>();
+
+/**
+ * x100: the engines whose load this isolate has already counted (engine-health.ts `loads`): one
+ * count per loaded engine, however many calls were waiting on the load when it finished. Weak, so
+ * a swapped-out store's engine is not kept alive by it.
+ */
+const countedLoads = new WeakSet<object>();
 
 function rethrowForRpc(err: unknown): never {
 	if (err instanceof EngineUnavailableError) {
@@ -1078,12 +1086,13 @@ export class SearchEngine extends DurableObject<Env> {
 				const neighbour = manifest ? hedgeNeighbourOf(this.label, manifest.placement) : null;
 				if (!neighbour) return null;
 				const { region, generation } = neighbour;
+				const placement = manifest?.placement;
 				return {
 					region,
 					send: () =>
 						withDeadline(
 							Promise.resolve().then(() =>
-								call(placeEngineStub(this.env, region, 0, p, generation) as unknown as SiblingStub),
+								call(placeEngineStub(this.env, region, 0, p, generation, placement) as unknown as SiblingStub),
 							),
 							SIBLING_CALL_DEADLINE_MS,
 							`${what} (${region})`,
@@ -1134,6 +1143,9 @@ export class SearchEngine extends DurableObject<Env> {
 			// Cooling: the neighbour answered for this region's sibling, which was later still — two in
 			// a row and its calls go to the neighbour at the cooling floor (SiblingMemory.cooling).
 			if (hedging !== null && hedge?.cross?.won) memory.rescued(partition, Date.now());
+			// x100: the gather went around partition `partition` — evidence for the nightly's judge
+			// (engine-health.ts), one row, sampled past a day's budget.
+			if (hedge?.won === "hedge") noteHealth(this.ctx.storage, { around: partition });
 			if (hedge) console.warn(siblingHedgeLine(this.label, partition, method, { ms: call.ms, hedge }, acquireMs));
 			trace.push({ partition, method, ms: call.ms, acquireMs, failed: !call.ok, ...(hedge ? { hedge } : {}) });
 			if (!call.ok) throw call.error;
@@ -1166,7 +1178,10 @@ export class SearchEngine extends DurableObject<Env> {
 				};
 			}
 			const connect = (): SiblingStub => {
-				const s = siblingStub(this.env, this.label, p) as unknown as SiblingStub | null;
+				// x100: partition p's object under the manifest this object serves — the nightly may have
+				// moved the name to a new epoch (engine-moves.ts), and the Worker resolves it the same way.
+				const placement = (currentManifest(this.label) ?? cold)?.placement;
+				const s = siblingStub(this.env, this.label, p, placement) as unknown as SiblingStub | null;
 				if (!s) throw new Error(`${this.label} cannot derive its partition-${p} sibling's name`);
 				return s;
 			};
@@ -1912,6 +1927,39 @@ export class SearchEngine extends DurableObject<Env> {
 	}
 
 	/**
+	 * x100: this object's colo and yesterday's health counters, for the nightly's placement judge
+	 * (engine-health.ts healthReport, engine-moves.ts). Reads two rows of its own storage and writes
+	 * none; loads no store, so a cold object answers from storage and evicts again. The coordinator
+	 * asks only announced objects.
+	 */
+	async placementReport(): Promise<EngineReport> {
+		return healthReport(this.ctx.storage, this.label);
+	}
+
+	/**
+	 * x100: CREATE a moved sibling's replacement from here — the nightly's seed of an automatic move
+	 * (import-coordinator stepNotify). The coordinator picks this object because it runs in its
+	 * replica's home colo; the stub has no hint (seedSiblingStub), so the object this call creates
+	 * is created near this one. It is told the manifest (no KV manifest read on its first load) and
+	 * asked its card count, which loads its partition now — at night, not in front of a user — and
+	 * so caches, announces and measures it like any first load. Refuses any name that is not a
+	 * replacement of one of this object's siblings.
+	 */
+	async seedSibling(name: string, manifest?: StoreManifest): Promise<{ seeded: boolean; cards: number; ms: number }> {
+		const stub = seedSiblingStub(this.env, this.label, name) as unknown as {
+			preparePublish(m?: StoreManifest): Promise<unknown>;
+			cardCount(): Promise<number>;
+		} | null;
+		if (!stub) throw new Error(`${this.label} refuses to seed ${name}: not a replacement of one of its siblings`);
+		const t0 = Date.now();
+		if (manifest) await stub.preparePublish(manifest);
+		const cards = await stub.cardCount();
+		const ms = Date.now() - t0;
+		console.log(`[${this.label}] seeded ${name}: ${cards} cards loaded in ${ms}ms`);
+		return { seeded: true, cards, ms };
+	}
+
+	/**
 	 * How many bytes this object's storage holds, changing nothing — the dry run in front of a
 	 * release (src/engine/retired-engine-sweep.ts).
 	 *
@@ -1956,10 +2004,18 @@ export class SearchEngine extends DurableObject<Env> {
 	private async engine(): Promise<Engine> {
 		lastServedAt.set(this.label, Date.now());
 		try {
+			// x100: whether THIS call is the one that finds the object without a store, for the load
+			// counter below (engine-health.ts) — once per loaded engine, whichever concurrent caller.
+			const cold = tryGetLoadedEngine(this.label) === null;
 			// getEngine is single-flighted and returns immediately when this
 			// isolate already holds the store; otherwise it streams the store in
 			// from KV (one immutable, colo-cached read per chunk — normally one per partition).
-			return await getEngine(this.env, this.loadContext());
+			const engine = await getEngine(this.env, this.loadContext());
+			if (cold && !countedLoads.has(engine)) {
+				countedLoads.add(engine);
+				noteHealth(this.ctx.storage, { load: true });
+			}
+			return engine;
 		} catch (err) {
 			rethrowForRpc(err);
 		}

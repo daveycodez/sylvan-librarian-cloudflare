@@ -52,6 +52,38 @@ export interface PlacementBlock {
 	 * lands where one created at the edge does (report 28).
 	 */
 	checked?: string;
+	/**
+	 * x100: the automatic moves of ONE object (engine-moves.ts), per epoch-0 name
+	 * (`engine-wnam-p11`). Absent for every name nothing has ever flagged — the whole fleet on a
+	 * quiet account — so an absent block, or a name absent from it, resolves exactly as before.
+	 */
+	engines?: Record<string, EngineMoveRecord>;
+}
+
+/**
+ * x100: what the nightly remembers about one engine name (engine-moves.ts judgeEngines writes it;
+ * engine-namespace.ts currentEngine reads `e`). Every field optional so a record holds only what is
+ * true of its name.
+ */
+export interface EngineMoveRecord {
+	/**
+	 * The epoch the name resolves to AT LEAST — `engine-wnam-p11` with `e: 1` is
+	 * `engine-wnam-p11-e1`, and ABANDONED_ENGINES' id chain continues from there. Never lowered
+	 * automatically; only a pin (PLACEMENT_PINS_KV_KEY) lowers it.
+	 */
+	e?: number;
+	/** ISO time of the last automatic move: when the cooldown started, and the `since` its old object is released by. */
+	since?: string;
+	/** Automatic moves this name has had. MAX_AUTO_MOVES of them and the nightly gives up on it. */
+	moves?: number;
+	/** Consecutive nights the HEALTH rule flagged it (the colo rule needs none; see engine-moves.ts). */
+	strikes?: number;
+	/** ISO time of the night that last counted a strike, so a skipped night breaks the run. */
+	seen?: string;
+	/** The evidence of the last move, kept, or give-up, in a sentence. */
+	why?: string;
+	/** `gave-up`: moved MAX_AUTO_MOVES times and still flagged; `pinned`: held by hand. Neither is moved. */
+	stop?: "gave-up" | "pinned";
 }
 
 /**
@@ -346,6 +378,9 @@ export function nextPlacement(input: {
 	}
 
 	const placement: PlacementBlock = { v: 1, obs, checked };
+	// x100's per-object records are not this function's to decide; they ride through untouched and
+	// the coordinator's placementGate replaces them with tonight's judgement (engine-moves.ts).
+	if (prev.engines) placement.engines = prev.engines;
 	if (Object.keys(alias).length) placement.alias = alias;
 	const nonzero = Object.entries(gens).filter(([, g]) => (g ?? 0) > 0);
 	if (nonzero.length) placement.gens = Object.fromEntries(nonzero) as Partial<Record<Hint, number>>;

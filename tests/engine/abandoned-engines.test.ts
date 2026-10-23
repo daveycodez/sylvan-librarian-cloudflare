@@ -377,7 +377,9 @@ describe("the publish fan-out runs the sweep, and notifies what it kept", () => 
 		expect(at).toBeGreaterThan(-1);
 		const call = notify.slice(at, notify.indexOf("const live = announced.filter("));
 		expect(call).toContain("announced.filter((name) => !reasons.has(name))");
-		expect(call).toContain("superseded: (name) => supersededEngine(this.env, name)");
+		// x100: under the PUBLISHED manifest's placement, so a name the nightly moved is swept too.
+		expect(call).toContain("superseded: (name) => supersededEngine(this.env, name, publishedPlacement)");
+		expect(notify).toContain("const publishedPlacement = (published as StoreManifest | null)?.placement;");
 		// The object decides whether it is still in use; the coordinator only asks.
 		expect(call).toContain(").releaseAbandoned(ABANDONED_QUIET_MS)");
 		expect(call).toContain("addressAnnouncedEngine(this.env, name)");

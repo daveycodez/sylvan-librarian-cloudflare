@@ -254,11 +254,30 @@ function fakeEngine(id: { name: string }, calls: string[]) {
 			calls.push(`release ${id.name}`);
 			return { released: true };
 		},
+		// x100: every enam partition object reports EWR but p6, which reports ATL — 1,200km from its
+		// replica's home — so the nightly moves engine-enam-p6 to -e1 and seeds it from p0.
+		placementReport: async () => {
+			calls.push(`report ${id.name}`);
+			return {
+				name: id.name,
+				colo: id.name === "engine-enam-p6" ? "ATL" : "EWR",
+				coloAt: Date.now(),
+				day: "",
+				loads: 10,
+				around: {},
+			};
+		},
+		seedSibling: async (to: string) => {
+			calls.push(`seed ${to} from ${id.name}`);
+			return { seeded: true, cards: 1, ms: 1 };
+		},
 	};
 }
 // engine-enam / engine-wnam: pre-partitioning single-store region objects whose announcements
 // outlived them — every nightly notified them and each logged a refusal at ERROR.
-const ANNOUNCED = ["engine-sam-p0", "engine-afr-p1", "engine-enam-p0", "engine-enam", "engine-wnam"];
+// engine-enam-p0 … p6: the served replica, whose p6 sits in ATL and is moved (x100).
+const SERVED = Array.from({ length: 7 }, (_, k) => `engine-enam-p${k}`);
+const ANNOUNCED = ["engine-sam-p0", "engine-afr-p1", ...SERVED, "engine-enam", "engine-wnam"];
 
 /** Everything the coordinator reaches for that is not this machine. */
 function makeEnv(kv: FakeKV, baseUrl: string) {
@@ -689,7 +708,12 @@ async function main(): Promise<number> {
 
 	// ── g1 and r3: the blocks the nightly decides, and what the fan-out did with them ──────────
 	const published = JSON.parse(String((await kv.get(formatManifestKey(), { type: "text" })) ?? "null")) as {
-		placement?: { checked?: string; alias?: Record<string, { to: string }>; obs?: Record<string, string[][]> };
+		placement?: {
+			checked?: string;
+			alias?: Record<string, { to: string }>;
+			obs?: Record<string, string[][]>;
+			engines?: Record<string, { e?: number; since?: string; moves?: number }>;
+		};
 		cache?: { v?: number; codec?: string };
 	} | null;
 	const probes = (env.PLACEMENT_PROBE as ReturnType<typeof fakeProbes>).created();
@@ -714,7 +738,7 @@ async function main(): Promise<number> {
 		engineCalls.includes("release engine-sam-p0") && engineCalls.includes("release engine-afr-p1")
 			? null
 			: "the notify did not retire the aliased hints' objects",
-		engineCalls.some((c) => c.endsWith("engine-sam-p0") && !c.startsWith("release"))
+		engineCalls.some((c) => c.endsWith("engine-sam-p0") && /^(prepare|commit) /.test(c))
 			? "an aliased object was prepared or committed instead of retired"
 			: null,
 		engineCalls.includes("prepare engine-enam-p0") ? null : "the served object was not prepared",
@@ -724,7 +748,26 @@ async function main(): Promise<number> {
 		engineCalls.some((c) => /^(prepare|commit) engine-(enam|wnam)$/.test(c))
 			? "a pre-partitioning region object was notified (the nightly ERROR refusals)"
 			: null,
-		liveLeft === "engine:live:engine-enam-p0" ? null : `announcements left: ${liveLeft}`,
+		liveLeft === SERVED.map((n) => `engine:live:${n}`).join(", ") ? null : `announcements left: ${liveLeft}`,
+		// x100: the nightly judged every served object, moved the one 1,200km from its replica's home,
+		// wrote the move into the manifest, and had a sibling in the home colo create the replacement.
+		SERVED.every((n) => engineCalls.includes(`report ${n}`)) ? null : "not every served object was asked its report",
+		published?.placement?.engines?.["engine-enam-p6"]?.e === 1 &&
+		published.placement.engines["engine-enam-p6"]?.moves === 1
+			? null
+			: `engine-enam-p6 was not moved to epoch 1 (engines: ${JSON.stringify(published?.placement?.engines ?? null)})`,
+		Object.keys(published?.placement?.engines ?? {}).join(",") === "engine-enam-p6"
+			? null
+			: "a name other than engine-enam-p6 has a placement record",
+		engineCalls.includes("seed engine-enam-p6-e1 from engine-enam-p0")
+			? null
+			: "the move's replacement was not seeded from the home colo's first sibling",
+		engineCalls.indexOf("seed engine-enam-p6-e1 from engine-enam-p0") > engineCalls.indexOf("commit engine-enam-p6")
+			? null
+			: "the replacement was seeded before the commit",
+		engineCalls.includes("release engine-enam-p6")
+			? "the moved object was released at the publish that moved it (it must keep its store 12h)"
+			: null,
 	].filter((p): p is string => p !== null);
 	if (placementProblems.length) {
 		console.error(`\nFAILED: placement/cache blocks — ${placementProblems.join("; ")}`);

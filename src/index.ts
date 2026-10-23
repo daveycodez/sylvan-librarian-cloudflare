@@ -88,6 +88,9 @@ async function resolveEngine(
 	const region = effectiveRegion(hint, manifest.placement);
 	const aliased = region !== hint;
 	const generation = generationOf(region, manifest.placement);
+	// x100: and the manifest's per-name epochs (engine-moves.ts) — every placeEngineStub below takes
+	// `manifest.placement`, so a name the nightly moved resolves here to the same object a
+	// coordinator's siblingStub resolves it to.
 	// The colo THIS isolate is running in, carried into the warm-RPC log line.
 	// It is the other half of the placement join: a colo that shows up serving
 	// `wnam` traffic is, by definition, a colo wnam traffic arrives at, so the
@@ -137,10 +140,10 @@ async function resolveEngine(
 			Promise.all(
 				Array.from({ length: count }, (_, p) =>
 					new RemoteEngine(
-						placeEngineStub(env, region, warmTarget, p, generation),
+						placeEngineStub(env, region, warmTarget, p, generation, manifest.placement),
 						region,
 						colo,
-						() => placeEngineStub(env, region, warmTarget, p, generation),
+						() => placeEngineStub(env, region, warmTarget, p, generation, manifest.placement),
 						aliased,
 					).cardCount(),
 				),
@@ -165,17 +168,17 @@ async function resolveEngine(
 	return new PartitionedEngine(
 		(partition) =>
 			new RemoteEngine(
-				placeEngineStub(env, region, shard, partition, generation),
+				placeEngineStub(env, region, shard, partition, generation, manifest.placement),
 				region,
 				colo,
-				() => placeEngineStub(env, region, shard, partition, generation),
+				() => placeEngineStub(env, region, shard, partition, generation, manifest.placement),
 				aliased,
 				hedgeRegion === null
 					? undefined
 					: {
 							region: hedgeRegion,
 							partition,
-							connect: () => placeEngineStub(env, hedgeRegion, 0, partition, hedgeGeneration),
+							connect: () => placeEngineStub(env, hedgeRegion, 0, partition, hedgeGeneration, manifest.placement),
 						},
 			),
 		manifest,
