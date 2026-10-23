@@ -837,6 +837,32 @@ async function feedStore(
 	format: StoreFormat = "raw",
 	fence?: LoadFence,
 ): Promise<FeedCounts> {
+	const fed = await feedUninstalled(w, body, totalLen, sink, format, fence);
+	fed.install();
+	return fed.counts;
+}
+
+/** A store fed into the instance but not yet installed: `install` validates it and swaps it in. */
+interface FedStore {
+	counts: FeedCounts;
+	install: () => void;
+}
+
+/**
+ * feedStore's first half: every byte into the load buffer, the store NOT yet the instance's. The
+ * engine's load is atomic — the active store is untouched until the matching finish succeeds, and
+ * the next begin recycles an unfinished load's buffer as the spare — so a load fed here and never
+ * installed costs no memory beyond the buffer the next load refills. See speculativeLocalFeed for the
+ * one caller that holds the two halves apart.
+ */
+async function feedUninstalled(
+	w: wasm.EngineHandle,
+	body: ReadableStream<Uint8Array>,
+	totalLen: number,
+	sink: CacheWriter | null,
+	format: StoreFormat,
+	fence?: LoadFence,
+): Promise<FedStore> {
 	// Every call into the instance is fenced: an abandoned load whose read resumes must not feed
 	// the buffer a newer load is filling.
 	checkFence(fence);
@@ -854,9 +880,13 @@ async function feedStore(
 			},
 			GZIP_FEED_BYTES,
 		);
-		checkFence(fence);
-		finish();
-		return counts;
+		return {
+			counts,
+			install: () => {
+				checkFence(fence);
+				finish();
+			},
+		};
 	}
 	w.begin_store_load(totalLen);
 	const counts = await feedBlocks(body, (block) => {
@@ -864,9 +894,13 @@ async function feedStore(
 		w.store_load_chunk(block);
 		sink?.write(block);
 	});
-	checkFence(fence);
-	w.finish_store_load();
-	return counts;
+	return {
+		counts,
+		install: () => {
+			checkFence(fence);
+			w.finish_store_load();
+		},
+	};
 }
 
 /** archiveOfManifest as a question rather than a refusal — for the publish
@@ -930,6 +964,65 @@ function archiveBytes(
 	return { body: fromKv(), cached: false, sink };
 }
 
+/** The archive's compressed bytes, from the object's own cache or from KV, and what to do after. */
+interface CompressedArchive {
+	body: ReadableStream<Uint8Array>;
+	cached: boolean;
+	format: "gzip" | "lz4";
+	commit: () => void;
+	invalidate: () => void;
+}
+
+/** Drop every gzip-family row of `source`'s cached copy: a failed load's escape hatch. */
+function dropCompressedOf(ctx: LoadContext | undefined, source: ArchiveSource): () => void {
+	return () => {
+		const storage = ctx?.storage;
+		if (!storage) return;
+		try {
+			for (const k of compressedCacheKeys(source.storeKey, source.chunkCount as number)) dropCached(storage, k);
+		} catch (err) {
+			console.warn(`${tag(ctx)}could not drop the compressed cache for ${source.storeKey}: ${err}`);
+		}
+	};
+}
+
+/**
+ * The object's OWN committed copy of the archive, still compressed — LZ4 frames first, then the
+ * stored gzip chunks — or null when it holds neither. Reads only: a miss drops nothing and starts
+ * no fill, which is what lets a wake read the copy before it knows the copy is the store to load
+ * (speculativeLocalFeed). A cache that cannot be read is a miss, never a failed load.
+ */
+function localCompressedArchive(ctx: LoadContext | undefined, source: ArchiveSource): CompressedArchive | null {
+	const storage = ctx?.storage;
+	if (!storage) return null;
+	try {
+		ensureCacheSchema(storage);
+		// LZ4 first (r3): the cheaper decode, and — held — the only family the object keeps.
+		// Taken whatever the codec says: a gate that turned LZ4 off tonight must not make an
+		// object throw away a copy it already has and pay a KV reload for it.
+		const lz4 = cachedLz4Stream(storage, source.storeKey);
+		if (lz4) {
+			const dropLz4 = () => {
+				try {
+					dropCached(storage, lz4CacheKey(source.storeKey));
+				} catch (err) {
+					console.warn(`${tag(ctx)}could not drop the LZ4 cache for ${source.storeKey}: ${err}`);
+				}
+			};
+			return { body: lz4, cached: true, format: "lz4", commit: () => {}, invalidate: dropLz4 };
+		}
+		const gzipBytes = source.gzipBytes as number; // callers gate on presence
+		const chunkCount = source.chunkCount as number; // compressed manifests always carry it
+		const local = cachedCompressedStream(storage, source.storeKey, chunkCount, gzipBytes, false);
+		if (local) {
+			return { body: local, cached: true, format: "gzip", commit: () => {}, invalidate: dropCompressedOf(ctx, source) };
+		}
+	} catch (err) {
+		console.warn(`${tag(ctx)}compressed archive cache unreadable for ${source.storeKey} (falling back to KV): ${err}`);
+	}
+	return null;
+}
+
 /**
  * The COMPRESSED-cache twin of archiveBytes, and the path every real archive
  * takes (plan reconciliation 2 — see the store-cache.ts header for why N
@@ -952,52 +1045,15 @@ function compressedArchiveBytes(
 	source: ArchiveSource,
 	/** What the manifest being loaded lets this object WRITE (cacheCodecOf). Reads take either. */
 	codec: CacheCodec = "gzip",
-): {
-	body: ReadableStream<Uint8Array>;
-	cached: boolean;
-	format: "gzip" | "lz4";
-	commit: () => void;
-	invalidate: () => void;
-} {
+): CompressedArchive {
+	const local = localCompressedArchive(ctx, source);
+	if (local) return local;
 	const storage = ctx?.storage;
 	const gzipBytes = source.gzipBytes as number; // callers gate on presence
 	const chunkCount = source.chunkCount as number; // compressed manifests always carry it (kvArchiveStream enforces)
-	const keys = compressedCacheKeys(source.storeKey, chunkCount);
 	// Everything this archive may be cached under, in either family: what every prune keeps.
 	const keep = cacheKeysOf(source);
-	const dropAll = () => {
-		if (!storage) return;
-		try {
-			for (const k of keys) dropCached(storage, k);
-		} catch (err) {
-			console.warn(`${tag(ctx)}could not drop the compressed cache for ${source.storeKey}: ${err}`);
-		}
-	};
-	if (storage) {
-		try {
-			ensureCacheSchema(storage);
-			// LZ4 first (r3): the cheaper decode, and — held — the only family the object keeps.
-			// Taken whatever the codec says: a gate that turned LZ4 off tonight must not make an
-			// object throw away a copy it already has and pay a KV reload for it.
-			const lz4 = cachedLz4Stream(storage, source.storeKey);
-			if (lz4) {
-				const dropLz4 = () => {
-					try {
-						dropCached(storage, lz4CacheKey(source.storeKey));
-					} catch (err) {
-						console.warn(`${tag(ctx)}could not drop the LZ4 cache for ${source.storeKey}: ${err}`);
-					}
-				};
-				return { body: lz4, cached: true, format: "lz4", commit: () => {}, invalidate: dropLz4 };
-			}
-			const local = cachedCompressedStream(storage, source.storeKey, chunkCount, gzipBytes, false);
-			if (local) return { body: local, cached: true, format: "gzip", commit: () => {}, invalidate: dropAll };
-		} catch (err) {
-			console.warn(
-				`${tag(ctx)}compressed archive cache unreadable for ${source.storeKey} (falling back to KV): ${err}`,
-			);
-		}
-	}
+	const dropAll = dropCompressedOf(ctx, source);
 	// Miss: read KV, teeing each STORED chunk in. Tee faults must never fail the
 	// load — warn once and stop writing, exactly like the decompressed sink.
 	//
@@ -1200,6 +1256,79 @@ export function pruneToManifest(ctx: LoadContext, manifest: StoreManifest): numb
 	}
 }
 
+/** A store fed from the object's own cache before the load knew it was the one to load. */
+interface EarlyFeed extends FedStore {
+	storeKey: string;
+	archive: CompressedArchive;
+	/** Why the feed failed, if it did — thrown only if this turns out to be the store to load. */
+	failure: { error: unknown } | null;
+}
+
+/**
+ * A wake's KV manifest check and its decode, OVERLAPPED.
+ *
+ * Every wake of an object the publisher has told about a build reads KV's manifest before it loads
+ * anything (loadStore explains why the record is checked first). That read is pure I/O — ~37ms of
+ * the object's own clock at p50 on a paid wnam wake (2026-10-23), where the clock moves only across
+ * I/O — and the decode that followed it is pure CPU: SQLite rows into wasm, LZ4 frames into the
+ * store buffer. They were done one after the other. This does the CPU while the I/O is out: with the
+ * read already issued, the record's store is fed from the object's own cache, and loadStore installs
+ * it only once the check has named that same store. The check, its tiebreak, the record correction
+ * and the fallback are unchanged, so the store an object ends up serving is the one it served before.
+ *
+ * Only from the object's OWN committed copy (never KV: a fetch of a store the check may reject is
+ * I/O this exists to hide, not to add), and only on a cold object: a loaded store means a hot swap,
+ * which arrives with its manifest in hand and never reaches here.
+ *
+ * If the check chooses another store, this feed is never installed. The engine's next begin
+ * recycles its buffer as the spare, so the load that follows refills it — the store buffer is
+ * sized with headroom for a partition's night-to-night drift — rather than adding a second one.
+ *
+ * A feed that fails (a corrupt copy) drops the copy at once, as any failed cached load does, and
+ * hands the error to loadStore, which throws it only if that copy was the store to load — the
+ * same failure, and the same fallback, as feeding it after the check.
+ */
+/**
+ * One turn of the runtime's event loop, so the I/O just issued is actually SENT.
+ *
+ * Calling a binding (`env.STORE_KV.get`) only queues its request: workerd writes it when its event
+ * loop next runs, and promise reactions never run it — every `await` in the store feed resolves as
+ * a microtask, so the whole feed is one turn. Measured in local workerd (wrangler dev, p3 39.9MB):
+ * without this turn the manifest read went out only after the ~26ms feed and was still waited on
+ * for 10–23ms after it; with it, nothing was left to wait for. A timer is the turn: it fires after
+ * the loop has run what is already queued.
+ */
+function sendIssuedIo(): Promise<void> {
+	return new Promise((resolve) => setTimeout(resolve, 0));
+}
+
+async function speculativeLocalFeed(
+	w: wasm.EngineHandle,
+	state: LabelState,
+	ctx: LoadContext,
+	source: ArchiveSource,
+	fence?: LoadFence,
+): Promise<EarlyFeed | null> {
+	if (source.gzipBytes === undefined || liveCurrent(state, ctx.label)) return null;
+	const archive = localCompressedArchive(ctx, source);
+	if (!archive) return null;
+	try {
+		const fed = await feedUninstalled(w, archive.body, source.storeBytes, null, archive.format, fence);
+		return { ...fed, storeKey: source.storeKey, archive, failure: null };
+	} catch (err) {
+		if (err instanceof StoreLoadStalledError) throw err;
+		archive.invalidate();
+		const noop = () => {};
+		return {
+			counts: { pieces: 0, blocks: 0 },
+			install: noop,
+			storeKey: source.storeKey,
+			archive,
+			failure: { error: err },
+		};
+	}
+}
+
 async function loadStore(env: Env, ctx?: LoadContext, known?: StoreManifest, fence?: LoadFence): Promise<Engine> {
 	const state = stateFor(ctx?.label);
 	// The one place wasm is first touched, so the one place that has to bring it
@@ -1227,12 +1356,18 @@ async function loadStore(env: Env, ctx?: LoadContext, known?: StoreManifest, fen
 	// woke, and did it again — about once every 80 seconds for half an hour, with every request
 	// from the region fanned out into them and waiting. The record was never corrected because
 	// only the failed-load path wrote the truth back. One KV round trip (~125ms, colo-cached
-	// for 60s) in front of a 400-900ms load is the price of never loading twice.
+	// for 60s) in front of a 400-900ms load is the price of never loading twice. Since
+	// speculativeLocalFeed it is paid BESIDE the decode of the record's own cached copy rather than
+	// before it; a record KV then overrules costs that one discarded feed, into the store buffer the
+	// next load refills — the record is corrected before that load starts, as before.
 	let manifest = known;
 	// KV's manifest, held only when the pushed record was NEWER than it and was
 	// loaded on that basis: if the record's chunks turn out to be gone, this is
 	// what the object falls back to. See the tiebreak below.
 	let fallback: StoreManifest | null = null;
+	// The record's store, fed from the object's own cache while KV's manifest was in flight (see
+	// speculativeLocalFeed) — installed below only if the check that follows names the same store.
+	let early: EarlyFeed | null = null;
 	if (!manifest && ctx?.storage) {
 		const pushed = readLiveManifest(ctx.storage) as StoreManifest | null;
 		if (pushed?.store_bytes) {
@@ -1252,7 +1387,15 @@ async function loadStore(env: Env, ctx?: LoadContext, known?: StoreManifest, fen
 				// PER-PARTITION: the comparison is between THIS PARTITION's chunk-family keys under
 				// each manifest, not the manifests' top-level keys — a v2 store_key is a stem
 				// holding no chunks, so comparing stems would miss a republished partition.
-				const truth = await readManifest(env).catch(() => null);
+				//
+				// The read is ISSUED first and awaited last: while it is in flight the object
+				// decodes the record's store out of its own SQLite, which is CPU the I/O wait
+				// would otherwise have sat idle beside. Nothing is installed until the comparison
+				// below has run, so what the object loads is decided exactly as before.
+				const truthRead = readManifest(env).catch(() => null);
+				await sendIssuedIo();
+				early = await speculativeLocalFeed(w, state, ctx, pushedSource, fence);
+				const truth = await truthRead;
 				const truthSource = truth?.store_bytes ? tryArchiveOfManifest(truth, ctx.partition) : null;
 				if (truth && truthSource && truthSource.storeKey !== pushedSource.storeKey) {
 					// THE TIEBREAK IS built_at. KV's manifest is colo-cached for 60s, and in
@@ -1336,6 +1479,17 @@ async function loadStore(env: Env, ctx?: LoadContext, known?: StoreManifest, fen
 	const loaded = liveCurrent(state, ctx?.label);
 	if (loaded && loaded.storeKey === source.storeKey) return loaded.engine;
 
+	// The early feed is used only for the store the check above decided on. Any other is left
+	// unfinished: the load below begins over it, and the engine recycles its buffer as the spare
+	// that load refills (one partition drifts by a fraction of the spare's headroom night to night).
+	const fed = early?.storeKey === source.storeKey ? early : null;
+	if (early && !fed) {
+		console.log(
+			`${tag(ctx)}read the recorded ${early.storeKey} from the local cache while KV's manifest was read; ` +
+				`KV's check chose ${source.storeKey}, so that one loads instead`,
+		);
+	}
+
 	// Started here rather than after the load, so the write has the whole archive fetch to complete
 	// in. Awaited below, before the engine is committed — see announceSelf for why a dropped
 	// announcement is a correctness problem and not a missing log line.
@@ -1360,19 +1514,21 @@ async function loadStore(env: Env, ctx?: LoadContext, known?: StoreManifest, fen
 		sink: CacheWriter | null;
 		commit: () => void;
 		invalidate: () => void;
-	} = compressedMode
-		? { ...compressedArchiveBytes(env, ctx, source, codec), sink: null }
-		: (() => {
-				const f = archiveBytes(ctx, source.storeKey, source.storeBytes, () => kvSourceStream(env, source));
-				return {
-					body: f.body,
-					cached: f.cached,
-					format: "raw" as const,
-					sink: f.sink,
-					commit: () => commitSink(ctx, f.sink, source.storeKey, [source.storeKey]),
-					invalidate: () => f.sink?.abort(),
-				};
-			})();
+	} = fed
+		? { ...fed.archive, sink: null }
+		: compressedMode
+			? { ...compressedArchiveBytes(env, ctx, source, codec), sink: null }
+			: (() => {
+					const f = archiveBytes(ctx, source.storeKey, source.storeBytes, () => kvSourceStream(env, source));
+					return {
+						body: f.body,
+						cached: f.cached,
+						format: "raw" as const,
+						sink: f.sink,
+						commit: () => commitSink(ctx, f.sink, source.storeKey, [source.storeKey]),
+						invalidate: () => f.sink?.abort(),
+					};
+				})();
 	const { body, cached, sink, format } = fetch;
 	if (liveCurrent(state, ctx?.label)) {
 		// Hot swap: requests arriving during the swap await `loading` (set by
@@ -1392,7 +1548,15 @@ async function loadStore(env: Env, ctx?: LoadContext, known?: StoreManifest, fen
 	// ~105ms under V8. `store_gzip_bytes` stays a flag the reader can see absent.
 	let counts: FeedCounts;
 	try {
-		counts = await feedStore(w, body, source.storeBytes, sink, format, fence);
+		if (fed) {
+			// Fed while KV's manifest was read: the same bytes, the same checks, installed now. A
+			// copy that failed its feed fails here, exactly where feeding it now would have.
+			if (fed.failure) throw fed.failure.error;
+			fed.install();
+			counts = fed.counts;
+		} else {
+			counts = await feedStore(w, body, source.storeBytes, sink, format, fence);
+		}
 	} catch (err) {
 		// An abandoned load stops here: no cache invalidation it does not own, no fallback load.
 		if (err instanceof StoreLoadStalledError) throw err;
@@ -1470,7 +1634,8 @@ async function loadStore(env: Env, ctx?: LoadContext, known?: StoreManifest, fen
 	(isolate.crowded ? console.warn : console.log)(
 		`${tag(ctx)}store loaded from ${cached ? `local cache (${format})` : "KV"}: ${source.storeKey} (${source.cardCount} cards, ` +
 			`${source.storeBytes} bytes${!cached && source.gzipBytes ? ` from ${source.gzipBytes} gzipped` : ""}, ` +
-			`built ${manifest.built_at}) after ${Date.now() - started}ms of I/O wait, from ${pieces} pieces in ${blocks} blocks ` +
+			`built ${manifest.built_at}) after ${Date.now() - started}ms of I/O wait` +
+			`${fed ? " (decoded while KV's manifest was read)" : ""}, from ${pieces} pieces in ${blocks} blocks ` +
 			`(linear memory ${(w.linearMemoryBytes() / 1048576).toFixed(1)}MB); ${isolate.text}`,
 	);
 	return engine;

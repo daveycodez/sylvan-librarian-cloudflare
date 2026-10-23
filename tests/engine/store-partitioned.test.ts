@@ -16,6 +16,8 @@
 //     re-exports unchanged.
 
 import { describe, expect, mock, test } from "bun:test";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import { gunzipSync } from "node:zlib";
 import type { ArchiveCacheStorage } from "../../src/engine/store-cache";
 import * as cache from "../../src/engine/store-cache";
@@ -111,6 +113,10 @@ function handleFor(label: string) {
 			lz4Loads.push(label);
 		},
 		store_load_lz4_chunk(chunk: Uint8Array) {
+			// The real engine checks each frame as it decodes it, so a corrupt copy can fail mid-feed
+			// as well as at finish: a piece opening with 0x21 is refused here, the way a frame whose
+			// xxh32 mismatches is.
+			if (chunk[0] === 0x21) throw new Error("fake wasm: LZ4 frame refused mid-feed");
 			inst.staged.push(chunk.slice());
 		},
 		finish_store_load_lz4() {
@@ -948,6 +954,134 @@ describe("a pushed record NEWER than KV's colo-cached manifest", () => {
 		const recorded = cache.readLiveManifest(storage) as StoreManifest;
 		expect(recorded.format_version).toBe(ARCHIVE_FORMAT_VERSION);
 		expect(recorded.built_at).toBe(live.manifest.built_at);
+	});
+});
+
+describe("a wake decodes its local copy while KV's manifest is read", () => {
+	// The record check reads KV's manifest on every wake of a told object — I/O, ~37ms of the
+	// object's clock at p50 on paid wnam (2026-10-23) — and the decode after it is CPU. The read
+	// is issued first and the record's own copy fed while it is out; nothing is installed until
+	// the check has chosen, so the store served is the one the check chooses, as before.
+
+	/** A KV whose manifest read waits for `release()` — the window the decode now fills. */
+	function heldManifestEnv(entries: Map<string, Uint8Array | string>) {
+		const base = fakeEnv(entries);
+		let release = () => {};
+		const gate = new Promise<void>((resolve) => {
+			release = resolve;
+		});
+		const kv = base.env.STORE_KV as unknown as { get(key: string, opts?: unknown): Promise<unknown> };
+		const get = kv.get.bind(kv);
+		kv.get = async (key, opts) => {
+			if (key === MANIFEST_READ) await gate;
+			return get(key, opts);
+		};
+		return { ...base, release };
+	}
+
+	/** Build `builtAt` under the LZ4 codec, loaded once through `storage` so its LZ4 copy is held. */
+	async function heldLz4Copy(builtAt: string, storage: ArchiveCacheStorage) {
+		const pub = await publishV2(builtAt);
+		pub.manifest.cache = { v: 1, codec: "lz4", projected_lz4_bytes: 1 };
+		pub.entries.set(MANIFEST_READ, JSON.stringify(pub.manifest));
+		const pending: Promise<unknown>[] = [];
+		const ctx = {
+			...ctxFor(`engine-early-fill${builtAt}-p0`, 0, storage),
+			waitUntil: (p: Promise<unknown>) => pending.push(p),
+		};
+		await store.getEngine(fakeEnv(pub.entries).env, ctx);
+		await Promise.all(pending);
+		expect(cache.isLz4Cached(storage, pub.manifest.partitions?.[0]?.store_key as string)).toBe(true);
+		return pub;
+	}
+
+	/** A committed LZ4 copy of partition 0 whose first piece the engine refuses mid-feed. */
+	function corruptCopy(storage: ArchiveCacheStorage, manifest: StoreManifest): string {
+		const key = manifest.partitions?.[0]?.store_key as string;
+		const writer = cache.cacheWriter(storage, cache.lz4CacheKey(key), null);
+		writer.write(Uint8Array.from([0x21, 3, 0, 1, 2, 3]));
+		expect(writer.commit()).toBe(1);
+		return key;
+	}
+
+	const settle = () => new Promise((resolve) => setTimeout(resolve, 0));
+
+	test("the record's copy is fed before the check answers, and installed only after it", async () => {
+		const storage = fakeStorage();
+		const pub = await heldLz4Copy("400", storage);
+		cache.recordLiveManifest(storage, pub.manifest);
+		const kv = heldManifestEnv(pub.entries);
+		const label = "engine-early-p0";
+		const loading = store.getEngine(kv.env, ctxFor(label, 0, storage));
+		await settle();
+		const inst = instanceFor(label);
+		// Fed during the read...
+		expect(lz4Loads).toContain(label);
+		expect(inst.staged.length).toBeGreaterThan(0);
+		// ...but not the object's store until the check has run.
+		expect(inst.loaded).toBeNull();
+		expect(store.tryGetLoadedEngine(label)).toBeNull();
+		kv.release();
+		await loading;
+		expect(inst.loaded).toEqual(pub.raw[0] as Uint8Array);
+		expect(kv.chunkReads()).toEqual([]);
+		expect(kv.reads).toContain(MANIFEST_READ);
+	});
+
+	test("a check that chooses KV's newer build discards the early feed and loads that one", async () => {
+		const storage = fakeStorage();
+		const stale = await heldLz4Copy("401", storage);
+		cache.recordLiveManifest(storage, stale.manifest);
+		const live = await publishV2("402");
+		const kv = fakeEnv(live.entries);
+		const label = "engine-early-stale-p0";
+		await store.getEngine(kv.env, ctxFor(label, 0, storage));
+		expect(lz4Loads).toContain(label);
+		expect(instanceFor(label).loaded).toEqual(live.raw[0] as Uint8Array);
+		expect(kv.chunkReads()).toEqual([chunkKey(live.manifest.partitions?.[0]?.store_key as string, 0)]);
+		expect((cache.readLiveManifest(storage) as StoreManifest).built_at).toBe("402");
+	});
+
+	test("a copy that fails mid-feed is dropped, and fails the wake only when it was the store to load", async () => {
+		// The check agrees with the record: the same refusal a feed after the check would have met.
+		const agreed = await publishV2("403");
+		const storage = fakeStorage();
+		const key = corruptCopy(storage, agreed.manifest);
+		cache.recordLiveManifest(storage, agreed.manifest);
+		await expect(
+			store.getEngine(fakeEnv(agreed.entries).env, ctxFor("engine-early-bad-p0", 0, storage)),
+		).rejects.toThrow(/refused mid-feed/);
+		expect(cache.isLz4Cached(storage, key)).toBe(false);
+		const retry = fakeEnv(agreed.entries);
+		await store.getEngine(retry.env, ctxFor("engine-early-bad2-p0", 0, storage));
+		expect(retry.chunkReads().length).toBe(1);
+		expect(instanceFor("engine-early-bad2-p0").loaded).toEqual(agreed.raw[0] as Uint8Array);
+
+		// The check chooses KV's newer build: the corrupt record copy is dropped and the wake serves.
+		const stale = await publishV2("404");
+		const live = await publishV2("405");
+		const other = fakeStorage();
+		const staleKey = corruptCopy(other, stale.manifest);
+		cache.recordLiveManifest(other, stale.manifest);
+		await store.getEngine(fakeEnv(live.entries).env, ctxFor("engine-early-bad3-p0", 0, other));
+		expect(instanceFor("engine-early-bad3-p0").loaded).toEqual(live.raw[0] as Uint8Array);
+		expect(cache.isLz4Cached(other, staleKey)).toBe(false);
+	});
+
+	test("the read is SENT before the feed: one event-loop turn sits between issuing it and the feed", () => {
+		// workerd writes a binding's request only when its event loop runs, and the feed's awaits
+		// are all microtasks — without the turn, the read left after the feed and nothing overlapped
+		// (measured in wrangler dev). No fake KV can show when a request is sent, so the order is
+		// pinned at the source.
+		const src = readFileSync(join(import.meta.dir, "../../src/engine/store.ts"), "utf8");
+		const body = src.slice(src.indexOf("async function loadStore("));
+		const issued = body.indexOf("const truthRead = readManifest(env)");
+		const turned = body.indexOf("await sendIssuedIo();");
+		const fed = body.indexOf("await speculativeLocalFeed(");
+		expect(issued).toBeGreaterThan(-1);
+		expect(turned).toBeGreaterThan(issued);
+		expect(fed).toBeGreaterThan(turned);
+		expect(body.indexOf("await truthRead")).toBeGreaterThan(fed);
 	});
 });
 
