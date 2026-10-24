@@ -1161,12 +1161,12 @@ describe("cache headers", () => {
 	// uncached /cards/* would also put every request through the Worker and the Durable Object,
 	// against a 100k/day allowance, on the surface mtg-seeker actually calls.
 	test.each([
-		["/cards/search?q=elf", "public, max-age=57600"],
-		["/cards/aaaaaaaa-0000-4000-8000-000000000001", "public, max-age=57600"],
-		["/cards/m15/18", "public, max-age=57600"],
-		["/cards/multiverse/12345", "public, max-age=57600"],
-		["/cards/autocomplete?q=llan", "public, max-age=57600"],
-		["/cards", "public, max-age=57600"],
+		["/cards/search?q=elf", "public, max-age=57600, stale-while-revalidate=86400"],
+		["/cards/aaaaaaaa-0000-4000-8000-000000000001", "public, max-age=57600, stale-while-revalidate=86400"],
+		["/cards/m15/18", "public, max-age=57600, stale-while-revalidate=86400"],
+		["/cards/multiverse/12345", "public, max-age=57600, stale-while-revalidate=86400"],
+		["/cards/autocomplete?q=llan", "public, max-age=57600, stale-while-revalidate=86400"],
+		["/cards", "public, max-age=57600, stale-while-revalidate=86400"],
 	])("%s is Scryfall's 16-hour tier", async (path, expected) => {
 		expect((await testDispatch(ctx, path)).headers.get("Cache-Control")).toBe(expected);
 	});
@@ -1176,15 +1176,17 @@ describe("cache headers", () => {
 		// client hold prices from two imports ago with nothing in the response to say so — and
 		// `named` returns the same object every other route here does.
 		const res = await testDispatch(ctx, "/cards/named?exact=Llanowar%20Elves");
-		expect(res.headers.get("Cache-Control")).toBe("public, max-age=57600");
+		expect(res.headers.get("Cache-Control")).toBe("public, max-age=57600, stale-while-revalidate=86400");
 	});
 
 	test("the tier rides on error responses, as Scryfall's does", async () => {
 		// Measured: an empty-query 400 comes back with the route's own max-age, and a `named` miss
 		// with the full tier rather than no-store.
-		expect((await testDispatch(ctx, "/cards/search")).headers.get("Cache-Control")).toBe("public, max-age=57600");
+		expect((await testDispatch(ctx, "/cards/search")).headers.get("Cache-Control")).toBe(
+			"public, max-age=57600, stale-while-revalidate=86400",
+		);
 		expect((await testDispatch(ctx, "/cards/named?exact=Nope")).headers.get("Cache-Control")).toBe(
-			"public, max-age=57600",
+			"public, max-age=57600, stale-while-revalidate=86400",
 		);
 	});
 
@@ -2562,7 +2564,7 @@ describe("GET /cards/:id/rulings", () => {
 
 	test("rulings carry the same 16-hour tier as every other /cards/* answer", async () => {
 		const res = await testDispatch(rulingsCtx().ctx, "/cards/aaaaaaaa-0000-4000-8000-000000000001/rulings");
-		expect(res.headers.get("cache-control")).toBe("public, max-age=57600");
+		expect(res.headers.get("cache-control")).toBe("public, max-age=57600, stale-while-revalidate=86400");
 	});
 
 	test("pretty indents the envelope", async () => {

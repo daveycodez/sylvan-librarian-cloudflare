@@ -337,7 +337,13 @@ function collectionSchemaError(entry: Record<string, unknown>): ScryfallError | 
 // NOT matched: Scryfall's `Vary: Accept`. Its responses negotiate on the header; ours select their
 // format from the `format=` query parameter, which is already part of the cache key. Sending it
 // would split the edge cache per Accept value and buy nothing.
-const CARDS_CACHE: Record<string, string> = { "Cache-Control": "public, max-age=57600" };
+// Scryfall's 16 hours, plus a day of stale-while-revalidate (x106): past the 16 hours the edge
+// answers from its copy and refreshes it in the background instead of making the caller wait on a
+// fresh Worker invocation — which Cloudflare occasionally holds for ~8s before running anything
+// (see MIRRORED_CACHE_CONTROL). The nightly purge still clears every copy, so no card outlives an import.
+const CARDS_CACHE: Record<string, string> = {
+	"Cache-Control": "public, max-age=57600, stale-while-revalidate=86400",
+};
 /** Not `no-store`: Scryfall sends `no-cache`, which permits storing and requires revalidation. */
 const RANDOM_CACHE: Record<string, string> = { "Cache-Control": "no-cache" };
 /**

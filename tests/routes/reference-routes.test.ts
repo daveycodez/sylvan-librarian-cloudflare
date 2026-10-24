@@ -235,11 +235,11 @@ describe("cache headers", () => {
 	// Scryfall's data tier (measured 2026-08-11) is a bare `public`; ours adds an hour, a deliberate
 	// deviation — see MIRRORED_CACHE_CONTROL. `parse-mana` is still Scryfall's own tier.
 	test.each([
-		["/sets", "public, max-age=3600"],
-		["/sets/mh3", "public, max-age=3600"],
-		["/sets/tcgplayer/23361", "public, max-age=3600"],
-		["/catalog/creature-types", "public, max-age=3600"],
-		["/symbology", "public, max-age=3600"],
+		["/sets", "public, max-age=3600, stale-while-revalidate=86400"],
+		["/sets/mh3", "public, max-age=3600, stale-while-revalidate=86400"],
+		["/sets/tcgplayer/23361", "public, max-age=3600, stale-while-revalidate=86400"],
+		["/catalog/creature-types", "public, max-age=3600, stale-while-revalidate=86400"],
+		["/symbology", "public, max-age=3600, stale-while-revalidate=86400"],
 		["/symbology/parse-mana?cost=W", "max-age=0, private, must-revalidate"],
 	])("%s carries its tier", async (path, expected) => {
 		expect((await testDispatch(referenceCtx().ctx, path)).headers.get("Cache-Control")).toBe(expected);
@@ -247,7 +247,7 @@ describe("cache headers", () => {
 
 	test("a 404 carries the tier too, as Scryfall's does", async () => {
 		expect((await testDispatch(referenceCtx().ctx, "/sets/zzz")).headers.get("Cache-Control")).toBe(
-			"public, max-age=3600",
+			"public, max-age=3600, stale-while-revalidate=86400",
 		);
 	});
 });

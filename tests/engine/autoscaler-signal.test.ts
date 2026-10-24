@@ -81,7 +81,7 @@ describe("the streaming transport's riders", () => {
 					status: 200,
 					headers: {
 						"content-type": "application/json",
-						"cache-control": "public, max-age=57600",
+						"cache-control": "public, max-age=57600, stale-while-revalidate=86400",
 						"x-total-cards": "7",
 						"x-row-count": "7",
 						"x-acquire-ms": "0",
@@ -98,7 +98,7 @@ describe("the streaming transport's riders", () => {
 			{},
 		);
 		expect(res.status).toBe(200);
-		expect(res.headers.get("cache-control")).toBe("public, max-age=57600");
+		expect(res.headers.get("cache-control")).toBe("public, max-age=57600, stale-while-revalidate=86400");
 		for (const name of ["x-total-cards", "x-row-count", "x-acquire-ms", "x-load", "x-rate", "x-shards"]) {
 			expect(res.headers.get(name)).toBeNull();
 		}

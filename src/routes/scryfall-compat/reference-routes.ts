@@ -59,7 +59,12 @@ import { type SetGroups, setGroupsOf } from "./set-groups";
 //
 // `private` does not stop the Worker's own edge cache from being useless here, but it does stop
 // shared caches in front of it — which is Scryfall's behaviour, so it is ours.
-export const MIRRORED_CACHE_CONTROL = "public, max-age=3600";
+// The hour is Scryfall's; the day of stale-while-revalidate is ours (x103/x106). A request that
+// misses the edge has to start a Worker invocation, and on 2026-10-23 and 10-24 Cloudflare held a
+// few of those for ~8s without running a line of ours (cpuTime 0, requestDuration 0) — mtgseeker's
+// /catalog/ability-words among them. Past the hour the edge now answers from its copy and refreshes
+// it in the background, so a caller waits on an invocation only after a purge or a deploy.
+export const MIRRORED_CACHE_CONTROL = "public, max-age=3600, stale-while-revalidate=86400";
 const MIRRORED_CACHE: Record<string, string> = { "Cache-Control": MIRRORED_CACHE_CONTROL };
 const PARSE_MANA_CACHE: Record<string, string> = { "Cache-Control": "max-age=0, private, must-revalidate" };
 
