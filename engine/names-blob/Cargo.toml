@@ -1,0 +1,16 @@
+# The card-names blob's format (src/lib.rs): its parsers and format 3's encoder, compiled into the
+# query engine (engine/wasm, which reads the blob) and the import module (engine/wasm-import, which
+# both publishers run to write format 3) — one source for the reader and the writer.
+
+[package]
+name = "sylvan-names-blob"
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+name = "sylvan_names_blob"
+
+[dependencies]
+card_engine = { path = "../../vendor/sylvan_librarian/card_engine" }
+# The format-3 haystack's line breaks. Already in the tree through card_engine.
+memchr = "2"

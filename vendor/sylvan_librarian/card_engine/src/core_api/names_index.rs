@@ -680,6 +680,38 @@ impl FuzzyProbe {
         FuzzySignature { trigrams: u16::try_from(tg.len()).unwrap_or(u16::MAX), bits: tg.iter().fold(0, |b, t| b | signature_bit(t)) }
     }
 
+    /// [`signature`](Self::signature)'s `bits` alone, without building the window set: a window
+    /// sets its hash bit however often it occurs, so folding over every window `score` forms,
+    /// repeats included, is the set's fold. The windows are `collated_windows_into`'s, formed by its
+    /// own loop (alphanumerics, lowercased, `"  "` before and `" "` after a non-empty name) — the
+    /// sort and dedupe that loop ends in are what a names load no longer pays, since format 3 of
+    /// the card-names blob stores the window COUNT and leaves the bits to this pass. Pinned equal to
+    /// `signature().bits` over the fixture and the real corpus (engine/wasm names.rs).
+    pub fn signature_bits(folded: &str) -> u64 {
+        fn fold(chars: impl Iterator<Item = char>) -> u64 {
+            let mut window = [' ', ' ', ' '];
+            let mut bits = 0u64;
+            let mut any = false;
+            for c in chars {
+                window = [window[1], window[2], c];
+                bits |= signature_bit(&window);
+                any = true;
+            }
+            if any {
+                window = [window[1], window[2], ' '];
+                bits |= signature_bit(&window);
+            }
+            bits
+        }
+        if folded.is_ascii() {
+            // The same characters, byte by byte: on ASCII `is_alphanumeric` is `is_ascii_alphanumeric`
+            // and `to_lowercase` is the one character `to_ascii_lowercase` gives.
+            fold(folded.bytes().filter(u8::is_ascii_alphanumeric).map(|b| char::from(b.to_ascii_lowercase())))
+        } else {
+            fold(folded.chars().filter(|c| c.is_alphanumeric()).flat_map(char::to_lowercase))
+        }
+    }
+
     /// Whether a name with this signature CAN clear `floor` — false only where `score` would answer
     /// None: its size-ratio exit reads the window counts, and the Jaccard it computes is bounded
     /// above here (a needle window whose hash bit the name lacks is certainly not shared; one whose

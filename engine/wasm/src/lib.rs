@@ -1242,7 +1242,7 @@ pub fn autocomplete(prefix: &str, limit: u32, include_extras: bool) -> Result<St
 #[wasm_bindgen]
 pub fn load_names(gz: &[u8]) -> Result<u32, JsError> {
     with_mut(&NAMES, "names", |n| *n = None).map_err(|e| JsError::new(&e))?;
-    let list = names::NameList::from_gzip(gz).map_err(|e| JsError::new(&e))?;
+    let list = names::from_gzip(gz).map_err(|e| JsError::new(&e))?;
     let count = list.len() as u32;
     with_mut(&NAMES, "names", |n| *n = Some(list)).map_err(|e| JsError::new(&e))?;
     Ok(count)
@@ -1270,8 +1270,8 @@ pub fn names_autocomplete(prefix: &str, limit: u32, include_extras: bool) -> Res
     })
 }
 
-/// The loaded names blob's format: 1 (autocomplete only), 2 (the names index too), 0 when none is
-/// loaded.
+/// The loaded names blob's format: 1 (autocomplete only), 2 or 3 (the names index too), 0 when none
+/// is loaded.
 #[wasm_bindgen]
 pub fn names_format() -> u32 {
     NAMES.with(|n| n.try_borrow().ok().and_then(|g| g.as_ref().map(|l| u32::from(l.format()))).unwrap_or(0))

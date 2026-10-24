@@ -1133,6 +1133,7 @@ dependencies = [
  "lz4_flex",
  "memchr",
  "serde_json",
+ "sylvan-names-blob",
  "wasm-bindgen",
  "xxhash-rust",
 ]
@@ -1142,6 +1143,14 @@ name = "sylvan-inflate"
 version = "0.1.0"
 dependencies = [
  "flate2",
+]
+
+[[package]]
+name = "sylvan-names-blob"
+version = "0.1.0"
+dependencies = [
+ "card_engine",
+ "memchr",
 ]
 
 [[package]]
@@ -1175,6 +1184,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sylvan-inflate",
+ "sylvan-names-blob",
  "sylvan-store-builder",
 ]
 

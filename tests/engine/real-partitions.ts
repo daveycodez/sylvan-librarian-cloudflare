@@ -10,7 +10,8 @@
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { gzipSync } from "node:zlib";
-import { encodeCardNames, ledByPartition, nameHoldersFromIndex } from "../../src/engine/card-names";
+import { namesCodec } from "../../scripts/names-codec";
+import { cardNamesV3, encodeCardNames, ledByPartition, nameHoldersFromIndex } from "../../src/engine/card-names";
 import {
 	collectionBatchRequest,
 	collectionPacketRanks,
@@ -106,7 +107,8 @@ export function loadRealStore(): RealStore {
 		printed.push(encoder.encode(ledByPartition(k, decoder.decode(tsv))));
 	}
 	const index = newEngine();
-	index.use((g) => g.load_names(gzipSync(encodeCardNames(names))));
+	// Format 3, as both publishers put it (format 2 is pinned table for table against it in the engine).
+	index.use((g) => g.load_names(gzipSync(cardNamesV3(encodeCardNames(names), namesCodec()))));
 	index.use((g) => (g as unknown as RealGlue).load_printed_names(gzipSync(encodePrintedNames(printed))));
 	const n = engines.length;
 	const builtAt = String(m.built_at);

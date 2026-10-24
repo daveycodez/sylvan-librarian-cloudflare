@@ -876,8 +876,8 @@ export function names_autocomplete(prefix, limit, include_extras) {
 }
 
 /**
- * The loaded names blob's format: 1 (autocomplete only), 2 (the names index too), 0 when none is
- * loaded.
+ * The loaded names blob's format: 1 (autocomplete only), 2 or 3 (the names index too), 0 when none
+ * is loaded.
  * @returns {number}
  */
 export function names_format() {

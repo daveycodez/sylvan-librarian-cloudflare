@@ -4,7 +4,7 @@
 //   1. PUBLISHED: the manifest names the blob, KV holds exactly `names_bytes` under that key, and the
 //      blob is exactly the union of every partition's own name records as its archive reads them back
 //      (`store_name_records_tsv`, the archived twin, over the chunks the run published), each led by
-//      its partition.
+//      its partition — in format 3, so a nightly that fell back to format 2 fails here.
 //   2. IT ANSWERS WHAT THE FAN-OUT ANSWERS, through the committed engine wasm: every two-character
 //      needle and a sample of real substrings, the blob's answer against every partition's own
 //      `autocomplete` merged by the production `mergeAutocomplete` — byte for byte. And (n15) the
@@ -18,12 +18,13 @@
 
 import { existsSync, rmSync } from "node:fs";
 import { gunzipSync } from "node:zlib";
-import { cardNamesCount, cardNamesOf, encodeCardNames, ledByPartition } from "../../src/engine/card-names";
+import { cardNamesCount, cardNamesOf, cardNamesV3, encodeCardNames, ledByPartition } from "../../src/engine/card-names";
 import { mergeAutocomplete } from "../../src/engine/partitioned-engine";
 import { chunkKey, formatManifestKey } from "../../src/engine/store-kv";
 import type { StoreManifest } from "../../src/engine/types";
 import { foldAccents } from "../../src/parser/pystr";
 import { cardNamesFromBuildDir } from "../card-names-build";
+import { namesCodec } from "../names-codec";
 import type { FakeKV } from "./storage";
 
 export interface CardNamesCheck {
@@ -77,7 +78,8 @@ export async function checkCardNames(kv: FakeKV, nativeDir: string | null): Prom
 		archiveRecords.push(encoder.encode(ledByPartition(k, records)));
 		for (const line of records.split("\n")) if (line) collated.push(line.split("\t")[1] as string);
 	}
-	const expected = encodeCardNames(archiveRecords);
+	// Format 3 of exactly those records, through the converter both publishers run.
+	const expected = cardNamesV3(encodeCardNames(archiveRecords), namesCodec());
 	if (!Buffer.from(expected).equals(Buffer.from(raw))) {
 		return fail(
 			`the blob (${cardNamesCount(raw)} records) is not the union of the ${partitions.length} archives' own ` +

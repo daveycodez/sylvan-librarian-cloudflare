@@ -18,6 +18,8 @@ crate-type = ["cdylib"]
 card_engine = { path = "../../vendor/sylvan_librarian/card_engine" }
 sylvan-store-builder = { path = "../builder" }
 sylvan-inflate = { path = "../inflate" }
+# Format 3 of the card-names blob, which both publishers write through this module (names_blob_v3).
+sylvan-names-blob = { path = "../names-blob" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 

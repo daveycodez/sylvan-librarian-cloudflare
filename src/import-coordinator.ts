@@ -77,7 +77,7 @@
 // its SQLite inputs — minutes of redone compute, never a wrong store.
 
 import { DurableObject } from "cloudflare:workers";
-import { encodeCardNames, ledByPartition, writeCardNames } from "./engine/card-names";
+import { cardNamesV3, encodeCardNames, ledByPartition, writeCardNames } from "./engine/card-names";
 import type { EngineReport } from "./engine/engine-health";
 import {
 	type EngineMove,
@@ -4574,6 +4574,15 @@ export class ImportCoordinator extends DurableObject<Env> {
 		} catch (err) {
 			console.warn(`Card names NOT published for build ${builtAt}: ${err}`);
 			return null;
+		}
+		// Format 3 through the converter the deploy seeders run too (card-names.ts cardNamesV3), in a
+		// transient instance whose memory goes with it. Should it fail, the format-2 blob is published:
+		// every Worker reads it, a names load just builds its tables itself (scripts/card-names-build.ts
+		// falls back the same way).
+		try {
+			raw = cardNamesV3(raw, transientWasm());
+		} catch (err) {
+			console.warn(`Card names for build ${builtAt} published in format 2: format 3 failed: ${err}`);
 		}
 		const published = await writeCardNames(this.env.STORE_KV, formatVersion, builtAt, raw);
 		console.log(

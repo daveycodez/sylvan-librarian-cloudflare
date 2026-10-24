@@ -24,7 +24,8 @@ import { describe, expect, test } from "bun:test";
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { gzipSync } from "node:zlib";
-import { encodeCardNames, ledByPartition } from "../../src/engine/card-names";
+import { namesCodec } from "../../scripts/names-codec";
+import { cardNamesV3, encodeCardNames, ledByPartition } from "../../src/engine/card-names";
 import { type GatherShaping, joinJsonArray, type PartitionClient, runTwoPhase } from "../../src/engine/gather";
 import type { EngineSearchOptions } from "../../src/engine/types";
 import { canonicalStringify, type FilterValue, parseScryfallQueryWithDirectives } from "../../src/parser";
@@ -101,7 +102,8 @@ describe.skipIf(!readable)(`the names index vs the ten-partition gather, on ${ST
 						printed.push(f[2] as string);
 				}
 			}
-			const raw = encodeCardNames(lines);
+			// Format 3, as both publishers put it.
+			const raw = cardNamesV3(encodeCardNames(lines), namesCodec());
 			const gz = gzipSync(raw, { level: 9 });
 			// The index object: its own instance, holding a partition's store as a real one does.
 			const index = newEngine();

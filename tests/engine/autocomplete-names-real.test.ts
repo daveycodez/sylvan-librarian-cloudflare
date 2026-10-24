@@ -25,7 +25,8 @@ import { describe, expect, test } from "bun:test";
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { gzipSync } from "node:zlib";
-import { cardNamesCount, encodeCardNames, ledByPartition } from "../../src/engine/card-names";
+import { namesCodec } from "../../scripts/names-codec";
+import { cardNamesCount, cardNamesV3, encodeCardNames, ledByPartition } from "../../src/engine/card-names";
 import { mergeAutocomplete } from "../../src/engine/partitioned-engine";
 import { foldAccents } from "../../src/parser/pystr";
 import { newEngine } from "./wasm-engine";
@@ -163,8 +164,9 @@ describe.skipIf(!readable)(`autocomplete from the names blob vs the fan-out, on 
 				fanOutMs += performance.now() - started;
 			}
 
-			// The blob, through the production encoder, gzipped as KV and the object caches hold it.
-			const raw = encodeCardNames(lines);
+			// The blob, through the production encoder and converter (format 3), gzipped as KV and the object
+			// caches hold it.
+			const raw = cardNamesV3(encodeCardNames(lines), namesCodec());
 			const gz = gzipSync(raw, { level: 9 });
 			const loaded = engine.use((g) => g.load_names(gz));
 			expect(loaded).toBe(cardNamesCount(raw));

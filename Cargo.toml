@@ -7,6 +7,7 @@ members = [
     "engine/wasm-import",
     "engine/builder",
     "engine/inflate",
+    "engine/names-blob",
 ]
 
 # Tuned for the wasm engine (size + speed inside a Worker isolate); built

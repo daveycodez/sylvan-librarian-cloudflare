@@ -29,6 +29,13 @@
 //! (`cargo test`, CI) against the single store AND against the partitioned fan-out's merge, and the
 //! real-corpus one in tests/engine/autocomplete-names-real.test.ts.
 //!
+//! THE BLOB'S FORMAT lives in its own crate (engine/names-blob, `NameList`), because the import
+//! module compiles it too: both publishers write FORMAT 3 through it, the format-2 records with the
+//! tables a load used to build from them already built. A format-3 load inflates, checks and copies
+//! — on the 2026-10-23 corpus 39ms -> 9.5ms in V8 and 43ms -> 10ms in local workerd, against ~2% more
+//! gzipped bytes — and answers every question exactly as a format-2 load of the same records (the
+//! tests below answer from format 3 with format 2 pinned table for table beside it).
+//!
 //! THE NAMES INDEX COPIES NOTHING. Its predicates are the engine's (`NameQuery`, `FuzzyProbe`,
 //! `NamesProbe` in card_engine's `names_index`); this module only walks the records and collects
 //! partitions. Its answers are pinned against the partitions' own by the fixture differentials below
@@ -37,267 +44,17 @@
 use std::io::Read;
 
 use card_engine::{
-    BEST_ART_SERIES, BEST_NO_CONTAINMENT, CLASS_EXTRA_GATE, FuzzyProbe, FuzzySignature, KEY_SERVED, KEY_SERVED_OUTSIDE_CONTAINMENT, NameQuery,
-    NameRecordView, NamesProbe,
+    BEST_ART_SERIES, BEST_NO_CONTAINMENT, FuzzyProbe, KEY_SERVED, KEY_SERVED_OUTSIDE_CONTAINMENT, NameQuery, NameRecordView, NamesProbe,
 };
+pub use sylvan_names_blob::{NAMES_BLOB_HEADER, NAMES_BLOB_HEADER_V2, NAMES_BLOB_HEADER_V3, NameList};
 
-/// Format 1's first line: `<collated>\t<printed>\n` per served pair. Read for autocomplete only —
-/// a build published before n15 names such a blob, and its index answers nothing (the router then
-/// asks every partition, as it did).
-pub const NAMES_BLOB_HEADER: &str = "sylvan-card-names/1\n";
-/// Format 2's first line: one card record per line (`card_engine::name_records_tsv`, led by its
-/// partition). Any other first line is refused, so a format change is a new tag and an older
-/// object falls back instead of misreading it.
-pub const NAMES_BLOB_HEADER_V2: &str = "sylvan-card-names/2\n";
-
-/// A byte range of one of the list's two strings.
-type Span = (u32, u32);
-
-/// One line of the blob: a card (format 2) or a served pair (format 1).
-struct Entry {
-    /// Into `text`.
-    collated: Span,
-    printed: Span,
-    /// Into `derived` (format 2 only).
-    lower: Span,
-    folded: Span,
-    /// Format 2 only; format 1 reads every entry as served.
-    partition: u16,
-    classes: u8,
-    best: u8,
-    /// `flavor[flavor_from .. flavor_from + flavor_len]`.
-    flavor_from: u32,
-    flavor_len: u32,
-}
-
-/// The decoded blob: its text, its entries, and what the autocomplete scan precomputes.
-pub struct NameList {
-    format: u8,
-    text: String,
-    /// Format 2: every lower and folded name, written out (the blob elides the derivable ones).
-    derived: String,
-    entries: Vec<Entry>,
-    /// Every entry's flavor keys (format 2): a span into `text` and the key's `CLASS_*` bits.
-    flavor: Vec<(u32, u32, u8)>,
-    /// `|collated_trigrams(collated)|` per entry — the needle-independent half of the similarity,
-    /// computed once at load instead of on every hit of every keystroke.
-    trigram_counts: Vec<u32>,
-    /// Every collated name, each followed by `\n`, in entry order — ONE haystack for the needle, so a
-    /// keystroke is a single SIMD substring search instead of ~39k small ones. A collated name is
-    /// alphanumerics only, so neither it nor any needle can hold the separator, and no match can span
-    /// two names.
-    collated: String,
-    /// Where entry i's collated name starts in `collated`, ascending.
-    collated_starts: Vec<u32>,
-    /// Format 2: each entry's typo-stage signature (`FuzzyProbe::signature` of its folded name), so a
-    /// fuzzy plan scores only the names that can clear the floor (`FuzzyProbe::could_clear`).
-    signatures: Vec<FuzzySignature>,
-}
-
-fn hex(field: &str, line: usize) -> Result<u32, String> {
-    u32::from_str_radix(field, 16).map_err(|_| format!("card names line {line}: {field:?} is not hex"))
-}
-
-impl NameList {
-    /// Parse a raw (inflated) blob of either format.
-    pub fn parse(raw: Vec<u8>) -> Result<Self, String> {
-        let text = String::from_utf8(raw).map_err(|e| format!("card names blob is not UTF-8: {e}"))?;
-        let (format, header) = if text.starts_with(NAMES_BLOB_HEADER) {
-            (1u8, NAMES_BLOB_HEADER)
-        } else if text.starts_with(NAMES_BLOB_HEADER_V2) {
-            (2u8, NAMES_BLOB_HEADER_V2)
-        } else {
-            let first = text.lines().next().unwrap_or("").chars().take(40).collect::<String>();
-            return Err(format!("card names blob starts {first:?}, not a card-names header"));
-        };
-        if u32::try_from(text.len()).is_err() {
-            return Err(format!("card names blob is {} bytes, past what a u32 offset addresses", text.len()));
-        }
-        let body = &text[header.len()..];
-        if !body.is_empty() && !body.ends_with('\n') {
-            return Err("card names blob does not end in a line break (truncated?)".to_owned());
-        }
-        let mut entries: Vec<Entry> = Vec::with_capacity(body.len() / 40);
-        let mut flavor: Vec<(u32, u32, u8)> = Vec::new();
-        let mut derived = String::with_capacity(if format == 2 { body.len() / 2 } else { 0 });
-        let mut at = header.len();
-        for line in body.split_terminator('\n') {
-            let n = entries.len() + 1;
-            let span = |field: &str| -> Span {
-                let start = field.as_ptr() as usize - text.as_ptr() as usize;
-                (start as u32, (start + field.len()) as u32)
-            };
-            let fields: Vec<&str> = line.split('\t').collect();
-            let entry = if format == 1 {
-                let [collated, printed] = fields[..] else {
-                    return Err(format!("card names line {n} is not one tab between two names: {line:?}"));
-                };
-                Entry {
-                    collated: span(collated),
-                    printed: span(printed),
-                    lower: (0, 0),
-                    folded: (0, 0),
-                    partition: 0,
-                    classes: CLASS_EXTRA_GATE,
-                    best: 0,
-                    flavor_from: 0,
-                    flavor_len: 0,
-                }
-            } else {
-                let [partition, flags, collated, printed, lower, folded, keys] = fields[..] else {
-                    return Err(format!("card names line {n} does not hold 7 fields: {line:?}"));
-                };
-                let partition = partition.parse::<u16>().map_err(|_| format!("card names line {n}: bad partition {partition:?}"))?;
-                if flags.len() != 3 {
-                    return Err(format!("card names line {n}: bad flags {flags:?}"));
-                }
-                let (classes, best) = (hex(&flags[..2], n)? as u8, hex(&flags[2..], n)? as u8);
-                let push = |derived: &mut String, s: &str| -> Span {
-                    let start = derived.len() as u32;
-                    derived.push_str(s);
-                    (start, derived.len() as u32)
-                };
-                let lower = if lower.is_empty() { push(&mut derived, &printed.to_lowercase()) } else { push(&mut derived, lower) };
-                let folded = if folded.is_empty() { lower } else { push(&mut derived, folded) };
-                let flavor_from = flavor.len() as u32;
-                if !keys.is_empty() {
-                    for key in keys.split(',') {
-                        let Some((name, bits)) = key.rsplit_once(':') else {
-                            return Err(format!("card names line {n}: bad flavor key {key:?}"));
-                        };
-                        let (start, end) = span(name);
-                        flavor.push((start, end, hex(bits, n)? as u8));
-                    }
-                }
-                Entry {
-                    collated: span(collated),
-                    printed: span(printed),
-                    lower,
-                    folded,
-                    partition,
-                    classes,
-                    best,
-                    flavor_from,
-                    flavor_len: flavor.len() as u32 - flavor_from,
-                }
-            };
-            entries.push(entry);
-            at += line.len() + 1;
-        }
-        debug_assert_eq!(at, text.len());
-        // Every table at its final size: a load's linear memory is held for the life of the build.
-        entries.shrink_to_fit();
-        flavor.shrink_to_fit();
-        derived.shrink_to_fit();
-        let mut list = NameList {
-            format,
-            text,
-            derived,
-            entries,
-            flavor,
-            trigram_counts: Vec::new(),
-            collated: String::new(),
-            collated_starts: Vec::new(),
-            signatures: Vec::new(),
-        };
-        let n = list.len();
-        let joined: usize = list.entries.iter().map(|e| (e.collated.1 - e.collated.0) as usize + 1).sum();
-        let mut collated = String::with_capacity(joined);
-        let mut starts = Vec::with_capacity(n);
-        let mut counts = Vec::with_capacity(n);
-        let mut windows: Vec<[char; 3]> = Vec::with_capacity(64);
-        for i in 0..n {
-            let name = list.pair(i).0;
-            if name.contains('\n') {
-                return Err(format!("card names line {} has a line break in its collated name", i + 1));
-            }
-            starts.push(collated.len() as u32);
-            collated.push_str(name);
-            collated.push('\n');
-            // The distinct-window count `collated_trigrams(name).len()` gives, by sort and dedupe.
-            windows.clear();
-            if !name.is_empty() {
-                let mut window = [' ', ' ', ' '];
-                for c in name.chars().chain(std::iter::once(' ')) {
-                    window = [window[1], window[2], c];
-                    windows.push(window);
-                }
-            }
-            windows.sort_unstable();
-            windows.dedup();
-            counts.push(windows.len() as u32);
-        }
-        list.collated = collated;
-        list.collated_starts = starts;
-        list.trigram_counts = counts;
-        if list.format == 2 {
-            list.signatures = list.entries.iter().map(|e| FuzzyProbe::signature(list.at_derived(e.folded))).collect();
-        }
-        // The inflate over-reserves; the spans are offsets, so the text can move.
-        list.text.shrink_to_fit();
-        Ok(list)
-    }
-
-    /// Inflate a gzip blob (as KV and the object's cache hold it) and parse it.
-    pub fn from_gzip(gz: &[u8]) -> Result<Self, String> {
-        let mut raw = Vec::with_capacity(gz.len() * 4);
-        flate2::read::MultiGzDecoder::new(gz)
-            .read_to_end(&mut raw)
-            .map_err(|e| format!("card names blob does not inflate: {e}"))?;
-        Self::parse(raw)
-    }
-
-    pub fn len(&self) -> usize {
-        self.entries.len()
-    }
-
-    pub fn is_empty(&self) -> bool {
-        self.entries.is_empty()
-    }
-
-    /// The blob's format: 1 (autocomplete only) or 2 (the names index too).
-    pub fn format(&self) -> u8 {
-        self.format
-    }
-
-    fn at(&self, (start, end): Span) -> &str {
-        &self.text[start as usize..end as usize]
-    }
-
-    fn at_derived(&self, (start, end): Span) -> &str {
-        &self.derived[start as usize..end as usize]
-    }
-
-    /// Entry `i` as `(collated, printed)`.
-    fn pair(&self, i: usize) -> (&str, &str) {
-        let e = &self.entries[i];
-        (self.at(e.collated), self.at(e.printed))
-    }
-
-    /// Whether entry `i` is a card autocomplete may offer: one with a served printing.
-    fn served(&self, i: usize) -> bool {
-        self.entries[i].classes & CLASS_EXTRA_GATE != 0
-    }
-
-    /// Entry `i`'s flavor keys with their bits.
-    fn flavor_of(&self, e: &Entry) -> Vec<(&str, u8)> {
-        self.flavor[e.flavor_from as usize..(e.flavor_from + e.flavor_len) as usize]
-            .iter()
-            .map(|&(s, t, bits)| (self.at((s, t)), bits))
-            .collect()
-    }
-
-    /// Bytes held: the two strings plus the tables — what a load adds to linear memory.
-    pub fn heap_bytes(&self) -> usize {
-        self.text.capacity()
-            + self.derived.capacity()
-            + self.entries.capacity() * std::mem::size_of::<Entry>()
-            + self.flavor.capacity() * std::mem::size_of::<(u32, u32, u8)>()
-            + self.trigram_counts.capacity() * std::mem::size_of::<u32>()
-            + self.collated.capacity()
-            + self.collated_starts.capacity() * std::mem::size_of::<u32>()
-            + self.signatures.capacity() * std::mem::size_of::<FuzzySignature>()
-    }
+/// Inflate a gzip blob (as KV and the object's cache hold it) and parse it, whatever its format.
+pub fn from_gzip(gz: &[u8]) -> Result<NameList, String> {
+    let mut raw = Vec::with_capacity(gz.len() * 4);
+    flate2::read::MultiGzDecoder::new(gz)
+        .read_to_end(&mut raw)
+        .map_err(|e| format!("card names blob does not inflate: {e}"))?;
+    NameList::parse(raw)
 }
 
 /// `collate_name` (card_engine lib.rs), verbatim: the folded lowercase string with every
@@ -368,8 +125,8 @@ pub fn autocomplete(names: &NameList, prefix: &str, limit: usize, include_extras
     // Every name the needle occurs in — the engine's `starts_with || contains` — found by ONE search
     // over the joined collated names; a name matched twice is taken once.
     let mut last = usize::MAX;
-    for at in finder.find_iter(names.collated.as_bytes()) {
-        let i = names.collated_starts.partition_point(|&s| s as usize <= at) - 1;
+    for at in finder.find_iter(names.collated().as_bytes()) {
+        let i = names.collated_starts().partition_point(|&s| s as usize <= at) - 1;
         if i == last {
             continue;
         }
@@ -385,7 +142,7 @@ pub fn autocomplete(names: &NameList, prefix: &str, limit: usize, include_extras
         let (collated, printed) = names.pair(i);
         let rank = if collated.starts_with(&needle) { 0u8 } else { 1u8 };
         let inter = shared_windows(&needle_tg, collated, &mut seen);
-        hits.push((rank, inter, names.trigram_counts[i], printed, i as u32));
+        hits.push((rank, inter, names.trigram_counts()[i], printed, i as u32));
     }
     let qn = needle_tg.len() as u64;
     let union = |inter: u32, total: u32| qn + u64::from(total) - u64::from(inter);
@@ -450,19 +207,19 @@ pub fn search_partitions(
     query: &NameQuery,
     multilingual: bool,
 ) -> Option<Result<Vec<u16>, card_engine::EngineError>> {
-    if names.format < 2 {
+    if names.format() < 2 {
         return None;
     }
     let bit = query.class_bit(multilingual);
     Some(query.scan(|q| {
         let mut found: std::collections::BTreeSet<u16> = std::collections::BTreeSet::new();
-        for e in &names.entries {
+        for e in names.entries() {
             if found.contains(&e.partition) {
                 continue;
             }
             let flavor = if e.flavor_len == 0 { Vec::new() } else { names.flavor_of(e) };
             let view =
-                NameRecordView { collated: names.at(e.collated), lower: names.at_derived(e.lower), classes: e.classes, flavor: &flavor };
+                NameRecordView { collated: names.at_collated(e.collated), lower: names.at_derived(e.lower), classes: e.classes, flavor: &flavor };
             if q.card_matches(&view, bit) {
                 found.insert(e.partition);
             }
@@ -519,7 +276,7 @@ pub fn fuzzy_plan(
     lead: f64,
     weak_below: f32,
 ) -> Option<FuzzyPlan> {
-    if names.format < 2 {
+    if names.format() < 2 {
         return None;
     }
     let probe = NamesProbe::new(folded, words);
@@ -531,9 +288,9 @@ pub fn fuzzy_plan(
     };
 
     let mut exact_certain = false;
-    for e in &names.entries {
+    for e in names.entries() {
         let flavor_named = e.flavor_len > 0 && names.flavor_of(e).iter().any(|(key, _)| probe.names_key(key));
-        if probe.names_card(names.at_derived(e.folded), names.at(e.collated)) {
+        if probe.names_card(names.at_derived(e.folded), names.at_collated(e.collated)) {
             asked.insert(e.partition);
             exact_certain |= e.best & BEST_ART_SERIES == 0;
         } else if flavor_named {
@@ -546,7 +303,7 @@ pub fn fuzzy_plan(
 
     let mut scored: Vec<(f32, u16)> = Vec::new();
     if let Some(mut fuzzy) = FuzzyProbe::new(folded) {
-        for (e, &signature) in names.entries.iter().zip(&names.signatures) {
+        for (e, &signature) in names.entries().iter().zip(names.signatures()) {
             if e.best & BEST_ART_SERIES != 0 || !fuzzy.could_clear(signature, floor) {
                 continue;
             }
@@ -574,10 +331,10 @@ pub fn fuzzy_plan(
     let mut carriers: std::collections::HashSet<&str> = std::collections::HashSet::new();
     // How many cards carry each flavor key: a key only one card carries pools with that card's name.
     let mut key_cards: std::collections::HashMap<&str, u32> = std::collections::HashMap::new();
-    for &(s, t, _) in &names.flavor {
+    for &(s, t, _) in names.flavor() {
         *key_cards.entry(names.at((s, t))).or_default() += 1;
     }
-    for e in &names.entries {
+    for e in names.entries() {
         let name = names.at_derived(e.folded);
         let oracle = probe.contains_all(name);
         english_certain |= oracle && e.best & BEST_NO_CONTAINMENT == 0;
@@ -598,7 +355,7 @@ pub fn fuzzy_plan(
     if !english_certain {
         return Some(plan(asked, true, "contained"));
     }
-    for e in &names.entries {
+    for e in names.entries() {
         if carriers.contains(names.at_derived(e.folded)) {
             asked.insert(e.partition);
         }
@@ -889,7 +646,7 @@ mod tests {
         let needles = needles(&rows);
         for k in [1u32, 3, 7] {
             let parts = partitions(&rows, k);
-            let names = NameList::parse(encode_v2(&parts)).expect("v2 blob");
+            let names = index_of(&parts);
             let (mut widened, mut answered) = (0, 0);
             for needle in &needles {
                 for limit in [20usize, 3] {
@@ -908,7 +665,7 @@ mod tests {
             assert!(answered > 1000 && widened > 0, "k={k}: the flag must widen some needle ({widened}, {answered})");
         }
         // The two the fixture is named for: an extras-only card is offered by the flag alone.
-        let names = NameList::parse(encode_v2(&partitions(&rows, 3))).expect("v2 blob");
+        let names = index_of(&partitions(&rows, 3));
         assert!(!autocomplete(&names, "shark", 20, false).contains(&"Shark".to_owned()));
         assert!(autocomplete(&names, "shark", 20, true).contains(&"Shark".to_owned()));
         // The token and the doubled name ITS reversible printing prints (both extras): the flag alone.
@@ -917,7 +674,7 @@ mod tests {
         assert_eq!(autocomplete(&names, "wurmdoubled", 20, true), ["Doubled Wurm // Doubled Wurm"]);
         // A format-1 blob holds served names only, so it cannot answer the flag (lib.rs refuses it
         // and the router asks every partition, whose engines can).
-        assert_eq!(names.format(), 2);
+        assert_eq!(names.format(), 3);
     }
 
     /// The two moved costs, pinned to what they replace: the window intersection and the trigram
@@ -948,7 +705,7 @@ mod tests {
         let list = NameList::parse(encode_for_tests(&pairs)).expect("blob");
         for i in 0..list.len() {
             collated_trigrams(list.pair(i).0, &mut name_tg);
-            assert_eq!(list.trigram_counts[i], name_tg.len() as u32);
+            assert_eq!(list.trigram_counts()[i], name_tg.len() as u32);
         }
     }
 
@@ -1035,9 +792,65 @@ mod tests {
         assert!(NameList::parse(b"sylvan-card-names/1\na\tb\tc\n".to_vec()).is_err(), "two tabs");
         assert!(NameList::parse(b"sylvan-card-names/1\nab\tAb".to_vec()).is_err(), "truncated");
         assert!(NameList::parse(vec![0xff, 0xfe]).is_err(), "not UTF-8");
-        assert!(NameList::from_gzip(b"not gzip").is_err());
+        assert!(from_gzip(b"not gzip").is_err());
         let empty = NameList::parse(NAMES_BLOB_HEADER.as_bytes().to_vec()).expect("an empty corpus");
         assert!(empty.is_empty() && autocomplete(&empty, "ab", 20, false).is_empty());
+    }
+
+    /// Format 3 is checked whole before a byte of it is believed: every cut, every byte past its
+    /// tables, a count that disagrees with its sections, a section that is not UTF-8 — each is
+    /// refused (and the router asks every partition), never half-read or a panic.
+    #[test]
+    fn a_format_3_blob_it_cannot_read_is_refused() {
+        let rows = index_corpus();
+        let v2 = NameList::parse(encode_v2(&partitions(&rows, 3))).expect("v2 blob");
+        let v3 = v2.encode_v3().expect("v3");
+        NameList::parse(v3.clone()).expect("the blob itself reads");
+        for cut in (NAMES_BLOB_HEADER_V3.len()..v3.len()).step_by(97).chain([v3.len() - 1]) {
+            assert!(NameList::parse(v3[..cut].to_vec()).is_err(), "cut at {cut} of {}", v3.len());
+        }
+        let mut longer = v3.clone();
+        longer.push(0);
+        assert!(NameList::parse(longer).is_err(), "a byte past the tables");
+        let at = NAMES_BLOB_HEADER_V3.len();
+        for field in 0..5 {
+            for delta in [1i64, -1] {
+                let mut bad = v3.clone();
+                let i = at + field * 4;
+                let v = u32::from_le_bytes(bad[i..i + 4].try_into().expect("4 bytes")) as i64 + delta;
+                bad[i..i + 4].copy_from_slice(&(v as u32).to_le_bytes());
+                assert!(NameList::parse(bad).is_err(), "header field {field} moved by {delta}");
+            }
+        }
+        let mut not_utf8 = v3.clone();
+        not_utf8[at + 20] = 0xff;
+        assert!(NameList::parse(not_utf8).is_err(), "a section that is not UTF-8");
+        // Only format 2 has a format-3 form: format 1 carries no records.
+        let pairs = vec![("ab".to_owned(), "Ab".to_owned())];
+        assert!(NameList::parse(encode_for_tests(&pairs)).expect("v1").encode_v3().is_err());
+        let empty = NameList::parse(NameList::parse(NAMES_BLOB_HEADER_V2.as_bytes().to_vec()).expect("v2").encode_v3().expect("v3"))
+            .expect("an empty format-3 corpus");
+        assert!(empty.is_empty() && fuzzy_plan(&empty, "bolt", &["bolt".to_owned()], 0.3, 0.0, 0.55).is_some());
+    }
+
+    /// Format 3 leaves the signature's hash bits to the load (`FuzzyProbe::signature_bits`, one
+    /// pass, no window set), so that pass must give `signature`'s bits for every name — ASCII on
+    /// its fast path, and everything `collated_windows_into` treats specially off it: accents,
+    /// letters that lowercase to two characters, non-Latin scripts, digits, punctuation only, empty.
+    #[test]
+    fn the_signature_bits_pass_is_the_signatures_bits() {
+        let mut names: Vec<String> =
+            index_corpus().iter().chain(corpus().iter()).map(|r| r["card_name"].as_str().expect("name").to_lowercase()).collect();
+        names.extend(
+            [
+                "", " ", "--", "a", "ab", "İstanbul", "straße", "ǅemal", "æther vial", "jötun grunt", "雷光の稲妻", "тест abc де",
+                "ΣΊΣΥΦΟΣ", "1996 world champion", "_____ goblin", "who // what // when", "ﬁre", "Lightning BOLT",
+            ]
+            .map(str::to_owned),
+        );
+        for name in &names {
+            assert_eq!(FuzzyProbe::signature_bits(name), FuzzyProbe::signature(name).bits, "{name:?}");
+        }
     }
 
     // ─── The names index (backlog n15) ───────────────────────────────────────
@@ -1057,6 +870,17 @@ mod tests {
             out.extend_from_slice(line.as_bytes());
         }
         out
+    }
+
+    /// The list a build's records load into — parsed from FORMAT 3, after checking that format 3
+    /// holds exactly the tables a format-2 load of the same records builds. Every index test below
+    /// answers from it, so each is a format-3 test with format 2 pinned beside it.
+    fn index_of(parts: &[(BufferStore, StoreStats)]) -> NameList {
+        let v2 = NameList::parse(encode_v2(parts)).expect("v2 blob");
+        let v3 = NameList::parse(v2.encode_v3().expect("v3 encodes")).expect("v3 blob");
+        assert_eq!((v2.format(), v3.format()), (2, 3));
+        v2.same_tables(&v3).expect("format 3 holds format 2's tables");
+        v3
     }
 
     /// A printing of `name` with extras, variation, flavor-name, face and language knobs.
@@ -1217,8 +1041,8 @@ mod tests {
         let mut empty = 0;
         for k in [1u32, 3, 7] {
             let parts = partitions(&rows, k);
-            let names = NameList::parse(encode_v2(&parts)).expect("blob");
-            assert_eq!(names.format(), 2);
+            let names = index_of(&parts);
+            assert_eq!(names.format(), 3);
             for tree in name_trees() {
                 for (extra, variation) in [(true, true), (false, true), (true, false), (false, false)] {
                     for multilingual in [false, true] {
@@ -1325,7 +1149,7 @@ mod tests {
             let r = rows.iter().find(|r| r["card_name"] == "Doubled Hellkite").expect("the card");
             card_engine::partition_of_oracle_id(r["oracle_id"].as_str().expect("oracle"), 7) as u16
         };
-        let names = NameList::parse(encode_v2(&partitions(&rows, 7))).expect("blob");
+        let names = index_of(&partitions(&rows, 7));
         assert_eq!(autocomplete(&names, "hellkitedoubled", 20, false), ["Doubled Hellkite // Doubled Hellkite"]);
         assert_eq!(autocomplete(&names, "doubled hell", 20, false), ["Doubled Hellkite", "Doubled Hellkite // Doubled Hellkite"]);
         assert_eq!(autocomplete(&names, "doubled hellkite // d", 20, false), ["Doubled Hellkite // Doubled Hellkite"]);
@@ -1349,7 +1173,7 @@ mod tests {
             let pairs: Vec<(String, String)> =
                 parts.iter().flat_map(|(_, stats)| stats.autocomplete_names.iter().cloned()).collect();
             let v1 = NameList::parse(encode_for_tests(&pairs)).expect("v1");
-            let v2 = NameList::parse(encode_v2(&parts)).expect("v2");
+            let v2 = index_of(&parts);
             for needle in needles(&rows) {
                 for limit in [20usize, 3] {
                     assert_eq!(autocomplete(&v2, &needle, limit, false), autocomplete(&v1, &needle, limit, false), "k={k} {needle:?}");
@@ -1390,7 +1214,7 @@ mod tests {
         let mut total = 0usize;
         for k in [3u32, 7] {
             let parts = partitions(&rows, k);
-            let names = NameList::parse(encode_v2(&parts)).expect("blob");
+            let names = index_of(&parts);
             for folded in &needles {
                 let words: Vec<String> =
                     folded.split(|c: char| !(c.is_alphanumeric() || c == '_' || c == '\'')).filter(|w| !w.is_empty()).map(str::to_owned).collect();
@@ -1549,7 +1373,7 @@ mod tests {
         let (mut everywhere, mut settled, mut none) = (0usize, 0usize, 0usize);
         for k in [3u32, 7] {
             let parts = partitions(&rows, k);
-            let names = NameList::parse(encode_v2(&parts)).expect("blob");
+            let names = index_of(&parts);
             let printed = crate::printed::PrintedList::parse(encode_printed(&parts)).expect("printed blob");
             for folded in &needles {
                 let words: Vec<String> =

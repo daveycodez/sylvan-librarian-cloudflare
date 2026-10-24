@@ -34,7 +34,7 @@
 //
 // ── WHAT IS HASHED, AND THE DELIBERATE OVER-INCLUSION ─────────────────────────
 //
-// Every `.rs` under the five crates that feed the two blobs, plus their Cargo.toml files and
+// Every `.rs` under the six crates that feed the two blobs, plus their Cargo.toml files and
 // Cargo.lock. That sweeps in `tests.rs` and the `bench_*.rs` files, which cannot affect either
 // blob — they are `cfg(test)` and example-only. The over-inclusion is on purpose: the two ways to
 // be wrong are not symmetric. A missed input ships a stale engine and darkens the site; a spurious
@@ -58,6 +58,7 @@ const SOURCE_DIRS = [
 	"engine/wasm-import/src",
 	"engine/builder/src",
 	"engine/inflate/src",
+	"engine/names-blob/src",
 ];
 
 /**
@@ -73,6 +74,7 @@ const SOURCE_FILES = [
 	"engine/wasm-import/Cargo.toml",
 	"engine/builder/Cargo.toml",
 	"engine/inflate/Cargo.toml",
+	"engine/names-blob/Cargo.toml",
 	"Cargo.toml",
 	".cargo/config.toml",
 	"Cargo.lock",

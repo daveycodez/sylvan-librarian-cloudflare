@@ -23,7 +23,8 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { gzipSync } from "node:zlib";
 import * as bg from "../../engine/wasm/pkg/sylvan_engine_wasm_bg.js";
-import { encodeCardNames } from "../../src/engine/card-names";
+import { namesCodec } from "../../scripts/names-codec";
+import { cardNamesV3, encodeCardNames } from "../../src/engine/card-names";
 import { newEngine } from "./wasm-engine";
 
 const GLUE = join(import.meta.dir, "../../engine/wasm/pkg/sylvan_engine_wasm_bg.js");
@@ -46,11 +47,14 @@ const RECORDS = [
 	.map((fields) => `${fields.join("\t")}\n`)
 	.join("");
 
-function engineWithNames() {
+/** An engine holding these records as the publishers put them: format 3 (through the committed import
+ * module's converter, as both publishers run it) — or format 2, which a Worker still reads. */
+function engineWithNames(format: 2 | 3 = 3) {
 	const engine = newEngine();
-	const raw = encodeCardNames([new TextEncoder().encode(RECORDS)]);
+	const v2 = encodeCardNames([new TextEncoder().encode(RECORDS)]);
+	const raw = format === 3 ? cardNamesV3(v2, namesCodec()) : v2;
 	expect(engine.use((g) => g.load_names(gzipSync(raw)))).toBe(6);
-	expect(engine.use((g) => g.names_format())).toBe(2);
+	expect(engine.use((g) => g.names_format())).toBe(format);
 	return engine;
 }
 
@@ -70,6 +74,16 @@ describe("include_extras survives the wasm boundary", () => {
 		]);
 		expect(answer(engine, "treasure k", false)).toEqual(["Treasure Keeper"]);
 		expect(answer(engine, "treasure k", true)).toEqual(["Treasure Keeper", "Treasure Keeper // Treasure Keeper"]);
+	});
+
+	test("format 3 answers what format 2 answers, through the committed converter and glue", () => {
+		const [v2, v3] = [engineWithNames(2), engineWithNames(3)];
+		for (const prefix of ["me", "mechtitan", "mechtitan core", "treasure k", "keeper", "zz", "m"]) {
+			for (const extras of [false, true]) expect(answer(v3, prefix, extras)).toEqual(answer(v2, prefix, extras));
+			const plan = (e: typeof v2) =>
+				e.use((g) => g.names_fuzzy_plan(prefix, JSON.stringify(prefix.split(" ")), 0.3, 0, 0.55));
+			expect(plan(v3)).toBe(plan(v2));
+		}
 	});
 
 	// The class of failure, not only this instance of it: a regenerated export whose glue was not

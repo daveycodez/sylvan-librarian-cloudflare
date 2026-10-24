@@ -32,6 +32,17 @@ struct Field {
 
 const ORACLE: u32 = 1 << 31;
 
+/// The bytes a printed form is made of: ASCII alphanumerics and the space, as one table lookup.
+const FORM_BYTE: [bool; 256] = {
+    let mut t = [false; 256];
+    let mut b = 0usize;
+    while b < 256 {
+        t[b] = b == b' ' as usize || (b as u8).is_ascii_alphanumeric();
+        b += 1;
+    }
+    t
+};
+
 /// The decoded blob.
 pub struct PrintedList {
     /// The raw blob, header included; every field is a span of it.
@@ -62,34 +73,40 @@ impl PrintedList {
         let mut fields: Vec<Field> = Vec::with_capacity(body.len() / 16);
         let mut partitions: Vec<u16> = Vec::with_capacity(body.len() / 96);
         let mut printed = 0usize;
-        for (n, line) in body.split_terminator('\n').enumerate() {
-            let card = u32::try_from(partitions.len()).map_err(|_| "too many printed-name lines".to_owned())?;
-            let mut parts = line.split('\t');
-            let partition = parts
-                .next()
-                .and_then(|p| p.parse::<u16>().ok())
-                .ok_or_else(|| format!("printed names line {}: bad partition in {line:?}", n + 1))?;
-            let oracle = parts.next().ok_or_else(|| format!("printed names line {}: no oracle name", n + 1))?;
-            let span = |field: &str| -> Result<(u32, u16), String> {
-                let start = field.as_ptr() as usize - text.as_ptr() as usize;
-                let len = u16::try_from(field.len()).map_err(|_| format!("printed names line {}: a field past 64KB", n + 1))?;
-                Ok((start as u32, len))
-            };
-            let (start, len) = span(oracle)?;
-            fields.push(Field { start, card: card | ORACLE, len });
-            let before = fields.len();
-            for form in parts {
-                if form.is_empty() || !form.bytes().all(|b| b == b' ' || b.is_ascii_alphanumeric()) {
-                    return Err(format!("printed names line {}: {form:?} is not a printed form", n + 1));
+        // ONE pass over every separator in the body (a tab ends a field, a line break a field and its
+        // line), in place of a split per line and another per field: the same fields, the same checks.
+        // `field` counts the fields of the line so far: 0 its partition, 1 its oracle name, then forms.
+        let bytes = text.as_bytes();
+        let (mut from, mut field, mut partition) = (PRINTED_BLOB_HEADER.len(), 0usize, 0u16);
+        for at in memchr::memchr2_iter(b'\t', b'\n', body.as_bytes()).map(|i| i + PRINTED_BLOB_HEADER.len()) {
+            let n = partitions.len() + 1;
+            let value = &text[from..at];
+            let len = u16::try_from(value.len()).map_err(|_| format!("printed names line {n}: a field past 64KB"))?;
+            let card = u32::try_from(partitions.len()).ok().filter(|c| c & ORACLE == 0).ok_or("too many printed-name lines")?;
+            match field {
+                0 => {
+                    partition = value.parse::<u16>().map_err(|_| format!("printed names line {n}: bad partition {value:?}"))?;
                 }
-                let (start, len) = span(form)?;
-                fields.push(Field { start, card, len });
+                1 => fields.push(Field { start: from as u32, card: card | ORACLE, len }),
+                _ => {
+                    if value.is_empty() || !value.bytes().all(|b| FORM_BYTE[usize::from(b)]) {
+                        return Err(format!("printed names line {n}: {value:?} is not a printed form"));
+                    }
+                    fields.push(Field { start: from as u32, card, len });
+                }
             }
-            if fields.len() == before {
-                return Err(format!("printed names line {}: a card with no printed name", n + 1));
+            from = at + 1;
+            if bytes[at] == b'\t' {
+                field += 1;
+                continue;
             }
-            printed += fields.len() - before;
+            match field {
+                0 => return Err(format!("printed names line {n}: no oracle name")),
+                1 => return Err(format!("printed names line {n}: a card with no printed name")),
+                forms => printed += forms - 1,
+            }
             partitions.push(partition);
+            field = 0;
         }
         fields.shrink_to_fit();
         partitions.shrink_to_fit();

@@ -373,8 +373,8 @@ export function named_fuzzy_bundle(folded: string, set_code: string, floor: numb
 export function names_autocomplete(prefix: string, limit: number, include_extras: boolean): string;
 
 /**
- * The loaded names blob's format: 1 (autocomplete only), 2 (the names index too), 0 when none is
- * loaded.
+ * The loaded names blob's format: 1 (autocomplete only), 2 or 3 (the names index too), 0 when none
+ * is loaded.
  */
 export function names_format(): number;
 

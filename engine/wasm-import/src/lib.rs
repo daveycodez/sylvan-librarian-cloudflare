@@ -198,6 +198,8 @@ const EMIT_IS_LISTS: u32 = 15;
 /// each with the partition when it stages them, and one encoder (src/engine/oracle-tag-partitions.ts)
 /// publishes both builders' blobs.
 const EMIT_ORACLE_TAGS: u32 = 16;
+/// One card-names blob in format 3 (`names_blob_v3`), whole, in one emit.
+const EMIT_NAMES_BLOB: u32 = 17;
 
 /// The chunk every streamed snapshot export is cut into: the coordinator's STAGE_BLOB_BYTES, so
 /// each emit is exactly one staged row — the same cut the host used to make itself by slicing one
@@ -1726,6 +1728,36 @@ pub extern "C" fn inflate_total_out() -> i64 {
     match INFLATE.lock().unwrap().as_ref() {
         Some(inf) => inf.total_out() as i64,
         None => -1,
+    }
+}
+
+// ─── the card-names blob, format 3 ───────────────────────────────────────────
+
+/// Format 3 of a format-2 card-names blob (raw, uncompressed — what `encodeCardNames` writes):
+/// the same records with the tables every names load used to build from them already built
+/// (`sylvan_names_blob::NameList::encode_v3`, the crate the query engine reads it with). THE
+/// converter both publishers run — the nightly through its own instance of this module, the deploy
+/// seeders through a standalone one (scripts/names-codec.ts) — so their blobs are the same bytes.
+///
+/// Consumes its input buffer and touches no import state, so any instance can run it. Emits the
+/// raw format-3 blob (EMIT_NAMES_BLOB, one emit) and returns its length, or -1 — the reason logged —
+/// when the input is not a readable format-2 blob.
+#[unsafe(no_mangle)]
+pub extern "C" fn names_blob_v3(ptr: *mut u8, len: usize) -> i64 {
+    let raw = take_buf(ptr, len);
+    if !raw.starts_with(sylvan_names_blob::NAMES_BLOB_HEADER_V2.as_bytes()) {
+        log("names_blob_v3: not a format-2 card names blob");
+        return -1;
+    }
+    match sylvan_names_blob::NameList::parse(raw).and_then(|list| list.encode_v3()) {
+        Ok(out) => {
+            emit_bytes(EMIT_NAMES_BLOB, &out);
+            out.len() as i64
+        }
+        Err(e) => {
+            log(&format!("names_blob_v3: {e}"));
+            -1
+        }
     }
 }
 

@@ -71,6 +71,7 @@ const EMIT = {
 	PRINTED: 14,
 	IS_LISTS: 15,
 	ORACLE_TAGS: 16,
+	NAMES_BLOB: 17,
 } as const;
 
 interface ImportExports {
@@ -109,6 +110,7 @@ interface ImportExports {
 	inflate_status(): number;
 	inflate_save(dest: number, cap: number): bigint;
 	inflate_total_out(): bigint;
+	names_blob_v3(ptr: number, len: number): bigint;
 	/** Absent on a blob built before the `is:` lists could be overridden (isListsRefreshable). */
 	is_lists_compiled?(): bigint;
 	is_lists_override?(ptr: number, len: number): bigint;
@@ -132,6 +134,8 @@ export class ImportWasm {
 	 * dependent phase group must restart from its externally-stored inputs.
 	 */
 	readonly nonce: string = crypto.randomUUID();
+	/** The one blob `names_blob_v3` emits, held for namesBlobV3 to hand back. */
+	private namesBlob: Uint8Array | null = null;
 
 	constructor() {
 		const module_ = wasmModule as unknown as WebAssembly.Module;
@@ -196,6 +200,9 @@ export class ImportWasm {
 					case EMIT.IS_LISTS:
 						h.onIsLists?.(view(ptr, len).slice());
 						return;
+					case EMIT.NAMES_BLOB:
+						this.namesBlob = view(ptr, len).slice();
+						return;
 					default:
 						throw new Error(`wasm-import emitted unknown kind ${kind}`);
 				}
@@ -256,6 +263,25 @@ export class ImportWasm {
 			// `cap`, not the returned length — the allocation's own size.
 			this.ex.dealloc(ptr, cap);
 		}
+	}
+
+	/**
+	 * Format 3 of a format-2 card-names blob (raw in, raw out — src/engine/card-names.ts
+	 * `cardNamesV3`): the engine's own tables built once, here, instead of on every names load.
+	 * Stateless in wasm, so any instance runs it; the coordinator uses a transient one.
+	 */
+	namesBlobV3(raw: Uint8Array): Uint8Array {
+		const ptr = this.ex.alloc(raw.byteLength);
+		new Uint8Array(this.ex.memory.buffer, ptr, raw.byteLength).set(raw);
+		this.namesBlob = null;
+		// Consumes the input buffer, which is why there is no dealloc.
+		const n = Number(this.ex.names_blob_v3(ptr, raw.byteLength));
+		const out = this.namesBlob as Uint8Array | null;
+		this.namesBlob = null;
+		if (n < 0 || out === null || out.byteLength !== n) {
+			throw new Error("wasm-import names_blob_v3 failed (see [wasm-import] log)");
+		}
+		return out;
 	}
 
 	setHandlers(handlers: ImportEmitHandlers): void {

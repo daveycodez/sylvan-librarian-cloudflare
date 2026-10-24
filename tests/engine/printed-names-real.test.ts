@@ -20,7 +20,8 @@ import { describe, expect, test } from "bun:test";
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { gzipSync } from "node:zlib";
-import { encodeCardNames, ledByPartition } from "../../src/engine/card-names";
+import { namesCodec } from "../../scripts/names-codec";
+import { cardNamesV3, encodeCardNames, ledByPartition } from "../../src/engine/card-names";
 import { encodePrintedNames, PRINTED_NAMES_HEADER } from "../../src/engine/printed-names";
 import { FUZZY_SIMILARITY_FLOOR, FUZZY_SIMILARITY_LEAD, FUZZY_WEAK_BELOW } from "../../src/engine/types";
 import { newEngine, type TestEngine } from "./wasm-engine";
@@ -67,7 +68,7 @@ describe.skipIf(!readable)(`the printed-names blob vs every partition's containm
 		const raw = encodePrintedNames(printed);
 		const gz = gzipSync(raw);
 		const index = newEngine();
-		index.use((g) => g.load_names(gzipSync(encodeCardNames(names))));
+		index.use((g) => g.load_names(gzipSync(cardNamesV3(encodeCardNames(names), namesCodec()))));
 		const started = performance.now();
 		const forms = index.use((g) => (g as unknown as PrintedGlue).load_printed_names(gz));
 		const loadMs = performance.now() - started;

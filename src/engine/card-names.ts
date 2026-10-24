@@ -20,7 +20,8 @@
 // through its `card-names.tsv` sidecar (scripts/seed-remote-kv.ts), which the builder writes led, the
 // nightly through one staged emit per partition build (import-coordinator.ts), which the coordinator
 // leads (`ledByPartition`) — so the two blobs are the same bytes by construction; the import harness
-// checks it (scripts/import-harness/card-names-check.ts).
+// checks it (scripts/import-harness/card-names-check.ts). Both then turn that format-2 blob into
+// FORMAT 3 (CARD_NAMES_HEADER_V3) through the one converter (`cardNamesV3`), which is what they put.
 //
 // WHERE IT LIVES: one KV value per build, `store:card-names-v<fmt>-<built_at>.store:0`, named by the
 // manifest (`names_key`, with its stored length as `names_bytes`). Shaped like the routing filter's
@@ -39,6 +40,48 @@ import type { StoreManifest } from "./types";
  * autocomplete alone, answering every name lookup by asking every partition.
  */
 export const CARD_NAMES_HEADER = "sylvan-card-names/2\n";
+
+/**
+ * FORMAT 3's first line (engine/names-blob NAMES_BLOB_HEADER_V3) — what both publishers put in KV
+ * since the wake fix: format 2's records with every table a names load used to build from them
+ * already built (the joined collated haystack, the records cut into columns, the sort-and-dedupe
+ * window counts behind the autocomplete trigram counts and the typo-stage signatures), so a load
+ * only inflates, checks and copies — 39ms -> 9.5ms in V8 and 43ms -> 10ms in local workerd on the
+ * 2026-10-23 corpus, for ~2% more gzipped bytes (596,607 -> 608,269). Binary after this line.
+ *
+ * Its OWN marker, not the archive's: the archive format and STORE_CONTENT_GENERATION do not move,
+ * because nothing an archive holds changed. An object on a Worker from before format 3 finds the
+ * header unknown and refuses the blob — autocomplete and name lookups fan out from it, exactly as
+ * for a build that published no names — and this Worker still reads formats 1 and 2 (a store
+ * published before format 3, or by a publisher whose conversion failed: see cardNamesV3).
+ */
+export const CARD_NAMES_HEADER_V3 = "sylvan-card-names/3\n";
+
+/** What turns a format-2 blob into format 3: the import module's `names_blob_v3`, either instance. */
+export interface NamesCodec {
+	namesBlobV3(raw: Uint8Array): Uint8Array;
+}
+
+/**
+ * The blob a publisher puts in KV: format 3 of `encodeCardNames`'s format-2 blob, through `codec` —
+ * THE one converter both publishers run (engine/names-blob, compiled into the import module; the
+ * nightly through a transient instance, the deploy seeders through scripts/names-codec.ts), so the
+ * two blobs stay the same bytes. Throws when the conversion fails; a publisher that catches it
+ * publishes the format-2 blob, which every Worker on this build or the one before reads.
+ */
+export function cardNamesV3(raw: Uint8Array, codec: NamesCodec): Uint8Array {
+	const out = codec.namesBlobV3(raw);
+	if (!startsWith(out, CARD_NAMES_HEADER_V3) || cardNamesCount(out) !== cardNamesCount(raw)) {
+		throw new Error(`card names: the format-3 blob is not the format-2 blob's ${cardNamesCount(raw)} records`);
+	}
+	return out;
+}
+
+function startsWith(bytes: Uint8Array, header: string): boolean {
+	if (bytes.byteLength < header.length) return false;
+	for (let i = 0; i < header.length; i++) if (bytes[i] !== header.charCodeAt(i)) return false;
+	return true;
+}
 
 /** Fields per record line: partition, flags, collated, printed, lower, folded, flavor keys. */
 const RECORD_FIELDS = 7;
@@ -142,8 +185,12 @@ export function encodeCardNames(parts: Iterable<Uint8Array>): Uint8Array {
 	return encoder.encode(CARD_NAMES_HEADER + sorted.map((l) => `${l}\n`).join(""));
 }
 
-/** How many records a raw blob holds (its lines after the header). */
+/** How many records a raw blob holds: its lines after the header, or format 3's entry count. */
 export function cardNamesCount(raw: Uint8Array): number {
+	if (startsWith(raw, CARD_NAMES_HEADER_V3)) {
+		const at = CARD_NAMES_HEADER_V3.length;
+		return raw.byteLength < at + 4 ? 0 : new DataView(raw.buffer, raw.byteOffset + at, 4).getUint32(0, true);
+	}
 	let n = 0;
 	for (const b of raw) if (b === 10) n++;
 	return Math.max(0, n - 1);
