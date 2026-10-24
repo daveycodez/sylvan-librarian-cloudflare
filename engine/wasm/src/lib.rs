@@ -401,18 +401,39 @@ fn finish_store_load_gzip_inner() -> Result<(), String> {
 //
 // The stream is frames, one per LZ4_BLOCK_BYTES of raw archive:
 //
-//   [raw_len u32 LE][comp_len u32 LE][xxh32(compressed) u32 LE][LZ4 block, comp_len bytes]
+//   [raw_len u32 LE][comp_len u32 LE][checksum(compressed) u32 LE][LZ4 block, comp_len bytes]
 //
 // Independent blocks (no dictionary carried between frames), so a frame decodes straight into its
-// place in the store buffer. The per-frame xxh32 is what gzip's CRC was: the check that turns a
+// place in the store buffer. The per-frame checksum is what gzip's CRC was: the check that turns a
 // readable-and-wrong cached copy into a refused load. The format's version lives in the cache
 // key's family tag (`:lz4v1`), not in the bytes — an unknown tag is a cache miss on the JS side.
+//
+// THE CHECKSUM IS xxh3 (its low 32 bits) in every frame the encoder writes now, marked by
+// LZ4_FRAME_XXH3 in `raw_len`; a frame without the bit carries xxh32, as every frame did before, and
+// still reads. xxh3 runs its simd128 path over the ~20MB a wake checks — see LZ4_FRAME_XXH3 for the
+// measurement and for why a reader that predates the bit refuses a marked frame instead of misreading it.
 
 /// Raw bytes per LZ4 frame. 1MB keeps every crossing and the one buffered partial frame small;
 /// the ratio barely depends on it (21.38MB at 1MB blocks against 21.35MB at 4MB, 2026-09-24).
 pub const LZ4_BLOCK_BYTES: usize = 1 << 20;
-/// `raw_len`, `comp_len`, `xxh32`.
+/// `raw_len`, `comp_len`, `checksum`.
 const LZ4_FRAME_HEADER: usize = 12;
+
+/// The `raw_len` bit that says the frame's checksum is xxh3 (`xxh3_64`, its low 32 bits) rather
+/// than xxh32. The encoder sets it on every frame; the reader accepts either.
+///
+/// WHY xxh3: the cache is read on every wake of every object, and checking its ~20MB of frames was
+/// ~2.4ms of xxh32; xxh3 runs its simd128 path. A whole LZ4 load of a 39.9MB partition (2026-10-23)
+/// measured 18.3ms -> 16.7ms in V8 and 18ms -> 16ms in local workerd.
+///
+/// WHY A BIT, AND THIS ONE: a reader from before it masks nothing, so to it a marked frame declares
+/// over 2GB of raw bytes, which `check_frame_header` refuses (`raw > LZ4_BLOCK_BYTES`) before a byte
+/// is decoded — the load fails clean, the object drops its cached copy (store.ts
+/// `localCompressedArchive`'s invalidate), and its next load reads KV and caches xxh32 frames this
+/// reader accepts too. A rollback therefore costs one failed load per object, never a misread. No
+/// cache-key change: a key change would make every object pay a KV reload on deploy, where with the
+/// bit the frames it already holds keep loading until the next publish rewrites them.
+const LZ4_FRAME_XXH3: u32 = 1 << 31;
 
 struct Lz4Load {
     buf: AlignedVec,
@@ -421,9 +442,25 @@ struct Lz4Load {
     pending: Vec<u8>,
 }
 
-fn frame_header(bytes: &[u8]) -> (usize, usize, u32) {
+/// A checksum kind and its value, as a frame header declares them.
+#[derive(Clone, Copy)]
+struct FrameSum {
+    xxh3: bool,
+    value: u32,
+}
+
+impl FrameSum {
+    fn of(xxh3: bool, block: &[u8]) -> FrameSum {
+        let value = if xxh3 { xxhash_rust::xxh3::xxh3_64(block) as u32 } else { xxhash_rust::xxh32::xxh32(block, 0) };
+        FrameSum { xxh3, value }
+    }
+}
+
+/// `(raw_len, comp_len, checksum)` of a frame header, the checksum kind taken off `raw_len`.
+fn frame_header(bytes: &[u8]) -> (usize, usize, FrameSum) {
     let word = |at: usize| u32::from_le_bytes([bytes[at], bytes[at + 1], bytes[at + 2], bytes[at + 3]]);
-    (word(0) as usize, word(4) as usize, word(8))
+    let raw = word(0);
+    ((raw & !LZ4_FRAME_XXH3) as usize, word(4) as usize, FrameSum { xxh3: raw & LZ4_FRAME_XXH3 != 0, value: word(8) })
 }
 
 /// A frame header that could not have been written by `store_lz4_frame`: refused before its
@@ -439,8 +476,8 @@ fn check_frame_header(raw: usize, comp: usize) -> Result<(), String> {
 }
 
 /// Verify one whole frame and decode it into its place at the end of the store buffer.
-fn decode_frame(load: &mut Lz4Load, raw: usize, sum: u32, block: &[u8]) -> Result<(), String> {
-    if xxhash_rust::xxh32::xxh32(block, 0) != sum {
+fn decode_frame(load: &mut Lz4Load, raw: usize, sum: FrameSum, block: &[u8]) -> Result<(), String> {
+    if FrameSum::of(sum.xxh3, block).value != sum.value {
         return Err("store_load_lz4_chunk: frame checksum mismatch (corrupt cached copy)".to_string());
     }
     let at = load.buf.len();
@@ -593,10 +630,10 @@ fn lz4_frame_of(bytes: &[u8], index: usize) -> Vec<u8> {
     // Infallible: the output is sized by the crate's own bound for this input.
     let comp = lz4_flex::block::compress_into(block, &mut out[LZ4_FRAME_HEADER..]).unwrap_or(0);
     out.truncate(LZ4_FRAME_HEADER + comp);
-    let sum = xxhash_rust::xxh32::xxh32(&out[LZ4_FRAME_HEADER..], 0);
-    out[0..4].copy_from_slice(&(block.len() as u32).to_le_bytes());
+    let sum = FrameSum::of(true, &out[LZ4_FRAME_HEADER..]);
+    out[0..4].copy_from_slice(&(block.len() as u32 | LZ4_FRAME_XXH3).to_le_bytes());
     out[4..8].copy_from_slice(&(comp as u32).to_le_bytes());
-    out[8..12].copy_from_slice(&sum.to_le_bytes());
+    out[8..12].copy_from_slice(&sum.value.to_le_bytes());
     out
 }
 
@@ -2698,6 +2735,7 @@ mod tests {
         let stream = lz4_stream(&raw);
         assert!(stream.len() < raw.len(), "the sample must actually compress");
         assert_eq!(frame_header(&stream).0, LZ4_BLOCK_BYTES, "full frames carry a whole block");
+        assert!(frame_header(&stream).2.xxh3, "the encoder writes xxh3 frames");
         for piece in [5, 7_919, 1 << 20, stream.len()] {
             let out = lz4_decode(&stream, raw.len(), piece).expect("decode");
             assert_eq!(&out[..], &raw[..], "piece size {piece}");
@@ -2722,11 +2760,59 @@ mod tests {
         assert!(err.contains("left over"), "{err}");
 
         let mut huge = stream.clone();
-        huge[0..4].copy_from_slice(&((LZ4_BLOCK_BYTES as u32) + 1).to_le_bytes());
+        huge[0..4].copy_from_slice(&((LZ4_BLOCK_BYTES as u32 + 1) | LZ4_FRAME_XXH3).to_le_bytes());
         assert!(lz4_decode(&huge, raw.len(), 4096).expect_err("oversized frame").contains("raw bytes"));
+
+        // A frame whose kind bit was lost is checked as xxh32 and refused, never decoded.
+        let mut unmarked = stream.clone();
+        unmarked[3] &= 0x7f;
+        assert!(lz4_decode(&unmarked, raw.len(), 4096).expect_err("kind flipped").contains("checksum"));
 
         let err = lz4_decode(&stream, raw.len() - 1, 4096).expect_err("past the total");
         assert!(err.contains("declared total"), "{err}");
+    }
+
+    /// The frames every cache held before xxh3 — the same header with xxh32 in it and no kind bit —
+    /// still load, alone and mixed with xxh3 frames in one stream, and a corrupt one is still refused.
+    #[test]
+    fn lz4_still_reads_xxh32_frames() {
+        let raw = codec_sample(2 * LZ4_BLOCK_BYTES + 999);
+        let as_xxh32 = |frame: &[u8]| {
+            let mut f = frame.to_vec();
+            let (len, _, _) = frame_header(&f);
+            let sum = xxhash_rust::xxh32::xxh32(&f[LZ4_FRAME_HEADER..], 0);
+            f[0..4].copy_from_slice(&(len as u32).to_le_bytes());
+            f[8..12].copy_from_slice(&sum.to_le_bytes());
+            f
+        };
+        let (mut old, mut mixed) = (Vec::new(), Vec::new());
+        for index in 0..3 {
+            let frame = lz4_frame_of(&raw, index);
+            old.extend_from_slice(&as_xxh32(&frame));
+            mixed.extend_from_slice(&if index == 1 { as_xxh32(&frame) } else { frame });
+        }
+        for stream in [&old, &mixed] {
+            for piece in [5, 7_919, stream.len()] {
+                assert_eq!(&lz4_decode(stream, raw.len(), piece).expect("decode")[..], &raw[..]);
+            }
+        }
+        let mut flipped = old.clone();
+        flipped[LZ4_FRAME_HEADER + 40] ^= 0x01;
+        assert!(lz4_decode(&flipped, raw.len(), 4096).expect_err("checksum").contains("checksum"));
+    }
+
+    /// What a reader from before the kind bit does with a frame that carries it: its header check
+    /// (`raw == 0 || raw > LZ4_BLOCK_BYTES`, unchanged since r3) sees the bit as part of `raw_len` and
+    /// refuses the frame before decoding a byte — never a misread. Pinned against that check spelled
+    /// as it was, so a later change to the bit or the block size cannot quietly break it.
+    #[test]
+    fn a_reader_without_the_kind_bit_refuses_an_xxh3_frame() {
+        let frame = lz4_frame_of(&codec_sample(LZ4_BLOCK_BYTES), 0);
+        let old_raw = u32::from_le_bytes([frame[0], frame[1], frame[2], frame[3]]) as usize;
+        assert!(old_raw == 0 || old_raw > LZ4_BLOCK_BYTES, "a pre-xxh3 reader would accept raw_len {old_raw}");
+        let last = lz4_frame_of(&codec_sample(LZ4_BLOCK_BYTES + 1), 1);
+        let old_raw = u32::from_le_bytes([last[0], last[1], last[2], last[3]]) as usize;
+        assert!(old_raw > LZ4_BLOCK_BYTES, "a short last frame too");
     }
 
     /// The exported trio, end to end over a real store: encode the ACTIVE store frame by frame,

@@ -24,9 +24,10 @@ flate2 = { version = "1", default-features = false, features = ["zlib-rs"] }
 # holds (trusted input), so the unchecked encoder; decode keeps `checked-decode`, so even a frame
 # whose checksum somehow matched cannot write outside its output slice.
 lz4_flex = { version = "0.11", default-features = false, features = ["std", "checked-decode"] }
-# xxh32 over each compressed frame: the LZ4 cache's stand-in for gzip's CRC, which is what keeps a
-# readable-and-wrong cached copy (the 2026-08-13 incident) a refused load rather than a served one.
-xxhash-rust = { version = "0.8", features = ["xxh32"] }
+# A checksum over each compressed frame: the LZ4 cache's stand-in for gzip's CRC, which is what keeps
+# a readable-and-wrong cached copy (the 2026-08-13 incident) a refused load rather than a served one.
+# xxh3 is what the encoder writes (its simd128 path); xxh32 is still read, from frames written before.
+xxhash-rust = { version = "0.8", features = ["xxh32", "xxh3"] }
 
 # card_engine's `rand` pulls in `getrandom`, which refuses to compile for
 # wasm32-unknown-unknown unless a backend is chosen. The `wasm_js` feature +
