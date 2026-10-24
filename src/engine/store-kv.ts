@@ -2505,6 +2505,73 @@ export async function gzipBytes(bytes: Uint8Array): Promise<Uint8Array> {
 export const STORE_CONTENT_GENERATION = 96;
 
 /**
+ * Which per-build SIDE BLOBS — and which formats of them — the code publishing a store writes beside
+ * its archives. Every publisher stamps it into the manifest as `publish_features` (the nightly's
+ * stepManifest, scripts/seed-remote-kv.ts, scripts/seed-local-store.ts), and scripts/store-age.ts
+ * rebuilds a live store whose manifest carries LESS than this build's value.
+ *
+ * WHY A THIRD NUMBER. A side blob (the card-names, printed-names and oracle-tags blobs, the routing
+ * filter) is named per build and is never carried forward, so a build publishes exactly the blobs
+ * its own code knew how to make. A commit that adds a new one — or a new format of one — changes
+ * neither the archive's layout (ARCHIVE_FORMAT_VERSION) nor its stored values
+ * (STORE_CONTENT_GENERATION), so the deploy's gate found the live store current and skipped the
+ * import, and the new blob first appeared at the next 11:17 UTC nightly. That happened twice on
+ * 2026-10-23: the oracle-tags map (40cc963b) and the card-names format 3 (94e73317) both deployed
+ * onto stores that carried neither, on both accounts. Bumping the generation instead would have
+ * worked, but it says the stored values changed when they did not, and readers of a generation
+ * cannot tell the two apart.
+ *
+ * WHEN TO BUMP: whenever a build starts publishing a new side blob, or a new format of one that the
+ * readers prefer, AND the deploy should not wait for the nightly to publish it. Add a line below.
+ * A bump costs one store import per account on its first deploy (the cost of any deploy that lands
+ * after a Scryfall refresh); every deploy after it reads the value back and skips again.
+ *
+ * ONLY EVER COMPARED WITH `<` (publishFeaturesShort). A rollback's older code meeting a manifest
+ * from newer code must not rebuild: that store carries everything the older code would publish,
+ * and the readers ignore blobs they do not know. A manifest without the field — every one published
+ * before it existed — reads as 0.
+ *
+ * Unlike the generation it is NOT a claim about each blob's presence: a run that could not build
+ * one (a deploy landing mid-run, a build dir without the file) still stamps the value, because the
+ * value is what the publishing CODE does. Each blob stays read-tolerant, and the next nightly
+ * publishes it; a rule that rebuilt until the blob appeared could rebuild on every deploy.
+ *
+ *   0 — the field is absent: every manifest published before 2026-10-23. Such a store may carry
+ *       the card-names blob (n8, formats 1-2), the printed-names blob (x24) and the routing filter;
+ *       it carries no oracle-tags blob and no names format 3.
+ *   1 — the oracle-tags blob (`store:card-otags-v<fmt>-<built_at>.store:0`, manifest
+ *       `otags_key`/`otags_bytes`, src/engine/oracle-tag-partitions.ts; f6ec7e6d/40cc963b): which
+ *       partitions hold each `otag:` value, so an `otag:` search asks only those.
+ *   2 — the card-names blob in format 3 (`sylvan-card-names/3`, CARD_NAMES_HEADER_V3 in
+ *       src/engine/card-names.ts; 94e73317): its lookup tables built at publish instead of on
+ *       every wake.
+ */
+export const STORE_PUBLISH_FEATURES = 2;
+
+/** A manifest's `publish_features`, with anything but a non-negative integer — absent above all — read as 0. Pure. */
+export function publishFeaturesOf(manifest: { publish_features?: unknown } | null | undefined): number {
+	const value = manifest?.publish_features;
+	return typeof value === "number" && Number.isInteger(value) && value >= 0 ? value : 0;
+}
+
+/**
+ * Why a live store must be rebuilt for the side blobs this code publishes — or null when it carries
+ * them all. `<` and never `!=`: a manifest from NEWER code (a rollback deploy) is not short of
+ * anything. Pure; scripts/store-age.ts prints the reason and exits with its rebuild status.
+ */
+export function publishFeaturesShort(
+	manifest: { publish_features?: unknown } | null | undefined,
+	code: number = STORE_PUBLISH_FEATURES,
+): string | null {
+	const published = publishFeaturesOf(manifest);
+	if (published >= code) return null;
+	return (
+		`the published store carries publish features ${published}, but this deploy publishes features ${code} — ` +
+		"it lacks a side blob (or a blob format) this code writes beside every store."
+	);
+}
+
+/**
  * Chunk key for a store. Keyed by store_key, so publishes never collide.
  *
  * THE IMMUTABILITY EVERY READER RELIES ON STARTS AT THE MANIFEST. Readers cache these keys for a

@@ -27,6 +27,7 @@ import {
 	PARTITION_HASH_ALGO,
 	routingFilterKey,
 	STORE_CONTENT_GENERATION,
+	STORE_PUBLISH_FEATURES,
 } from "../src/engine/store-kv";
 import { tagAliasesKey } from "../src/engine/tag-aliases";
 import type { StoreManifest, StoreManifestPartition } from "../src/engine/types";
@@ -106,6 +107,7 @@ manifest.chunk_count = partitions.reduce((n, p) => n + p.chunk_count, 0);
 manifest.card_count = partitions.reduce((n, p) => n + p.card_count, 0);
 manifest.printing_count = partitions.reduce((n, p) => n + p.printing_count, 0);
 manifest.content_generation = STORE_CONTENT_GENERATION;
+manifest.publish_features = STORE_PUBLISH_FEATURES;
 manifest.partition_hash ??= PARTITION_HASH_ALGO;
 manifest.chunks = undefined;
 const problem = manifestShapeProblem(manifest);

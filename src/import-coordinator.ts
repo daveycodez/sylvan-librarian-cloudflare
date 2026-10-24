@@ -213,6 +213,7 @@ import {
 	partitionStoreKey,
 	REGION_LIVE_PREFIX,
 	STORE_CONTENT_GENERATION,
+	STORE_PUBLISH_FEATURES,
 	type StagedRow,
 	storeKeyStem,
 	writeManifest,
@@ -4409,6 +4410,9 @@ export class ImportCoordinator extends DurableObject<Env> {
 			upstream_commit: "vendored", // UPSTREAM.lock is a build-time concern; readers ignore this field
 			format_version: formatVersion,
 			content_generation: STORE_CONTENT_GENERATION,
+			// What this code publishes beside the store (STORE_PUBLISH_FEATURES): a deploy of code that
+			// publishes more rebuilds rather than waiting for tomorrow's run.
+			publish_features: STORE_PUBLISH_FEATURES,
 			store_bytes: sum((p) => p.store_bytes),
 			store_gzip_bytes: sum((p) => p.store_gzip_bytes ?? 0),
 			chunk_count: sum((p) => p.chunk_count),

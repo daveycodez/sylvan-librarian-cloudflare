@@ -61,6 +61,7 @@ import {
 	PARTITION_HASH_ALGO,
 	routingFilterKey,
 	STORE_CONTENT_GENERATION,
+	STORE_PUBLISH_FEATURES,
 } from "../src/engine/store-kv";
 import { tagAliasesKey } from "../src/engine/tag-aliases";
 import type { StoreManifest, StoreManifestPartition } from "../src/engine/types";
@@ -131,6 +132,10 @@ manifest.printing_count = partitions.reduce((n, p) => n + p.printing_count, 0);
 // drift the way a copy in Rust would. Without it store-age reads a natively
 // seeded store as generation 0 and demands a rebuild forever.
 manifest.content_generation = STORE_CONTENT_GENERATION;
+// The side blobs this checkout publishes (STORE_PUBLISH_FEATURES), stamped for the same reason:
+// without it store-age reads a natively seeded store as features 0 and rebuilds on every deploy.
+// Never carried from the live manifest — it describes THIS publish's code.
+manifest.publish_features = STORE_PUBLISH_FEATURES;
 // The hash NAME must match the one implementation everything routes by; the
 // builder stamps it, but an older skeleton without it must not publish as
 // "unspecified" — loaders refuse a manifest whose hash they do not recognise,

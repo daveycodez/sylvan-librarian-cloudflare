@@ -677,6 +677,25 @@ async function main(): Promise<number> {
 		return 1;
 	}
 
+	// ── the nightly stamps the side blobs its code publishes (STORE_PUBLISH_FEATURES), so the next
+	// deploy's store-age finds the store carrying them and skips rather than rebuilding again ──
+	{
+		const { STORE_PUBLISH_FEATURES, publishFeaturesShort } = await import("../../src/engine/store-kv");
+		const stamped = (JSON.parse(String(ownManifest)) as { publish_features?: unknown }).publish_features;
+		const short = publishFeaturesShort(JSON.parse(String(ownManifest)));
+		console.log(
+			`publish features: the manifest carries ${JSON.stringify(stamped)}, this code publishes ${STORE_PUBLISH_FEATURES}` +
+				(short ? ` — store-age would rebuild: ${short}` : " — the next deploy's store-age skips"),
+		);
+		if (stamped !== STORE_PUBLISH_FEATURES || short) {
+			console.error(
+				`\nFAILED: the nightly must stamp publish_features ${STORE_PUBLISH_FEATURES} into its manifest, or every ` +
+					"deploy after it rebuilds the store for side blobs it already carries",
+			);
+			return 1;
+		}
+	}
+
 	// ── x28: the largest partition the nightly built stays the full margin under the (scaled) cut ──
 	// The sizing guarantees a largest partition PROJECTED at or under the ceiling, and a projection
 	// is allowed PARTITION_PROJECTION_ERROR_PCT of error — so the built one may reach ceiling x 1.0125,

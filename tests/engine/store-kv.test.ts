@@ -38,7 +38,10 @@ import {
 	missingManifestChunks,
 	PARTITION_HASH_ALGO,
 	partitionStoreKey,
+	publishFeaturesOf,
+	publishFeaturesShort,
 	readManifest,
+	STORE_PUBLISH_FEATURES,
 	type StagedRow,
 	splitStore,
 	storeKeyStem,
@@ -791,6 +794,73 @@ describe("the dev and deploy staleness gates are the same gate", () => {
 // The publishers, pinned at the source level the way the store-age gate is:
 // every one of them writes the single manifest key, and every sweeper protects
 // the build the live manifest references.
+// STORE_PUBLISH_FEATURES: the side blobs a build publishes beside its archives. A deploy of code that
+// publishes more than the live manifest says it carries rebuilds; one that publishes less (a
+// rollback) never does — so the comparison is `<`, and absent reads as 0.
+describe("the publish-features rule", () => {
+	test("the code's value is above every manifest published before the field (they read as 0)", () => {
+		expect(Number.isInteger(STORE_PUBLISH_FEATURES)).toBe(true);
+		expect(STORE_PUBLISH_FEATURES).toBeGreaterThanOrEqual(2); // 1 the oracle-tags blob, 2 names format 3
+		expect(publishFeaturesOf({})).toBe(0);
+	});
+
+	test("absent, malformed and negative values read as 0", () => {
+		expect(publishFeaturesOf(null)).toBe(0);
+		expect(publishFeaturesOf(undefined)).toBe(0);
+		expect(publishFeaturesOf({ publish_features: "2" })).toBe(0);
+		expect(publishFeaturesOf({ publish_features: 1.5 })).toBe(0);
+		expect(publishFeaturesOf({ publish_features: -1 })).toBe(0);
+		expect(publishFeaturesOf({ publish_features: Number.NaN })).toBe(0);
+		expect(publishFeaturesOf({ publish_features: 3 })).toBe(3);
+	});
+
+	test("a manifest without the field rebuilds, with a reason naming both values", () => {
+		const why = publishFeaturesShort({}, 2);
+		expect(why).toContain("publish features 0");
+		expect(why).toContain("publishes features 2");
+	});
+
+	test("a lower value rebuilds", () => {
+		expect(publishFeaturesShort({ publish_features: 1 }, 2)).toContain("publish features 1");
+	});
+
+	test("an equal value skips: the rebuild that stamped it does not loop", () => {
+		expect(publishFeaturesShort({ publish_features: 2 }, 2)).toBeNull();
+		expect(publishFeaturesShort({ publish_features: STORE_PUBLISH_FEATURES })).toBeNull();
+	});
+
+	test("a higher value skips: a rollback's older code never rebuilds a newer store", () => {
+		expect(publishFeaturesShort({ publish_features: 3 }, 2)).toBeNull();
+		expect(publishFeaturesShort({ publish_features: STORE_PUBLISH_FEATURES + 1 })).toBeNull();
+	});
+
+	test("the deploy never carries the live manifest's value onto its own publish", () => {
+		expect(CARRIED_MANIFEST_BLOCKS as readonly string[]).not.toContain("publish_features");
+		const next = carryManifestBlocks({ publish_features: 1 }, { publish_features: 9, cache: { v: 1 } });
+		expect(next.publish_features).toBe(1);
+	});
+
+	test("store-age rebuilds through the rule, and only on `<`", () => {
+		const src = readFileSync(join(import.meta.dir, "../../scripts/store-age.ts"), "utf8");
+		expect(src).toMatch(
+			/const featuresShort = publishFeaturesShort\(manifest\);\s*if \(featuresShort\) \{\s*console\.error\(`store-age: \$\{featuresShort\}`\);[\s\S]{0,200}?process\.exit\(1\);/,
+		);
+		// Never a `!==` comparison: that would rebuild a newer store on every rollback deploy.
+		expect(src).not.toMatch(/publish_features\s*!==/);
+		expect(src).not.toMatch(/!==\s*STORE_PUBLISH_FEATURES/);
+		const rule = readFileSync(join(import.meta.dir, "../../src/engine/store-kv.ts"), "utf8");
+		expect(rule).toMatch(/if \(published >= code\) return null;/);
+	});
+
+	test("every publisher stamps the code's value into the manifest it writes", () => {
+		const script = (p: string) => readFileSync(join(import.meta.dir, "../../scripts", p), "utf8");
+		expect(script("seed-remote-kv.ts")).toContain("manifest.publish_features = STORE_PUBLISH_FEATURES;");
+		expect(script("seed-local-store.ts")).toContain("manifest.publish_features = STORE_PUBLISH_FEATURES;");
+		const coordinator = readFileSync(join(import.meta.dir, "../../src/import-coordinator.ts"), "utf8");
+		expect(coordinator).toContain("publish_features: STORE_PUBLISH_FEATURES,");
+	});
+});
+
 describe("the publishers", () => {
 	const read = (p: string) => readFileSync(join(import.meta.dir, "../../scripts", p), "utf8");
 

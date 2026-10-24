@@ -22,6 +22,8 @@
 //
 // "Usable" means a manifest that parses and carries a build time, a byte
 // count and a chunk count, AND describes data Scryfall has not superseded.
+// (Also this code's builder generation and archive format, and at least the
+// side blobs this code publishes beside a store — STORE_PUBLISH_FEATURES.)
 //
 // That last test is the real one: it asks upstream when it last regenerated
 // its dumps and compares against when this store was built. A store built
@@ -52,6 +54,7 @@ import {
 	chunkKey,
 	formatManifestKey,
 	MANIFEST_KEY,
+	publishFeaturesShort,
 	routingFilterKey,
 	STORE_CONTENT_GENERATION,
 } from "../src/engine/store-kv";
@@ -212,6 +215,7 @@ let manifest: {
 	chunk_count?: number;
 	store_key?: string;
 	content_generation?: number;
+	publish_features?: number;
 	partition_count?: number;
 	format_version?: number;
 	partitions?: { store_key?: string; store_bytes?: number; chunk_count?: number }[];
@@ -241,6 +245,19 @@ if (publishedGeneration !== STORE_CONTENT_GENERATION) {
 			`generation ${STORE_CONTENT_GENERATION} — its contents no longer match what the code queries.`,
 	);
 	console.error("           Treating it as no store at all, so the build rebuilds it.");
+	process.exit(1);
+}
+// The side blobs a build publishes beside its archives (the oracle-tags map, the card-names blob's
+// format, ...) are named per build and never carried forward, and adding one moves neither the
+// generation nor the format — so without this check a deploy of code that publishes a new one finds
+// the store current and the blob waits for the next nightly (2026-10-23, twice). LOWER only, never
+// different: a rollback's older code meeting a newer manifest is short of nothing (see
+// STORE_PUBLISH_FEATURES, src/engine/store-kv.ts). The rebuild is a whole import, the same as any
+// deploy after a Scryfall refresh; it stamps this code's value, so the next deploy skips again.
+const featuresShort = publishFeaturesShort(manifest);
+if (featuresShort) {
+	console.error(`store-age: ${featuresShort}`);
+	console.error("           Treating it as no store at all, so the build rebuilds it and publishes them.");
 	process.exit(1);
 }
 // THE FORMAT AND THE GENERATION HAVE TO MOVE TOGETHER, and only the generation

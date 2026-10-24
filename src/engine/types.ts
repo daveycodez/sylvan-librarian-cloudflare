@@ -803,6 +803,13 @@ export interface StoreManifest {
 	 * which the deploy reads as "older than generation 1" and rebuilds.
 	 */
 	content_generation?: number;
+	/**
+	 * Which side blobs (and blob formats) the code that published this store writes beside every
+	 * build (see STORE_PUBLISH_FEATURES). Written by every publisher, never carried forward from the
+	 * manifest being replaced. Absent on manifests published before it was recorded, which read as 0;
+	 * the deploy rebuilds a store whose value is below its own code's.
+	 */
+	publish_features?: number;
 	/** Uncompressed archive size; the wasm buffer is preallocated from this. */
 	store_bytes: number;
 	/**

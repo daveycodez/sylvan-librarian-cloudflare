@@ -593,6 +593,8 @@ async function deployPublish(
 		partitions: source.partitions?.map((p) => ({ ...p, store_key: rename(p.store_key) })),
 		...(source.names_key ? { names_key: rename(source.names_key) } : {}),
 		...(source.otags_key ? { otags_key: rename(source.otags_key) } : {}),
+		// seed-remote-kv.ts stamps its own code's value, never the replaced manifest's.
+		publish_features: storeKv.STORE_PUBLISH_FEATURES,
 	};
 	// seed-remote-kv.ts: the manifest this one replaces is its own format's, else the newest live one.
 	const live = await deployUpload.readPublishedManifests<StoreManifest>(dkv);
@@ -697,6 +699,10 @@ async function deployPublish(
 		`the deploy's store ${d} is live, ${g2} is its rollback, ${g1} is gone`,
 	);
 	check((await kv.get(PUBLISHING_KEY)) === null, "the deploy released its lease");
+	check(
+		deployed.publish_features === storeKv.STORE_PUBLISH_FEATURES && storeKv.publishFeaturesShort(deployed) === null,
+		`the deploy's manifest carries publish features ${deployed.publish_features}, so the next deploy's store-age skips`,
+	);
 	const published = snapshot(kv);
 
 	await a.drive();
@@ -730,6 +736,10 @@ async function deployPublish(
 	check(
 		a.runState() === "done" && String(live.built_at) === g5 && live.previous_built_at === d,
 		`once the lease is free it publishes ${g5}, with the deploy's ${d} as its rollback`,
+	);
+	check(
+		live.publish_features === storeKv.STORE_PUBLISH_FEATURES && storeKv.publishFeaturesShort(live) === null,
+		`the nightly's manifest carries publish features ${live.publish_features} too`,
 	);
 	check(generations(kv).join() === [g5, d].join(), `KV ends holding ${g5} and ${d}`);
 	check(
