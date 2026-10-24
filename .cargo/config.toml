@@ -3,5 +3,12 @@
 # `wasm_js` routes it to the JS crypto API, which Cloudflare Workers provide.
 # The matching cargo feature is enabled in engine/wasm/Cargo.toml; this flag is
 # the second half of getrandom's two-part opt-in.
+#
+# `+simd128`: both wasm blobs (the query engine and the import module) are built
+# with WebAssembly SIMD, which workerd (V8) runs everywhere Workers run. Rust's
+# own code is unchanged — the gain is the dependencies that switch to their
+# simd128 paths at compile time (memchr's substring and byte searches, the
+# LZ4 and inflate loops LLVM vectorises) — and the gate's native-vs-wasm and
+# N=2-vs-N=10 differentials pin that the answers did not move.
 [target.wasm32-unknown-unknown]
-rustflags = ['--cfg', 'getrandom_backend="wasm_js"']
+rustflags = ['--cfg', 'getrandom_backend="wasm_js"', '-C', 'target-feature=+simd128']
