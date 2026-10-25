@@ -44,6 +44,38 @@ use regex::Regex;
 /// longer a wrong answer but a reported one (see `REGEX_MATCH_FAILED` below).
 const BACKTRACK_LIMIT: usize = 8192;
 
+/// LOCAL PATCH (Cloudflare port): the limits a candidate that exhausted [`BACKTRACK_LIMIT`] is
+/// retried at, in order, each drawing on the query's [`ESCALATION_POOL`].
+///
+/// 8,192 PER CANDIDATE IS A PRICE ON THE TEXT AS WELL AS THE PATTERN, and an ordinary pattern can
+/// pay more than that on one long card without being pathological. The shape that found it is
+/// mtg-seeker's "tempered token" (2026-10-25): `whenever you sacrifice[^.]*((?!\. whenever).)*?create`
+/// is a class loop followed by a lookahead loop that can take the same characters, so the VM tries
+/// every split between them — quadratic in the sentence, not exponential. Over the 123 cards
+/// Scryfall holds with "whenever you", "sacrific" and "create" in their full oracle text, two
+/// needed more than 8,192 backtracks (and none more than 16,384), and the first of them refused
+/// the whole query as `regex execution limit exceeded`: api.scryfall.com answers 15 cards, this
+/// engine answered a 400. Each alone is cheap — 1.3ms native for all 123 texts, unbounded.
+///
+/// A RAISED PER-CANDIDATE LIMIT WOULD HAVE BEEN THE WRONG LEVER: it multiplies what EVERY candidate
+/// may spend, which is exactly the cost upstream's 8,192 bounds. The ladder spends more only on the
+/// candidates that need it and only out of a fixed per-query purse, so the worst a query can add is
+/// the purse — and a genuinely exponential pattern (`((?=a)a+)+(?!b)b` on sixty `a`s) climbs it,
+/// empties it, and is refused exactly as before.
+///
+/// ×4 per rung, so a text that needs 16,384 is charged 32,768 and not a whole top rung.
+const ESCALATION_LIMITS: [usize; 4] = [32_768, 131_072, 524_288, 2_097_152];
+
+/// LOCAL PATCH (Cloudflare port): backtracks the [`ESCALATION_LIMITS`] retries may spend in one
+/// query, per thread (one engine per partition object), refilled by [`clear_regex_match_failed`].
+///
+/// Each retry is charged its whole limit up front — fancy_regex does not report what it actually
+/// spent — so this bounds the work from above. 4,194,304 backtracks measured ~75ms native on the
+/// exponential pattern above, which is the most a query can add here; it covers 128 first-rung
+/// rescues, or one climb to the top rung. Without the ladder the same query's worst case was
+/// already larger: every candidate that stays under 8,192 spends it, uncapped in count.
+const ESCALATION_POOL: usize = 4_194_304;
+
 /// Prefix on a compile error that must surface as an unsupported-regex rejection
 /// rather than an engine decline: the pattern is invalid for the public search
 /// surface, so retrying it on the SQL path would fail the same way.
@@ -61,6 +93,9 @@ thread_local! {
     /// later match on the thread short-circuits to `false`: the answer is already
     /// known to be wrong, so there is nothing to gain by computing more of it.
     static REGEX_MATCH_FAILED: Cell<bool> = const { Cell::new(false) };
+
+    /// LOCAL PATCH (Cloudflare port): what this query's [`ESCALATION_LIMITS`] retries have spent.
+    static ESCALATION_SPENT: Cell<usize> = const { Cell::new(0) };
 }
 
 /// Whether a match on this thread has already aborted on the backtrack limit.
@@ -68,9 +103,23 @@ pub(crate) fn regex_match_failed() -> bool {
     REGEX_MATCH_FAILED.with(Cell::get)
 }
 
-/// Reset before bind/evaluate so a prior query on this thread cannot poison the next.
+/// Reset before bind/evaluate so a prior query on this thread cannot poison the next — and refill
+/// the query's [`ESCALATION_POOL`], for the same reason.
 pub(crate) fn clear_regex_match_failed() {
     REGEX_MATCH_FAILED.with(|c| c.set(false));
+    ESCALATION_SPENT.with(|c| c.set(0));
+}
+
+/// Charge `limit` to the query's escalation pool; false (and nothing charged) when it cannot pay.
+fn charge_escalation(limit: usize) -> bool {
+    ESCALATION_SPENT.with(|spent| {
+        let next = spent.get().saturating_add(limit);
+        if next > ESCALATION_POOL {
+            return false;
+        }
+        spent.set(next);
+        true
+    })
 }
 
 /// Take and clear the failure flag; `Some(message)` when a match aborted at runtime.
@@ -95,7 +144,50 @@ enum RegexEngine {
     /// The linear-time engine. Every pattern that can be, is.
     Fast(Regex),
     /// The backtracking engine: lookaround and backreferences only.
-    Backtrack(Arc<fancy_regex::Regex>),
+    Backtrack(Arc<BacktrackRegex>),
+}
+
+/// A backtracking pattern at [`BACKTRACK_LIMIT`], plus its [`ESCALATION_LIMITS`] rungs — each
+/// compiled the first time a candidate needs it, which nearly no query ever does.
+#[derive(Debug)]
+struct BacktrackRegex {
+    base: fancy_regex::Regex,
+    rungs: [std::sync::OnceLock<Option<fancy_regex::Regex>>; ESCALATION_LIMITS.len()],
+}
+
+/// The one way a backtracking query regex is built: seeking, at `limit`. See `CompiledRegex::compile`.
+fn build_backtrack(cased: &str, limit: usize) -> Result<fancy_regex::Regex, fancy_regex::Error> {
+    fancy_regex::RegexBuilder::new(cased).backtrack_limit(limit).seek(true).build()
+}
+
+impl BacktrackRegex {
+    fn is_match(&self, haystack: &str) -> bool {
+        if REGEX_MATCH_FAILED.with(Cell::get) {
+            return false;
+        }
+        match self.base.is_match(haystack) {
+            Ok(m) => return m,
+            Err(fancy_regex::Error::RuntimeError(_)) => {}
+            Err(_) => return false,
+        }
+        for (rung, &limit) in self.rungs.iter().zip(ESCALATION_LIMITS.iter()) {
+            if !charge_escalation(limit) {
+                break;
+            }
+            // The rung compiles the same source the base did, so it cannot fail where the base
+            // compiled; `None` is only a defensive stop.
+            let Some(re) = rung.get_or_init(|| build_backtrack(self.base.as_str(), limit).ok()) else {
+                break;
+            };
+            match re.is_match(haystack) {
+                Ok(m) => return m,
+                Err(fancy_regex::Error::RuntimeError(_)) => {}
+                Err(_) => return false,
+            }
+        }
+        REGEX_MATCH_FAILED.with(|c| c.set(true));
+        false
+    }
 }
 
 /// One compiled query pattern, plus the one fact about it the matcher needs on every candidate.
@@ -348,12 +440,11 @@ impl CompiledRegex {
             // from 2.8 s to 9 ms over the 38,705 oracle texts, and a battery of 47 lookaround and
             // backreference patterns answered identically to the unbounded, unseeked VM on every
             // one of them. A pattern with nothing to seek on (`(?=a)(?=b)`) keeps the old search.
-            Err(linear_err) => match fancy_regex::RegexBuilder::new(&cased)
-                .backtrack_limit(BACKTRACK_LIMIT)
-                .seek(true)
-                .build()
-            {
-                Ok(re) => Ok(CompiledRegex { engine: RegexEngine::Backtrack(Arc::new(re)), self_reference }),
+            Err(linear_err) => match build_backtrack(&cased, BACKTRACK_LIMIT) {
+                Ok(base) => Ok(CompiledRegex {
+                    engine: RegexEngine::Backtrack(Arc::new(BacktrackRegex { base, rungs: Default::default() })),
+                    self_reference,
+                }),
                 Err(_) => Err(format!("invalid regex '{pattern}': {linear_err}")),
             },
         }
@@ -361,7 +452,8 @@ impl CompiledRegex {
 
     /// Does this pattern match anywhere in `haystack`?
     ///
-    /// Exceeding `BACKTRACK_LIMIT` returns `false` AND raises
+    /// Exceeding `BACKTRACK_LIMIT` — and, LOCAL PATCH (Cloudflare port), every
+    /// [`ESCALATION_LIMITS`] rung the query's pool can still pay for — returns `false` AND raises
     /// [`REGEX_MATCH_FAILED`], which the query entry points read once at the end
     /// and turn into an unsupported-regex error. That is what this used to get
     /// wrong: the limit was treated as "no match", a silent divergence from
@@ -376,19 +468,7 @@ impl CompiledRegex {
     pub(crate) fn is_match(&self, haystack: &str) -> bool {
         match &self.engine {
             RegexEngine::Fast(re) => re.is_match(haystack),
-            RegexEngine::Backtrack(re) => {
-                if REGEX_MATCH_FAILED.with(Cell::get) {
-                    return false;
-                }
-                match re.is_match(haystack) {
-                    Ok(m) => m,
-                    Err(fancy_regex::Error::RuntimeError(_)) => {
-                        REGEX_MATCH_FAILED.with(|c| c.set(true));
-                        false
-                    }
-                    Err(_) => false,
-                }
-            }
+            RegexEngine::Backtrack(re) => re.is_match(haystack),
         }
     }
 
@@ -401,7 +481,7 @@ impl CompiledRegex {
     pub(crate) fn as_str(&self) -> &str {
         match &self.engine {
             RegexEngine::Fast(re) => re.as_str(),
-            RegexEngine::Backtrack(re) => re.as_str(),
+            RegexEngine::Backtrack(re) => re.base.as_str(),
         }
     }
 

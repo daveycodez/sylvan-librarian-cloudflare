@@ -323,13 +323,20 @@ fn lookarounds_answer_what_the_text_says() {
 
 /// The other half: a pattern that DOES run out of budget is refused. It is not answered short.
 ///
-/// Eight bare lookaheads leave the engine nothing to seek on, so the search walks every character
-/// of Baldur's Gate Wilderness at a backtrack per alternative and exhausts the budget there.
-/// Before the fix each of these was `Ok` with whatever the walk had found before that card.
+/// A nested repeat in front of a lookahead that refuses every candidate: the VM tries every way of
+/// cutting a line into `.+` pieces before giving up, which is exponential in the line, so it climbs
+/// the whole escalation ladder (card_engine `regex_compat::ESCALATION_LIMITS`) and empties the
+/// query's purse on the first long line it meets. Before the budget was read, each of these was `Ok`
+/// with whatever the walk had found before that card.
+///
+/// LOCAL PATCH (Cloudflare port), 2026-10-25: this was eight bare lookaheads,
+/// `(?=zq)|(?=zx)|…|(?=zr)`, which walk every character at a backtrack per alternative — LINEAR in
+/// the text, ~12K backtracks on Baldur's Gate Wilderness and ~16K on Day Vs. Night. The ladder now
+/// answers that pattern (correctly: nothing), so it no longer stands for "a pattern that runs out".
 #[test]
 fn an_exhausted_budget_is_a_refusal_not_a_short_page() {
     let store = store();
-    let exhausting = r"(?=zq)|(?=zx)|(?=zw)|(?=zv)|(?=zu)|(?=zt)|(?=zs)|(?=zr)";
+    let exhausting = r"((?=.).+)+(?!e)e";
     for unique in ["card", "printing"] {
         for extras in [false, true] {
             for tree in [

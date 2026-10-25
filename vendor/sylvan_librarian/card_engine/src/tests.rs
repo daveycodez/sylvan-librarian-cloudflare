@@ -13583,6 +13583,72 @@ fn regex_budget_does_not_scale_with_the_length_of_the_text() {
     assert!(take_regex_match_failed().is_none());
 }
 
+/// LOCAL PATCH (Cloudflare port): a candidate that needs more than 8,192 backtracks is retried
+/// up the escalation ladder instead of refusing the whole query.
+///
+/// mtg-seeker's tempered-token queries of 2026-10-25: a class loop, then a lookahead loop that can
+/// take the same characters, so the VM tries every split between them. Each text below is a real
+/// full oracle text (Effluence Devourer; a nontoken-sacrifice Eldrazi Spawn maker) that MATCHES,
+/// needs between 8,192 and 16,384 backtracks to prove it (Effluence Devourer under both patterns,
+/// the Spawn maker under the second), and refused the query outright at the flat budget — api.scryfall.com answers 15 and 9 cards for the two patterns, every one of them
+/// reached here now.
+#[test]
+fn regex_budget_escalates_for_a_quadratic_candidate() {
+    use crate::regex_compat::{clear_regex_match_failed, take_regex_match_failed};
+
+    let texts = [
+        "whenever you sacrifice effluence devourer or another creature, it perpetually gains \"{2}, exile this card from your graveyard: create an x/x green ooze creature token, where x is this card's power. activate only as a sorcery.\"\nblitz {b}{r}{g} (if you cast this spell for its blitz cost, it gains haste and \"when this creature dies, draw a card.\" sacrifice it at the beginning of the next end step.)",
+        "devoid (this card has no color.)\nmenace\nwhenever you sacrifice a nontoken permanent, create a 0/1 colorless eldrazi spawn creature token with \"sacrifice this token: add {c}.\"",
+    ];
+    for pattern in [
+        r"whenever you sacrifice[^.]*((?!\. whenever).)*?create",
+        r"whenever you ([^.]* or )?sacrifice[^.]*((?!\. whenever).)*?(—(.|\n•)*?)?create [^.]*creature tokens?",
+    ] {
+        let re = crate::filter::compile_search_regex_for_test(pattern);
+        assert!(re.is_backtracking(), "{pattern:?}: the lookahead must route this to the backtracking engine");
+        for text in texts {
+            clear_regex_match_failed();
+            assert!(re.is_match(text), "{pattern:?} must match {text:?}");
+            assert!(take_regex_match_failed().is_none(), "{pattern:?} refused a quadratic candidate");
+        }
+    }
+    // And the answer is the pattern's, not the ladder's: a candidate it refuses is still refused.
+    let re = crate::filter::compile_search_regex_for_test(r"whenever you sacrifice[^.]*((?!\. whenever).)*?create");
+    clear_regex_match_failed();
+    let refused = "whenever you sacrifice another creature or artifact, put a +1/+1 counter on target creature you control and it gains trample until end of turn. whenever a creature dies, create a 1/1 black rat creature token.";
+    assert!(!re.is_match(refused));
+    assert!(take_regex_match_failed().is_none());
+}
+
+/// LOCAL PATCH (Cloudflare port): the ladder draws on a per-query purse, so an exponential
+/// pattern still exhausts it and is refused — and `clear_regex_match_failed` refills it, so one
+/// refused query does not leave the next one without.
+#[test]
+fn regex_escalation_pool_is_per_query() {
+    use crate::regex_compat::{clear_regex_match_failed, take_regex_match_failed};
+
+    let exponential = crate::filter::compile_search_regex_for_test("((?=a)a+)+(?!b)b");
+    let quadratic = crate::filter::compile_search_regex_for_test(r"whenever you sacrifice[^.]*((?!\. whenever).)*?create");
+    let hay = format!("{}b", "a".repeat(60));
+    let text = "whenever you sacrifice effluence devourer or another creature, it perpetually gains \"{2}, exile this card from your graveyard: create an x/x green ooze creature token, where x is this card's power. activate only as a sorcery.\"\nblitz {b}{r}{g} (if you cast this spell for its blitz cost, it gains haste and \"when this creature dies, draw a card.\" sacrifice it at the beginning of the next end step.)";
+
+    clear_regex_match_failed();
+    // One climb does not empty the purse (it is sized for more than one top rung's worth); a few
+    // exponential candidates in the same query do, each climbing as far as what is left can pay.
+    for _ in 0..8 {
+        assert!(!exponential.is_match(&hay));
+        assert!(take_regex_match_failed().is_some(), "an exponential candidate must still exhaust the budget");
+    }
+    // The flag is taken but the purse is still empty within this query: a quadratic candidate that
+    // needs a rung now has nothing to climb with.
+    assert!(!quadratic.is_match(text));
+    assert!(take_regex_match_failed().is_some(), "an emptied purse must refuse, not answer false");
+
+    clear_regex_match_failed();
+    assert!(quadratic.is_match(text), "the next query starts with a full purse");
+    assert!(take_regex_match_failed().is_none());
+}
+
 // And children reorder cheapest-tier-first regardless of written order, and
 // equal-tier children keep their written order (stable sort).
 #[test]
