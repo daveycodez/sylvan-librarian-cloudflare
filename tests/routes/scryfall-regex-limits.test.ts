@@ -437,3 +437,57 @@ describe("a pattern Scryfall would run and the engine's own budget will not", ()
 		expect(response.status).toBe(400);
 	});
 });
+
+describe("a tempered token after a character class is a term, not a refusal", () => {
+	// mtg-seeker, 2026-10-25: a `[^.]*` followed by a group holding a lookahead and a lazy loop. The
+	// text rules here accept every one of these, as api.scryfall.com does — the 400 Sylvan answered
+	// for #1 and #4 came from the ENGINE running out of backtracks (card_engine
+	// `regex_compat::ESCALATION_LIMITS`; tests/engine/regex-escalation-real.test.ts is the corpus
+	// half). This half pins that the parser and the term policy never become the thing refusing them.
+	// The trailing numbers are api.scryfall.com's card totals that day, which the local corpus matched.
+	const ANSWERED = [
+		String.raw`fo:/whenever you sacrifice[^.]*((?!\. whenever).)*?create/`, // #1: 15
+		String.raw`fo:/whenever you sacrifice((?!\. whenever).)*?create/`, // #2: 15
+		"fo:/whenever you sacrifice[^.]*create/", // #3: 11
+		String.raw`fo:/whenever you ([^.]* or )?sacrifice[^.]*((?!\. whenever).)*?(—(.|\n•)*?)?create [^.]*creature tokens?/`, // #4: 9
+		String.raw`o:/whenever you [^.]*((?!\. whenever).)*?draw a card/`, // 224
+		String.raw`fo:/\([^)]*((?!\)).)*?enters/`, // 784
+		"o:/[.()] ?(?=whenever)whenever [^.]*sacrifice/", // 404
+		String.raw`o:/(when|whenever) [^.]*((?!\.)(.))*?(create|draw) a/`, // 2,199
+		"o:/whenever [^.,]*(?<!another )creature you control dies/", // 104
+		"o:/target [^.]*?((?!opponent).)+? controls? gains/", // 175
+		String.raw`o:/sacrifice [^.]*(?!.*draw)\./`, // 3,035
+		String.raw`fo:/when[^.]*((?!\. when).)*?token/`, // 2,336
+		String.raw`o:/(?<=\. )[^.]*?(create|draw)((?!\.).)*?tokens?/`, // 690
+		"fo:/[^.]*((?!xyz).)*?zz/", // 27
+		String.raw`o:/the [^.]*((?!\. the).)*?quest/`, // 16
+		String.raw`fo:/(?<!\w)[^.]*((?!\. ).)*?ninja/`, // 36
+	];
+
+	test("each is kept whole, warns nothing, and reaches the engine", async () => {
+		for (const q of ANSWERED) {
+			expect({ q, ...scryfallTermPolicy(q) }).toMatchObject({ q, query: q, warnings: [], allIgnored: false });
+			// The harness engine is a fake, so the status says only that nothing before it refused.
+			const response = await search(q);
+			expect({ q, status: response.status }).toEqual({ q, status: 200 });
+		}
+	});
+
+	test("#5 stays Scryfall's complexity refusal, and an over-nested one its nesting refusal", async () => {
+		const five = String.raw`fo:/when(ever)? (a|an|another|one or more|each|equipped|enchanted|that|target)\b[^.]*\bcreatures?\b[^.]*\b(dies|die|is put into a graveyard from the battlefield|are put into a graveyard from the battlefield)\b((?!\. whenever).)*?create [^.]*creature tokens?/`;
+		const response = await search(five);
+		expect(response.status).toBe(400);
+		expect(await json(response)).toEqual({
+			object: "error",
+			code: "bad_request",
+			status: 400,
+			warnings: [ignored("fo:/when(ever)? (a|\u2026", "Regular expression too complex.")],
+			details: "All of your terms were ignored.",
+		});
+		const nested = String.raw`o:/(you|each player) [^.]*((?!\. (you|each)).)*?(sacrifice|discard)s?/`;
+		expect(scryfallTermPolicy(nested)).toMatchObject({
+			allIgnored: true,
+			warnings: [ignored("o:/(you|each player\u2026", "Too many nested groups.")],
+		});
+	});
+});
