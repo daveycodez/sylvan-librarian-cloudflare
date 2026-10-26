@@ -79,6 +79,7 @@ import {
 	hasNestedScryfallDisplayOption,
 	type KeywordTables,
 	NESTED_DISPLAY_OPTIONS_DETAILS,
+	SCRYFALL_LEX,
 	SCRYFALL_ONLY_ORDERS,
 	scryfallTermPolicyFor,
 	TOO_MANY_REGEX_DETAILS,
@@ -609,7 +610,7 @@ export async function cardsSearchHandler(
 	// `is:split` into `layout:split`, and only one of those two forces the extras gate.
 	let expandedDerivedTerms: readonly ExpandedDerivedTerm[] = [];
 	try {
-		const parsed = parser.parseWithDirectives(policy.query, await ctx.tagAliases());
+		const parsed = parser.parseWithDirectives(policy.query, await ctx.tagAliases(), SCRYFALL_LEX);
 		filterTree = parsed.tree;
 		// The policy has already lifted every display option out of the query text (they are not
 		// terms on Scryfall); anything the parser still finds is folded after them.
@@ -1159,7 +1160,7 @@ export async function cardsRandomHandler(
 		let loweredRegexTerms: readonly LoweredRegexTerm[] = [];
 		let expandedDerivedTerms: readonly ExpandedDerivedTerm[] = [];
 		try {
-			const parsed = parser.parseWithDirectives(policy.query, await ctx.tagAliases());
+			const parsed = parser.parseWithDirectives(policy.query, await ctx.tagAliases(), SCRYFALL_LEX);
 			tree = parsed.tree;
 			// Out of band from the tree for the same two reasons `/cards/search` carries them out of
 			// band: `name:/bolt/` is lowered to a literal and `is:split` is expanded to `layout:split`

@@ -6,6 +6,7 @@ import {
 	type DirectiveFound,
 	type ExpandedDerivedTerm,
 	InvalidRegexPatternError,
+	type LexOptions,
 	type LoweredRegexTerm,
 	ParseError,
 	parseScryfallQuery,
@@ -22,7 +23,7 @@ export interface WireParser {
 	 * (RouteContext.tagAliases); `otag:`/`atag:` terms resolve through it. Omitted, every tag
 	 * spelling is taken as the slug it is typed as.
 	 */
-	parseScryfallQuery(query: string, tagAliases?: TagAliasTables): unknown;
+	parseScryfallQuery(query: string, tagAliases?: TagAliasTables, options?: LexOptions): unknown;
 	/**
 	 * Same, plus the in-query directives the string carried (upstream #893) and the warnings the
 	 * rewrite passes raised — today, `is:` values this server has no data for, which the search
@@ -31,6 +32,11 @@ export interface WireParser {
 	parseWithDirectives(
 		query: string,
 		tagAliases?: TagAliasTables,
+		/**
+		 * How the lexer reads characters upstream's grammar refuses — the Scryfall-compatible surface
+		 * passes SCRYFALL_LEX (query-terms.ts); `/search` passes nothing and keeps upstream's lexer.
+		 */
+		options?: LexOptions,
 	): {
 		tree: unknown;
 		directives: readonly DirectiveFound[];
@@ -66,9 +72,10 @@ export interface WireParser {
 }
 
 const realParser: WireParser = {
-	parseScryfallQuery: (query: string, tagAliases?: TagAliasTables) => parseScryfallQuery(query, tagAliases),
-	parseWithDirectives: (query: string, tagAliases?: TagAliasTables) =>
-		parseScryfallQueryWithDirectives(query, tagAliases),
+	parseScryfallQuery: (query: string, tagAliases?: TagAliasTables, options?: LexOptions) =>
+		parseScryfallQuery(query, tagAliases, options),
+	parseWithDirectives: (query: string, tagAliases?: TagAliasTables, options?: LexOptions) =>
+		parseScryfallQueryWithDirectives(query, tagAliases, options),
 	isParseError: (err: unknown) => err instanceof ParseError,
 	queryBudgetMessage: (err: unknown) => {
 		if (err instanceof QueryBudgetExceeded) return err.userMessage;

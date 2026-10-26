@@ -20,7 +20,7 @@ import { checkQueryByteLength } from "./query-budget";
 import { validateRegexPatterns } from "./regex-budget";
 import { flattenAndDeduplicateCompounds, rewriteQuery } from "./rewrite";
 import { braceCloseIndex, findCloseIndex, opensRegex, QUOTE_CHARS } from "./spans";
-import { foldTypographicQuotes, isWordCont } from "./tokenizer";
+import { foldTypographicQuotes, isWordCont, type LexOptions } from "./tokenizer";
 
 export { EMPTY_TAG_ALIASES, type TagAliasTables, withTagAliases } from "./card-query-nodes";
 export { ParseError } from "./errors";
@@ -47,7 +47,7 @@ export {
 export { validateRegexPatterns } from "./regex-budget";
 export { flattenAndDeduplicateCompounds, regexPlainLiteral, rewriteQuery } from "./rewrite";
 export { canonicalStringify } from "./serialize";
-export { foldTypographicQuotes } from "./tokenizer";
+export { foldTypographicQuotes, type LexOptions } from "./tokenizer";
 
 /**
  * The shared post-parse pipeline (mirrors api.parsing.post_parse.finalize_query, upstream #1050):
@@ -68,11 +68,11 @@ export function finalizeQuery(queryIn: Query): Query {
  * Parse a Scryfall search query into a card-specific AST
  * (mirrors api.parsing.parse_scryfall_query: byte-length check => parse => finalize).
  */
-export function parseScryfallQueryAst(query: string | null | undefined): Query {
+export function parseScryfallQueryAst(query: string | null | undefined, options?: LexOptions): Query {
 	if (query !== null && query !== undefined) {
 		checkQueryByteLength(query);
 	}
-	return finalizeQuery(parseQuery(query));
+	return finalizeQuery(parseQuery(query, options));
 }
 
 /**
@@ -82,8 +82,12 @@ export function parseScryfallQueryAst(query: string | null | undefined): Query {
  * distinction); use canonicalStringify() to obtain the byte-exact JSON string
  * the Python side would produce.
  */
-export function parseScryfallQuery(query: string | null | undefined, tagAliases?: TagAliasTables): FilterTree {
-	return withTagAliases(tagAliases, () => parseScryfallQueryAst(query).toJson());
+export function parseScryfallQuery(
+	query: string | null | undefined,
+	tagAliases?: TagAliasTables,
+	options?: LexOptions,
+): FilterTree {
+	return withTagAliases(tagAliases, () => parseScryfallQueryAst(query, options).toJson());
 }
 
 /**
@@ -104,6 +108,7 @@ export function parseScryfallQuery(query: string | null | undefined, tagAliases?
 export function parseScryfallQueryWithDirectives(
 	query: string | null | undefined,
 	tagAliases?: TagAliasTables,
+	options?: LexOptions,
 ): {
 	tree: FilterTree;
 	directives: readonly DirectiveFound[];
@@ -114,7 +119,7 @@ export function parseScryfallQueryWithDirectives(
 	// `tagAliases` is the store build's alias -> slug map (src/engine/tag-aliases.ts); the tag
 	// terms resolve through it inside `toJson()`, which is why the scope covers the whole parse.
 	return withTagAliases(tagAliases, () => {
-		const parsed = parseScryfallQueryAst(query);
+		const parsed = parseScryfallQueryAst(query, options);
 		return {
 			tree: parsed.toJson(),
 			directives: parsed.directives,

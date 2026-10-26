@@ -62,10 +62,18 @@ import {
 	SUPPORTED_IS_VALUES,
 } from "../../parser/rewrite";
 import { isKnownSetCode } from "../../parser/set-dates.gen";
-import { isWordCont, type Token, TT, tokenize } from "../../parser/tokenizer";
+import { isWordCont, type LexOptions, type Token, TT, tokenize } from "../../parser/tokenizer";
 import { DIRECTIVE_TABLES } from "../enums";
 import { blockSetCodes, blockValueCode, setNameCode, setNameCodes } from "./set-blocks.gen";
 import { NO_SET_GROUPS, type SetGroups } from "./set-groups";
+
+/**
+ * How THIS surface lexes: `[` and `]` are word characters, as they are on api.scryfall.com, where
+ * upstream's lexer — and so `/search` — refuses them. See tokenizer.ts LexOptions for the
+ * measurements. Every lex on the compat surface passes it: the parse in routes.ts and the scans in
+ * this file, which must agree with that parse on where a term ends.
+ */
+export const SCRYFALL_LEX: LexOptions = { bracketsInWords: true };
 
 /** Scryfall's syntax budget, independent of the engine's post-rewrite safety budget. */
 export const TOO_MANY_REGEX_DETAILS = "Too many regular expression operators used";
@@ -97,7 +105,7 @@ const SCRYFALL_REGEX_KEYWORDS: ReadonlySet<string> = new Set([
 export function exceedsScryfallRegexBudget(query: string): boolean {
 	let tokens: Token[];
 	try {
-		tokens = tokenize(foldTypographicQuotes(query));
+		tokens = tokenize(foldTypographicQuotes(query), SCRYFALL_LEX);
 	} catch (error) {
 		// Keep the existing syntax/term-policy error for queries that cannot be tokenized.
 		if (error instanceof LexError) return false;
@@ -310,7 +318,7 @@ function classifyDisplayOption(keyword: string, rawValue: string): LeafVerdict {
 export function hasNestedScryfallDisplayOption(query: string): boolean {
 	let tokens: Token[];
 	try {
-		tokens = tokenize(foldTypographicQuotes(query));
+		tokens = tokenize(foldTypographicQuotes(query), SCRYFALL_LEX);
 	} catch (error) {
 		if (error instanceof LexError) return false;
 		throw error;
@@ -3517,14 +3525,28 @@ function scanPieces(source: string): Piece[] {
 			if (c === '"' || c === "'" || (c === "/" && opensPattern(src, pos))) {
 				// A quoted string or a regex literal: run to its closing delimiter, honoring `\`.
 				pos++;
+				let closed = false;
 				while (pos < n) {
 					const d = src[pos] as string;
 					if (d === "\\" && pos + 1 < n) pos += 2;
 					else if (d === c) {
 						pos++;
+						closed = true;
 						break;
 					} else pos++;
 				}
+				// THE CLOSING `/` OF A PATTERN ENDS ITS TERM, and what is glued behind it is the next
+				// one. Measured on api.scryfall.com 2026-10-25 (anchor `t:goblin` = 561):
+				// `t:goblin o:/haste/b` is `t:goblin o:/haste/ b`'s 55, and an unescaped `/` inside a
+				// class closes the pattern there as it does in the lexer — `o:/a[/]b/` answers 7,694
+				// with `Invalid expression “o:/a[/” was ignored. Invalid regular expression: brackets
+				// [] not balanced.`, the leftover `]b/` searched as the name word `b` (7,694), and
+				// `-o:/a[/]b/ t:goblin` quotes `-o:/a[/` (330 = `t:goblin b`). This scan ran the piece
+				// on to the next space, so the whole `o:/a[/]b/` was judged as the valid pattern
+				// `a[/]b`, kept, and handed to a parser that lexes the pattern `a[` — 400 `Failed to
+				// parse query`. The lexer always ended the pattern there; now the term does too. Only
+				// at the top of this level: a group is re-scanned piece by piece (policyLevel).
+				if (closed && c === "/" && depth === 0) break;
 				continue;
 			}
 			if (c === "{") {
@@ -3772,7 +3794,7 @@ function gluedRest(rest: string): string | null {
 	if (number !== null) return `${number[1]}name:${number[2]}`;
 	if (text === "-") return null;
 	try {
-		tokenize(text);
+		tokenize(text, SCRYFALL_LEX);
 	} catch {
 		return null;
 	}

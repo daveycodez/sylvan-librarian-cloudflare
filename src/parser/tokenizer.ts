@@ -132,15 +132,39 @@ export function isWordCont(c: string): boolean {
  * "and". Deliberately NOT "preceded by a word char", which would also swallow the first
  * apostrophe of "urza''" and leave the second one opening a string that never closes.
  */
-function scanWordEnd(src: string[], n: number, j: number): number {
+function scanWordEnd(src: string[], n: number, j: number, cont: (c: string) => boolean = isWordCont): number {
 	while (j < n) {
 		const c = src[j] as string;
-		const apostropheInWord = c === "'" && (j + 1 >= n || isWordCont(src[j + 1] as string));
-		if (!(isWordCont(c) || c === "," || apostropheInWord)) break;
+		const apostropheInWord = c === "'" && (j + 1 >= n || cont(src[j + 1] as string));
+		if (!(cont(c) || c === "," || apostropheInWord)) break;
 		j += 1;
 	}
 	return j;
 }
+
+/**
+ * How a caller wants the lexer to read characters upstream's grammar has no use for.
+ *
+ * `bracketsInWords`: `[` and `]` are ordinary word characters, start and continuation both — the
+ * reading api.scryfall.com gives them, and ONLY the Scryfall-compatible surface asks for it.
+ * Upstream's hand_parser.py refuses both ("Unexpected character"), so `/search`, which keeps
+ * upstream's contract, lexes without this and still answers `a]b` with its 400.
+ *
+ * Measured on api.scryfall.com 2026-10-25 (anchor `t:goblin` = 561): a bracket is one more
+ * character of whatever word it touches, at the start, middle or end of it, and the column decides
+ * what that means. The collated name drops it — `t:goblin a]b`, `a[b`, `a[]b`, `[ab]`, `a]-b`,
+ * `(a]b)` and `name:a]b` are all `t:goblin ab`'s 14, `lightning]`, `[lightning`, `light[]ning` and
+ * `[[lightning]]` are `lightning`'s 67, `!ponder]` and `![ponder]` are `!ponder`'s 1, and `]` or `[`
+ * alone collates to nothing and matches every goblin (561; `-]` 404). A literal column keeps it:
+ * `t:goblin o:a]b`, `t:gob]lin`, `t:goblin]` and the QUOTED `"a]b"` / `name:"a]b"` are 404, and
+ * `o:[` is the 31 cards whose text holds one. Not one of them is a query error there; every one of
+ * them was `400 Failed to parse query` on /cards/search.
+ */
+export interface LexOptions {
+	readonly bracketsInWords?: boolean;
+}
+
+const BRACKETS = new Set("[]");
 
 /**
  * Find the `quote` closing a string opened before `start` and unescape its content, or null if the
@@ -171,8 +195,11 @@ function closedRegex(src: readonly string[], start: number): { closeIndex: numbe
 }
 
 /** Lex a query string into a flat list of Tokens, terminated by an EOF token. */
-export function tokenize(source: string): Token[] {
+export function tokenize(source: string, options: LexOptions = {}): Token[] {
 	const src = [...source]; // code points
+	const brackets = options.bracketsInWords === true;
+	const wordStart = brackets ? (c: string) => BRACKETS.has(c) || isWordStart(c) : isWordStart;
+	const wordCont = brackets ? (c: string) => BRACKETS.has(c) || isWordCont(c) : isWordCont;
 	const tokens: Token[] = [];
 	let pos = 0;
 	const n = src.length;
@@ -327,8 +354,8 @@ export function tokenize(source: string): Token[] {
 				while (j < n && DIGIT.has(src[j] as string)) j++;
 			}
 			const text = slice(pos, j);
-			if (j < n && isWordCont(src[j] as string)) {
-				j = scanWordEnd(src, n, j);
+			if (j < n && wordCont(src[j] as string)) {
+				j = scanWordEnd(src, n, j, wordCont);
 				push(TT.WORD, slice(pos, j), start, sb);
 			} else if (text.includes(".")) {
 				const value = Number(text);
@@ -344,8 +371,8 @@ export function tokenize(source: string): Token[] {
 		}
 
 		// Word
-		if (isWordStart(c)) {
-			const j = scanWordEnd(src, n, pos + 1);
+		if (wordStart(c)) {
+			const j = scanWordEnd(src, n, pos + 1, wordCont);
 			push(TT.WORD, slice(pos, j), start, sb);
 			pos = j;
 			continue;

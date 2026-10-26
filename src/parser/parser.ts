@@ -35,7 +35,7 @@ import {
 import { PyNumber, pyLower, pyStr, pyStrip, pyUpper } from "./pystr";
 import { MAX_ARITH_CHAIN, MAX_GROUP_DEPTH, QueryBudgetExceeded } from "./query-budget";
 import { setReleaseDate } from "./set-dates.gen";
-import { foldTypographicQuotes, type Token, TT, tokenize } from "./tokenizer";
+import { foldTypographicQuotes, type LexOptions, type Token, TT, tokenize } from "./tokenizer";
 
 /** Python `repr()` of a plain string, for the one message that interpolates `{invalid!r}`. */
 function pyRepr(s: string): string {
@@ -1242,8 +1242,11 @@ export class Parser {
  *
  * Lex/parse failures are wrapped exactly like Python's ValueError re-raise;
  * they surface as ParseError with the identical message.
+ *
+ * `options` is how the lexer reads characters upstream's grammar refuses (tokenizer.ts LexOptions);
+ * omitted, it is upstream's lexer exactly.
  */
-export function parseQuery(src: string | null | undefined): Query {
+export function parseQuery(src: string | null | undefined, options?: LexOptions): Query {
 	if (!src || !pyStrip(src)) {
 		return new Query(new TrueNode());
 	}
@@ -1253,7 +1256,7 @@ export function parseQuery(src: string | null | undefined): Query {
 	src = foldTypographicQuotes(src);
 	let tokens: Token[];
 	try {
-		tokens = tokenize(src);
+		tokens = tokenize(src, options);
 	} catch (exc) {
 		if (exc instanceof LexError) {
 			throw new ParseError(`Failed to lex query: "${src}"`);
