@@ -36,6 +36,8 @@ import {
 	MAX_MOVES_PER_NIGHT,
 	MISPLACED_KM,
 	MOVE_COOLDOWN_MS,
+	REPORTS_AT_ONCE,
+	SHARD_HOME_FALLBACK,
 	SICK_HEDGES_MIN,
 	seedMoves,
 } from "../../src/engine/engine-moves";
@@ -283,6 +285,91 @@ describe("the judge, on synthetic evidence", () => {
 			},
 		);
 		expect(gone.engines).toBeUndefined();
+	});
+});
+
+describe("a replica above shard 0 with too few reporters is judged by its region's shard-0 home (SHARD_HOME_FALLBACK)", () => {
+	// DeckGen 2026-10-26: `homes … wnam SEA 12/12, wnam-1 SEA 1/1` — a burst shard's objects are released
+	// at the notify after their burst, so few of them report on any night; engine-wnam-1-p7 logged
+	// colo=SJC (~1,100km from SEA) and a replica of one to three reporters judged nothing.
+	const wnam = () => replica("wnam", 12, () => "SEA");
+	const shard1 = (k: number, colo: string) => report(`engine-wnam-1-p${k}`, colo);
+
+	test("SJC is past the bar from SEA", () => {
+		expect(SHARD_HOME_FALLBACK).toBe(true);
+		expect(coloKm("SEA", "SJC")).toBeGreaterThan(MISPLACED_KM);
+	});
+
+	test("a lone shard-1 reporter in SJC is misplaced against wnam's SEA home, and moves", () => {
+		const out = judge([...wnam(), shard1(7, "SJC")]);
+		expect(out.moves).toEqual([
+			{
+				name0: "engine-wnam-1-p7",
+				from: "engine-wnam-1-p7",
+				to: "engine-wnam-1-p7-e1",
+				epoch: 1,
+				host: null,
+				why: expect.stringContaining("misplaced: colo SJC"),
+			},
+		]);
+		expect(out.lines[0]).toMatch(
+			/^Engine placement: moved engine-wnam-1-p7 -> engine-wnam-1-p7-e1 — misplaced: colo SJC, \d+km vs home SEA \(12 of 12 in wnam, its region's shard 0\); .*not seeded \(no sibling of its replica reported from SEA\): its first caller places it; automatic move 1 of 3$/,
+		);
+		expect(out.lines.at(-1)).toContain("homes wnam SEA 12/12, wnam-1 SEA by wnam's home");
+	});
+
+	test("a shard-1 sibling that reported from the home colo seeds it", () => {
+		const out = judge([...wnam(), shard1(0, "SEA"), shard1(4, "SEA"), shard1(7, "SJC")]);
+		expect(out.moves).toHaveLength(1);
+		expect(out.moves[0]).toMatchObject({ name0: "engine-wnam-1-p7", host: "engine-wnam-1-p0" });
+		// The rest of the replica is where wnam's objects are: kept, and nothing said of them.
+		expect(out.lines.filter((l) => l.includes("engine-wnam-1-p0") && l.includes("kept"))).toEqual([]);
+	});
+
+	test("a shard-1 replica that can judge its own home keeps its own verdict", () => {
+		// Four of its own, all in SJC: its home is SJC, and SJC is not misplaced from itself.
+		const out = judge([...wnam(), ...[0, 1, 2, 3].map((k) => shard1(k, "SJC"))]);
+		expect(out.moves).toEqual([]);
+		expect(out.lines.at(-1)).toContain("wnam-1 SJC 4/4");
+	});
+
+	test("no fallback where shard 0 cannot judge a home either", () => {
+		const thin = replica("wnam", 3, () => "SEA");
+		expect(judge([...thin, shard1(7, "SJC")]).moves).toEqual([]);
+		// Nor for shard 0 itself: a thin shard-0 replica has no one to borrow from.
+		expect(judge(replica("wnam", 3, (k) => (k === 2 ? "DFW" : "SEA"))).moves).toEqual([]);
+	});
+
+	test("another generation's shard 0 is not this replica's home", () => {
+		const g1 = replica("wnam-g1", 12, () => "SEA");
+		expect(judge([...g1, shard1(7, "SJC")]).moves).toEqual([]);
+	});
+
+	test("the limits hold: one move per replica a night, and shard 1's move counts against the night's three", () => {
+		const reports = [
+			...replica("wnam", 12, (k) => (k === 11 ? "DFW" : "SEA")),
+			shard1(7, "SJC"),
+			shard1(9, "DFW"),
+			...replica("apac", 12, (k) => (k >= 10 ? "SIN" : "ICN")),
+			...replica("oc", 12, (k) => (k === 11 ? "PER" : "SYD")),
+		];
+		const out = judge(reports);
+		expect(out.moves).toHaveLength(MAX_MOVES_PER_NIGHT);
+		const groups = out.moves.map((m) => m.name0.replace(/-p\d+$/, ""));
+		expect(new Set(groups).size).toBe(MAX_MOVES_PER_NIGHT);
+		// wnam-1's farther object (DFW) is its one candidate tonight; SJC waits.
+		const wnam1 = out.lines.filter((l) => l.includes("engine-wnam-1-p"));
+		expect(wnam1.some((l) => l.includes("engine-wnam-1-p7") && l.includes(" kept "))).toBe(true);
+	});
+
+	test("the cooldown applies to a shard-1 name like any other", () => {
+		const first = judge([...wnam(), shard1(7, "SJC")]);
+		const again = judge([...wnam(), report("engine-wnam-1-p7-e1", "SJC")], {
+			previous: first.engines,
+			nowMs: NIGHT + DAY,
+		});
+		expect(again.moves).toEqual([]);
+		expect(again.lines.some((l) => l.includes("cooling down until"))).toBe(true);
 	});
 });
 
@@ -574,6 +661,46 @@ describe("the coordinator's I/O halves", () => {
 		);
 		expect(out.reports.map((r) => r.name)).toEqual(["engine-wnam-p0"]);
 		expect(out.failed).toEqual(["engine-wnam-p1", "engine-wnam-p2", "engine-wnam-p3"]);
+	});
+
+	test("six at a time, each timed from its own send: 111 names answer where a queue on the deadline lost wnam's 21", async () => {
+		// DeckGen 2026-10-25: 111 announced names, every one asked at once against a 5s deadline started
+		// when ASKED; the region at the end of the list (wnam, then wnam-1) never answered in time.
+		expect(REPORTS_AT_ONCE).toBe(6);
+		const regions = ["apac", "apac-ne", "apac-se", "eeur", "enam", "oc", "weur", "wnam-1", "wnam"];
+		const names = regions.flatMap((r) => Array.from({ length: 12 }, (_, p) => `engine-${r}-p${p}`)).slice(0, 111);
+		const open = { now: 0, peak: 0 };
+		const out = await gatherEngineReports(
+			names,
+			async (name) => {
+				open.now += 1;
+				open.peak = Math.max(open.peak, open.now);
+				// Each object answers in 4ms of its own. Nineteen waves of six take ~80ms, twice the 40ms
+				// deadline: every name answers only if each deadline starts at its own send.
+				await new Promise((resolve) => setTimeout(resolve, 4));
+				open.now -= 1;
+				return report(name, "SEA");
+			},
+			40,
+		);
+		expect(open.peak).toBeLessThanOrEqual(6);
+		expect(out.failed).toEqual([]);
+		expect(out.reports.map((r) => r.name)).toEqual(names);
+	});
+
+	test("a hung object costs its slot the deadline, not the objects after it theirs", async () => {
+		const names = Array.from({ length: 14 }, (_, p) => `engine-wnam-p${p}`);
+		const out = await gatherEngineReports(
+			names,
+			async (name) => {
+				if (name === "engine-wnam-p0" || name === "engine-wnam-p1") return new Promise<EngineReport>(() => {});
+				await new Promise((resolve) => setTimeout(resolve, 5));
+				return report(name, "SEA");
+			},
+			60,
+		);
+		expect(out.failed).toEqual(["engine-wnam-p0", "engine-wnam-p1"]);
+		expect(out.reports).toHaveLength(12);
 	});
 
 	test("seeds go from each move's host; a failure or a hostless move is logged, never thrown", async () => {

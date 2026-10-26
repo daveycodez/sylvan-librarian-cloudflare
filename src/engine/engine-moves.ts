@@ -27,7 +27,8 @@
 //
 //   MISPLACED  colo more than MISPLACED_KM from the replica's home, measured within COLO_FRESH_MS,
 //              in a replica of at least MIN_GROUP_REPORTS reporting objects whose home holds at
-//              least HOME_MIN_SHARE of them. ONE night is enough: a colo is the fact of an object's
+//              least HOME_MIN_SHARE of them — or, for a replica above shard 0 without that many,
+//              its region's shard-0 home (SHARD_HOME_FALLBACK). ONE night is enough: a colo is the fact of an object's
 //              creation (Cloudflare: objects "do not currently change locations after they are
 //              created"), not a bad minute, and the probe that measured it is the object's own.
 //   SICK       hedges around it >= max(SICK_HEDGES_MIN, SICK_HEDGES_FACTOR x the replica's median),
@@ -78,8 +79,29 @@ import type { EngineMoveRecord } from "./placement-policy";
 export const MISPLACED_KM = 1000;
 /** The home colo must hold at least this share of the replica's reporting objects to judge colos. */
 export const HOME_MIN_SHARE = 0.4;
-/** Fewer reporting objects than this and a replica's home is not judged at all. */
+/** Fewer reporting objects than this and a replica's home is not judged at all — except a replica
+ * above shard 0, which SHARD_HOME_FALLBACK judges by its region's shard-0 home. */
 export const MIN_GROUP_REPORTS = 4;
+
+/**
+ * A replica above shard 0 (engine-wnam-1-p*) whose own reporting objects cannot judge a home — fewer
+ * than MIN_GROUP_REPORTS fresh colos, or no colo holding HOME_MIN_SHARE of them — is judged against
+ * its region's SHARD-0 home instead, when that one can be.
+ *
+ * WHY. A second shard exists only through bursts: its objects load a store in one, announce, and are
+ * released (storage and announcement) at the next notify that finds the region at one shard. So on
+ * most nights few or none of them report — DeckGen's 2026-10-26 judge saw one wnam-1 object
+ * (`wnam-1 SEA 1/1`), 10-25's four — and a replica of one to three reporters never judged a colo,
+ * however far an object of it sat. The shard-0 home is the right yardstick: both replicas are
+ * created by the same hint from the same region's isolates, every wnam object that has reported
+ * a colo is in SEA but the misplaced ones (wnam-p11 and wnam-1-p9 in DFW, wnam-1-p7 in SJC), and a
+ * shard-1 gather's siblings are shard-1 objects created the same way. The seed host stays a sibling
+ * of the moved object's own replica (engine-namespace.ts seedSiblingStub); with none reporting from
+ * the home colo the replacement is placed by its first caller, as an ABANDONED_ENGINES move's was.
+ * Every limit applies unchanged: MAX_MOVES_PER_NIGHT across the account, one per replica (shard 1 is
+ * its own replica), the cooldown, the give-up.
+ */
+export const SHARD_HOME_FALLBACK = true;
 /** A colo measured longer ago than this is not evidence (placement.ts re-measures every ~20h). */
 export const COLO_FRESH_MS = 48 * 60 * 60 * 1000;
 /** Hedges around one partition in a day, at least, to count as sick… */
@@ -212,6 +234,8 @@ interface GroupFacts {
 	home: { colo: string; count: number } | null;
 	members: number;
 	judgesColo: boolean;
+	/** A replica above shard 0 judged by its region's shard-0 home (SHARD_HOME_FALLBACK): that group. */
+	borrowed?: string;
 	loadsMedian: number;
 	aroundMedian: number;
 	around: Map<number, number>;
@@ -289,6 +313,21 @@ export function judgeEngines(input: JudgeInput): JudgeResult {
 		});
 	}
 
+	// 2b. SHARD_HOME_FALLBACK: a replica above shard 0 with too few reporters of its own is judged by
+	// its region's shard-0 home, when that replica's home can be judged.
+	for (const [group, f] of facts) {
+		if (!SHARD_HOME_FALLBACK || f.judgesColo) continue;
+		const parsed = parseEngineName(group);
+		if (!parsed || parsed.shard === 0) continue;
+		const base = engineName(parsed.region as DurableObjectLocationHint, 0, undefined, parsed.generation ?? 0);
+		const zero = facts.get(base);
+		if (!zero?.judgesColo || !zero.home) continue;
+		f.home = zero.home;
+		f.members = zero.members;
+		f.judgesColo = true;
+		f.borrowed = base;
+	}
+
 	// 3. Each name's verdict.
 	const judged = new Map<string, Judged>();
 	for (const entry of current.values()) {
@@ -306,7 +345,8 @@ export function judgeEngines(input: JudgeInput): JudgeResult {
 		if (hedges >= hedgeBar) sickness.push(`hedged around ${hedges} times on ${r.day} (bar ${hedgeBar})`);
 		if (r.loads >= loadBar) sickness.push(`${r.loads} store loads on ${r.day} (bar ${loadBar})`);
 		const where = f.home
-			? `colo ${r.colo ?? "?"}${misplaced ? `, ${misplaced.km}km` : ""} vs home ${f.home.colo} (${f.home.count} of ${f.members})`
+			? `colo ${r.colo ?? "?"}${misplaced ? `, ${misplaced.km}km` : ""} vs home ${f.home.colo} ` +
+				`(${f.home.count} of ${f.members}${f.borrowed ? ` in ${f.borrowed.slice("engine-".length)}, its region's shard 0` : ""})`
 			: `colo ${r.colo ?? "?"}, no home`;
 		judged.set(entry.name0, {
 			...entry,
@@ -444,7 +484,13 @@ export function judgeEngines(input: JudgeInput): JudgeResult {
 		moves.push({ name0, from: j.name, to, epoch, host, why });
 		lines.push(
 			`Engine placement: moved ${j.name} -> ${to} — ${why}; ` +
-				`${host ? `seeded from ${host} in ${f.home?.colo}` : "not seeded (no home colo): its first caller places it"}; ` +
+				`${
+					host
+						? `seeded from ${host} in ${f.home?.colo}`
+						: f.judgesColo
+							? `not seeded (no sibling of its replica reported from ${f.home?.colo}): its first caller places it`
+							: "not seeded (no home colo): its first caller places it"
+				}; ` +
 				`automatic move ${rec.moves} of ${MAX_AUTO_MOVES}`,
 		);
 	}
@@ -452,7 +498,11 @@ export function judgeEngines(input: JudgeInput): JudgeResult {
 	for (const [name0, rec] of Object.entries(engines)) if (isEmptyRecord(rec)) delete engines[name0];
 	const homes = [...facts.entries()]
 		.filter(([, f]) => f.home)
-		.map(([g, f]) => `${g.slice("engine-".length)} ${f.home?.colo} ${f.home?.count}/${f.members}`)
+		.map(
+			([g, f]) =>
+				`${g.slice("engine-".length)} ${f.home?.colo} ` +
+				(f.borrowed ? `by ${f.borrowed.slice("engine-".length)}'s home` : `${f.home?.count}/${f.members}`),
+		)
 		.sort();
 	lines.push(
 		`Engine placement: judged ${current.size} object(s) in ${facts.size} replica(s); ${moves.length} moved, ` +
@@ -463,8 +513,28 @@ export function judgeEngines(input: JudgeInput): JudgeResult {
 
 // ── the coordinator's two I/O halves, kept here so they are tested with the rules ────────────────
 
-/** How long the nightly waits for one object's placementReport (two SQLite reads; a wake at most). */
+/** How long the nightly waits for one object's placementReport (two SQLite reads; a wake at most),
+ * counted from when the call is SENT — see REPORTS_AT_ONCE. */
 export const REPORT_DEADLINE_MS = 5_000;
+
+/**
+ * How many placementReport calls the nightly has out at once: the six a Workers invocation may have
+ * open (sibling-limit.ts SIBLING_CALLS_AT_ONCE — x23 measured the same six for Durable Object calls).
+ *
+ * WHY. The reports used to be asked all at once, each against a deadline started when it was ASKED,
+ * so past six they waited in the runtime's queue on the deadline's clock — and the names are asked
+ * in KV-list order, wnam last. DeckGen's nightly: 98 names answered in 3,559ms on 2026-10-26 (~16
+ * waves of six at ~220ms), but on 10-25, after a day of bursts had announced twelve engine-wnam-1
+ * objects, 111 names took the full 5,155ms and 21 "did not" answer — the region at the end of the
+ * list: no engine-wnam home was judged that night (the homes line has none), and only four of
+ * wnam-1's twelve answered. engine-wnam-1-p7, which logged `colo=SJC` (~1,100km from the region's
+ * SEA home), was not among them, and released at that notify with its replica it had no
+ * announcement for the 10-26 report to find. That is what a queue on the deadline's clock looks
+ * like; nothing else about those objects was slow (none logged a line in the window). Six at a
+ * time, each timed from its own send, the deadline measures the object, not the queue: a night of
+ * N names takes ~N/6 round trips, plus up to REPORT_DEADLINE_MS for each that truly hangs.
+ */
+export const REPORTS_AT_ONCE = 6;
 
 /** How long it waits for one seed: a wake, a KV load of one partition (~14MB), its cache fill. */
 export const SEED_DEADLINE_MS = 60_000;
@@ -485,25 +555,37 @@ async function within<T>(promise: Promise<T>, ms: number, what: string): Promise
 }
 
 /**
- * Ask every announced partition object for its report, in parallel, each bounded. An object that
- * does not answer is left out — its name keeps last night's record untouched (judgeEngines) — and
- * never fails the run.
+ * Ask every announced partition object for its report, REPORTS_AT_ONCE at a time, each bounded from
+ * its own send. An object that does not answer is left out — its name keeps last night's record
+ * untouched (judgeEngines) — and never fails the run.
  */
 export async function gatherEngineReports(
 	names: readonly string[],
 	ask: (name: string) => Promise<EngineReport>,
 	deadlineMs: number = REPORT_DEADLINE_MS,
+	atOnce: number = REPORTS_AT_ONCE,
 ): Promise<{ reports: EngineReport[]; failed: string[] }> {
 	const asked = names.filter((name) => parseEngineName(name)?.partition !== undefined);
-	const settled = await Promise.allSettled(
-		asked.map((name) =>
-			within(
-				Promise.resolve().then(() => ask(name)),
-				deadlineMs,
-				`${name} placementReport`,
-			),
-		),
-	);
+	// REPORTS_AT_ONCE workers take the names in order; each call's deadline starts when it is sent.
+	const settled: PromiseSettledResult<EngineReport>[] = new Array(asked.length);
+	let next = 0;
+	const worker = async () => {
+		while (next < asked.length) {
+			const i = next++;
+			const name = asked[i] as string;
+			try {
+				const value = await within(
+					Promise.resolve().then(() => ask(name)),
+					deadlineMs,
+					`${name} placementReport`,
+				);
+				settled[i] = { status: "fulfilled", value };
+			} catch (reason) {
+				settled[i] = { status: "rejected", reason };
+			}
+		}
+	};
+	await Promise.all(Array.from({ length: Math.max(1, Math.min(atOnce, asked.length)) }, worker));
 	const reports: EngineReport[] = [];
 	const failed: string[] = [];
 	settled.forEach((s, i) => {
