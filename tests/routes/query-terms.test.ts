@@ -280,12 +280,24 @@ describe("a comparison Scryfall does not implement is honored and matches nothin
 	// and every directive name was probed as `<alias>>=0 e:khm t:creature` against api.scryfall.com
 	// on 2026-08-16. See COMPARABLE_KEYWORDS for the three classes the 78 rows fell into.
 
+	// UNDER `>` AND `<` THE TERM IS A NAME WORD (2026-10-25): the operator is collated away with the
+	// rest of the punctuation, so `t:goblin a>b` is `t:goblin ab`'s 14 and `lightning>bolt` Lightning
+	// Bolt's 2 — and `nonsense>1` the name word "nonsense1", which no card has: the 404 above. Under
+	// `>=` `<=` `!=` the collation keeps the `=`, so the word can match no name and `cmc<0` says so.
 	test("an unknown keyword under a comparison is NOT the ignore machinery", () => {
-		for (const op of [">", ">=", "<", "<=", "!="]) {
+		for (const [op, query] of [
+			[">", "name:nonsense1"],
+			["<", "name:nonsense1"],
+			[">=", "cmc<0"],
+			["<=", "cmc<0"],
+			["!=", "cmc<0"],
+		] as const) {
 			const result = scryfallTermPolicy(`nonsense${op}1 e:khm t:creature`);
 			expect(result.warnings).toEqual([]);
-			expect(result.query).toBe("cmc<0 e:khm t:creature");
+			expect(result.query).toBe(`${query} e:khm t:creature`);
 		}
+		expect(scryfallTermPolicy("lightning>bolt").query).toBe("name:lightningbolt"); // 2
+		expect(scryfallTermPolicy("t:goblin a<b").query).toBe("t:goblin name:ab"); // 14
 		// …and under `:`/`=` it still is.
 		for (const op of [":", "="]) {
 			expect(scryfallTermPolicy(`nonsense${op}1 e:khm`).warnings).toEqual([
@@ -295,10 +307,18 @@ describe("a comparison Scryfall does not implement is honored and matches nothin
 	});
 
 	test("a text column under a comparison matches nothing", () => {
-		for (const term of ["t>creature", "t!=creature", "o!=flying", "name!=a", "a>guay", "ft>zzz", "wm>zzz"]) {
+		for (const [term, query] of [
+			["t>creature", "name:tcreature"],
+			["t!=creature", "cmc<0"],
+			["o!=flying", "cmc<0"],
+			["name!=a", "cmc<0"],
+			["a>guay", "name:aguay"],
+			["ft>zzz", "name:ftzzz"],
+			["wm>zzz", "name:wmzzz"],
+		] as const) {
 			const result = scryfallTermPolicy(`${term} e:khm`);
 			expect(result.warnings).toEqual([]);
-			expect(result.query).toBe("cmc<0 e:khm");
+			expect(result.query).toBe(`${query} e:khm`);
 		}
 		// The `:` twins are ordinary searches and must be untouched.
 		for (const term of ["t:creature", "o:flying", "name:a", "t=creature"]) {
@@ -312,7 +332,7 @@ describe("a comparison Scryfall does not implement is honored and matches nothin
 		for (const term of ["f>notaformat", "lang>zz", "oracleid>abc", "is>foil", "layout>normal", "border>black"]) {
 			const result = scryfallTermPolicy(`${term} e:khm t:creature`);
 			expect(result.warnings).toEqual([]);
-			expect(result.query).toBe("cmc<0 e:khm t:creature");
+			expect(result.query).toBe(`name:${term.replace(">", "")} e:khm t:creature`);
 		}
 	});
 
@@ -360,10 +380,16 @@ describe("a comparison Scryfall does not implement is honored and matches nothin
 		// `-nonsense>=1` and `-t>creature` are 151 with `warnings` absent — the always-true leaf the
 		// negation rule installs, NOT this rule's empty one. The negation block runs first, so a
 		// negated comparison never reaches here.
-		for (const term of ["-nonsense>=1", "-t>creature", "-lang>zz"]) {
+		// Under `>` and `<` the negated term is the negated name word instead: `t:goblin -a>b` is
+		// `-ab`'s 547 and `-lightning>bolt` 33,825 — the complement, not every card.
+		for (const [term, query] of [
+			["-nonsense>=1", "-cmc<0"],
+			["-t>creature", "-name:tcreature"],
+			["-lang>zz", "-name:langzz"],
+		] as const) {
 			const result = scryfallTermPolicy(`${term} e:khm t:creature`);
 			expect(result.warnings).toEqual([]);
-			expect(result.query).toBe("-cmc<0 e:khm t:creature");
+			expect(result.query).toBe(`${query} e:khm t:creature`);
 		}
 	});
 });
@@ -642,17 +668,35 @@ describe("a negated comparison is not applied — it is always-true, and silentl
 		// `name>zzz`, `t>creature` and `nonsense>=1` are all 404 positive — so the negated form
 		// matching everything is ordinary — but `-nonsense>=1 e:khm t:creature` is 151 with NO
 		// `warnings` key, where `nonsense:1` is ignored-and-warned. That silence is the assertion.
-		for (const q of ["-name>zzz", "-o>draw", "-t>creature", "-layout>normal", "-nonsense>=1", "-subtype>=1"]) {
+		for (const q of ["-nonsense>=1", "-subtype>=1"]) {
 			const result = scryfallTermPolicy(`${q} e:khm`);
 			expect(result.query).toBe(`${ALWAYS} e:khm`);
+			expect(result.warnings).toEqual([]);
+		}
+		// Under `>` the term is the negated NAME WORD (`t:goblin -a>b` is `-ab`'s 547 on Scryfall,
+		// 2026-10-25) — every card here too, since no card is named "namezzz", and just as quiet.
+		for (const [q, query] of [
+			["-name>zzz", "-name:namezzz"],
+			["-o>draw", "-name:odraw"],
+			["-t>creature", "-name:tcreature"],
+			["-layout>normal", "-name:layoutnormal"],
+		] as const) {
+			const result = scryfallTermPolicy(`${q} e:khm`);
+			expect(result.query).toBe(`${query} e:khm`);
 			expect(result.warnings).toEqual([]);
 		}
 	});
 
 	test("it runs BEFORE the value validators, because Scryfall's does", () => {
 		// Each of these is ignored-and-warned unnegated and 151-with-no-warning negated.
-		for (const q of ["-lang>zz", "-f>notaformat", "-oracleid>abc", "-cmc>=notanumber"]) {
-			expect(scryfallTermPolicy(`${q} e:khm`)).toMatchObject({ query: `${ALWAYS} e:khm`, warnings: [] });
+		expect(scryfallTermPolicy("-cmc>=notanumber e:khm")).toMatchObject({ query: `${ALWAYS} e:khm`, warnings: [] });
+		// Under `>` the negated name word, as quiet (see above).
+		for (const [q, query] of [
+			["-lang>zz", "-name:langzz"],
+			["-f>notaformat", "-name:fnotaformat"],
+			["-oracleid>abc", "-name:oracleidabc"],
+		] as const) {
+			expect(scryfallTermPolicy(`${q} e:khm`)).toMatchObject({ query: `${query} e:khm`, warnings: [] });
 		}
 	});
 

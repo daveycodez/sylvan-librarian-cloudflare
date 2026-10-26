@@ -86,7 +86,10 @@ describe("a value that is not a v4 UUID is ignored with Scryfall's sentence", ()
 
 	test("a comparison is honored and matches nothing; a well-formed id no card has is kept", () => {
 		expect(scryfallTermPolicy(`scryfallid!=${RESET} e:khm t:god`).query).toBe("cmc<0 e:khm t:god");
-		expect(scryfallTermPolicy(`scryfallid>${RESET} e:khm t:god`).query).toBe("cmc<0 e:khm t:god");
+		// Under `>`, a comparison on a keyword Scryfall does not compare is a name word (`t:goblin a>b` is `ab`'s 14), which no card has.
+		expect(scryfallTermPolicy(`scryfallid>${RESET} e:khm t:god`).query).toBe(
+			`name:scryfallid${RESET.replaceAll("-", "")} e:khm t:god`,
+		);
 		const unknown = "scryfallid:11111111-1111-4111-8111-111111111111";
 		expect(scryfallTermPolicy(unknown).query).toBe(unknown);
 	});

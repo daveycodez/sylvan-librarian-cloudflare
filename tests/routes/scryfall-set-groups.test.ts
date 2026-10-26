@@ -373,9 +373,24 @@ describe("what Scryfall ignores, and what it honors as nothing", () => {
 		// g>=ecc, g<=ecc and g!=ecc are 404s; g!=war or cmc=3 is cmc=3's 8,089, echoing
 		// include_extras=false; -g>war or cmc=3 is not narrowed. (g>war and g<war are a NAME search
 		// for `gwar` there — 11 cards — as e>war is one for `ewar`; nothing here.)
-		for (const term of ["g>=ecc", "g<=ecc", "g!=ecc", "g>ecc", "g<ecc", "group>ecc", "group!=ecc"]) {
+		for (const term of ["g>=ecc", "g<=ecc", "g!=ecc", "group!=ecc"]) {
 			const policy = await policyFor(`${term} or cmc=3`);
 			expect([term, policy.query, policy.warnings, policy.include.extras]).toEqual([term, "cmc<0 or cmc=3", [], false]);
+		}
+		// …and `g>ecc` / `g<ecc` are that name search, for "gecc": no card, and no extras opened.
+		for (const [term, word] of [
+			["g>ecc", "name:gecc"],
+			["g<ecc", "name:gecc"],
+			["group>ecc", "name:groupecc"],
+			["g>war", "name:gwar"],
+		] as const) {
+			const policy = await policyFor(`${term} or cmc=3`);
+			expect([term, policy.query, policy.warnings, policy.include.extras]).toEqual([
+				term,
+				`${word} or cmc=3`,
+				[],
+				false,
+			]);
 		}
 		expect((await policyFor("-g>=ecc e:lea")).query).toBe("-cmc<0 e:lea");
 	});

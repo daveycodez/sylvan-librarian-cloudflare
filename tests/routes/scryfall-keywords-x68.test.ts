@@ -68,7 +68,8 @@ describe("edition: is a fourth spelling of set:", () => {
 	test("a comparison is honored and matches nothing, as on e:", () => {
 		// `edition!=khm t:god` and `edition>khm t:god` are 404 with no warnings.
 		expect(scryfallTermPolicy("edition!=khm t:god").query).toBe("cmc<0 t:god");
-		expect(scryfallTermPolicy("edition>khm t:god").query).toBe("cmc<0 t:god");
+		// Under `>`, a comparison on a keyword Scryfall does not compare is a name word (`t:goblin a>b` is `ab`'s 14).
+		expect(scryfallTermPolicy("edition>khm t:god").query).toBe("name:editionkhm t:god");
 	});
 
 	test("a real regex is Scryfall's regex-keyword sentence", () => {
@@ -284,7 +285,8 @@ describe("stamp: is the security stamp, with Scryfall's six values", () => {
 
 	test("a comparison matches nothing, a regex is the regex-keyword sentence, and extras stay closed", async () => {
 		expect(scryfallTermPolicy("stamp!=oval e:khm").query).toBe("cmc<0 e:khm");
-		expect(scryfallTermPolicy("stamp>oval e:khm").query).toBe("cmc<0 e:khm");
+		// Under `>`, a comparison on a keyword Scryfall does not compare is a name word (`t:goblin a>b` is `ab`'s 14).
+		expect(scryfallTermPolicy("stamp>oval e:khm").query).toBe("name:stampoval e:khm");
 		expect(scryfallTermPolicy("stamp:/oval/ e:khm").warnings).toEqual([
 			ignored("stamp:/oval/", "Unknown regular expression keyword “stamp”."),
 		]);
@@ -351,9 +353,17 @@ describe("the four external-id keywords", () => {
 	});
 
 	test("a comparison is honored and matches nothing", () => {
-		for (const q of ["mtgoid>=87000", "mtgoid!=87000", "arenaid>=75000", "tcgplayerid>abc", "multiverseid<503650"]) {
+		for (const q of ["mtgoid>=87000", "mtgoid!=87000", "arenaid>=75000"]) {
 			const policy = scryfallTermPolicy(`${q} e:khm`);
 			expect([q, policy.query, policy.warnings]).toEqual([q, "cmc<0 e:khm", []]);
+		}
+		// Under `>` and `<`, a comparison on a keyword Scryfall does not compare is a name word (`t:goblin a>b` is `ab`'s 14), which no card in khm has.
+		for (const [q, word] of [
+			["tcgplayerid>abc", "name:tcgplayeridabc"],
+			["multiverseid<503650", "name:multiverseid503650"],
+		] as const) {
+			const policy = scryfallTermPolicy(`${q} e:khm`);
+			expect([q, policy.query, policy.warnings]).toEqual([q, `${word} e:khm`, []]);
 		}
 	});
 
@@ -651,7 +661,8 @@ describe("block: and b: are the sets of a block", () => {
 
 	test("a comparison matches nothing and a regex is the regex-keyword sentence", () => {
 		expect(scryfallTermPolicy("block!=khm t:god").query).toBe("cmc<0 t:god");
-		expect(scryfallTermPolicy("block>khm t:god").query).toBe("cmc<0 t:god");
+		// Under `>`, a comparison on a keyword Scryfall does not compare is a name word (`t:goblin a>b` is `ab`'s 14).
+		expect(scryfallTermPolicy("block>khm t:god").query).toBe("name:blockkhm t:god");
 		expect(scryfallTermPolicy("block:/khm/ t:god").warnings).toEqual([
 			ignored("block:/khm/", "Unknown regular expression keyword “block”."),
 		]);

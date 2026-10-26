@@ -93,7 +93,11 @@ describe("a keyword: value that is no keyword is ignored, with a sentence of its
 
 	test("under a comparison the keyword matches nothing, as it did", async () => {
 		// `keyword!=flying e:khm` and `keyword>untap e:khm` are plain 404s.
-		expect(await policyFor("keyword>nonsense e:khm")).toMatchObject({ query: "cmc<0 e:khm", warnings: [] });
+		// `>` is the name word "keywordnonsense" (`t:goblin a>b` is `ab`'s 14), which no card has.
+		expect(await policyFor("keyword>nonsense e:khm")).toMatchObject({
+			query: "name:keywordnonsense e:khm",
+			warnings: [],
+		});
 		expect(await policyFor("keyword!=flying e:khm")).toMatchObject({ query: "cmc<0 e:khm", warnings: [] });
 	});
 });

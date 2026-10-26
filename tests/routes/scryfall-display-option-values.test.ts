@@ -155,7 +155,9 @@ describe("under `=` a display keyword is a keyword Scryfall does not know", () =
 	});
 
 	test("and under a comparison it matches nothing, like any unknown keyword", () => {
-		expect(scryfallTermPolicy("order>cmc t:goblin").query).toBe("cmc<0 t:goblin");
+		// The name word "ordercmc" (`t:goblin a>b` is `ab`'s 14), which no card has; `>=` matches nothing.
+		expect(scryfallTermPolicy("order>cmc t:goblin").query).toBe("name:ordercmc t:goblin");
+		expect(scryfallTermPolicy("order>=cmc t:goblin").query).toBe("cmc<0 t:goblin");
 	});
 });
 

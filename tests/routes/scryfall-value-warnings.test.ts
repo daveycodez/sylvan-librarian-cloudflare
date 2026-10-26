@@ -66,9 +66,11 @@ describe("an is: value neither side answers", () => {
 	});
 
 	test("under a comparison it is honored and matches nothing", () => {
-		// `is>nonsense e:khm t:god` is a 404 with no warning.
+		// `is>nonsense e:khm t:god` is a 404 with no warning: the name word "isnonsense", which a
+		// comparison on a keyword Scryfall does not compare is (`t:goblin a>b` = `ab`'s 14).
 		const policy = scryfallTermPolicy(`is>nonsense ${ANCHOR}`);
-		expect([policy.query, policy.warnings]).toEqual([`cmc<0 ${ANCHOR}`, []]);
+		expect([policy.query, policy.warnings]).toEqual([`name:isnonsense ${ANCHOR}`, []]);
+		expect(scryfallTermPolicy(`is>=nonsense ${ANCHOR}`).query).toBe(`cmc<0 ${ANCHOR}`);
 	});
 
 	test("a value this port answers, respells or knows Scryfall answers is not ignored", () => {
@@ -181,7 +183,9 @@ describe("st: reads Scryfall's 24 set types and nothing else", () => {
 	});
 
 	test("under a comparison it is honored and matches nothing", () => {
-		expect(scryfallTermPolicy(`st>nonsense ${ANCHOR}`).query).toBe(`cmc<0 ${ANCHOR}`);
+		// The name word "stnonsense" (`t:goblin a>b` is `ab`'s 14); under `>=` nothing at all.
+		expect(scryfallTermPolicy(`st>nonsense ${ANCHOR}`).query).toBe(`name:stnonsense ${ANCHOR}`);
+		expect(scryfallTermPolicy(`st>=nonsense ${ANCHOR}`).query).toBe(`cmc<0 ${ANCHOR}`);
 	});
 
 	test("a pattern keeps answering only when it spells a set type", () => {
@@ -282,7 +286,8 @@ describe("frame: reads Scryfall's frames, effects and nicknames and nothing else
 	});
 
 	test("under a comparison it is honored and matches nothing; a pattern is the regex sentence", () => {
-		expect(scryfallTermPolicy(`frame>nonsense ${ANCHOR}`).query).toBe(`cmc<0 ${ANCHOR}`);
+		expect(scryfallTermPolicy(`frame>nonsense ${ANCHOR}`).query).toBe(`name:framenonsense ${ANCHOR}`);
+		expect(scryfallTermPolicy(`frame!=nonsense ${ANCHOR}`).query).toBe(`cmc<0 ${ANCHOR}`);
 		expectIgnored("frame:/nonsense/", "frame:/nonsense/", "Unknown regular expression keyword “frame”.");
 	});
 });

@@ -102,7 +102,8 @@ describe("a set is named by its whole name where its code goes", () => {
 		// `-e:zendikar t:goblin cmc=1 pow=2` is 9 = `-e:zen …`; `e!=zendikar …` is a 404.
 		expect(scryfallTermPolicy("-e:zendikar t:goblin").query).toBe("-e:zen t:goblin");
 		expect(scryfallTermPolicy("e!=zendikar t:goblin").query).toBe("cmc<0 t:goblin");
-		expect(scryfallTermPolicy("e>zendikar t:goblin").query).toBe("cmc<0 t:goblin");
+		// Under `>`, a comparison on a keyword Scryfall does not compare is a name word (`t:goblin a>b` is `ab`'s 14): "ezendikar", which no goblin has.
+		expect(scryfallTermPolicy("e>zendikar t:goblin").query).toBe("name:ezendikar t:goblin");
 		expect(scryfallTermPolicy("e:zendikar or e:worldwake").query).toBe("e:zen or e:wwk");
 	});
 

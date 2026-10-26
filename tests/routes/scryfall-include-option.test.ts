@@ -93,7 +93,8 @@ describe("include: is a display option", () => {
 		expect(equals.query).toBe("t:goblin");
 		expect(equals.include).toEqual(NONE);
 		expect(equals.warnings).toEqual(["Invalid expression “include=extras” was ignored. Unknown keyword “include”."]);
-		expect(scryfallTermPolicy("include>extras t:goblin").query).toBe("cmc<0 t:goblin");
+		// Under `>`, a comparison on a keyword Scryfall does not compare is a name word (`t:goblin a>b` is `ab`'s 14): "includeextras", which no goblin has.
+		expect(scryfallTermPolicy("include>extras t:goblin").query).toBe("name:includeextras t:goblin");
 	});
 
 	test("alone it is the 400 with no warnings — an option is not a term", async () => {

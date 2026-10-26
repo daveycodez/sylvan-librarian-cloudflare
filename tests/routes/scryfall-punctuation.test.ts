@@ -540,6 +540,126 @@ describe("every shape of the 2026-10-25 punctuation sweep reaches the engine as 
 	});
 });
 
+describe("a comparison on a keyword Scryfall does not compare is a name word", () => {
+	test("the operator is collated away with the rest of the punctuation", async () => {
+		for (const [q, same] of [
+			["t:goblin a>b", "t:goblin name:ab"], // 14, the same ids as `t:goblin ab`
+			["t:goblin a<b", "t:goblin name:ab"], // 14
+			["t:goblin -a>b", "t:goblin -name:ab"], // 547 = `t:goblin -ab`
+			["lightning>bolt", "name:lightningbolt"], // 2
+			["lightning<bolt", "name:lightningbolt"], // 2
+			["-lightning>bolt", "-name:lightningbolt"], // 33,825
+			['t:goblin o>""', "t:goblin name:o"], // 429: the quotes collate away too
+		] as const) {
+			await expectSameSearch(q, same);
+		}
+	});
+
+	test("`>=`, `<=` and `!=` keep their `=`, so they match nothing, as before", () => {
+		expect(scryfallTermPolicy("lightning>=bolt").query).toBe("cmc<0"); // 404
+		expect(scryfallTermPolicy("-nonsense>=1 e:khm").query).toBe("-cmc<0 e:khm");
+	});
+
+	test("a keyword Scryfall compares is the comparison it was", () => {
+		expect(scryfallTermPolicy("pow>tou").query).toBe("pow>tou");
+		expect(scryfallTermPolicy("cmc>3").query).toBe("cmc>3");
+	});
+});
+
+describe("an empty quoted value is no value: Scryfall's `Unknown keyword`", () => {
+	const unknown = (echo: string, keyword: string) => ignored(echo, `Unknown keyword “${keyword}”.`);
+
+	test("on every keyword without a sentence of its own", async () => {
+		// Each `t:goblin <kw>:""` is 561 carrying the sentence on api.scryfall.com, 2026-10-25.
+		for (const kw of [
+			"o",
+			"oracle",
+			"fo",
+			"fulloracle",
+			"t",
+			"type",
+			"name",
+			"a",
+			"artist",
+			"ft",
+			"flavor",
+			"e",
+			"set",
+			"s",
+			"is",
+			"not",
+			"has",
+			"kw",
+			"keyword",
+			"f",
+			"lang",
+			"st",
+			"frame",
+			"wm",
+			"art",
+			"otag",
+			"atag",
+			"cmc",
+			"pow",
+			"usd",
+			"year",
+			"game",
+			"in",
+			"border",
+			"layout",
+			"new",
+			"cn",
+			"number",
+			"stamp",
+			"cheapest",
+			"lore",
+			"block",
+			"g",
+			"nonsense",
+		]) {
+			await expectSameSearch(`t:goblin ${kw}:""`, "t:goblin", [unknown(`${kw}:""`, kw)]);
+		}
+		for (const [term, keyword] of [
+			['o=""', "o"],
+			["o:''", "o"],
+			['-o:""', "-o"],
+			['name=""', "name"],
+			['-name:""', "-name"],
+			['""', "name"],
+			['-""', "-name"],
+			['!""', "!"],
+			['-!""', "-!"],
+		] as const) {
+			await expectSameSearch(`t:goblin ${term}`, "t:goblin", [unknown(term, keyword)]);
+		}
+	});
+
+	test("glued to a word, the word is a term of its own", async () => {
+		await expectSameSearch('t:goblin o:""x', "t:goblin x", [unknown('o:""', "o")]); // 15
+	});
+
+	test("the columns whose empty value means something keep their answer", async () => {
+		await expectSameSearch('t:goblin r:""', "t:goblin", [ignored('r:""', "Unknown rarity “.”")]);
+		await expectSameSearch('t:goblin date:""', "t:goblin", [ignored('date:""', "Invalid date or unknown set code “”")]);
+		await expectSameSearch('t:goblin devotion:""', "t:goblin", [
+			ignored('devotion:""', "Devotion can only match single color or hybrid mana."),
+		]);
+		for (const [q, same] of [
+			['t:goblin c:""', "t:goblin c>=c"], // 561
+			['t:goblin -c:""', "t:goblin -c>=c"], // 404
+			['t:goblin c=""', "t:goblin c=c"], // 4
+			['t:goblin id:""', "t:goblin id:c"], // 1
+			['t:goblin ci:""', "t:goblin ci:c"], // 1
+			['t:goblin id=""', "t:goblin id=c"], // 1
+			['t:goblin -id:""', "t:goblin -id:c"], // 560
+			['t:goblin produces:""', "t:goblin -cmc<0"], // 561
+			['t:goblin -produces:""', "t:goblin cmc<0"], // 404
+		] as const) {
+			await expectSameSearch(q, same);
+		}
+	});
+});
+
 describe("/cards/random reads them alike", () => {
 	test("a punctuation word and an arithmetic chunk", async () => {
 		for (const [q, same] of [

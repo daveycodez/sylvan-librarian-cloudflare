@@ -263,7 +263,9 @@ describe("a value Scryfall does not know is ignored with its sentence", () => {
 
 	test("under a comparison it is honored and matches nothing, as every non-comparable keyword", () => {
 		// `new>rarity e:khm t:god` 404; `-new>rarity e:khm t:god` all 25.
-		expect(scryfallTermPolicy("new>rarity e:khm t:god").query).toBe("cmc<0 e:khm t:god");
+		// a comparison on a keyword Scryfall does not compare is a name word (`t:goblin a>b` is `ab`'s 14): "newrarity", which no god has — and `-new>rarity` its complement, all 25.
+		expect(scryfallTermPolicy("new>rarity e:khm t:god").query).toBe("name:newrarity e:khm t:god");
+		expect(scryfallTermPolicy("-new>rarity e:khm t:god").query).toBe("-name:newrarity e:khm t:god");
 		expect(scryfallTermPolicy("-new>rarity e:khm t:god").warnings).toEqual([]);
 	});
 });

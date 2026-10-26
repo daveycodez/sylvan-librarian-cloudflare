@@ -4064,6 +4064,48 @@ function opensString(rawValue: string): boolean {
 	return (rawValue.startsWith('"') || rawValue.startsWith("'")) && !isUnclosedOpener([...rawValue], 0);
 }
 
+/**
+ * AN EMPTY QUOTED VALUE IS NO VALUE: the term is ignored with `Unknown keyword “<keyword>”.`, whatever
+ * the keyword's own validator would say. Measured on api.scryfall.com 2026-10-25, each as
+ * `t:goblin <kw>:""` (561 carrying the sentence): o oracle fo fulloracle t type name a artist ft
+ * flavor e set s is not has kw keyword f lang st frame wm art otag atag cmc pow usd year game in
+ * border layout new cn number stamp cheapest lore block g nonsense — and `o=""`, `o:''`, `-o:""`
+ * (“-o”), the bare `""` (“name”, `-""` “-name”) and `!""` (“!”, `-!""` “-!”). This port read most
+ * as a literal empty string matching every card, `block:""` as nothing, and `f:""`, `lang:""`,
+ * `st:""`, `frame:""`, `game:""`, `stamp:""` and `cmc:""` with the validator's own sentence.
+ *
+ * Four kinds keep their own answer there: `r:""` (`Unknown rarity “.”`) and `date:""` (`Invalid
+ * date or unknown set code “”`), which this port already said; `devotion:""`, which is Devotion's
+ * sentence; and the colour columns, where the empty set is a value — `c:""` is every card (`c>=c`)
+ * and `-c:""` none, `c=""` the 4 colourless goblins (`c=c`), `id:""`, `ci:""` and `id=""` the 1
+ * colourless identity (`id:c`, `-id:""` 560), `produces:""` every card (`-produces:""` none).
+ * (`m:""` is a 500 there, and is left as it was.)
+ */
+const EMPTY_QUOTED_RE = /^(?:""|'')$/;
+const EMPTY_QUOTED_TERM_RE = /^(-?)(!?)(?:""|'')$/;
+const EMPTY_VALUE_KEEPS: ReadonlySet<string> = new Set(["r", "rarity", "date", "m", "mana"]);
+const COLOUR_SET_KEYWORDS: ReadonlySet<string> = new Set(["c", "color", "colors", "colour", "colours"]);
+const IDENTITY_KEYWORDS: ReadonlySet<string> = new Set(["id", "identity", "ci", "commander"]);
+
+function emptyQuotedVerdict(negated: boolean, keyword: string, op: string): LeafVerdict | null {
+	const sign = negated ? "-" : "";
+	if (EMPTY_VALUE_KEEPS.has(keyword)) return null;
+	if (DEVOTION_KEYWORDS.has(keyword)) return { keep: false, reason: DEVOTION_REASON };
+	if (COLOUR_SET_KEYWORDS.has(keyword)) return { keep: true, text: `${sign}${keyword}${op === ":" ? ">=" : "="}c` };
+	if (IDENTITY_KEYWORDS.has(keyword)) return { keep: true, text: `${sign}${keyword}${op}c` };
+	if (keyword === "produces") return op === ":" ? { keep: true, text: negated ? NEVER_MATCHES : ALWAYS_MATCHES } : null;
+	return { keep: false, reason: `Unknown keyword \u201c${sign}${keyword}\u201d.` };
+}
+
+/** `o:""x` is `o:""` and `x` (15 under `t:goblin`, the first ignored): null when the leaf is not that shape. */
+function emptyQuotedTail(term: string): string | null {
+	const match = LEAF_RE.exec(term);
+	if (match === null || (match[3] !== ":" && match[3] !== "=")) return null;
+	const glued = /^(""|'')(.+)$/su.exec(match[4] as string);
+	if (glued === null) return null;
+	return `${match[1]}${match[2]}${match[3]}${glued[1]} ${glued[2]}`;
+}
+
 /** The literal text columns, whose value Scryfall reads as typed up to the next space. */
 const LITERAL_TEXT_KEYWORDS: ReadonlySet<string> = new Set([
 	"o",
@@ -4151,7 +4193,14 @@ type LeafVerdict =
 
 function classifyLeaf(term: string, context: TermPolicyContext = {}): LeafVerdict {
 	const match = LEAF_RE.exec(term);
-	if (match === null) return numberLeafVerdict(term) ?? { keep: true, text: term };
+	if (match === null) {
+		// `""` and `!""` are the empty name: `Unknown keyword “name”.` / `“!”.` — see emptyQuotedVerdict.
+		const empty = EMPTY_QUOTED_TERM_RE.exec(term);
+		if (empty !== null) {
+			return { keep: false, reason: `Unknown keyword \u201c${empty[1]}${empty[2] === "!" ? "!" : "name"}\u201d.` };
+		}
+		return numberLeafVerdict(term) ?? { keep: true, text: term };
+	}
 	const negated = match[1] === "-";
 	const keyword = (match[2] as string).toLowerCase();
 	const op = match[3] as string;
@@ -4192,6 +4241,26 @@ function classifyLeaf(term: string, context: TermPolicyContext = {}): LeafVerdic
 	if (DATE_KEYWORDS.has(keyword)) {
 		const honored = honoredDateTerm(match[2] as string, op, rawValue);
 		if (honored !== null) return { keep: true, text: honored };
+	}
+
+	// AN EMPTY QUOTED VALUE — see emptyQuotedVerdict. Before every validator but the date's, whose
+	// own sentence Scryfall says for it.
+	if (equality && EMPTY_QUOTED_RE.test(rawValue)) {
+		const verdict = emptyQuotedVerdict(negated, keyword, op);
+		if (verdict !== null) return verdict;
+	}
+
+	// A COMPARISON ON A KEYWORD SCRYFALL DOES NOT COMPARE IS A NAME WORD, the operator collated away
+	// with the rest of the punctuation (scryfallNameTerm). Measured on api.scryfall.com 2026-10-25:
+	// `t:goblin a>b` and `a<b` are `t:goblin ab`'s 14 (the same ids), `t:goblin -a>b` is `-ab`'s 547,
+	// `lightning>bolt` and `lightning<bolt` are Lightning Bolt's 2, `-lightning>bolt` the other
+	// 33,825, and `t:goblin o>""` the 429 goblins whose name holds an "o" — the quotes collated away
+	// too. The rule below ("honored, matching nothing") was measured only on words that match no
+	// name (`nonsense>=1`, `t>creature`, `f>notaformat`, `lang>zz`) and on `>=` `<=` `!=`, whose `=`
+	// the name collation KEEPS, so `lightning>=bolt` is 404 and those three stay with it. Before the
+	// negation rule, because the negated word is the complement, not every card.
+	if ((op === ">" || op === "<") && !COMPARABLE_KEYWORDS.has(keyword) && !rawValue.includes("~")) {
+		return { keep: true, text: scryfallNameTerm(`${match[2]}${rawValue}`, negated) };
 	}
 
 	// BEFORE the unknown-keyword rule and before every value validator, because Scryfall applies it
@@ -4657,6 +4726,14 @@ function policyLevel(source: string, scan: PolicyScan): string | null {
 		if (bare !== null) {
 			changed = true;
 			const inner = bare === "" ? null : policyLevel(bare, scan);
+			if (inner !== null) kept.push({ kind: "leaf", text: inner });
+			continue;
+		}
+		// `o:""x` is two terms — see emptyQuotedTail.
+		const tail = emptyQuotedTail(piece.text);
+		if (tail !== null) {
+			changed = true;
+			const inner = policyLevel(tail, scan);
 			if (inner !== null) kept.push({ kind: "leaf", text: inner });
 			continue;
 		}

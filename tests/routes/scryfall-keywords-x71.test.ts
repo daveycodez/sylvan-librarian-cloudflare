@@ -72,7 +72,8 @@ describe("lore: is a literal substring the engine answers", () => {
 	test("a comparison is honored and matches nothing", () => {
 		// `lore!=jace` and `lore>jace` are 404 with no warnings.
 		expect(scryfallTermPolicy("lore!=jace e:khm").query).toBe("cmc<0 e:khm");
-		expect(scryfallTermPolicy("lore>jace e:khm").query).toBe("cmc<0 e:khm");
+		// Under `>`, a comparison on a keyword Scryfall does not compare is a name word (`t:goblin a>b` is `ab`'s 14).
+		expect(scryfallTermPolicy("lore>jace e:khm").query).toBe("name:lorejace e:khm");
 		expect(scryfallTermPolicy("lore>jace e:khm").warnings).toEqual([]);
 	});
 
@@ -206,7 +207,8 @@ describe("cheapest: is a currency, and its negated term is a term of its own", (
 			warnings: [ignored("cheapest:/usd/", "Unknown regular expression keyword “cheapest”.")],
 		});
 		// `cheapest>usd e:khm` and `cheapest!=usd e:khm` are 404 with no warnings.
-		expect(scryfallTermPolicy("cheapest>usd e:khm")).toMatchObject({ query: "cmc<0 e:khm", warnings: [] });
+		// Under `>`, a comparison on a keyword Scryfall does not compare is a name word (`t:goblin a>b` is `ab`'s 14).
+		expect(scryfallTermPolicy("cheapest>usd e:khm")).toMatchObject({ query: "name:cheapestusd e:khm", warnings: [] });
 		expect(scryfallTermPolicy("cheapest!=usd e:khm")).toMatchObject({ query: "cmc<0 e:khm", warnings: [] });
 	});
 
