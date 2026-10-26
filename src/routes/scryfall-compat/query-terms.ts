@@ -43,7 +43,7 @@
  * typographic-quote fold), which is the property that keeps this off the hot path's conscience.
  */
 
-import { foldTypographicQuotes, regexPlainLiteral } from "../../parser";
+import { foldTypographicQuotes, ParseError, parseScryfallQuery, regexPlainLiteral } from "../../parser";
 import {
 	ALIAS_TO_FIELD_INFOS,
 	COLOR_ALIAS_TO_CODES,
@@ -64,6 +64,7 @@ import {
 import { isKnownSetCode } from "../../parser/set-dates.gen";
 import { isWordCont, type LexOptions, type Token, TT, tokenize } from "../../parser/tokenizer";
 import { DIRECTIVE_TABLES } from "../enums";
+import { usesValueAsPredicate } from "../query-validation";
 import { blockSetCodes, blockValueCode, setNameCode, setNameCodes } from "./set-blocks.gen";
 import { NO_SET_GROUPS, type SetGroups } from "./set-groups";
 
@@ -3801,6 +3802,73 @@ function gluedRest(rest: string): string | null {
 	return text;
 }
 
+/**
+ * A bare piece `bareValueWords` may respell: an optional `-`, then letters, digits and the
+ * characters the name collation deletes or a bare word already carries — `_ . ~ * - / , [ ]`. Not
+ * `+`, which Scryfall keeps in a name (`+2` is +2 Mace's 1 there, `fire+` and `1+` 404), and nothing
+ * that opens a string, a group, a mana symbol or a comparison.
+ */
+const BARE_WORDS_RE = /^-?(?!-)[\p{L}\p{N}_.~*/,[\]-]+$/u;
+/** What the parser could read as arithmetic or a number: a digit, a slash, a star or a hyphen. */
+const MAY_READ_AS_VALUE_RE = /[\d/*-]/;
+/** Every character `collateName` deletes (pystr.ts): what a `name:` word may shed unchanged. */
+const COLLATED_AWAY_RE = /[^\p{L}\p{Nd}\p{Nl}\p{No}]/gu;
+
+/** Whether the parser reads `text` as a filter — not as a number, an arithmetic value or a syntax error. */
+function readsAsFilter(text: string): boolean {
+	try {
+		return !usesValueAsPredicate(parseScryfallQuery(text, undefined, SCRYFALL_LEX));
+	} catch (error) {
+		if (error instanceof ParseError) return false;
+		throw error;
+	}
+}
+
+/**
+ * A BARE NUMBER IS A NAME WORD ON SCRYFALL, AND A SLASH ENDS A BARE WORD — so a bare piece the
+ * parser would read as a number or as arithmetic is respelled as the `name:` words Scryfall
+ * searches. Null when the parser already reads the piece as a filter (`fire/ice`, `2rr`, `a]b`),
+ * which is then left byte-identical.
+ *
+ * Measured on api.scryfall.com 2026-10-25, where there is no arithmetic at all:
+ *
+ *   1  1/1  1//1  1/1/1  (1/1)  1]/1  1,      17   = `1`, the names holding a 1 (and a star glued before `/1`)
+ *   2  2/2  2/2/2  2*  *2  2]                     9    = `2`
+ *   11                                            3    so `1/1` is NOT the collated "11"
+ *   x/1   1/b   b/1                               2, 3, 3 — the two words, ANDed
+ *   t:goblin 1/1   t:goblin 1   t:goblin 1/b      404  no goblin's name holds a 1
+ *   t:goblin -1                                   561  every goblin; `-2` alone is 33,818
+ *   -1/1                                          404  `-1` and `1`
+ *   1-2                                           2    one hyphenated word, collated "12"
+ *   1.5   15   cmc/2   pow/tou   cmc-power  ajani 2   404
+ *
+ * Every one of them was a 400 on /cards/search: a bare NUMBER is a numeric literal to upstream's
+ * parser and `1/1` a division, so the tree held a value where a filter belongs and the route
+ * answered `The search query '…' contains invalid syntax. Arithmetic expressions like 'cmc+1' need
+ * to be part of a comparison` (query-validation.ts) — or `Failed to parse query` for `-1/1`, a
+ * negated division. `/search` keeps that reading; it is upstream's grammar.
+ *
+ * Each word becomes `name:` and its collated spelling, so the parser can only read it as the
+ * name word it is. The collation deletes the same characters on either side of the colon, so this
+ * changes no match: `name:12` and the bare `1-2` collate alike. A word that collates to nothing is
+ * `name:*`, which matches every card as `*` does; one holding the tilde stays as typed, because
+ * `~` is the character the name collation does not delete (card-query-nodes.ts).
+ */
+function bareValueWords(text: string): string | null {
+	if (!BARE_WORDS_RE.test(text)) return null;
+	const negated = text.startsWith("-");
+	const body = negated ? text.slice(1) : text;
+	if (!MAY_READ_AS_VALUE_RE.test(body) || readsAsFilter(text)) return null;
+	const words = body.split(/\/+/).filter((word) => word !== "");
+	if (words.length === 0) return null;
+	return words
+		.map((word, i) => {
+			const term = word.includes("~") ? word : `name:${word.replace(COLLATED_AWAY_RE, "") || "*"}`;
+			return negated && i === 0 ? `-${term}` : term;
+		})
+		.join(" ");
+}
+
 /** `pow=1a` → `pow=1 a`: the leaf as the terms Scryfall reads, or null when it is one term. */
 function numericValueSplit(term: string): string | null {
 	const match = LEAF_RE.exec(term);
@@ -4322,6 +4390,14 @@ function policyLevel(source: string, scan: PolicyScan): string | null {
 		// slash itself (parser.skipStraySlashes), so this is only what keeps `/` from being a term.
 		if (STRAY_SLASHES_RE.test(piece.text)) {
 			changed = true;
+			continue;
+		}
+		// `1/1` is the name words `1` and `1` — see bareValueWords.
+		const words = bareValueWords(piece.text);
+		if (words !== null) {
+			changed = true;
+			const inner = policyLevel(words, scan);
+			if (inner !== null) kept.push({ kind: "leaf", text: inner });
 			continue;
 		}
 		// `pow=1a` is two terms — see numericValueSplit. Each is answered as the term it is.
