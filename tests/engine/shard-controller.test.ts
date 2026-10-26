@@ -630,3 +630,153 @@ describe("regions are independent", () => {
 		expect(observedWidth(c, OTHER)).toBe(2);
 	});
 });
+
+// ── burst season ─────────────────────────────────────────────────────────────────────────────────
+//
+// DeckGen wnam, 2026-10-24/25: mtg-seeker's load came as one- and two-minute bursts in clusters
+// (21:05, 21:17, 21:26 on 10-24) with 8–14 minute gaps inside a cluster and hours between. The
+// ten-minute hold contracted at 21:15–17, and neither 21:17 nor 21:26 opened shard 1 again.
+describe("burst season: a region that ran two shards within the hour", () => {
+	/** One burst's onset on one shard: the rate the DO reports, and shard 1 admitted when opened. */
+	function burst(c: Controller, rate: number, region = R): number | null {
+		c.reportEngineRate(region, rate);
+		return admitPending(c, region);
+	}
+
+	test("the tuning production runs with: an hour, half the ceiling, a twenty-minute hold, a one-minute gap", async () => {
+		const c = await freshController();
+		expect(c.BURST_MEMORY_MS).toBe(60 * 60_000);
+		expect(c.BURST_EXPAND_RATE).toBe(33);
+		expect(c.BURST_HOLD_MS).toBe(20 * 60_000);
+		expect(c.BURST_RECUR_GAP_MS).toBe(60_000);
+	});
+
+	test("outside a season nothing changed: 40/s opens nothing, a lone burst contracts after ten minutes", async () => {
+		const c = await freshController();
+		c.reportEngineRate(R, 40);
+		expect(c.takeWarmTarget(R)).toBeNull();
+		expect(burst(c, 90)).toBe(1);
+		expect(observedWidth(c)).toBe(2);
+		advance(10 * 60_000 + 1);
+		c.pickShard(R);
+		expect(observedWidth(c)).toBe(1);
+	});
+
+	test("the next burst in the season opens shard 1 at half the ceiling — seconds sooner into its ten-second mean", async () => {
+		const c = await freshController();
+		expect(burst(c, 90)).toBe(1);
+		advance(10 * 60_000 + 1);
+		c.pickShard(R);
+		expect(observedWidth(c)).toBe(1);
+		advance(2 * 60_000);
+		// 33/s: what a step from ~1/s to 90/s averages ~3.7s in, against ~6s for 53/s.
+		c.reportEngineRate(R, 32);
+		expect(c.takeWarmTarget(R)).toBeNull();
+		expect(burst(c, 33)).toBe(1);
+		expect(observedWidth(c)).toBe(2);
+	});
+
+	test("but a second shard does not ladder to a third below EXPAND_RATE", async () => {
+		const c = await freshController();
+		expect(burst(c, 90)).toBe(1);
+		advance(31_000);
+		// Two shards at ~45/s each: 68% of the ceiling, busy, not a reason for a third.
+		c.reportEngineRate(R, 45);
+		expect(c.takeWarmTarget(R)).toBeNull();
+		c.reportEngineRate(R, 53);
+		expect(c.takeWarmTarget(R)).toBe(2);
+	});
+
+	test("a burst that came back holds its shard twenty minutes — through the next one in the cluster", async () => {
+		const c = await freshController();
+		// 21:05: the first burst; 21:15, contracted after ten quiet minutes.
+		expect(burst(c, 90)).toBe(1);
+		advance(10 * 60_000 + 1);
+		c.pickShard(R);
+		expect(observedWidth(c)).toBe(1);
+		// 21:17: it came back, and opens at the season's bar.
+		advance(2 * 60_000);
+		expect(burst(c, 40)).toBe(1);
+		// Ten quiet minutes no longer fold it…
+		advance(10 * 60_000 + 1);
+		c.pickShard(R);
+		expect(observedWidth(c)).toBe(2);
+		// …so a 21:26-like burst lands on two warm shards, and its 40/s per shard counts as busy,
+		// holding the shard for twenty more minutes from there.
+		c.reportEngineRate(R, 40);
+		advance(19 * 60_000);
+		c.pickShard(R);
+		expect(observedWidth(c)).toBe(2);
+		advance(60_000 + 1);
+		c.pickShard(R);
+		expect(observedWidth(c)).toBe(1);
+	});
+
+	test("the season ends an hour after the region last ran two shards", async () => {
+		const c = await freshController();
+		expect(burst(c, 90)).toBe(1);
+		advance(10 * 60_000 + 1);
+		c.pickShard(R);
+		expect(observedWidth(c)).toBe(1);
+		advance(60 * 60_000);
+		c.reportEngineRate(R, 40);
+		expect(c.takeWarmTarget(R)).toBeNull();
+		// And a burst then is a first burst again: ten minutes' hold.
+		expect(burst(c, 90)).toBe(1);
+		advance(10 * 60_000 + 1);
+		c.pickShard(R);
+		expect(observedWidth(c)).toBe(1);
+	});
+
+	test("isolates joining the burst under way do not count it as one coming back", async () => {
+		const c = await freshController();
+		// The region's DO says two shards ran a second ago: another isolate's expansion, this burst.
+		c.noteRegionWide(R, 1_000);
+		expect(burst(c, 40)).toBe(1);
+		advance(10 * 60_000 + 1);
+		c.pickShard(R);
+		expect(observedWidth(c)).toBe(1);
+	});
+
+	test("a fresh isolate learns the season from the region's DO, and opens shard 1 at its bar", async () => {
+		const c = await freshController();
+		c.reportEngineRate(R, 40);
+		expect(c.takeWarmTarget(R)).toBeNull();
+		// Twelve minutes ago the region ran two shards: this isolate was not there.
+		c.noteRegionWide(R, 12 * 60_000);
+		expect(burst(c, 40)).toBe(1);
+		// And that is a burst coming back: held past ten quiet minutes.
+		advance(15 * 60_000);
+		c.pickShard(R);
+		expect(observedWidth(c)).toBe(2);
+	});
+
+	test("the DO's word is taken only inside an hour, and never widens anything by itself", async () => {
+		const c = await freshController();
+		for (const nonsense of [Number.NaN, -1, 61 * 60_000, Number.POSITIVE_INFINITY]) c.noteRegionWide(R, nonsense);
+		c.reportEngineRate(R, 40);
+		expect(c.takeWarmTarget(R)).toBeNull();
+		c.noteRegionWide(R, 0);
+		expect(c.takeWarmTarget(R)).toBeNull();
+		expect(observedWidth(c)).toBe(1);
+	});
+
+	test("caps hold: SHARDS_MAX=1, or a pool of one, opens nothing in season either", async () => {
+		const c = await freshController();
+		c.pickShard(R, 1);
+		c.noteRegionWide(R, 5 * 60_000);
+		for (let i = 0; i < 5; i++) {
+			c.reportEngineRate(R, 90);
+			advance(31_000);
+		}
+		expect(c.takeWarmTarget(R)).toBeNull();
+		for (let i = 0; i < 300; i++) expect(c.pickShard(R, c.effectiveShardCap(undefined, 1))).toBe(0);
+	});
+
+	test("seasons are per region: wnam's bursts change nothing in enam", async () => {
+		const c = await freshController();
+		expect(burst(c, 90, "wnam")).toBe(1);
+		c.reportEngineRate("enam", 40);
+		expect(c.takeWarmTarget("enam")).toBeNull();
+	});
+});

@@ -178,7 +178,7 @@ mock.module("../../src/engine/placement", () => ({
 	probePlacement: () => {},
 }));
 
-const { SearchEngine } = await import("../../src/engine/search-engine-do");
+const { SearchEngine, resetRegionWideForTests } = await import("../../src/engine/search-engine-do");
 const { encodeKeyPacket, encodeRowPacket } = await import("../../src/engine/gather");
 const { resetGatherHealthForTests } = await import("../../src/engine/gather-health");
 
@@ -199,6 +199,9 @@ async function report(engine: Do, width?: number): Promise<number> {
 beforeEach(() => {
 	clock = 5_000_000;
 	nowSpy = spyOn(Date, "now").mockImplementation(() => clock);
+	// Burst season is module state, like the gather's health: one suite's width-4 reports must not
+	// put the next suite's replies in a season (and give them a rider they do not expect).
+	resetRegionWideForTests();
 });
 
 afterEach(() => {
@@ -449,6 +452,38 @@ describe("decay, so adoption is not a ratchet", () => {
 			clock += 30_000;
 			expect(await report(engine, 4)).toBe(4);
 		}
+	});
+});
+
+describe("burst season: the region's objects remember it ran two shards (shard-controller.ts BURST_MEMORY_MS)", () => {
+	/** An object with a real engine name, so its region is the season's key. */
+	function regionDo(label: string): { searchCardsAsObjects: Do["searchCardsAsObjects"] } {
+		return new SearchEngine({ waitUntil: () => {}, id: { name: label } } as never, {} as never) as unknown as Do;
+	}
+	const ask = async (engine: ReturnType<typeof regionDo>, width: number) =>
+		(await engine.searchCardsAsObjects({ limit: 1 }, width)) as { shards: number; wideAgoMs?: number };
+
+	test("no word of a season until some caller reports two shards — the free account's every reply", async () => {
+		const p0 = regionDo("engine-oc-p0");
+		for (let i = 0; i < 5; i++) {
+			clock += 10_000;
+			const reply = await ask(p0, 1);
+			expect(reply.shards).toBe(1);
+			expect(reply.wideAgoMs).toBeUndefined();
+		}
+	});
+
+	test("after a burst, every object of the region says how long ago — for an hour, after its announcement decays", async () => {
+		const p3 = regionDo("engine-me-p3");
+		const p7 = regionDo("engine-me-p7");
+		await ask(p3, 2);
+		clock += 12 * 60_000;
+		// The announcement went back to one long ago (WIDTH_TTL_MS); the season did not.
+		expect(await ask(p3, 1)).toMatchObject({ shards: 1, wideAgoMs: 12 * 60_000 });
+		// And it is the REGION's season: another partition object in this isolate says the same.
+		expect((await ask(p7, 1)).wideAgoMs).toBe(12 * 60_000);
+		clock += 48 * 60_000 + 1;
+		expect((await ask(p3, 1)).wideAgoMs).toBeUndefined();
 	});
 });
 

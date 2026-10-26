@@ -80,7 +80,7 @@ import { gatherHealthOf, type SiblingCallTiming, SLOW_GATHER_LOG_MS, slowGatherL
 import { nameReplySettles } from "./name-settle";
 import { probePlacement } from "./placement";
 import { ENGINE_SHED_ERROR, SIBLING_CALL_DEADLINE_MS, siblingCall, withDeadline } from "./remote-engine";
-import { foldWidthAnnouncement } from "./shard-controller";
+import { BURST_MEMORY_MS, foldWidthAnnouncement } from "./shard-controller";
 import {
 	type CrossTarget,
 	HedgePhase,
@@ -166,6 +166,9 @@ interface SearchTelemetry {
 	rate: number;
 	/** Widest fan-out any caller has reported lately — the rendezvous. */
 	shards: number;
+	/** Burst season (shard-controller.ts BURST_MEMORY_MS): how long ago this region last ran two or
+	 * more shards, as far as this isolate's engine objects heard — present only inside the season. */
+	wideAgoMs?: number;
 	/** Present only on a call that found no store loaded here — see EngineWake. */
 	wake?: EngineWake;
 }
@@ -181,6 +184,20 @@ interface SearchTelemetry {
  * CONTRACT_COOLDOWN_MS so decay and contraction step at the same pace.
  */
 const WIDTH_TTL_MS = 60_000;
+
+/**
+ * Burst season, the DO's half (shard-controller.ts BURST_MEMORY_MS): when each region was last
+ * announced at two or more shards by an engine object in THIS isolate. Module state, like the
+ * gather's health: the instance holding the announcement is evicted after ten idle seconds, and
+ * the bursts it must remember are minutes apart. No storage — an isolate that is itself replaced
+ * forgets, and the region is then judged by its next burst as it always was.
+ */
+const regionWideAt = new Map<string, number>();
+
+/** For tests: forget every region's burst season. */
+export function resetRegionWideForTests(): void {
+	regionWideAt.clear();
+}
 
 /** One-second buckets behind the arrival-rate meter; also its window in
  * seconds, since each bucket holds exactly one. */
@@ -282,8 +299,8 @@ export class SearchEngine extends DurableObject<Env> {
 		return this.ctx.id?.name ?? "engine-?";
 	}
 
-	/** Fold a caller's width in and hand back the current announcement. */
-	private rendezvous(reported: number, now: number): number {
+	/** Fold a caller's width in and hand back the current announcement, and the burst season's age. */
+	private rendezvous(reported: number, now: number): { shards: number; wideAgoMs?: number } {
 		// The rule lives in shard-controller.ts (foldWidthAnnouncement) beside the
 		// isolate half, so the whole loop is testable with the real rule on both
 		// sides. Callers report the width they hold on their OWN evidence, so an
@@ -296,7 +313,12 @@ export class SearchEngine extends DurableObject<Env> {
 		);
 		this.announcedShards = folded.shards;
 		this.announcedAt = folded.at;
-		return this.announcedShards;
+		const region = parseEngineName(this.label)?.region ?? this.label;
+		if (this.announcedShards >= 2) regionWideAt.set(region, now);
+		const wideAt = regionWideAt.get(region);
+		return wideAt !== undefined && now - wideAt <= BURST_MEMORY_MS
+			? { shards: this.announcedShards, wideAgoMs: now - wideAt }
+			: { shards: this.announcedShards };
 	}
 
 	/** Searches per second over the trailing window. O(RATE_BUCKETS), no
@@ -474,6 +496,7 @@ export class SearchEngine extends DurableObject<Env> {
 			"x-load": String(result.load),
 			"x-rate": String(result.rate),
 			"x-shards": String(result.shards),
+			...(result.wideAgoMs === undefined ? {} : { "x-wide-ago-ms": String(result.wideAgoMs) }),
 			// n15: how many partitions the gather asked (the names index can make it fewer than N, or
 			// none). For the route's log line; RemoteEngine strips it with the riders.
 			...(result.gathered === undefined ? {} : { "x-gathered": String(result.gathered) }),
@@ -530,7 +553,7 @@ export class SearchEngine extends DurableObject<Env> {
 		const now = Date.now();
 		const load = this.inFlightSearches;
 		const rate = this.searchRate(now);
-		const shards = this.rendezvous(reportedShards ?? 1, now);
+		const meet = this.rendezvous(reportedShards ?? 1, now);
 		this.inFlightSearches += 1;
 		try {
 			// Time the engine acquisition (the KV load, when there is one) for
@@ -545,7 +568,7 @@ export class SearchEngine extends DurableObject<Env> {
 			const engine = await this.engine();
 			const acquireMs = Date.now() - acquireStart;
 			try {
-				const reply = { ...(await run(engine)), acquireMs, load, rate, shards };
+				const reply = { ...(await run(engine)), acquireMs, load, rate, ...meet };
 				return woke ? { ...reply, wake: { startedAt: now, endedAt: Date.now() } } : reply;
 			} catch (err) {
 				rethrowForRpc(err);
@@ -579,9 +602,9 @@ export class SearchEngine extends DurableObject<Env> {
 		// `load` is what is executing HERE; this gather is not added to it (see inFlightSearches).
 		const load = this.inFlightSearches;
 		const rate = this.searchRate(now);
-		const shards = this.rendezvous(reportedShards ?? 1, now);
+		const meet = this.rendezvous(reportedShards ?? 1, now);
 		try {
-			return { ...(await run()), load, rate, shards };
+			return { ...(await run()), load, rate, ...meet };
 		} catch (err) {
 			rethrowForRpc(err);
 		}

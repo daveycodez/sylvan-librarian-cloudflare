@@ -29,6 +29,7 @@ const reportEngineRate = mock((_region: string, _rate: number) => {});
 const reportEngineLatency = mock((_region: string, _ms: number) => {});
 const adoptShardWidth = mock((_region: string, _width: number) => {});
 const currentShardWidth = mock((_region: string) => 1);
+const noteRegionWide = mock((_region: string, _agoMs: number) => {});
 // The DO-side fold is imported by search-engine-do, which rendezvous.test.ts runs for real; since
 // `mock.module` is process-global, the mock has to carry the REAL rule or that suite's announcement
 // never moves. Query-string import so the real module is not the one being mocked.
@@ -41,7 +42,9 @@ mock.module("../../src/engine/shard-controller", () => ({
 	reportEngineLatency,
 	adoptShardWidth,
 	currentShardWidth,
+	noteRegionWide,
 	foldWidthAnnouncement: realController.foldWidthAnnouncement,
+	BURST_MEMORY_MS: realController.BURST_MEMORY_MS,
 }));
 
 const { RemoteEngine, resetEngineCoolingForTests, setEngineHedgeForTests, wakeSplit } = await import(
@@ -69,6 +72,7 @@ beforeEach(() => {
 	reportEngineLatency.mockClear();
 	adoptShardWidth.mockClear();
 	currentShardWidth.mockClear();
+	noteRegionWide.mockClear();
 });
 
 describe("the streaming transport's riders", () => {
@@ -88,6 +92,7 @@ describe("the streaming transport's riders", () => {
 						"x-load": "3",
 						"x-rate": "44",
 						"x-shards": "2",
+						"x-wide-ago-ms": "720000",
 					},
 				}),
 		} as unknown as Stub;
@@ -99,12 +104,22 @@ describe("the streaming transport's riders", () => {
 		);
 		expect(res.status).toBe(200);
 		expect(res.headers.get("cache-control")).toBe("public, max-age=57600, stale-while-revalidate=86400");
-		for (const name of ["x-total-cards", "x-row-count", "x-acquire-ms", "x-load", "x-rate", "x-shards"]) {
+		for (const name of [
+			"x-total-cards",
+			"x-row-count",
+			"x-acquire-ms",
+			"x-load",
+			"x-rate",
+			"x-shards",
+			"x-wide-ago-ms",
+		]) {
 			expect(res.headers.get(name)).toBeNull();
 		}
 		expect(reportEngineLoad).toHaveBeenCalledWith("wnam", 3);
 		expect(reportEngineRate).toHaveBeenCalledWith("wnam", 44);
 		expect(adoptShardWidth).toHaveBeenCalledWith("wnam", 2);
+		// Burst season (shard-controller.ts BURST_MEMORY_MS): the region ran two shards 12 minutes ago.
+		expect(noteRegionWide).toHaveBeenCalledWith("wnam", 720_000);
 		expect(await res.text()).toBe("{}");
 	});
 });
@@ -291,7 +306,13 @@ describe("a HEDGED answer feeds nothing", () => {
 			fetch: async () =>
 				new Response("{}", {
 					status: 200,
-					headers: { "x-acquire-ms": "0", "x-load": "9", "x-rate": "80", "x-shards": "4" },
+					headers: {
+						"x-acquire-ms": "0",
+						"x-load": "9",
+						"x-rate": "80",
+						"x-shards": "4",
+						"x-wide-ago-ms": "1000",
+					},
 				}),
 		};
 		const engine = new RemoteEngine(hung, "wnam", "SJC", undefined, false, hedgeTo(neighbour));
@@ -302,6 +323,7 @@ describe("a HEDGED answer feeds nothing", () => {
 		expect(reportEngineRate).not.toHaveBeenCalled();
 		expect(reportEngineLatency).not.toHaveBeenCalled();
 		expect(adoptShardWidth).not.toHaveBeenCalled();
+		expect(noteRegionWide).not.toHaveBeenCalled();
 	});
 
 	test("the primary winning after the hedge fired still feeds as it always has", async () => {
@@ -316,5 +338,18 @@ describe("a HEDGED answer feeds nothing", () => {
 		expect(reportEngineLoad).toHaveBeenCalledWith("wnam", 1);
 		expect(reportEngineRate).toHaveBeenCalledWith("wnam", 5);
 		expect(adoptShardWidth).toHaveBeenCalledWith("wnam", 1);
+	});
+});
+
+describe("burst season's rider", () => {
+	test("an RPC reply's wideAgoMs is handed to the controller for its region, and never to the caller", async () => {
+		const result = await search({ acquireMs: 0, load: 0, rate: 1, shards: 1, wideAgoMs: 300_000 }, "enam");
+		expect(noteRegionWide).toHaveBeenCalledWith("enam", 300_000);
+		expect("wideAgoMs" in result).toBe(false);
+	});
+
+	test("a reply outside any season carries none, and nothing is noted", async () => {
+		await search({ acquireMs: 0, load: 0, rate: 1, shards: 1 });
+		expect(noteRegionWide).not.toHaveBeenCalled();
 	});
 });

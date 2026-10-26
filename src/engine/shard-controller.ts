@@ -285,6 +285,62 @@ const EXPAND_COOLDOWN_MS = 30_000;
  * sure" has no event to wait on; it is a real control-loop parameter. */
 const CONTRACT_IDLE_MS = 10 * 60_000;
 const CONTRACT_COOLDOWN_MS = 60_000;
+
+/**
+ * BURST SEASON: a region that ran a second shard within this long — by this isolate's own expansion,
+ * by adopting a width of 2 or more, or by the region's DO saying so (noteRegionWide) — expands from
+ * one shard at BURST_EXPAND_RATE and, once a burst has come back inside the season, holds a shard
+ * BURST_HOLD_MS without saturation instead of CONTRACT_IDLE_MS.
+ *
+ * WHY (DeckGen, wnam, 2026-10-24/25). mtg-seeker's west-coast load arrives as one- and two-minute
+ * bursts — 06:47 UTC on 10-25 carried 77,677 Durable Object requests in a minute against a daily
+ * median of 53–81 a minute — and they come in CLUSTERS: 03:06, 03:14–03:22 on 10-25; 21:05, 21:17,
+ * 21:26 on 10-24; 21:28, 21:38, 21:46, 21:55–21:59 on 10-25; gaps of 8–14 minutes inside a cluster,
+ * hours between them. The controller's own lines show what that does to a ten-minute hold:
+ *
+ *   10-24 21:05     62 isolates expand to 2, shard 1 warm within the second
+ *   10-24 21:15–17  contracted to 1 (ten minutes since the last busy report)
+ *   10-24 21:17     16,178 DO requests in the minute — and NO expansion, nor at 21:26 (9,628)
+ *
+ * and each expansion from one shard pays shard 1's wake in front of the burst (warm 1–8s after the
+ * expansion: 00:26:45 → 00:26:47.7, 03:06:08 → 03:06:09.2, 06:47:12 → 06:47:20 on 10-25), while the
+ * rate that opens it is a TEN-SECOND trailing mean (SearchEngine.searchRate): stepped from ~1/s to
+ * 90/s it reaches EXPAND_RATE (53/s) ~6s into the burst, and half the ceiling ~3.7s in.
+ *
+ * Sixty minutes covers every in-cluster gap seen (the longest, 05:56 → 06:10 on 10-26, is 14) and
+ * ends long before the next cluster (hours), so a lone burst a day leaves the region exactly as it
+ * was. What it costs is bounded by what already bounds the fan-out: no shard past SHARDS_MAX or the
+ * pool cap (canExpand, effectiveShardCap), and nothing at all for a region that never reached two —
+ * the free account's traffic never has (its regions run well under 1 search/s per object).
+ */
+export const BURST_MEMORY_MS = 60 * 60_000;
+
+/**
+ * In burst season, the rate at which ONE shard opens a second — and the rate that counts as busy,
+ * holding contraction off, at any width. Half the ceiling, the latency backstop's own gate
+ * (LATENCY_MIN_RATE): a burst's ten-second mean crosses it ~2s sooner than EXPAND_RATE, and nothing
+ * but a burst reaches it — the region's baseline is about one search a second per object.
+ *
+ * The step from two shards up stays at EXPAND_RATE: at 84–92/s on one shard (the onset readings),
+ * two shards are ~45/s each, 68% of the ceiling, and a third would be a wake for nothing.
+ */
+export const BURST_EXPAND_RATE = LATENCY_MIN_RATE;
+
+/**
+ * In a burst season that has already seen a burst come back, how long a second shard is held with no
+ * saturation reported: twenty minutes, past the longest in-cluster gap (14 minutes) with room for a
+ * burst that starts below the busy bar. The first burst of a season keeps CONTRACT_IDLE_MS, so a lone
+ * burst holds its shard no longer than before.
+ */
+export const BURST_HOLD_MS = 20 * 60_000;
+
+/**
+ * A second shard opened this long after the region last ran two is a burst coming BACK; sooner, it
+ * is one more isolate joining the burst under way (the region's DO reports the season to every
+ * caller, so most of a burst's ~45 expanding isolates have heard of it seconds before). A minute:
+ * the announcement's own TTL, and far below the shortest in-cluster gap (8 minutes).
+ */
+export const BURST_RECUR_GAP_MS = 60_000;
 /** Cap on the fan-out. Not a scaling limit so much as a blast radius: the
  * signals that drive expansion can be wrong, and an unbounded response to a
  * wrong signal opens shards that each cold-load ~76MB and hold it resident.
@@ -455,6 +511,10 @@ interface RegionState {
 	engineRate: number;
 	/** A just-opened shard awaiting its warm ping (see takeWarmTarget). */
 	pendingWarmShard: number | null;
+	/** Burst season: the last time this region was known to run two or more shards (0: never). */
+	wideAt: number;
+	/** Burst season: when a burst came BACK — one shard opened a second inside a season (0: never). */
+	recurredAt: number;
 }
 
 const regions = new Map<string, RegionState>();
@@ -479,6 +539,8 @@ function stateFor(region: string): RegionState {
 			latencyBreaches: 0,
 			engineRate: 0,
 			pendingWarmShard: null,
+			wideAt: 0,
+			recurredAt: 0,
 		};
 		regions.set(region, state);
 	}
@@ -489,8 +551,24 @@ function canExpand(state: RegionState): boolean {
 	return configuredMax === 0 || state.targetShards < configuredMax;
 }
 
+/** Whether `state`'s region ran two or more shards within BURST_MEMORY_MS of `now`. */
+function inBurstSeason(state: RegionState, now: number): boolean {
+	return state.wideAt > 0 && now - state.wideAt <= BURST_MEMORY_MS;
+}
+
+/** How long `state`'s region holds a shard with no saturation reported (see BURST_HOLD_MS). */
+function contractIdleMs(state: RegionState, now: number): number {
+	return state.recurredAt > 0 && now - state.recurredAt <= BURST_MEMORY_MS ? BURST_HOLD_MS : CONTRACT_IDLE_MS;
+}
+
 /** Open one more shard, pending its warm-up. Shared by both expansion triggers. */
 function expand(state: RegionState, region: string, now: number, why: string): void {
+	// A burst that came back: one shard opening a second inside a season that already had two, and
+	// had been back at one for a while — not one more isolate joining the burst that is under way.
+	if (state.targetShards === 1 && inBurstSeason(state, now) && now - state.wideAt >= BURST_RECUR_GAP_MS) {
+		state.recurredAt = now;
+	}
+	state.wideAt = now;
 	state.targetShards += 1;
 	// Saturation was observed at the CURRENT routing width, adopted shards
 	// included, so the isolate now holds the whole of the new width on its own
@@ -523,19 +601,36 @@ function expand(state: RegionState, region: string, now: number, why: string): v
 export function reportEngineRate(region: string, rate: number): void {
 	const state = stateFor(region);
 	state.engineRate = rate;
-	if (rate < EXPAND_RATE) return;
+	// Burst season (BURST_MEMORY_MS): half the ceiling is busy, and opens the second shard.
 	const now = Date.now();
+	const season = inBurstSeason(state, now);
+	if (rate < (season ? BURST_EXPAND_RATE : EXPAND_RATE)) return;
 	// At 80% of its ceiling a shard is busy whether or not anything has queued yet — hold
 	// contraction off on the same evidence that opens a shard.
 	state.lastBusyAt = now;
-	if (now - state.lastExpandAt >= EXPAND_COOLDOWN_MS && canExpand(state)) {
+	const bar = season && state.targetShards === 1 ? BURST_EXPAND_RATE : EXPAND_RATE;
+	if (rate >= bar && now - state.lastExpandAt >= EXPAND_COOLDOWN_MS && canExpand(state)) {
 		expand(
 			state,
 			region,
 			now,
-			`engine rate ${rate.toFixed(0)}/s at ${EXPAND_RATE}/s bar (80% of ${DO_CEILING_RATE}/s)`,
+			bar === EXPAND_RATE
+				? `engine rate ${rate.toFixed(0)}/s at ${EXPAND_RATE}/s bar (80% of ${DO_CEILING_RATE}/s)`
+				: `engine rate ${rate.toFixed(0)}/s at ${BURST_EXPAND_RATE}/s bar: burst season, two shards ` +
+						`${Math.round((now - state.wideAt) / 60_000)}m ago`,
 		);
 	}
+}
+
+/**
+ * The region's DO says the region ran two or more shards `agoMs` ago (its rendezvous memory — see
+ * SearchEngine.rendezvous): what lets an isolate that was not there for the last burst open shard 1
+ * at the next one's onset (BURST_EXPAND_RATE). Never widens anything by itself.
+ */
+export function noteRegionWide(region: string, agoMs: number): void {
+	if (!Number.isFinite(agoMs) || agoMs < 0 || agoMs > BURST_MEMORY_MS) return;
+	const state = stateFor(region);
+	state.wideAt = Math.max(state.wideAt, Date.now() - agoMs);
 }
 
 /** Feed one response's reported queue depth back into the controller. */
@@ -706,6 +801,7 @@ export function adoptShardWidth(region: string, width: number): void {
 	const capped = configuredMax === 0 ? Math.floor(width) : Math.min(Math.floor(width), configuredMax);
 	if (capped > state.readyShards) {
 		state.readyShards = capped;
+		if (capped > 1) state.wideAt = Date.now();
 		if (state.targetShards < capped) state.targetShards = capped;
 		console.log(`[${region}] shard controller: adopted ${state.readyShards} shards announced by the region's DO`);
 		return;
@@ -753,10 +849,11 @@ export function pickShard(region: string, maxShards?: number): number {
 	if (maxShards !== undefined && maxShards >= 0) configuredMax = maxShards;
 	const state = stateFor(region);
 	const now = Date.now();
+	const idleMs = contractIdleMs(state, now);
 	if (
 		state.targetShards > 1 &&
 		state.lastBusyAt !== 0 &&
-		now - state.lastBusyAt >= CONTRACT_IDLE_MS &&
+		now - state.lastBusyAt >= idleMs &&
 		now - state.lastContractAt >= CONTRACT_COOLDOWN_MS
 	) {
 		state.targetShards -= 1;
@@ -769,9 +866,12 @@ export function pickShard(region: string, maxShards?: number): number {
 		state.lastContractAt = now;
 		console.log(
 			`[${region}] shard controller: contracted to ${state.targetShards} shards ` +
-				`(no saturation for ${CONTRACT_IDLE_MS / 60_000}m — not necessarily idle)`,
+				`(no saturation for ${idleMs / 60_000}m — not necessarily idle` +
+				`${idleMs === BURST_HOLD_MS ? "; held longer: a burst came back this season" : ""})`,
 		);
 	}
+	// Burst season runs from the last moment this isolate routed across two or more shards.
+	if (state.readyShards > 1) state.wideAt = now;
 	if (configuredMax > 0 && state.targetShards > configuredMax) state.targetShards = configuredMax;
 	if (configuredMax > 0 && state.readyShards > configuredMax) state.readyShards = configuredMax;
 	return state.readyShards === 1 ? 0 : Math.floor(Math.random() * state.readyShards);

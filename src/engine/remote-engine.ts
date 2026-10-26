@@ -5,6 +5,7 @@ import { decodeCollectionPacket } from "./collection-batch";
 import {
 	adoptShardWidth,
 	currentShardWidth,
+	noteRegionWide,
 	reportEngineLatency,
 	reportEngineLoad,
 	reportEngineRate,
@@ -43,7 +44,15 @@ import {
 } from "./types";
 
 /** Riders the DO attaches to a search result for the shard controller. */
-type Telemetry = { acquireMs?: number; load?: number; rate?: number; shards?: number; wake?: EngineWake };
+type Telemetry = {
+	acquireMs?: number;
+	load?: number;
+	rate?: number;
+	shards?: number;
+	/** Burst season: how long ago the region last ran two or more shards (search-engine-do.ts). */
+	wideAgoMs?: number;
+	wake?: EngineWake;
+};
 
 /** Structural stub type: the SearchEngine DO's RPC surface. The riders are
  * optional only for one deploy's worth of rolling-update skew (new isolate, old
@@ -857,6 +866,7 @@ export const ENGINE_TELEMETRY_HEADERS = [
 	"x-load",
 	"x-rate",
 	"x-shards",
+	"x-wide-ago-ms",
 	"x-gathered",
 ] as const;
 
@@ -938,8 +948,8 @@ export class RemoteEngine implements Engine {
 	): Promise<Omit<T, keyof Telemetry>> {
 		const rpcStart = Date.now();
 		const { value, from } = await this.read(method, call);
-		const { acquireMs, load, rate, shards, wake, ...result } = value;
-		if (from === "primary") this.feedAutoscaler(rpcStart, { acquireMs, load, rate, shards, wake });
+		const { acquireMs, load, rate, shards, wideAgoMs, wake, ...result } = value;
+		if (from === "primary") this.feedAutoscaler(rpcStart, { acquireMs, load, rate, shards, wideAgoMs, wake });
 		return result as Omit<T, keyof Telemetry>;
 	}
 
@@ -951,7 +961,7 @@ export class RemoteEngine implements Engine {
 	 * — which for /cards/search would mean the controller losing sight of the very route whose
 	 * ceiling DO_CEILING_RATE is calibrated against.
 	 */
-	private feedAutoscaler(rpcStart: number, { acquireMs, load, rate, shards, wake }: Telemetry): void {
+	private feedAutoscaler(rpcStart: number, { acquireMs, load, rate, shards, wideAgoMs, wake }: Telemetry): void {
 		// A wake is a reply carrying `wake` (EngineWake) or, from an object on the build before it,
 		// a nonzero `acquireMs`. Only the first is certain: `acquireMs` is the acquisition's I/O, and
 		// a store read from the object's own SQLite (synchronous) and decoded in wasm takes none — a
@@ -970,6 +980,9 @@ export class RemoteEngine implements Engine {
 		// The rendezvous: adopt a fan-out this region already reached, so an
 		// isolate that never expanded on its own stops pinning shard 0.
 		if (shards !== undefined) adoptShardWidth(this.region, shards);
+		// Burst season: the region ran two shards a while ago, so the next burst opens the second at
+		// half the ceiling (shard-controller.ts BURST_EXPAND_RATE). Absent outside a season.
+		if (wideAgoMs !== undefined) noteRegionWide(this.region, wideAgoMs);
 		// A wake-carrying reply's depth is the queue behind the object's OWN store load: every
 		// request that arrived during the load waited for it and reports the ones before it. That
 		// says nothing about whether one more replica is needed once the store is in memory, and a
@@ -1086,6 +1099,7 @@ export class RemoteEngine implements Engine {
 				load: num("x-load"),
 				rate: num("x-rate"),
 				shards: num("x-shards"),
+				wideAgoMs: num("x-wide-ago-ms"),
 			});
 		}
 		// n15: how many partitions a gather asked (the names index can make it fewer than N) — kept for
