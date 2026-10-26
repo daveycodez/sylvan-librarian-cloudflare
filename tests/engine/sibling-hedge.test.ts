@@ -14,18 +14,21 @@ import { afterEach, beforeEach, describe, expect, jest, test } from "bun:test";
 import {
 	type CrossTarget,
 	HedgePhase,
+	hedgeAway,
 	hedgeNeighbourOf,
 	PhaseBuild,
 	SIBLING_AWAKE_MS,
 	SIBLING_COOLING_FLOOR_MS,
 	SIBLING_COOLING_MS,
 	SIBLING_COOLING_STRIKES,
+	SIBLING_HEDGE_BUSY_GATHERS,
 	SIBLING_HEDGE_CROSS_AFTER_MS,
 	SIBLING_HEDGE_CROSS_REGION_ENABLED,
 	SIBLING_HEDGE_ENABLED,
 	SIBLING_HEDGE_FLOOR_MS,
 	SIBLING_HEDGE_PEER_FACTOR,
 	SIBLING_HEDGE_QUORUM,
+	SIBLING_HEDGE_SLOW_PHASE_MS,
 	SIBLING_HEDGE_WAKING_FLOOR_MS,
 	SIBLING_STUCK_MEMORY_MS,
 	SIBLING_STUCK_MS,
@@ -1037,6 +1040,225 @@ describe("cooling: a sibling the neighbour answered for twice in a row", () => {
 		const cross = { region: "enam", firedAtMs: 101, direct: true, cooled: true as const, won: true as const };
 		expect(siblingHedgeLine("engine-wnam-p3", 8, "searchKeys", { ms: 178, hedge: { ...hedge, cross } }, 0)).toBe(
 			"[engine-wnam-p3] sibling hedge p8 searchKeys: fired at 101ms to enam (cooling); won by hedge to enam at 178ms (10 of 11 answered, median 22ms)",
+		);
+	});
+});
+
+// ── away from a busy sibling ────────────────────────────────────────────────────────────────────
+//
+// DeckGen wnam, 2026-10-24/25 (mtg-seeker's bursts): with ten or more other gathers on the
+// coordinator, a second call to the late sibling won 27 times in 426 lines — it queued behind the
+// first — while the neighbour's copy won 135 of 315 direct hedges. A phase whose own answers had a
+// median of 50ms or more looked the same at any load. Quiet traffic is hedged as x53 hedged it.
+describe("away from a busy sibling: the coordinator's load and the phase's median", () => {
+	beforeEach(() => {
+		restore();
+		restore = setSiblingHedgeForTests({ floorMs: 20, wakingFloorMs: 20, crossAfterMs: 30 });
+	});
+
+	function neighbour<T>(answer: () => Promise<T>) {
+		const state = { sent: 0 };
+		const cross = (): CrossTarget<T> => ({
+			region: "enam",
+			send: () => {
+				state.sent += 1;
+				return answer();
+			},
+		});
+		return { state, cross };
+	}
+
+	test("the tuning production runs with: ten other gathers, a 50ms phase median", () => {
+		restore();
+		expect(SIBLING_HEDGE_BUSY_GATHERS).toBe(10);
+		expect(SIBLING_HEDGE_SLOW_PHASE_MS).toBe(50);
+		expect(hedgeAway(0, 0)).toBeNull();
+		expect(hedgeAway(9, 49)).toBeNull();
+		expect(hedgeAway(10, 0)).toBe("busy");
+		expect(hedgeAway(44, 116)).toBe("busy");
+		expect(hedgeAway(0, 50)).toBe("slow phase");
+	});
+
+	test("quiet: fewer than ten other gathers and a quick phase — the same object first, as before", async () => {
+		const phase = new HedgePhase();
+		const late = sibling(
+			() => after(300, "rows"),
+			() => after(5, "rows"),
+		);
+		const there = neighbour(() => after(5, "rows"));
+		const [, , call] = await Promise.all([
+			phase.run(quick("a").send),
+			phase.run(quick("b").send),
+			phase.run(late.send, undefined, { cross: there.cross, gathersAlongside: () => 9 }),
+		]);
+		expect(late.state.sent).toBe(2);
+		expect(there.state.sent).toBe(0);
+		expect(call).toMatchObject({ ok: true, value: "rows", hedge: { won: "hedge" } });
+		expect(call.hedge?.cross).toBeUndefined();
+		await after(310, null);
+	});
+
+	test("busy: ten other gathers — the neighbour alone, never the same object twice", async () => {
+		const phase = new HedgePhase();
+		const queued = sibling(
+			() => after(150, "late"),
+			() => after(150, "second"),
+		);
+		const there = neighbour(() => after(5, "rows"));
+		const [, , call] = await Promise.all([
+			phase.run(quick("a").send),
+			phase.run(quick("b").send),
+			phase.run(queued.send, undefined, { cross: there.cross, gathersAlongside: () => 10 }),
+		]);
+		expect(queued.state.sent).toBe(1);
+		expect(there.state.sent).toBe(1);
+		expect(call).toMatchObject({
+			ok: true,
+			value: "rows",
+			hedge: { won: "hedge", cross: { region: "enam", direct: true, away: "busy", won: true } },
+		});
+		// At the ordinary floor: the load changes where the second ask goes, not when.
+		expect(call.hedge?.firedAtMs).toBeGreaterThanOrEqual(18);
+		expect(call.ms).toBeLessThan(120);
+		await after(160, null);
+	});
+
+	test("busy: the original that lands first still wins — what most late calls under load did", async () => {
+		const phase = new HedgePhase();
+		const queued = sibling(() => after(60, "late"));
+		const there = neighbour(() => after(200, "rows"));
+		const [, , call] = await Promise.all([
+			phase.run(quick("a").send),
+			phase.run(quick("b").send),
+			phase.run(queued.send, undefined, { cross: there.cross, gathersAlongside: () => 40 }),
+		]);
+		expect(queued.state.sent).toBe(1);
+		expect(there.state.sent).toBe(1);
+		expect(call).toMatchObject({ ok: true, value: "late", hedge: { won: "original", cross: { away: "busy" } } });
+		await after(210, null);
+	});
+
+	test("a slow phase on a quiet coordinator — the neighbour alone, the same object not asked again", async () => {
+		const phase = new HedgePhase();
+		const slow = (ms: number) => sibling(() => after(ms, "x"));
+		const late = sibling(
+			() => after(400, "late"),
+			() => after(5, "second"),
+		);
+		const there = neighbour(() => after(5, "rows"));
+		const [, , call] = await Promise.all([
+			// Answers at ~60ms: a phase median past 50ms, so the hedge is due at 4 × 60 = 240ms.
+			phase.run(slow(60).send),
+			phase.run(slow(62).send),
+			phase.run(late.send, undefined, { cross: there.cross, gathersAlongside: () => 0 }),
+		]);
+		expect(late.state.sent).toBe(1);
+		expect(there.state.sent).toBe(1);
+		expect(call).toMatchObject({
+			ok: true,
+			value: "rows",
+			hedge: { won: "hedge", cross: { direct: true, away: "slow phase", won: true } },
+		});
+		expect(call.hedge?.peerMedianMs).toBeGreaterThanOrEqual(50);
+		expect(call.hedge?.firedAtMs).toBeGreaterThanOrEqual(4 * 50);
+		await after(410, null);
+	});
+
+	test("neither helps — busy and no neighbour: no hedge at all, the original's answer as it lands", async () => {
+		const phase = new HedgePhase();
+		const queued = sibling(
+			() => after(150, "late"),
+			() => after(0, "second"),
+		);
+		const [, , call] = await Promise.all([
+			phase.run(quick("a").send),
+			phase.run(quick("b").send),
+			phase.run(queued.send, undefined, { cross: () => null, gathersAlongside: () => 12 }),
+		]);
+		expect(queued.state.sent).toBe(1);
+		expect(call).toMatchObject({ ok: true, value: "late", hedge: null });
+	});
+
+	test("the neighbour switched off and the coordinator busy: nothing is sent", async () => {
+		restore();
+		restore = setSiblingHedgeForTests({ floorMs: 20, wakingFloorMs: 20, crossRegion: false });
+		const phase = new HedgePhase();
+		const queued = sibling(
+			() => after(120, "late"),
+			() => after(0, "second"),
+		);
+		const there = neighbour(() => after(0, "rows"));
+		const [, , call] = await Promise.all([
+			phase.run(quick("a").send),
+			phase.run(quick("b").send),
+			phase.run(queued.send, undefined, { cross: there.cross, gathersAlongside: () => 30 }),
+		]);
+		expect(queued.state.sent).toBe(1);
+		expect(there.state.sent).toBe(0);
+		expect(call).toMatchObject({ ok: true, value: "late", hedge: null });
+	});
+
+	test("under a burst, every late call of a phase goes to the neighbour and the busy sibling gets none twice", async () => {
+		// A burst minute: twelve coordinators, each asking each sibling at once; three of this
+		// gather's siblings answer 100–150ms late, queued. Within the six-call limit, as ever.
+		const limiter = new SiblingLimiter();
+		const phase = new HedgePhase();
+		const peak = { open: 0 };
+		const counted =
+			(urgent: boolean) =>
+			<T>(task: () => Promise<T>) =>
+				limiter.run(() => {
+					peak.open = Math.max(peak.open, limiter.open);
+					return task();
+				}, urgent);
+		const lates = [100, 120, 150].map((ms) => sibling(() => after(ms, "late")));
+		const theres = lates.map(() => neighbour(() => after(5, "rows")));
+		const quicks = ["a", "b", "c", "d"].map(quick);
+		await Promise.all([
+			...quicks.map((q) => phase.run(q.send, counted(false))),
+			...lates.map((l, i) =>
+				phase.run(l.send, counted(false), {
+					cross: (theres[i] as (typeof theres)[number]).cross,
+					free: () => limiter.free,
+					scheduleHedge: counted(true),
+					gathersAlongside: () => 39,
+				}),
+			),
+		]);
+		expect(lates.map((l) => l.state.sent)).toEqual([1, 1, 1]);
+		expect(theres.map((t) => t.state.sent)).toEqual([1, 1, 1]);
+		expect(peak.open).toBeLessThanOrEqual(6);
+		await after(160, null);
+		expect(limiter.open).toBe(0);
+	});
+
+	test("the line says why the neighbour was asked alone", () => {
+		const hedge = {
+			firedAtMs: 502,
+			won: "hedge" as const,
+			originalMs: null,
+			answered: 9,
+			issued: 11,
+			peerMedianMs: 24,
+		};
+		const busy = { region: "enam", firedAtMs: 502, direct: true, away: "busy" as const, won: true as const };
+		expect(siblingHedgeLine("engine-wnam-p5", 6, "searchKeys", { ms: 580, hedge: { ...hedge, cross: busy } }, 0)).toBe(
+			"[engine-wnam-p5] sibling hedge p6 searchKeys: fired at 502ms to enam (busy); won by hedge to enam at 580ms (9 of 11 answered, median 24ms)",
+		);
+		const slow = { ...busy, away: "slow phase" as const, won: undefined };
+		expect(
+			siblingHedgeLine(
+				"engine-wnam-p5",
+				6,
+				"fetchRows",
+				{
+					ms: 700,
+					hedge: { ...hedge, firedAtMs: 640, won: "original", peerMedianMs: 160, cross: { ...slow, firedAtMs: 640 } },
+				},
+				0,
+			),
+		).toBe(
+			"[engine-wnam-p5] sibling hedge p6 fetchRows: fired at 640ms to enam (slow phase); won by original at 700ms (9 of 11 answered, median 160ms)",
 		);
 	});
 });

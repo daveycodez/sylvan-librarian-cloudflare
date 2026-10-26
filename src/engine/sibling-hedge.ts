@@ -119,6 +119,14 @@
  *
  * so "won by hedge to " counts the neighbour's rescues, "ms to " and ", to " its calls, and
  * "discarded" the answers a publish in progress made unusable.
+ *
+ * ──────────────────────────────────────────────────────────────────────────────────────────────
+ * AWAY FROM A BUSY SIBLING (2026-10-26). Under mtg-seeker's burst minutes a late sibling is QUEUED,
+ * not stuck, and a second call to it queues behind the first: 513 of 768 wnam hedges on 10-25 were
+ * "won by original". So a coordinator running SIBLING_HEDGE_BUSY_GATHERS other gathers, or a phase
+ * whose answers so far have a median of SIBLING_HEDGE_SLOW_PHASE_MS, asks the neighbour alone (the
+ * line says `to enam (busy)` / `to enam (slow phase)`), and where there is no neighbour sends no
+ * hedge. Below both bars nothing changed. The evidence is on the two constants.
  */
 
 import { parseEngineName } from "./engine-namespace";
@@ -197,6 +205,52 @@ export const SIBLING_COOLING_MS = 120_000;
  */
 export const SIBLING_COOLING_FLOOR_MS = 100;
 
+/**
+ * AWAY FROM A BUSY SIBLING: when the coordinator is running this many OTHER gathers, a late call's
+ * second ask does not go to the same object again — it goes to the neighbour region's copy (the
+ * cross path, with its build, sort-key and shape refusals), or nowhere when there is no neighbour.
+ *
+ * WHY (DeckGen, wnam, 2026-10-24 and 10-25 — mtg-seeker's west-coast bursts, wnam searches 9,495 →
+ * 36,805 a day, a burst minute at 06:47 UTC carrying 77,677 Durable Object requests). Every hedged
+ * gather logs its `slow gather` line with `inflight=`, the coordinator's other gathers at the end:
+ *
+ *   inflight   lines with a same-object win / loss
+ *              10-24       10-25
+ *   0–2        22 / 49     34 / 106
+ *   3–9         0 / 3       6 / 22
+ *   ≥ 10        0 / 90     27 / 309      (the burst minutes' coordinators reached inflight=39–44)
+ *
+ * Under a burst every coordinator asks every sibling at once, so the late sibling is late because it
+ * is QUEUED, not stuck: the original landed a median 93ms after the hedge was sent (p75 161ms, p90
+ * 247ms, 326 losses in the burst windows), and a second call to it waits in the same queue behind it
+ * — and adds one more call to that queue. The neighbour's copy is on other hosts with its own queue:
+ * the direct neighbour hedges already sent past either bar (busy, or a slow phase below) won 135 of
+ * 315 on 10-25 and 68 of 99 on 10-24.
+ *
+ * Ten is where the two populations part: below it the second call still won about one late call in
+ * four, at ten and above one in sixteen. Quiet traffic — fewer than ten other gathers and a quick
+ * phase, the stall x53 was built for — is hedged exactly as before: 144 of 10-25's 564 same-object
+ * re-sends, which won 33 of the 70 the day's re-sends won.
+ */
+export const SIBLING_HEDGE_BUSY_GATHERS = 10;
+
+/**
+ * ...nor when the phase's own answers so far have this median: the WHOLE phase is slow, so the late
+ * call is the tail of a queue, not a stuck path. The same days' hedged gathers on coordinators
+ * running fewer than ten others, by the gather's sibling-call median:
+ *
+ *   median     lines with a same-object win / loss     lines the neighbour won
+ *   < 50ms     51 / 114                                 135
+ *   ≥ 50ms     11 / 66                                  119
+ *
+ * and the `sibling hedge` lines by the median each was judged against: a same-object win 60 times
+ * in 461 below 50ms (46 of them below 25ms), 32 in 354 at or above it. Below the bar is where the
+ * second call earns its keep, and it is left alone. The stall x53 measured had its other siblings at
+ * 8–121ms and a second call landing a median 17ms after it was sent; above this bar such a stall is
+ * now answered by the neighbour a round trip later (wnam → enam 66–80ms), not left unanswered.
+ */
+export const SIBLING_HEDGE_SLOW_PHASE_MS = 50;
+
 const tuning = {
 	enabled: SIBLING_HEDGE_ENABLED,
 	crossRegion: SIBLING_HEDGE_CROSS_REGION_ENABLED,
@@ -206,6 +260,8 @@ const tuning = {
 	quorum: SIBLING_HEDGE_QUORUM,
 	crossAfterMs: SIBLING_HEDGE_CROSS_AFTER_MS,
 	coolingFloorMs: SIBLING_COOLING_FLOOR_MS,
+	busyGathers: SIBLING_HEDGE_BUSY_GATHERS,
+	slowPhaseMs: SIBLING_HEDGE_SLOW_PHASE_MS,
 };
 
 /** For tests: change the hedge's tuning; the returned function puts it back. */
@@ -353,6 +409,20 @@ export class PhaseBuild {
 	}
 }
 
+/** Why a late call's second ask went away from the same object: see SIBLING_HEDGE_BUSY_GATHERS. */
+export type HedgeAway = "busy" | "slow phase";
+
+/**
+ * Whether a late call's second ask should stay off the same object, and why: the coordinator is
+ * running SIBLING_HEDGE_BUSY_GATHERS or more other gathers, or the phase's answers so far have a
+ * median of SIBLING_HEDGE_SLOW_PHASE_MS or more. Null on quiet traffic, where x53's re-send stands.
+ */
+export function hedgeAway(gathersAlongside: number, peerMedianMs: number): HedgeAway | null {
+	if (gathersAlongside >= tuning.busyGathers) return "busy";
+	if (peerMedianMs >= tuning.slowPhaseMs) return "slow phase";
+	return null;
+}
+
 /** What a hedge did, for the log line and the gather's stall verdict. */
 export interface HedgeNote {
 	/** How long the original had been out when the first hedge was sent. */
@@ -374,6 +444,9 @@ export interface HedgeNote {
 		direct: boolean;
 		/** True when it was sent at the cooling floor: the sibling is cooling (SiblingMemory.cooling). */
 		cooled?: true;
+		/** Why the same object was not asked again: the coordinator was busy (SIBLING_HEDGE_BUSY_GATHERS)
+		 * or the phase was slow (SIBLING_HEDGE_SLOW_PHASE_MS). */
+		away?: HedgeAway;
 		/** True when ITS answer is the one the gather used (`won` is then "hedge"). */
 		won?: true;
 		/** Why its answer was thrown away, when it was: it came from another store build. */
@@ -411,6 +484,8 @@ export interface HedgeOptions<T> {
 	cross?: () => CrossTarget<T> | null;
 	/** Slots the gather's limiter has free right now. */
 	free?: () => number;
+	/** Gathers the coordinator is running BESIDE this one, asked when the call is late (hedgeAway). */
+	gathersAlongside?: () => number;
 	/** The limiter's line for a hedge (its head — see sibling-limit.ts); `schedule` when absent. */
 	scheduleHedge?: (task: () => Promise<T>) => Promise<T>;
 	/** Hears the ORIGINAL call's own outcome whenever it comes — after the gather has moved on, too. */
@@ -494,13 +569,21 @@ export class HedgePhase {
 				direct: boolean,
 				then?: () => void,
 				cooled = false,
+				away?: HedgeAway,
 			) => {
 				call.out += 1;
 				scheduleHedge(() => {
 					if (call.landed || call.settled) return Promise.reject(new HedgeNotSentError());
 					const firedAtMs = sinceSent();
 					call.note ??= { firedAtMs, won: "neither", originalMs: null, ...seen };
-					if (target) call.note.cross = { region: target.region, firedAtMs, direct, ...(cooled ? { cooled } : {}) };
+					if (target)
+						call.note.cross = {
+							region: target.region,
+							firedAtMs,
+							direct,
+							...(cooled ? { cooled } : {}),
+							...(away ? { away } : {}),
+						};
 					then?.();
 					return target ? target.send() : send();
 				}).then((value) => {
@@ -571,16 +654,20 @@ export class HedgePhase {
 				call.asked = true;
 				this.unhedged -= 1;
 				const target = tuning.crossRegion ? (options.cross?.() ?? null) : null;
+				// A busy coordinator or a slow phase: the sibling is late because it is queued, and a
+				// second call would queue behind the first (SIBLING_HEDGE_BUSY_GATHERS). The neighbour
+				// alone, or — where there is none — no hedge at all.
+				const away = hedgeAway(options.gathersAlongside?.() ?? 0, peerMedianMs);
 				// A second call to an object that is starting up waits for the same start (it won none
 				// of 170), so it is sent to a may-be-waking sibling only where there is no neighbour.
-				const same = tuning.enabled && (!waking || target === null);
+				const same = tuning.enabled && away === null && (!waking || target === null);
 				const seen = { answered: this.answers.length, issued: this.issued, peerMedianMs };
 				// Both hedges need a slot each, and so does every other late call of the phase still to
 				// be hedged. When the limiter cannot give that, the neighbour alone is asked: its
 				// answer frees the slot in a round trip, where a second call that sticks holds it.
 				const slots = options.free?.() ?? Number.POSITIVE_INFINITY;
 				if (target && (!same || slots < 2 * (this.unhedged + 1))) {
-					hedge(seen, target, true);
+					hedge(seen, target, true, undefined, false, away ?? undefined);
 				} else if (same) {
 					hedge(seen, null, false, () => {
 						if (!target) return;
@@ -644,11 +731,17 @@ export function hedgeVerdict(hedge: HedgeNote): string {
 	return `won by ${hedge.won}${hedge.won === "hedge" && hedge.cross?.won ? ` to ${hedge.cross.region}` : ""}`;
 }
 
-/** `fired at 502ms`, `fired at 502ms to enam`, `fired at 101ms to enam (cooling)`, or `fired at 502ms, to enam at 655ms`. */
+/**
+ * `fired at 502ms`, `fired at 502ms to enam`, `fired at 101ms to enam (cooling)`, `fired at 502ms to
+ * enam (busy)`, `fired at 640ms to enam (slow phase)`, or `fired at 502ms, to enam at 655ms`.
+ */
 export function hedgeFired(hedge: HedgeNote, at = "fired at "): string {
 	const { cross } = hedge;
 	if (!cross) return `${at}${hedge.firedAtMs}ms`;
-	if (cross.direct) return `${at}${hedge.firedAtMs}ms to ${cross.region}${cross.cooled ? " (cooling)" : ""}`;
+	if (cross.direct) {
+		const why = cross.cooled ? " (cooling)" : cross.away ? ` (${cross.away})` : "";
+		return `${at}${hedge.firedAtMs}ms to ${cross.region}${why}`;
+	}
 	return `${at}${hedge.firedAtMs}ms, to ${cross.region} at ${cross.firedAtMs}ms`;
 }
 

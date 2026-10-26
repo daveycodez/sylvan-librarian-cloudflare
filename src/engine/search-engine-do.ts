@@ -1130,6 +1130,11 @@ export class SearchEngine extends DurableObject<Env> {
 							cooling: () => memory.cooling(partition, Date.now()),
 							cross: hedging.cross,
 							free: () => limiter.free,
+							// The other gathers this object is coordinating: at SIBLING_HEDGE_BUSY_GATHERS a
+							// late sibling is queued behind them all, and is asked of the neighbour instead.
+							// (A split gather's second invocation is not counted in inFlightGathers, so
+							// there this reads one low — the coordinating invocation is counted.)
+							gathersAlongside: () => Math.max(0, this.inFlightGathers - 1),
 							scheduleHedge: (task) => limiter.run(task, true),
 							onOriginal: (outcome) => {
 								if (!outcome.ok) return;
