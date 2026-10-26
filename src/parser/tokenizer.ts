@@ -145,10 +145,13 @@ function scanWordEnd(src: string[], n: number, j: number, cont: (c: string) => b
 /**
  * How a caller wants the lexer to read characters upstream's grammar has no use for.
  *
- * `bracketsInWords`: `[` and `]` are ordinary word characters, start and continuation both — the
- * reading api.scryfall.com gives them, and ONLY the Scryfall-compatible surface asks for it.
- * Upstream's hand_parser.py refuses both ("Unexpected character"), so `/search`, which keeps
- * upstream's contract, lexes without this and still answers `a]b` with its 400.
+ * `scryfallWords`: read every character as api.scryfall.com reads it, which ONLY the
+ * Scryfall-compatible surface asks for. Upstream's hand_parser.py refuses each of the characters
+ * below ("Unexpected character", "Unclosed quote", "Unclosed '{'") or gives it a reading Scryfall
+ * does not, so `/search`, which keeps upstream's contract, lexes without this and still answers
+ * `a]b` with its 400.
+ *
+ * `[` and `]` came first (2026-10-25), as ordinary word characters, start and continuation both.
  *
  * Measured on api.scryfall.com 2026-10-25 (anchor `t:goblin` = 561): a bracket is one more
  * character of whatever word it touches, at the start, middle or end of it, and the column decides
@@ -159,12 +162,39 @@ function scanWordEnd(src: string[], n: number, j: number, cont: (c: string) => b
  * `t:goblin o:a]b`, `t:gob]lin`, `t:goblin]` and the QUOTED `"a]b"` / `name:"a]b"` are 404, and
  * `o:[` is the 31 cards whose text holds one. Not one of them is a query error there; every one of
  * them was `400 Failed to parse query` on /cards/search.
+ *
+ * The rest followed the same day. Measured on api.scryfall.com, each printable punctuation
+ * character alone, at the start, middle and end of a bare word, after `-`, inside a `name:`, `t:`
+ * and `o:` value and quoted (anchor `t:goblin` = 561, `t:goblin ab` = 14, `t:goblin b` = 330):
+ *
+ *   ? ; & | @ $ % { } * and the backtick
+ *                    ONE MORE CHARACTER OF THE WORD it touches, wherever it stands —
+ *                    the bracket's rule exactly: `t:goblin a?b` 14, `?b` and `b?` 330, `?` alone 561,
+ *                    `-?` 404, `name:a?b` 14, and a literal column keeps it: `t:go?blin` 404, `o:?` 7,
+ *                    `o:&` 18, `o:|` 87, `o:{` and `o:}` 12,515 (the cards whose text holds one),
+ *                    `o:*` 404. A `{` a `}` closes is still a mana symbol.
+ *   `# ^ +`          the same — `o:#` 1, `o:+` 7,615, `t:go#blin` 404 — except that Scryfall's name
+ *                    collation KEEPS them where this port's deletes them, so `t:goblin a#b`, `#b`,
+ *                    `#` and `^` are 404 and `-#` 561, and `+` alone is +2 Mace's 1. The compat term
+ *                    policy spells those names for the parser (query-terms.ts KEPT_IN_NAMES_RE).
+ *   `\`              a character to the lexer; what it means is the term's business (query-terms.ts
+ *                    BACKSLASH_ESCAPE_RE): an escape inside a value, a separator in a bare word.
+ *   `.`              starts a word as well as continuing one: `t:goblin .b` 330, `.` 561, `o:.` 32,079.
+ *   `!`              with no word glued behind it is a character of the word before it, or a word
+ *                    of its own: `t:goblin b!` 330, `!` 561, `-!` 404, `o:!` 124. Glued to a word
+ *                    behind it, it is the exact-name prefix it always was (`t:goblin !b` 404).
+ *   `"` and `'`      that nothing closes are characters: `t:goblin "b` 330, `a"b` 14, `"` 561,
+ *                    `o:"` 1,352, `o:'` 8,009. A quote that closes still opens a string.
+ *
+ * Each was `400 Failed to lex query` or `Failed to parse query` on /cards/search.
  */
 export interface LexOptions {
-	readonly bracketsInWords?: boolean;
+	readonly scryfallWords?: boolean;
 }
 
-const BRACKETS = new Set("[]");
+/** The characters `scryfallWords` makes ordinary word characters, at a word's start or inside it. */
+const SCRYFALL_WORD_PUNCTUATION = new Set("[]?;&|@$%`#^+*\\}.");
+const QUOTE_OR_BRACE = new Set(["'", '"', "{"]);
 
 /**
  * Find the `quote` closing a string opened before `start` and unescape its content, or null if the
@@ -194,15 +224,65 @@ function closedRegex(src: readonly string[], start: number): { closeIndex: numbe
 	return { closeIndex, content: sawEscape ? content.replaceAll("\\/", "/") : content };
 }
 
+/** A word character on the Scryfall-compatible surface (`LexOptions.scryfallWords`), quotes and braces aside. */
+export function isScryfallWordCont(c: string): boolean {
+	return SCRYFALL_WORD_PUNCTUATION.has(c) || isWordCont(c);
+}
+
+/**
+ * Whether the `"`, `'` or `{` at `pos` is a CHARACTER under `scryfallWords` rather than the start of
+ * a string or a mana symbol: nothing closes it. Exported for the compat term policy's scanners,
+ * which must agree with the lexer on where a term ends.
+ */
+export function isUnclosedOpener(src: readonly string[], pos: number): boolean {
+	const c = src[pos] as string;
+	if (c === "{") return braceCloseIndex(src, pos + 1) === null;
+	return findCloseIndex(src, pos + 1, c).closeIndex === null;
+}
+
+/**
+ * A word under `scryfallWords`, from `j` to its end. Beyond `scanWordEnd`, a quote glued to the end
+ * of a word is one more character of it, closed or not (`t:goblin a"b"` is `t:goblin ab`'s 14 on
+ * api.scryfall.com), as is a `{` nothing closes and a `!` with no word glued behind it (`b!` 330).
+ */
+function scanScryfallWordEnd(src: string[], n: number, j: number): number {
+	while (j < n) {
+		const c = src[j] as string;
+		if (isScryfallWordCont(c) || c === "," || c === "'" || c === '"') {
+			j += 1;
+			continue;
+		}
+		if (c === "{" && isUnclosedOpener(src, j)) {
+			j += 1;
+			continue;
+		}
+		if (c === "!" && bangStandsAlone(src, n, j)) {
+			j += 1;
+			continue;
+		}
+		break;
+	}
+	return j;
+}
+
+/** A `!` with nothing glued behind it — the end of input, a space, a comma or a closing parenthesis. */
+function bangStandsAlone(src: readonly string[], n: number, j: number): boolean {
+	if (j + 1 >= n) return true;
+	const next = src[j + 1] as string;
+	return SKIPPED.has(next) || next === ")";
+}
+
 /** Lex a query string into a flat list of Tokens, terminated by an EOF token. */
 export function tokenize(source: string, options: LexOptions = {}): Token[] {
 	const src = [...source]; // code points
-	const brackets = options.bracketsInWords === true;
-	const wordStart = brackets ? (c: string) => BRACKETS.has(c) || isWordStart(c) : isWordStart;
-	const wordCont = brackets ? (c: string) => BRACKETS.has(c) || isWordCont(c) : isWordCont;
+	const scryfall = options.scryfallWords === true;
+	const wordCont = scryfall ? isScryfallWordCont : isWordCont;
+	const n = src.length;
+	const wordEnd = scryfall
+		? (j: number) => scanScryfallWordEnd(src, n, j)
+		: (j: number) => scanWordEnd(src, n, j, wordCont);
 	const tokens: Token[] = [];
 	let pos = 0;
-	const n = src.length;
 	let spaceBefore = false;
 
 	const push = (type: TT, value: string | PyNumber, start: number, sb: boolean, raw?: string) => {
@@ -226,6 +306,20 @@ export function tokenize(source: string, options: LexOptions = {}): Token[] {
 		const sb = spaceBefore;
 		spaceBefore = false;
 		const c = cur;
+
+		// The compat surface's word characters — see LexOptions.scryfallWords. First, because `+`, `*`
+		// and an unclosed quote or brace each have another reading below that Scryfall never gives
+		// them; a lone `!` is a word of its own there.
+		if (
+			scryfall &&
+			(SCRYFALL_WORD_PUNCTUATION.has(c) ||
+				(QUOTE_OR_BRACE.has(c) && isUnclosedOpener(src, pos)) ||
+				(c === "!" && bangStandsAlone(src, n, pos)))
+		) {
+			pos = wordEnd(pos + 1);
+			push(TT.WORD, slice(start, pos), start, sb);
+			continue;
+		}
 
 		// {mana symbol}. braceCloseIndex is shared with the balancer (spans.ts): both have to agree
 		// that a '{...}' is opaque whatever it holds, or the balancer reads the ')' in '(mana:{)})'
@@ -355,7 +449,7 @@ export function tokenize(source: string, options: LexOptions = {}): Token[] {
 			}
 			const text = slice(pos, j);
 			if (j < n && wordCont(src[j] as string)) {
-				j = scanWordEnd(src, n, j, wordCont);
+				j = wordEnd(j);
 				push(TT.WORD, slice(pos, j), start, sb);
 			} else if (text.includes(".")) {
 				const value = Number(text);
@@ -371,8 +465,8 @@ export function tokenize(source: string, options: LexOptions = {}): Token[] {
 		}
 
 		// Word
-		if (wordStart(c)) {
-			const j = scanWordEnd(src, n, pos + 1, wordCont);
+		if (isWordStart(c)) {
+			const j = wordEnd(pos + 1);
 			push(TT.WORD, slice(pos, j), start, sb);
 			pos = j;
 			continue;

@@ -571,11 +571,14 @@ describe("pt and powtou — the combined power-and-toughness keyword", () => {
 		expect(scryfallTermPolicy("powtou>notanumber e:khm").query).toBe("cmc<0 e:khm");
 	});
 
-	test("`pow+tou` is this port's arithmetic, not Scryfall's keyword — it is left alone", () => {
-		// api.scryfall.com answers `pow+tou<6` with a 404 and no warning; this port answers it, over
-		// the cross product of a card's faces (see card_engine's `front_power_plus_toughness` for
-		// where the two part). The policy does not touch it either way.
-		kept("pow+tou<6 ci<=br -ci=c t:creature");
+	test("`pow+tou` is no keyword on Scryfall — `pow+tou<6` is the name word it reads", () => {
+		// api.scryfall.com answers `pow+tou<6` with a 404 and no warning: a sum is no keyword there,
+		// so the term is one bare word, its `<` collated away and its `+` kept (scryfallBareWords).
+		// This port used to answer it as its own arithmetic, over the cross product of a card's faces.
+		expect(scryfallTermPolicy("pow+tou<6 ci<=br -ci=c t:creature")).toMatchObject({
+			query: '(name:powtou6 name:"w+t") ci<=br -ci=c t:creature',
+			warnings: [],
+		});
 	});
 });
 

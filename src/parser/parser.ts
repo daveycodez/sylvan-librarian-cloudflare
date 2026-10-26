@@ -76,6 +76,12 @@ const ALIAS_TO_PC: ReadonlyMap<string, ParserClass> = (() => {
 // spaced bang keeps the exact-name-prefix reading a space always had.
 const BANG_ALIAS_CLASSES: ReadonlySet<ParserClass> = new Set([PC.COLOR, PC.MANA, PC.RARITY, PC.YEAR, PC.DATE]);
 
+/** Whether a `!` glued between `keyword` and a value is the `=` alias above (`c!w`, `pow!2`). */
+export function bangIsEqualsAfter(keyword: string): boolean {
+	const pc = ALIAS_TO_PC.get(keyword.toLowerCase());
+	return pc !== undefined && (pc === PC.NUMERIC || BANG_ALIAS_CLASSES.has(pc));
+}
+
 // Aliases that have BOTH a NUMERIC and a TEXT mapping (only cn / number today).
 const DUAL_NUM_TEXT: ReadonlySet<string> = (() => {
 	const set = new Set<string>();

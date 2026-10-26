@@ -43,7 +43,13 @@
  * typographic-quote fold), which is the property that keeps this off the hot path's conscience.
  */
 
-import { foldTypographicQuotes, ParseError, parseScryfallQuery, regexPlainLiteral } from "../../parser";
+import {
+	bangIsEqualsAfter,
+	foldTypographicQuotes,
+	ParseError,
+	parseScryfallQuery,
+	regexPlainLiteral,
+} from "../../parser";
 import {
 	ALIAS_TO_FIELD_INFOS,
 	COLOR_ALIAS_TO_CODES,
@@ -62,19 +68,28 @@ import {
 	SUPPORTED_IS_VALUES,
 } from "../../parser/rewrite";
 import { isKnownSetCode } from "../../parser/set-dates.gen";
-import { isWordCont, type LexOptions, type Token, TT, tokenize } from "../../parser/tokenizer";
+import {
+	isScryfallWordCont,
+	isUnclosedOpener,
+	isWordCont,
+	type LexOptions,
+	type Token,
+	TT,
+	tokenize,
+} from "../../parser/tokenizer";
 import { DIRECTIVE_TABLES } from "../enums";
 import { usesValueAsPredicate } from "../query-validation";
 import { blockSetCodes, blockValueCode, setNameCode, setNameCodes } from "./set-blocks.gen";
 import { NO_SET_GROUPS, type SetGroups } from "./set-groups";
 
 /**
- * How THIS surface lexes: `[` and `]` are word characters, as they are on api.scryfall.com, where
- * upstream's lexer — and so `/search` — refuses them. See tokenizer.ts LexOptions for the
+ * How THIS surface lexes: every punctuation character is a word character, and an unclosed quote or
+ * brace a character, as they are on api.scryfall.com, where upstream's lexer — and so `/search` —
+ * refuses them. See tokenizer.ts LexOptions for the
  * measurements. Every lex on the compat surface passes it: the parse in routes.ts and the scans in
  * this file, which must agree with that parse on where a term ends.
  */
-export const SCRYFALL_LEX: LexOptions = { bracketsInWords: true };
+export const SCRYFALL_LEX: LexOptions = { scryfallWords: true };
 
 /** Scryfall's syntax budget, independent of the engine's post-rewrite safety budget. */
 export const TOO_MANY_REGEX_DETAILS = "Too many regular expression operators used";
@@ -3438,6 +3453,17 @@ function apostropheInWord(src: readonly string[], pos: number): boolean {
 }
 
 /**
+ * A QUOTE IS A CHARACTER WHERE THE LEXER READS ONE (tokenizer.ts LexOptions.scryfallWords): glued
+ * to the end of a word, or with nothing to close it. Measured on api.scryfall.com 2026-10-25:
+ * `t:goblin a"b"` and `a"b` are `t:goblin ab`'s 14, `"b t:goblin` is `t:goblin b`'s 330, `o:"` the
+ * 1,352 cards whose text holds one. Both scanners below ran an unclosed quote to the end of the
+ * query, swallowing every term after it.
+ */
+function quoteIsCharacter(src: readonly string[], pos: number, inWord: boolean): boolean {
+	return inWord || isUnclosedOpener(src, pos);
+}
+
+/**
  * A `/` OPENS A PATTERN ONLY WHERE THE LEXER READS ONE: directly behind a comparison operator
  * (tokenizer.ts). Anywhere else it is the character — the separator `fire/ice` has, or division.
  * Both scanners below used to run to the next `/` on any slash, so `(fire/ice) e:khm` read as a
@@ -3458,10 +3484,14 @@ function unbalancedParens(source: string): boolean {
 	const src = [...source];
 	const n = src.length;
 	let depth = 0;
+	let inWord = false;
 	for (let pos = 0; pos < n; pos++) {
 		const c = src[pos] as string;
 		if (c === "'" && apostropheInWord(src, pos)) continue;
+		if ((c === '"' || c === "'") && quoteIsCharacter(src, pos, inWord)) continue;
+		inWord = isScryfallWordCont(c) || (inWord && c === ",");
 		if (c === '"' || c === "'" || (c === "/" && opensPattern(src, pos))) {
+			inWord = false;
 			pos++;
 			while (pos < n) {
 				const d = src[pos] as string;
@@ -3517,13 +3547,20 @@ function scanPieces(source: string): Piece[] {
 		let depth = 0;
 		let groupStart = -1;
 		let groupEnd = -1;
+		let inWord = false;
 		while (pos < n) {
 			const c = src[pos] as string;
 			if (c === "'" && apostropheInWord(src, pos)) {
 				pos++;
 				continue;
 			}
+			if ((c === '"' || c === "'") && quoteIsCharacter(src, pos, inWord)) {
+				pos++;
+				continue;
+			}
+			inWord = isScryfallWordCont(c) || (inWord && c === ",");
 			if (c === '"' || c === "'" || (c === "/" && opensPattern(src, pos))) {
+				inWord = false;
 				// A quoted string or a regex literal: run to its closing delimiter, honoring `\`.
 				pos++;
 				let closed = false;
@@ -3564,7 +3601,15 @@ function scanPieces(source: string): Piece[] {
 			if (c === ")") {
 				depth--;
 				pos++;
-				if (depth === 0) groupEnd = pos;
+				if (depth === 0) {
+					groupEnd = pos;
+					// A GROUP ENDS ITS TERM, and what is glued behind it is the next one. Measured on
+					// api.scryfall.com 2026-10-25: `t:goblin (b)>c` is `t:goblin b c`'s 113 (same ids),
+					// `t:goblin -(b)>c` 97, `(2)>1` is `2 1`'s 3 — and so `(cmc+1)>3` is no comparison
+					// (`(cmc+1)>3 or t:goblin` 561, no warning) where this port compared a sum. Only for a
+					// group that opens the piece, bare or negated; `!(…)` and `a(b)` are left as they were.
+					if (groupStart === start || (groupStart === start + 1 && src[start] === "-")) break;
+				}
 				continue;
 			}
 			if (depth === 0 && (c === " " || c === "\t" || c === "\r" || c === "\n")) break;
@@ -3869,6 +3914,198 @@ function bareValueWords(text: string): string | null {
 		.join(" ");
 }
 
+// ─── Scryfall's name words ───────────────────────────────────────────────────
+
+/**
+ * THE CHARACTERS SCRYFALL'S NAME COLLATION KEEPS, which this port's (`collateName`, pystr.ts)
+ * deletes with every other non-alphanumeric. Measured on api.scryfall.com 2026-10-25 (anchor
+ * `t:goblin` = 561): every other printable punctuation character is dropped from a name word —
+ * `t:goblin a?b`, `a:b`'s `name:a:b`, `a>b`, `a"b` are `t:goblin ab`'s 14 — but these four are kept,
+ * so a word holding one asks for it in the name: `t:goblin a#b`, `#b`, `#`, `^`, `=b`, `a+b`, `+`
+ * and `name:a=b` are 404 (no goblin's name holds one) and `-#`, `-^`, `-=`, `-+` the 561. One card's
+ * name holds any of them, +2 Mace: `+`, `+2`, `+2.`, `[+2]`, `+2,`, `+2]`, `name:+2`, `+2mace`,
+ * `name:+2mace` and `+2>mace` are its 1, while `2+`, `1+2`, `+1/+1`, `fire+`, `+fire`, `cmc+1` and
+ * `+2>xyz` are 404 and `t:goblin -+2` 561. (`~` is the fifth, and was already read literally —
+ * card-query-nodes.ts.)
+ *
+ * The engine compares a collated needle with names collated its way, so a kept character cannot be
+ * asked for in one node. `scryfallNameTerm` asks for the word in two: the collated word without the
+ * kept characters (`name:2mace`), AND each run of kept characters with the letter or digit on either
+ * side of it as a literal (`name:"+2"`), which the name must contain as typed. The two agree with
+ * Scryfall's single comparison unless a name holds a kept character with a deleted one between it
+ * and its neighbour (a "+ 2"); no name in the corpus does.
+ */
+const KEPT_IN_NAMES_RE = /[#+=^]/;
+const KEPT_IN_NAMES_GLOBAL_RE = /[#+=^]/g;
+/** Every character Scryfall's name collation deletes: all but letters, digits and the four it keeps. */
+const SCRYFALL_NAME_COLLATED_AWAY_RE = /[^\p{L}\p{Nd}\p{Nl}\p{No}#+=^]/gu;
+/** A run of kept characters, with the letter or digit glued to either side of it in the collated word. */
+const KEPT_RUN_RE = /[\p{L}\p{Nd}\p{Nl}\p{No}]?[#+=^]+[\p{L}\p{Nd}\p{Nl}\p{No}]?/gu;
+
+/** One name word as Scryfall's collation reads it, spelled as terms this parser reads alike. */
+function scryfallNameTerm(word: string, negated: boolean): string {
+	const collated = word.replace(SCRYFALL_NAME_COLLATED_AWAY_RE, "");
+	const base = collated.replace(KEPT_IN_NAMES_GLOBAL_RE, "");
+	const terms = base === "" && KEPT_IN_NAMES_RE.test(collated) ? [] : [`name:${base === "" ? "*" : base}`];
+	for (const run of collated.matchAll(KEPT_RUN_RE)) terms.push(`name:"${run[0]}"`);
+	const body = terms.length === 1 ? (terms[0] as string) : `(${terms.join(" ")})`;
+	return negated ? `-${body}` : body;
+}
+
+/**
+ * A BACKSLASH ESCAPES THE NEXT CHARACTER OF A VALUE, AND SEPARATES THE WORDS OF A BARE ONE.
+ * Measured on api.scryfall.com 2026-10-25: `t:goblin o:\haste` is `o:haste`'s 90, `t:go\blin` every
+ * goblin (561), `name:a\b` and the quoted `"a\b"` `t:goblin ab`'s 14 — but the bare `t:goblin a\b`
+ * and `a\\b` are `t:goblin a b`'s 255, `\b` and `b\` 330, `\` alone 561 and `-\` 404: the slash's
+ * rule exactly. A trailing backslash in a value stays (`o:\` 404).
+ */
+const BACKSLASH_ESCAPE_RE = /\\([\s\S])/gu;
+const BARE_WORD_SEPARATORS_RE = /[/\\]+/;
+const HYPHENS_ONLY_RE = /^-+$/;
+/** `<number><operator><value>`: a comparison whose left side is a number — see numberLeafVerdict. */
+const NUMBER_LEAF_RE = /^(-?)(\d+(?:\.\d+)?)(!=|>=|<=|:|=|>|<)([\s\S]*)$/;
+
+/**
+ * Whether Scryfall reads this bare word other than this parser does: it holds an operator or a kept
+ * character, or a `!` glued between two of its characters that is not the `=` alias (`a!b` is
+ * `t:goblin ab`'s 14 and `t!goblin` the 6 goblins whose collated name holds "tgoblin", where `c!r`
+ * is `c=r`'s 422 and `pow!2` `pow=2`'s 227).
+ */
+function readsAsScryfallWordOnly(word: string): boolean {
+	if (/[#+=^:<>]/.test(word)) return true;
+	const bang = word.indexOf("!", 1);
+	return bang > 0 && bang < word.length - 1 && !bangIsEqualsAfter(word.slice(0, bang));
+}
+
+/**
+ * A BARE CHUNK SCRYFALL READS AS NAME WORDS, spelled as the terms this parser reads alike; null when
+ * the parser already reads it so (left byte-identical), and "" when it is no term at all.
+ *
+ * Scryfall's terms are `keyword<op>value` only where the keyword is a word (`[A-Za-z_][A-Za-z0-9_]*`,
+ * LEAF_RE) or a number (NUMBER_LEAF_RE); anything else up to the next space is a bare word, which a
+ * `/` or a `\` splits, and whose punctuation the name collation drops — the operators with the rest
+ * (KEPT_IN_NAMES_RE for the four it keeps). Measured on api.scryfall.com 2026-10-25, anchor
+ * `t:goblin` = 561:
+ *
+ *   `:b`  `>b`  `<b`  `->b`                 330, 330, 330, 231 = `b`, `b`, `b`, `-b`
+ *   `:`  `<`  `>`  `!`  `.`  `,`            561 — the empty word; `-:` `-<` `->` `-,` `-/` `-` 404
+ *   `=b`  `>=b`  `<=b`  `=`                 404 — `=` is kept; `-=` 561
+ *   `a*>b`  `*a>b`  `a.>b`  `a?>b`  `a->b`  `t:goblin ab`'s 14
+ *   `>3`  `<3`                              `3`'s 8; `=3` 404
+ *
+ * which is all arithmetic is there, since a sum is no keyword: `cmc+1>3`, `cmc-1>3`, `cmc*2>4`,
+ * `pow+tou>5`, `power*2>1`, `power-1>2`, `cmc+1=4`, `cmc+1:4` and `pow+1` are each one name word
+ * (404 under `t:goblin`; 561 with no warning as `… or t:goblin`), and `power/2>1` is the word `power`
+ * and the comparison `2>1`: 77 with `Invalid expression “2>1” was ignored. One or both sides of your
+ * comparison must be a card value (“pow”, “tou”, “usd”, “eur”, etc).` (`pow/2>1` 85, `cmc/2>1` 404).
+ * This port's parser has arithmetic, so it answered `cmc+1>3` with 21,932 sums and `power/2>1` with
+ * 8,824 halved powers, and `>b`, `=b`, `-` and the rest with `Failed to parse query`.
+ *
+ * The negation stays on the first word, as bareValueWords keeps it (`-1/1` is 404 there).
+ */
+function scryfallBareWords(text: string): string | null {
+	// A lone `-` is the negated empty word, which matches nothing: `t:goblin -`, `t:goblin - b`,
+	// `t:goblin b -`, `fire - ice` and `lightning - bolt` are 404 — so a spaced hyphen no longer
+	// negates the word after it (this port read `fire - ice` as `fire -ice`). A run of two or more is no
+	// term at all: `t:goblin --` and `t:goblin ---` are 561, `t:goblin -- b` 330.
+	if (HYPHENS_ONLY_RE.test(text)) return text === "-" ? "-name:*" : "";
+	const negated = text.startsWith("-");
+	const body = negated ? text.slice(1) : text;
+	if (body.startsWith("-") || (body.startsWith("!") && !body.startsWith("!=")) || body.startsWith("(")) return null;
+	const first = body[0];
+	if ((first === '"' || first === "'" || first === "{") && !isUnclosedOpener([...body], 0)) return null;
+	if (LEAF_RE.test(text) || NUMBER_LEAF_RE.test(text)) return null;
+	const words = body.split(BARE_WORD_SEPARATORS_RE).filter((word) => word !== "");
+	let respelled = body.includes("\\");
+	// A comparison glued behind a slash is a term of its own (`power/2>1`), which the parser would read as
+	// arithmetic, so the chunk is split even where no word needs respelling.
+	if (words.length > 1 && words.some((word) => LEAF_RE.test(word) || NUMBER_LEAF_RE.test(word))) respelled = true;
+	const terms = words.map((word, i) => {
+		const sign = negated && i === 0 ? "-" : "";
+		if (word.includes("~") || LEAF_RE.test(word) || NUMBER_LEAF_RE.test(word) || !readsAsScryfallWordOnly(word)) {
+			return `${sign}${word}`;
+		}
+		respelled = true;
+		return scryfallNameTerm(word, negated && i === 0);
+	});
+	// A negated chunk with nothing left of it is the negated empty word, which matches nothing.
+	if (terms.length === 0) return negated ? "-name:*" : body.includes("\\") ? "" : null;
+	// `-,`: the lexer skips a lone comma, so the negation would have nothing to negate.
+	if (negated && body.includes(",") && body.replace(SCRYFALL_NAME_COLLATED_AWAY_RE, "") === "") return "-name:*";
+	return respelled ? terms.join(" ") : null;
+}
+
+/** Scryfall's sentence for a comparison with no card value on either side — see numberLeafVerdict. */
+const NO_CARD_VALUE_REASON =
+	"One or both sides of your comparison must be a card value (\u201cpow\u201d, \u201ctou\u201d, \u201cusd\u201d, \u201ceur\u201d, etc).";
+const SIGNED_NUMBER_RE = /^-?(\d+(\.\d*)?|\.\d+)$/;
+
+/**
+ * A NUMBER ON THE LEFT OF A COMPARISON. Measured on api.scryfall.com 2026-10-25, anchor `t:goblin`:
+ * against another number or a zero word it is ignored with NO_CARD_VALUE_REASON — `2>1`, `1=1`,
+ * `2:1`, `2=x`, `2>=1`, `2!=1`, `2<1`, `1.5>1`, `-2>1`, `2>-1` are each 561 carrying it, and `2>1`
+ * alone is "All of your terms were ignored." — against a numeric column it is that comparison
+ * turned round (`2<pow` 127 = `pow>2`, `2>pow` 202), and against anything else the whole term is a
+ * name word (`1:b`, `2:goblin`, `2>a`, `2>"a"` 404). This port's parser compared the two numbers,
+ * so `t:goblin 2>1` was every goblin with no warning and `2>1` every card.
+ */
+function numberLeafVerdict(term: string): LeafVerdict | null {
+	const match = NUMBER_LEAF_RE.exec(term);
+	if (match === null) return null;
+	const value = match[4] as string;
+	if (value === "") return null;
+	if (SIGNED_NUMBER_RE.test(value) || ZERO_WORD_RE.test(value)) return { keep: false, reason: NO_CARD_VALUE_REASON };
+	if (CROSS_COLUMN_VALUES.has(value.toLowerCase())) return { keep: true, text: term };
+	return { keep: true, text: scryfallNameTerm(`${match[2]}${match[3]}${value}`, match[1] === "-") };
+}
+
+/** A value that is a quoted string — one whose opening quote closes (`o:":` is the 3 cards holding `":`). */
+function opensString(rawValue: string): boolean {
+	return (rawValue.startsWith('"') || rawValue.startsWith("'")) && !isUnclosedOpener([...rawValue], 0);
+}
+
+/** The literal text columns, whose value Scryfall reads as typed up to the next space. */
+const LITERAL_TEXT_KEYWORDS: ReadonlySet<string> = new Set([
+	"o",
+	"oracle",
+	"fo",
+	"fulloracle",
+	"ft",
+	"flavor",
+	"t",
+	"type",
+]);
+
+/**
+ * A VALUE IS EVERYTHING UP TO THE NEXT SPACE. Measured on api.scryfall.com 2026-10-25: `o::`, `o:<`,
+ * `o:=`, `o:>`, `t:go:blin`, `t:go<blin`, `t:go=blin`, `t:go>blin`, `t:goblin o:a:b` and
+ * `t:goblin o:!haste` are 404 (no card's text or type holds the string), `o:,` the 22,782 cards whose
+ * text holds a comma, `o:-` 1,942, `o:-1/-1` 360 and `o:!` 124 — the value as typed, with a `\` escaping
+ * the character after it (BACKSLASH_ESCAPE_RE). This port's lexer ends a value at an operator, a
+ * leading `-` or `,`, or a `!` glued to a word, so each was `Failed to parse query` here (or, for
+ * `o:,haste`, `o:haste`'s 90). A literal column answers the quoted value as it answers the bare one,
+ * so the value is quoted; `name:` is collated instead (scryfallNameTerm).
+ */
+function scryfallTextValue(rawValue: string): string | null {
+	if (opensString(rawValue) || isRegexLiteral(rawValue)) return null;
+	const unescaped = rawValue.replace(BACKSLASH_ESCAPE_RE, "$1");
+	if (/[:<>=]|![^\s)]|^[-,]/u.test(unescaped)) {
+		const escaped = unescaped.replaceAll("\\", "\\\\");
+		if (!unescaped.includes('"')) return `"${escaped}"`;
+		return unescaped.includes("'") ? null : `'${escaped}'`;
+	}
+	return unescaped === rawValue ? null : unescaped;
+}
+
+/** A `name:` value Scryfall's collation reads otherwise than this parser does, spelled as its terms. */
+function scryfallNameValue(rawValue: string, negated: boolean): string | null {
+	if (opensString(rawValue) || isRegexLiteral(rawValue)) return null;
+	const unescaped = rawValue.replace(BACKSLASH_ESCAPE_RE, "$1");
+	if (unescaped.includes("~")) return null;
+	if (unescaped === rawValue && !/[#+=^:<>]|![^\s)]|^[-,]/u.test(unescaped)) return null;
+	return scryfallNameTerm(unescaped, negated);
+}
+
 /** `pow=1a` → `pow=1 a`: the leaf as the terms Scryfall reads, or null when it is one term. */
 function numericValueSplit(term: string): string | null {
 	const match = LEAF_RE.exec(term);
@@ -3914,7 +4151,7 @@ type LeafVerdict =
 
 function classifyLeaf(term: string, context: TermPolicyContext = {}): LeafVerdict {
 	const match = LEAF_RE.exec(term);
-	if (match === null) return { keep: true, text: term };
+	if (match === null) return numberLeafVerdict(term) ?? { keep: true, text: term };
 	const negated = match[1] === "-";
 	const keyword = (match[2] as string).toLowerCase();
 	const op = match[3] as string;
@@ -4333,6 +4570,21 @@ function classifyLeaf(term: string, context: TermPolicyContext = {}): LeafVerdic
 		}
 	}
 
+	// A value as Scryfall reads it, to the next space — see scryfallTextValue and scryfallNameValue —
+	// except one that OPENS with a colon, which matches nothing: `o::`, `fo::`, `ft::`, `t::`,
+	// `t:goblin o::haste` and `t:goblin name::b` are 404 and `t:goblin -o::` 561 on api.scryfall.com
+	// (2026-10-25), though `o:":"` is 8,971, `o:x:` 27 and `t:goblin name:<b` `t:goblin b`'s 330.
+	if (equality && (keyword === "name" || LITERAL_TEXT_KEYWORDS.has(keyword)) && rawValue.startsWith(":")) {
+		return { keep: true, text: negated ? ALWAYS_MATCHES : NEVER_MATCHES };
+	}
+	if (equality && keyword === "name") {
+		const respelled = scryfallNameValue(rawValue, negated);
+		if (respelled !== null) return { keep: true, text: respelled };
+	}
+	if (equality && LITERAL_TEXT_KEYWORDS.has(keyword)) {
+		const respelled = scryfallTextValue(rawValue);
+		if (respelled !== null) return { keep: true, text: `${match[1]}${match[2]}${op}${respelled}` };
+	}
 	return { keep: true, text: term };
 }
 
@@ -4397,6 +4649,14 @@ function policyLevel(source: string, scan: PolicyScan): string | null {
 		if (words !== null) {
 			changed = true;
 			const inner = policyLevel(words, scan);
+			if (inner !== null) kept.push({ kind: "leaf", text: inner });
+			continue;
+		}
+		// `cmc+1>3`, `>b`, `a\\b` and `power/2>1` are the name words Scryfall reads — see scryfallBareWords.
+		const bare = scryfallBareWords(piece.text);
+		if (bare !== null) {
+			changed = true;
+			const inner = bare === "" ? null : policyLevel(bare, scan);
 			if (inner !== null) kept.push({ kind: "leaf", text: inner });
 			continue;
 		}

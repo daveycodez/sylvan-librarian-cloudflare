@@ -241,12 +241,10 @@ describe("a bare number is a name word, and a slash ends a bare word", () => {
 		}
 	});
 
-	test("arithmetic inside a comparison is not a bare word, and is not touched here", () => {
-		// Scryfall has no arithmetic (`cmc+1>3` is 404 there, `power/2>1` ignores `2>1`); this port's
-		// arithmetic comparisons are upstream's and stay as they were.
-		for (const q of ["cmc+1>3", "power/2>1", "pow>tou", "1+2", "+2"]) {
-			expect({ q, query: scryfallTermPolicy(q).query }).toEqual({ q, query: q });
-		}
+	test("a column compared with a column is left byte-identical", () => {
+		// Arithmetic inside a comparison (`cmc+1>3`, `power/2>1`) and `+` in a word (`1+2`, `+2`) are
+		// Scryfall's name words now — tests/routes/scryfall-punctuation.test.ts.
+		expect(scryfallTermPolicy("pow>tou").query).toBe("pow>tou");
 	});
 
 	test("/search keeps upstream's arithmetic reading", async () => {

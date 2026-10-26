@@ -32,7 +32,7 @@ export type {
 	LoweredRegexTerm,
 	QueryTerm,
 } from "./nodes";
-export { parseQuery } from "./parser";
+export { bangIsEqualsAfter, parseQuery } from "./parser";
 export { PyNumber } from "./pystr";
 export {
 	boundedQueryLogContext,
