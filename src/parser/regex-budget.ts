@@ -54,14 +54,30 @@ export const MAX_REGEX_PARSE_DEPTH = 16;
 /** Largest explicit `{n}` / `{m,n}` bound, and the largest product of nested ones. */
 export const MAX_QUANTIFIER_BOUND = 1024;
 
+/**
+ * How a surface relaxes the budget. LOCAL PATCH, Cloudflare port: `openRepeats` is the
+ * Scryfall-compatible surface's (`/cards/search`), where api.scryfall.com runs `o:/a{3,}/` and
+ * upstream's rule below refuses it. `/search` passes nothing and keeps upstream's budget.
+ */
+export interface RegexBudgetOptions {
+	/**
+	 * Accept an open-ended `{m,}` with m over 1. Safe on this engine: the `regex` crate compiles
+	 * `X{m,}` as m copies of X and a star — linear, like the bounded `{m,n}` this budget already
+	 * runs — and the lookaround path is held by the step budget in regex_compat.rs. The NESTED
+	 * product still counts it at m (`(a{40,}){40,}` is 1,600, over MAX_QUANTIFIER_BOUND), and the
+	 * Scryfall surface refuses m over 255 first, as PostgreSQL's DUPMAX does there.
+	 */
+	readonly openRepeats?: boolean;
+}
+
 /** Reject `query` when any regex leaf is ill-formed or over budget. */
-export function validateRegexPatterns(query: Query): void {
+export function validateRegexPatterns(query: Query, options?: RegexBudgetOptions): void {
 	const patterns = collectRegexPatterns(query.root);
 	if (patterns.length > MAX_REGEX_LEAVES_PER_QUERY) {
 		throw new QueryBudgetExceeded("regex_leaves");
 	}
 	for (const pattern of patterns) {
-		enforcePatternLimits(pattern);
+		enforcePatternLimits(pattern, options);
 	}
 }
 
@@ -92,12 +108,12 @@ interface PatternMetrics {
 	quantifierOverBound: boolean;
 }
 
-function enforcePatternLimits(pattern: string): void {
+function enforcePatternLimits(pattern: string, options?: RegexBudgetOptions): void {
 	if (utf8ByteLength(pattern) > MAX_PATTERN_UTF8_BYTES) {
 		throw new QueryBudgetExceeded("regex_pattern");
 	}
 
-	const metrics = analyzePattern(pattern);
+	const metrics = analyzePattern(pattern, options?.openRepeats === true);
 
 	// Conditionals and backreferences are refused BEFORE well-formedness, and the order is forced
 	// rather than chosen: upstream's `sre` PARSES `(?(1)b)` happily and then rejects it as a
@@ -133,9 +149,9 @@ function enforcePatternLimits(pattern: string): void {
  * api.scryfall.com ignores one). A malformed pattern is not "over budget"; it answers false and
  * the caller's own well-formedness check speaks for it.
  */
-export function patternExceedsBudget(pattern: string): boolean {
+export function patternExceedsBudget(pattern: string, options?: RegexBudgetOptions): boolean {
 	try {
-		enforcePatternLimits(pattern);
+		enforcePatternLimits(pattern, options);
 		return false;
 	} catch (err) {
 		if (err instanceof QueryBudgetExceeded) return true;
@@ -173,7 +189,7 @@ function readQuantifier(pattern: string, i: number): { lower: number; upper: num
  * group that just closed, and nesting MULTIPLIES, which is the shape that turns a 256-byte pattern
  * into exponential work.
  */
-function analyzePattern(pattern: string): PatternMetrics {
+function analyzePattern(pattern: string, openRepeats = false): PatternMetrics {
 	let constructs = 0;
 	let depth = 0;
 	let maxDepth = 0;
@@ -269,7 +285,11 @@ function analyzePattern(pattern: string): PatternMetrics {
 			if (q !== null) {
 				constructs += 1;
 				// `{m,}` with m > 1 is explicit and unbounded above; `*`/`+`/`?` are neither.
-				if (q.upper === null ? q.lower > 1 : q.lower > MAX_QUANTIFIER_BOUND || q.upper > MAX_QUANTIFIER_BOUND) {
+				if (
+					q.upper === null
+						? q.lower > 1 && !openRepeats
+						: q.lower > MAX_QUANTIFIER_BOUND || q.upper > MAX_QUANTIFIER_BOUND
+				) {
 					quantifierOverBound = true;
 				}
 				const factor = q.upper ?? q.lower;

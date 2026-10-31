@@ -3405,8 +3405,10 @@ function neutralizeBackreferences(pattern: string): string {
  * The parser's static budget (`parser/regex-budget.ts`, upstream #1047) is the engine's safety
  * bound, and it is narrower than Scryfall's in four places: more than 4 lookarounds (Scryfall
  * prices a lookaround at 3 of its 90, so up to 29), more than 64 constructs (Scryfall runs 89 dots
- * or 82 `\w`), an open-ended `{m,}` with m over 1 (`o:/a{2,}/` runs there), and more than 256
- * UTF-8 BYTES (Scryfall counts 248 CHARACTERS, so a pattern of non-ASCII text). Left to the
+ * or 82 `\w`), and more than 256 UTF-8 BYTES (Scryfall counts 248 CHARACTERS, so a pattern of
+ * non-ASCII text). (A fourth, an open-ended `{m,}` with m over 1, is no longer one: this surface
+ * passes `openRepeats` — 2026-10-30, `t:land fo:/add (\{[wubrgc]\}){3,}|add (three|four|five)
+ * mana/` was every land with this warning where api.scryfall.com answers 11.) Left to the
  * parser, any of them refused the WHOLE query — `400 Search query
  * contains an unsupported regular expression.`, a sentence Scryfall has no counterpart for — even
  * with other terms present. Dropping the one term keeps the rest of the query answering and tells
@@ -3424,7 +3426,7 @@ function neutralizeBackreferences(pattern: string): string {
  */
 function overEngineBudget(keyword: string, pattern: string): boolean {
 	if (!MANA_COST_KEYWORDS.has(keyword) && regexPlainLiteral(pattern) !== null) return false;
-	return patternExceedsBudget(pattern);
+	return patternExceedsBudget(pattern, { openRepeats: true });
 }
 
 /**

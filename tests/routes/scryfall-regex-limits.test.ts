@@ -407,12 +407,12 @@ describe("a pattern Scryfall would run and the engine's own budget will not", ()
 		expect(scryfallTermPolicy(q).query).toBe(q);
 	});
 
-	test("the other three places the engine is narrower", () => {
-		for (const body of ["\\w".repeat(70), "a{2,}", "\u00e9".repeat(200)]) {
+	test("the other two places the engine is narrower", () => {
+		for (const body of ["\\w".repeat(70), "\u00e9".repeat(200)]) {
 			expect(scryfallRegexTextReason(body)).toBeNull();
 		}
-		// More than 64 constructs, and an open-ended `{m,}`: regexes, so the budget speaks.
-		for (const body of ["\\w".repeat(70), "a{2,}"]) {
+		// More than 64 constructs: a regex, so the budget speaks.
+		for (const body of ["\\w".repeat(70)]) {
 			const result = scryfallTermPolicy(`t:instant o:/${body}/`);
 			expect(result.query).toBe("t:instant");
 			expect(result.warnings[0]).toEndWith(COMPLEX);
@@ -489,5 +489,64 @@ describe("a tempered token after a character class is a term, not a refusal", ()
 			allIgnored: true,
 			warnings: [ignored("o:/(you|each player\u2026", "Too many nested groups.")],
 		});
+	});
+});
+
+// 2026-10-30, reported from mtg-seeker: an open-ended `{m,}` with m over 1 was upstream's budget
+// refusal (regex_budget.py), so /cards/search dropped the term as "too complex" and answered every
+// land. Counts read off api.scryfall.com the same day (all `t:land fo:/…/`).
+describe("an open-ended `{m,}` runs on /cards/search as on api.scryfall.com", () => {
+	const SCRYFALL: readonly (readonly [string, number])[] = [
+		["a{3,}", 0],
+		["[wubrgc]{3,}", 39],
+		["(ab){3,}", 0],
+		["(\\{c\\}){3,}", 3],
+		["add (\\{[wubrgc]\\}){2,}", 75],
+		["add (\\{[wubrgc]\\}){3,}", 6],
+		["add (\\{[wubrgc]\\}){3,}|add (three|four|five) mana", 11],
+	];
+
+	test("the term is kept, with no warning", () => {
+		for (const [body] of SCRYFALL) {
+			expect(scryfallRegexTextReason(body)).toBeNull();
+			const q = `t:land fo:/${body}/`;
+			const result = scryfallTermPolicy(q);
+			expect(result.query).toBe(q);
+			expect(result.warnings).toEqual([]);
+		}
+	});
+
+	test("it reaches the engine: 200 with no warning", async () => {
+		for (const [body] of SCRYFALL) {
+			const response = await search(`t:land fo:/${body}/`);
+			expect(response.status).toBe(200);
+			expect((await json(response)).warnings).toBeUndefined();
+		}
+	});
+
+	test("the shapes that already ran still run", () => {
+		for (const body of [
+			"x{0,}",
+			"x{1,}",
+			"add (\\{[wubrgc]\\}){3}",
+			"add (\\{[wubrgc]\\}){3,6}",
+			"(\\{[wubrgc]\\})+",
+		]) {
+			const q = `t:land fo:/${body}/`;
+			expect(scryfallTermPolicy(q)).toMatchObject({ query: q, warnings: [] });
+		}
+	});
+
+	test("Scryfall's own limits on it still hold", () => {
+		// PostgreSQL's DUPMAX there: 255 runs, 256 is `invalid repetition count(s)`.
+		expect(scryfallTermPolicy("t:land fo:/a{255,}/").warnings).toEqual([]);
+		expect(scryfallTermPolicy("t:land fo:/a{256,}/").warnings[0]).toEndWith("invalid repetition count(s).");
+		// The engine's nested product still counts an open bound at its lower: 40 × 40 = 1,600.
+		expect(scryfallTermPolicy("t:land fo:/(a{40,}){40,}/").warnings[0]).toEndWith("Regular expression too complex.");
+	});
+
+	test("/search keeps upstream's refusal", async () => {
+		const response = await testDispatch(makeCtx(), `/search?q=${encodeURIComponent("t:land fo:/a{3,}/")}`);
+		expect(response.status).toBe(400);
 	});
 });

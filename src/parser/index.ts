@@ -17,7 +17,7 @@ import { ParseError } from "./errors";
 import type { DirectiveFound, ExpandedDerivedTerm, FilterTree, LoweredRegexTerm, Query } from "./nodes";
 import { parseQuery } from "./parser";
 import { checkQueryByteLength } from "./query-budget";
-import { validateRegexPatterns } from "./regex-budget";
+import { type RegexBudgetOptions, validateRegexPatterns } from "./regex-budget";
 import { flattenAndDeduplicateCompounds, rewriteQuery } from "./rewrite";
 import { braceCloseIndex, findCloseIndex, opensRegex, QUOTE_CHARS } from "./spans";
 import { foldTypographicQuotes, isWordCont, type LexOptions } from "./tokenizer";
@@ -58,9 +58,9 @@ export { foldTypographicQuotes, type LexOptions } from "./tokenizer";
  * should not be charged against the regex budget. Dedupe runs LAST, after that budget, so
  * repeating one expensive pattern ten times still counts as ten leaves.
  */
-export function finalizeQuery(queryIn: Query): Query {
+export function finalizeQuery(queryIn: Query, budget?: RegexBudgetOptions): Query {
 	const query = rewriteQuery(queryIn);
-	validateRegexPatterns(query);
+	validateRegexPatterns(query, budget);
 	return flattenAndDeduplicateCompounds(query);
 }
 
@@ -72,7 +72,9 @@ export function parseScryfallQueryAst(query: string | null | undefined, options?
 	if (query !== null && query !== undefined) {
 		checkQueryByteLength(query);
 	}
-	return finalizeQuery(parseQuery(query, options));
+	// The Scryfall-compatible surface (SCRYFALL_LEX) runs `{m,}` as api.scryfall.com does; `/search`
+	// keeps upstream's refusal. See RegexBudgetOptions.
+	return finalizeQuery(parseQuery(query, options), { openRepeats: options?.scryfallWords === true });
 }
 
 /**

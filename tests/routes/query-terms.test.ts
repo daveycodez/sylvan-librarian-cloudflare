@@ -227,7 +227,7 @@ describe("Scryfall's regex dialect is PostgreSQL's: what its compiler refuses is
 		expect(reasonOf("[\\p]")).toEqual([ESCAPE]);
 		expect(reasonOf("a{51")).toEqual(["Invalid regular expression: braces {} not balanced."]);
 		expect(reasonOf("a{256,}")).toEqual(["Invalid regular expression: invalid repetition count(s)."]);
-		expect(reasonOf("a{255,}")).toEqual(["Regular expression too complex."]); // the engine's own budget, not Scryfall's
+		expect(reasonOf("a{255,}")).toEqual([]); // runs, as on api.scryfall.com (openRepeats, 2026-10-30)
 	});
 
 	test("the colour columns never read a regex, so `c:/(?i)w/` is a colour value's business", () => {
