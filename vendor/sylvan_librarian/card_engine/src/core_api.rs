@@ -2967,7 +2967,7 @@ impl BufferStore {
                 }
                 continue;
             }
-            if self.is_arena_only(cid) {
+            if self.is_alchemy_only(cid) {
                 continue;
             }
             // One past the limit is enough to tell "one match" from "ambiguous"; the caller asks
@@ -3071,7 +3071,7 @@ impl BufferStore {
                     }
                     continue;
                 }
-                if self.is_arena_only(cid) {
+                if self.is_alchemy_only(cid) {
                     continue;
                 }
                 Self::offer_answer(if is_printed { &mut foreign } else { &mut answers }, answer, limit);
@@ -3097,7 +3097,7 @@ impl BufferStore {
                     }
                     continue;
                 }
-                if self.is_arena_only(cid) {
+                if self.is_alchemy_only(cid) {
                     continue;
                 }
                 Self::offer_answer(&mut answers, answer, limit);
@@ -3127,24 +3127,37 @@ impl BufferStore {
             .collect())
     }
 
-    /// Whether every printing of this card is Arena-only (`games` exactly `["arena"]`).
+    /// Whether every printing of this card is an Arena-only ALCHEMY printing: `games` exactly
+    /// `["arena"]` in a set whose `set_type` is `alchemy` (the y-prefixed sets and `hbg`).
     ///
     /// LOCAL ADDITION. Scryfall's containment stage never answers with such a card, though its
-    /// exact and typo stages still do — measured on api.scryfall.com 2026-11-13:
+    /// exact and typo stages still do. Measured on api.scryfall.com 2026-11-13:
     ///
     ///   - `fuzzy=swiftspear` answers Monastery Swiftspear, though Alchemy's "Swiftspear's
     ///     Teachings" carries the word too; likewise `cactusfolk`, `duplicator`, `gravitic` and
     ///     `deviant` each answer their one paper card over an Alchemy namesake.
-    ///   - `fuzzy=snarlfang`, `rotboar` and `bloodbile`, words only an Alchemy card carries, are
-    ///     `not_found` there, while `fuzzy=swiftspear teachings` still finds the Alchemy card.
-    ///   - MTGO-only cards are NOT excluded: `fuzzy=armada` stays ambiguous between Armada Wurm
-    ///     and the MTGO-only Red Cliffs Armada, and `errand`, `tetsuo` and `drifters` do the same.
+    ///   - `fuzzy=snarlfang`, `rotboar`, `bloodbile`, `routeway` and `stairwurm`, words only an
+    ///     Alchemy card carries, are `not_found` there. `willbound`, `corpseweaver` and
+    ///     `boisterous` DO answer their Alchemy card, but through the typo stage (0.600, 0.571 and
+    ///     0.556 against the 0.55 floor), which this does not touch; `willboun` and `boisterou`,
+    ///     under the floor, are `not_found`.
+    ///   - ARENA-ONLY IS NOT ENOUGH: Arena-only cards outside Alchemy sets stay in. `oulhunte` and
+    ///     `rakshasa soulhunter` answer Soulhunter Rakshasa (Arena Beginner Set, `starter`),
+    ///     `ackhunte` Baloth Packhunter (same set), `ubversiv` Subversive Acolyte (Jumpstart:
+    ///     Historic Horizons, `draft_innovation`).
+    ///   - MTGO-only cards stay in too: `fuzzy=armada` stays ambiguous between Armada Wurm and the
+    ///     MTGO-only Red Cliffs Armada, and `errand`, `tetsuo` and `drifters` do the same.
     ///
-    /// A printing with no recognised game at all is not Arena-only, so it stays searchable.
-    fn is_arena_only(&self, cid: usize) -> bool {
+    /// A printing with no recognised game, or no set type, is not Alchemy, so it stays searchable.
+    fn is_alchemy_only(&self, cid: usize) -> bool {
         let data = self.data();
         let (start, end) = (u32::from(data.offsets[cid]) as usize, u32::from(data.offsets[cid + 1]) as usize);
-        start < end && (start..end).all(|pid| data.printings[pid].compat.games & super::GAME_MEMBER_MASK == super::GAME_ARENA)
+        start < end
+            && (start..end).all(|pid| {
+                let p = &data.printings[pid];
+                p.compat.games & super::GAME_MEMBER_MASK == super::GAME_ARENA
+                    && super::coll_str_opt(&data.coll_vocab, u16::from(p.compat.set_type_id)) == Some("alchemy")
+            })
     }
 
     /// Record one containment answer, keeping ONE per (card, oracle name) class: the shortest
@@ -6830,22 +6843,24 @@ mod tests {
         assert_eq!(rows[0]["name"], json!("Emeritus of Conflict // Lightning Bolt"));
     }
 
-    /// Scryfall's containment stage never answers with an Arena-only card (see `is_arena_only`):
+    /// Scryfall's containment stage never answers with an Alchemy-only card (see `is_alchemy_only`):
     /// `fuzzy=swiftspear` is Monastery Swiftspear there, not ambiguous with Alchemy's
     /// "Swiftspear's Teachings", and a word only the Alchemy card carries finds nothing — while
     /// its whole name still answers, and an MTGO-only card still counts.
     #[test]
-    fn containment_skips_arena_only_cards_but_not_their_whole_name() {
-        let with_games = |name: &str, oracle: &str, games: Value| {
+    fn containment_skips_alchemy_only_cards_but_not_their_whole_name() {
+        let with_games = |name: &str, oracle: &str, games: Value, set_type: &str| {
             let mut row = annex_row(name, oracle, &format!("row-{oracle}"), "en", 100.0);
-            row["card_compat_blob"] = json!({"lang": "en", "games": games});
+            row["card_compat_blob"] = json!({"lang": "en", "games": games, "set_type": set_type});
             row
         };
         let store = build_store(&[
-            with_games("Monastery Swiftspear", "oracle-a", json!(["paper", "mtgo", "arena"])),
-            with_games("Swiftspear's Teachings", "oracle-b", json!(["arena"])),
-            with_games("Armada Wurm", "oracle-c", json!(["paper", "mtgo"])),
-            with_games("Red Cliffs Armada", "oracle-d", json!(["mtgo"])),
+            with_games("Monastery Swiftspear", "oracle-a", json!(["paper", "mtgo", "arena"]), "expansion"),
+            with_games("Swiftspear's Teachings", "oracle-b", json!(["arena"]), "alchemy"),
+            with_games("Armada Wurm", "oracle-c", json!(["paper", "mtgo"]), "expansion"),
+            with_games("Red Cliffs Armada", "oracle-d", json!(["mtgo"]), "masters"),
+            // Arena-only but NOT Alchemy (Arena Beginner Set): Scryfall's containment finds it.
+            with_games("Soulhunter Rakshasa", "oracle-e", json!(["arena"]), "starter"),
         ])
         .1;
         let fields = Some(vec!["name".to_owned()]);
@@ -6858,6 +6873,7 @@ mod tests {
         assert!(ask(&["teachings"]).is_empty(), "a word only the Arena-only card carries finds nothing");
         assert_eq!(ask(&["swiftspear's", "teachings"]), vec!["Swiftspear's Teachings"], "its whole name answers");
         assert_eq!(ask(&["armada"]).len(), 2, "an MTGO-only card still makes the word ambiguous");
+        assert_eq!(ask(&["oulhunte"]), vec!["Soulhunter Rakshasa"], "an Arena-only non-Alchemy card still answers");
     }
 
     /// Which PRINTING answers when several of a card's printed names carry every word: the
