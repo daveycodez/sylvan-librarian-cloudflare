@@ -1350,6 +1350,17 @@
 		"zheng-shang-chi": "shang-chi",
 		"zimone": "zimone-wola"
 	},
+	"art_fold_groups": {
+		"aura": ["au-ra", "aura"],
+		"betor": ["b-etor", "betor"],
+		"blackbeard": ["black-beard", "edward-teach"],
+		"mailbox": ["mail-box", "mailbox"],
+		"seaweed": ["sea-weed", "seaweed"],
+		"shield": ["s-h-i-e-l-d", "shield"],
+		"sundial": ["sun-dial", "sundial"],
+		"tana": ["t-ana", "tana"],
+		"warpick": ["war-pick", "warpick"]
+	},
 	"art_fold_guard": ["black-beard"],
 	"oracle": {
 		"107-3f-x-card": "cr-107-3f-x-card",
@@ -2186,5 +2197,6 @@
 		"zombie-lord": "typal-zombie",
 		"zombify": "reanimate"
 	},
+	"oracle_fold_groups": {},
 	"oracle_fold_guard": []
 }

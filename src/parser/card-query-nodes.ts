@@ -184,11 +184,15 @@ export interface TagAliasTables {
 	readonly oracle: ReadonlyMap<string, string>;
 	readonly art: ReadonlyMap<string, string>;
 	/**
-	 * Declared slugs the punctuation-blind fallback must leave exact, per dump (see
-	 * `foldTagAlias`). ABSENT for a map published before the builder emitted them, and then the
-	 * fallback stays off: without the guard a real slug could fold onto another tag's alias.
+	 * Punctuation-blind spellings two or more tags share -> every one of them, per dump
+	 * (TagData::oracle_fold_groups). ABSENT for a map published before the builder emitted them,
+	 * and then the punctuation-blind fallback stays off: without them a real slug could fold onto
+	 * another tag's alias instead of unioning with it.
 	 */
-	readonly foldGuard?: { readonly oracle: ReadonlySet<string>; readonly art: ReadonlySet<string> };
+	readonly foldGroups?: {
+		readonly oracle: ReadonlyMap<string, readonly string[]>;
+		readonly art: ReadonlyMap<string, readonly string[]>;
+	};
 }
 
 /** No aliases: every tag spelling is taken as the slug it is typed as. */
@@ -215,19 +219,39 @@ export function withTagAliases<T>(tables: TagAliasTables | undefined, fn: () => 
 }
 
 /**
- * Resolve a slugified tag through a dump's alias map, or return it unchanged.
+ * Resolve a slugified tag to the slugs it selects: usually one, several when it is a spelling
+ * several tags share.
  *
- * The substitution is exact, not approximate: the builder attaches alias `a` to slug `s` under
- * precisely the condition it attaches `s` itself, so `art:flames` and `art:fire` were always the
- * same row set. An unknown value passes through untouched, which is what keeps a plain slug — and
- * a typo — behaving exactly as before.
+ * Scryfall matches a tag value with its punctuation removed against every tag whose slug OR alias
+ * reads the same, and answers the UNION. Measured on api.scryfall.com 2026-11-13:
+ *
+ *   - `otag:board-wipe`, `board_wipe` and `boardwipe` all find `sweeper` (952), though only
+ *     `boardwipe` is a listed alias; `otag:wrathofgod` finds it through the alias "wrath of god".
+ *   - `art:black-beard` and `art:blackbeard` are both 14 = `art:black-beard or art:edward-teach`
+ *     (`edward-teach` carries the alias "Blackbeard"); `art:aura` and `art:au-ra` are both 44,
+ *     two real slugs a hyphen apart; `art:betor` / `art:b-etor` 7, `art:seaweed` / `sea-weed` 52.
+ *
+ * So, in order: a spelling several tags share answers ALL of them (the builder lists those, since
+ * only it sees every slug); an exact alias answers its tag (the substitution is exact — the builder
+ * attaches alias `a` to slug `s` under precisely the condition it attaches `s`); a punctuation-blind
+ * alias or alias target answers its tag; anything else is the slug as typed, which keeps a plain
+ * slug, and a typo, behaving as before.
+ *
+ * The folded alias index is derived from the alias map on first use, so it ships nothing. Folding
+ * every slug would mean shipping every slug (~460KB on every cold isolate's first search), so a slug
+ * with no alias and no collision still needs its real spelling: `otag:mana-rock` always works,
+ * `otag:manarock` only because Scryfall lists it.
  */
-function resolveTagAlias(
+function resolveTagSlugs(
 	slug: string,
 	aliases: ReadonlyMap<string, string>,
-	guard: ReadonlySet<string> | undefined,
-): string {
-	return aliases.get(slug) ?? (guard ? foldTagAlias(slug, aliases, guard) : undefined) ?? slug;
+	groups: ReadonlyMap<string, readonly string[]> | undefined,
+): string[] {
+	if (groups) {
+		const shared = groups.get(foldTag(slug));
+		if (shared) return [...shared];
+	}
+	return [aliases.get(slug) ?? (groups ? foldTagAlias(slug, aliases) : undefined) ?? slug];
 }
 
 /** A slug with its hyphens removed. Must agree with `fold_tag` in engine/builder/src/tags.rs. */
@@ -235,34 +259,15 @@ function foldTag(slug: string): string {
 	return slug.replaceAll("-", "");
 }
 
-/** Folded spelling -> canonical slug, per alias map; spellings two tags share are left out. */
+/** Folded spelling -> canonical slug, per alias map. */
 const foldedIndexes = new WeakMap<ReadonlyMap<string, string>, ReadonlyMap<string, string>>();
 
 /**
- * The punctuation-blind retry, for a value that missed the alias map exactly.
- *
- * Scryfall ignores punctuation when it matches a tag: `otag:board-wipe`, `otag:board_wipe` and
- * `otag:boardwipe` all find `sweeper` there (952 cards, measured 2026-11-13), though only
- * `boardwipe` is a listed alias, and `otag:wrathofgod` finds it through the alias "wrath of god".
- * Exact lookup misses every spelling but the listed one, so a miss is retried with its hyphens
- * removed against an index of every alias key AND every alias target, folded the same way.
- *
- * The index is derived from the alias map on first use, so it ships nothing. Folding every slug
- * would mean shipping every slug (~400KB), so a slug that has no alias still needs its real
- * spelling: `otag:mana-rock` always works, `otag:manarock` only because Scryfall lists it.
- *
- * Two guards keep this from turning a correct query into a wrong one:
- *   - a folded spelling two different tags share is dropped from the index, not guessed at;
- *   - a declared slug whose folded spelling lands on ANOTHER tag (art `black-beard` vs the
- *     `edward-teach` alias `blackbeard`) stays exact. The builder lists those, since only it sees
- *     every slug (TagData::oracle_fold_guard).
+ * The punctuation-blind alias lookup, for a value that missed the alias map exactly: an index of
+ * every alias key AND every alias target, folded. A folded spelling two tags share is a fold group
+ * and was answered before this runs; it is left out here rather than guessed at.
  */
-function foldTagAlias(
-	slug: string,
-	aliases: ReadonlyMap<string, string>,
-	guard: ReadonlySet<string>,
-): string | undefined {
-	if (guard.has(slug)) return undefined;
+function foldTagAlias(slug: string, aliases: ReadonlyMap<string, string>): string | undefined {
 	let index = foldedIndexes.get(aliases);
 	if (index === undefined) {
 		const built = new Map<string, string | null>();
@@ -282,14 +287,14 @@ function foldTagAlias(
 	return index.get(foldTag(slug));
 }
 
-/** get_oracle_tags_comparison_object(...).keys() */
+/** get_oracle_tags_comparison_object(...).keys() — several slugs mean ANY of them (see toJson). */
 export function getOracleTagsComparisonKeys(val: string, tables: TagAliasTables = activeTagAliases): string[] {
-	return [resolveTagAlias(slugifyTag(val), tables.oracle, tables.foldGuard?.oracle)];
+	return resolveTagSlugs(slugifyTag(val), tables.oracle, tables.foldGroups?.oracle);
 }
 
-/** get_art_tags_comparison_object(...).keys() */
+/** get_art_tags_comparison_object(...).keys() — several slugs mean ANY of them (see toJson). */
 export function getArtTagsComparisonKeys(val: string, tables: TagAliasTables = activeTagAliases): string[] {
-	return [resolveTagAlias(slugifyTag(val), tables.art, tables.foldGuard?.art)];
+	return resolveTagSlugs(slugifyTag(val), tables.art, tables.foldGroups?.art);
 }
 
 /** get_is_tags_comparison_object(...).keys() */
@@ -527,6 +532,34 @@ export class CardBinaryOperatorNode extends BinaryOperatorNode {
 			}
 		}
 		super(lhs, operator, rhs);
+	}
+
+	/**
+	 * A tag term that resolved to SEVERAL slugs (a spelling tags share; see `resolveTagSlugs`) is
+	 * the OR of one leaf per slug — exactly the tree `art:black-beard or art:edward-teach` parses
+	 * to, so negation and every consumer of the tree treat it like that query. The engine reads only
+	 * the first key of a tag leaf, so a multi-key leaf would silently answer one tag. Only `:` and
+	 * `=` widen; any other operator on a tag column keeps the first slug, as before.
+	 */
+	override toJson(): FilterTree {
+		const kwargs = this.kwargs();
+		const attr = this.lhs instanceof CardAttributeNode ? this.lhs.attributeName : "";
+		const rhs = kwargs.rhs;
+		if ((attr === "card_oracle_tags" || attr === "card_art_tags") && Array.isArray(rhs) && rhs.length > 1) {
+			if (this.operator !== ":" && this.operator !== "=") {
+				return { node_type: this.nodeType, kwargs: { ...kwargs, rhs: [rhs[0] as FilterValue] } };
+			}
+			return {
+				node_type: "OrNode",
+				kwargs: {
+					operands: rhs.map((slug) => ({
+						node_type: this.nodeType,
+						kwargs: { ...kwargs, rhs: [slug as FilterValue] },
+					})),
+				},
+			};
+		}
+		return { node_type: this.nodeType, kwargs };
 	}
 
 	override kwargs(): Record<string, FilterValue> {

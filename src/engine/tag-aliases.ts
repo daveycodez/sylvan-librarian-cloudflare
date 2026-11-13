@@ -56,9 +56,12 @@ export function tagAliasesKeyFor(manifest: StoreManifest): string | null {
 export interface TagAliasesJson {
 	oracle: Record<string, string>;
 	art: Record<string, string>;
-	/** Declared slugs the punctuation-blind fallback leaves exact; absent on older builds. */
+	/** LEGACY: read only by Workers deployed before the fold groups. */
 	oracle_fold_guard?: string[];
 	art_fold_guard?: string[];
+	/** Spellings two or more tags share -> every one of them; absent on older builds. */
+	oracle_fold_groups?: Record<string, string[]>;
+	art_fold_groups?: Record<string, string[]>;
 }
 
 /**
@@ -80,22 +83,29 @@ export function parseTagAliasTables(json: string): TagAliasTables {
 		}
 		return out;
 	};
-	// The fold guards (TagData::oracle_fold_guard) arrived after the maps did, so a map published
-	// before them parses with NO guard, which keeps the punctuation-blind fallback off for that
-	// build rather than running it unguarded. Both or neither: half a guard is a malformed map.
-	const guards = parsed as Record<string, unknown>;
-	const guard = (name: "oracle_fold_guard" | "art_fold_guard"): ReadonlySet<string> => {
-		const list = guards[name];
-		if (!Array.isArray(list) || !list.every((s) => typeof s === "string"))
-			throw new Error(`tag aliases: "${name}" is not a list of strings`);
-		return new Set(list as string[]);
+	// The fold groups (TagData::oracle_fold_groups) arrived after the maps did, so a map published
+	// before them parses with NONE, which keeps the punctuation-blind fallback off for that build
+	// rather than running it without them. Both or neither: half is a malformed map. The legacy
+	// `*_fold_guard` lists are only for Workers deployed before the groups, and are ignored here.
+	const extra = parsed as Record<string, unknown>;
+	const groups = (name: "oracle_fold_groups" | "art_fold_groups"): ReadonlyMap<string, readonly string[]> => {
+		const obj = extra[name];
+		if (!obj || typeof obj !== "object" || Array.isArray(obj))
+			throw new Error(`tag aliases: "${name}" is not an object`);
+		const out = new Map<string, readonly string[]>();
+		for (const [key, slugs] of Object.entries(obj as Record<string, unknown>)) {
+			if (!Array.isArray(slugs) || slugs.length < 2 || !slugs.every((s) => typeof s === "string"))
+				throw new Error(`tag aliases: ${name}.${key} is not a list of two or more slugs`);
+			out.set(key, slugs as string[]);
+		}
+		return out;
 	};
-	const hasOracleGuard = "oracle_fold_guard" in guards;
-	if (hasOracleGuard !== "art_fold_guard" in guards)
-		throw new Error("tag aliases: carries one fold guard without the other");
+	const hasOracle = "oracle_fold_groups" in extra;
+	if (hasOracle !== "art_fold_groups" in extra)
+		throw new Error("tag aliases: carries one fold-group table without the other");
 	const tables = { oracle: table("oracle"), art: table("art") };
-	if (!hasOracleGuard) return tables;
-	return { ...tables, foldGuard: { oracle: guard("oracle_fold_guard"), art: guard("art_fold_guard") } };
+	if (!hasOracle) return tables;
+	return { ...tables, foldGroups: { oracle: groups("oracle_fold_groups"), art: groups("art_fold_groups") } };
 }
 
 /**
@@ -113,9 +123,10 @@ const TAG_ALIASES_EDGE_TTL_S = 86_400;
  * Versions the colo Cache API copy's URL. The copy is keyed by build, so republishing a build's map
  * in place (scripts/publish-tag-aliases.ts) is invisible for up to TAG_ALIASES_EDGE_TTL_S unless
  * the URL moves. Bump it with any change to what a map carries: 2 = the fold guards
- * (TagData::oracle_fold_guard), republished over the live build's guard-less map on 2026-11-13.
+ * (TagData::oracle_fold_guard), republished over the live build's guard-less map on 2026-11-13;
+ * 3 = the fold groups (TagData::oracle_fold_groups), republished the same day.
  */
-const TAG_ALIASES_EDGE_SHAPE = 2;
+const TAG_ALIASES_EDGE_SHAPE = 3;
 
 /** The colo Cache API URL a build's alias map is held under (see TAG_ALIASES_EDGE_SHAPE). */
 export function tagAliasesEdgeUrl(key: string): string {

@@ -168,35 +168,63 @@ describe("punctuation-blind fallback (Scryfall ignores punctuation in a tag valu
 		expect(oracle("sw-eeper")).toEqual(["sweeper"]);
 	});
 
-	test("a guarded real slug is never redirected onto another tag's alias", () => {
-		// art `black-beard` folds to `blackbeard`, an alias of `edward-teach`.
-		expect(FIXTURE.foldGuard?.art.has("black-beard")).toBe(true);
-		expect(art("black-beard")).toEqual(["black-beard"]);
-		expect(art("blackbeard")).toEqual(["edward-teach"]);
+	test("a spelling several tags share answers ALL of them", () => {
+		// api.scryfall.com 2026-11-13: art:black-beard = art:blackbeard = 14 = black-beard ∪
+		// edward-teach (alias "Blackbeard"); art:aura = art:au-ra = 44; art:betor = art:b-etor = 7.
+		for (const v of ["black-beard", "blackbeard", "Black Beard"])
+			expect(art(v)).toEqual(["black-beard", "edward-teach"]);
+		for (const v of ["aura", "au-ra"]) expect(art(v)).toEqual(["au-ra", "aura"]);
+		for (const v of ["betor", "b-etor"]) expect(art(v)).toEqual(["b-etor", "betor"]);
+		// A spelling one tag owns is still that tag alone.
+		expect(art("edward-teach")).toEqual(["edward-teach"]);
+		expect(art("edward thatch")).toEqual(["edward-teach"]);
 	});
 
-	test("a map published without guards keeps the fallback off", () => {
-		// Older builds' maps carry no guard; folding unguarded could redirect a real slug.
+	test("the union is an OR of single-tag leaves, so negation and the engine see one tag per leaf", () => {
+		const tree = (q: string) => JSON.parse(JSON.stringify(parseScryfallQuery(q, FIXTURE)));
+		const leaf = (slug: string) => ({
+			node_type: "CardBinaryOperatorNode",
+			kwargs: expect.objectContaining({ op: ":", rhs: [slug] }),
+		});
+		expect(tree("art:blackbeard")).toEqual({
+			node_type: "OrNode",
+			kwargs: { operands: [leaf("black-beard"), leaf("edward-teach")] },
+		});
+		expect(tree("-art:blackbeard")).toEqual({
+			node_type: "NotNode",
+			kwargs: { operand: { node_type: "OrNode", kwargs: { operands: [leaf("black-beard"), leaf("edward-teach")] } } },
+		});
+		expect(tree("art:fire")).toEqual(leaf("fire"));
+	});
+
+	test("a map published without fold groups keeps the fallback off", () => {
+		// Older builds' maps carry none; folding without them could redirect a real slug.
 		const legacy = { oracle: FIXTURE.oracle, art: FIXTURE.art };
 		expect(oracle("board-wipe", legacy)).toEqual(["board-wipe"]);
 		expect(oracle("boardwipe", legacy)).toEqual(["sweeper"]);
+		expect(art("black-beard", legacy)).toEqual(["black-beard"]);
 	});
 
-	test("half a guard is a malformed map", () => {
-		expect(() => parseTagAliasTables('{"oracle":{},"art":{},"oracle_fold_guard":[]}')).toThrow();
+	test("half the fold groups is a malformed map", () => {
+		expect(() => parseTagAliasTables('{"oracle":{},"art":{},"oracle_fold_groups":{}}')).toThrow();
+		expect(() =>
+			parseTagAliasTables('{"oracle":{},"art":{},"oracle_fold_groups":{},"art_fold_groups":{"a":["a"]}}'),
+		).toThrow();
 	});
 
-	for (const [name, map, keys, guard] of [
-		["oracle", FIXTURE.oracle, oracle, FIXTURE.foldGuard?.oracle],
-		["art", FIXTURE.art, art, FIXTURE.foldGuard?.art],
+	for (const [name, map, keys, groups] of [
+		["oracle", FIXTURE.oracle, oracle, FIXTURE.foldGroups?.oracle],
+		["art", FIXTURE.art, art, FIXTURE.foldGroups?.art],
 	] as const) {
-		test(`${name}: every listed alias, alias target and guarded slug still resolves exactly`, () => {
-			// The fallback only runs on a miss, so it can never change an exact hit.
+		test(`${name}: every listed alias and alias target still resolves exactly, unless it is a shared spelling`, () => {
+			// The fallback only runs on a miss, so it can never change an exact hit — except where the
+			// spelling is shared, and then the answer is the whole group (Scryfall's union).
+			const fold = (s: string) => s.replaceAll("-", "");
+			const expected = (slug: string, own: string) => groups?.get(fold(own)) ?? [slug];
 			for (const [alias, slug] of map) {
-				expect(keys(alias)).toEqual([slug]);
-				expect(keys(slug)).toEqual([slug]);
+				expect(keys(alias)).toEqual([...expected(slug, alias)]);
+				expect(keys(slug)).toEqual([...expected(slug, slug)]);
 			}
-			for (const slug of guard ?? []) expect(keys(slug)).toEqual([slug]);
 		});
 	}
 });

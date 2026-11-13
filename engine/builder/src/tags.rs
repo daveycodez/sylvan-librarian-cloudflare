@@ -130,7 +130,9 @@ pub struct TagData {
     /// nothing guarantees an art alias means anything in oracle space, and merging them would let
     /// one dump's spelling silently answer for the other's.
     pub art_aliases: HashMap<String, String>,
-    /// Declared oracle slugs the query side must NOT fold, sorted.
+    /// LEGACY, kept only so a Worker deployed before the fold groups keeps its fallback on while a
+    /// deploy rolls out; nothing current reads it. Declared oracle slugs the old query side would
+    /// not fold, sorted.
     ///
     /// Scryfall ignores punctuation when it matches a tag — `otag:board-wipe`, `otag:board_wipe`
     /// and `otag:boardwipe` all reach `sweeper` there, though only `boardwipe` is a listed alias.
@@ -142,9 +144,26 @@ pub struct TagData {
     /// declared slug, so it names those few here and the query side leaves them exact.
     #[serde(default)]
     pub oracle_fold_guard: Vec<String>,
-    /// The same, for the art dump.
+    /// The same, for the art dump. LEGACY, as above.
     #[serde(default)]
     pub art_fold_guard: Vec<String>,
+    /// Punctuation-blind spellings that two or more oracle tags share → every one of those tags.
+    ///
+    /// Scryfall matches a tag value with its punctuation removed against every tag whose slug OR
+    /// alias reads the same, and answers the UNION. Measured on api.scryfall.com 2026-11-13:
+    /// `art:black-beard` and `art:blackbeard` are both 14, which is `art:black-beard or
+    /// art:edward-teach` (the `edward-teach` tag carries the alias "Blackbeard"); `art:aura` and
+    /// `art:au-ra` are both 44, two real slugs that differ only by a hyphen; `art:betor` and
+    /// `art:b-etor` are both 7; `art:seaweed` and `art:sea-weed` both 52. A spelling ONE tag owns
+    /// resolves through the alias map; these are the ones the query side has to widen into an OR,
+    /// and only this side knows every slug, so it names them. An alias two tags claim, or one that
+    /// is also a real slug, is dropped from the alias map above but lands in a group here, which is
+    /// what Scryfall's union makes of it.
+    #[serde(default)]
+    pub oracle_fold_groups: std::collections::BTreeMap<String, Vec<String>>,
+    /// The same, for the art dump.
+    #[serde(default)]
+    pub art_fold_groups: std::collections::BTreeMap<String, Vec<String>>,
     /// slug → index, lazily (re)built by `intern` — not part of the snapshot.
     #[serde(skip)]
     index: HashMap<String, u32>,
@@ -191,6 +210,8 @@ impl TagData {
             "art": sorted(&self.art_aliases),
             "oracle_fold_guard": self.oracle_fold_guard,
             "art_fold_guard": self.art_fold_guard,
+            "oracle_fold_groups": self.oracle_fold_groups,
+            "art_fold_groups": self.art_fold_groups,
         })
     }
 
@@ -369,6 +390,33 @@ fn fold_guard(declared: &HashSet<String>, aliases: &HashMap<String, String>) -> 
         .collect();
     guard.sort();
     guard
+}
+
+/// The punctuation-blind spellings shared by two or more tags, each with every tag that owns it as
+/// its slug or as an alias — taken from the CLAIMANTS, before the alias map drops the ambiguous
+/// ones. See TagData::oracle_fold_groups.
+fn fold_groups(
+    declared: &HashSet<String>,
+    claimants: &HashMap<String, HashSet<String>>,
+) -> std::collections::BTreeMap<String, Vec<String>> {
+    let mut owners: HashMap<String, HashSet<&str>> = HashMap::new();
+    for slug in declared {
+        owners.entry(fold_tag(slug)).or_default().insert(slug);
+    }
+    for (alias, tags) in claimants {
+        for slug in tags {
+            owners.entry(fold_tag(alias)).or_default().insert(slug);
+        }
+    }
+    owners
+        .into_iter()
+        .filter(|(_, tags)| tags.len() > 1)
+        .map(|(key, tags)| {
+            let mut tags: Vec<String> = tags.into_iter().map(str::to_owned).collect();
+            tags.sort();
+            (key, tags)
+        })
+        .collect()
 }
 
 /// The fields the import reads from one tag-dump record. Typed (rather than
@@ -588,9 +636,10 @@ impl TagAccumulator {
                 eprintln!("tags: dropping {dropped} ambiguous alias(es)");
             }
             let guard = fold_guard(&self.declared_slugs, aliases);
+            let groups = fold_groups(&self.declared_slugs, &self.alias_claimants);
             match kind {
-                TagKind::Oracle => data.oracle_fold_guard = guard,
-                TagKind::Art => data.art_fold_guard = guard,
+                TagKind::Oracle => (data.oracle_fold_guard, data.oracle_fold_groups) = (guard, groups),
+                TagKind::Art => (data.art_fold_guard, data.art_fold_groups) = (guard, groups),
             }
         }
 
@@ -883,11 +932,13 @@ mod tests {
                 "art": {"open-mouth": "loose-lips"},
                 "oracle_fold_guard": [],
                 "art_fold_guard": [],
+                "oracle_fold_groups": {},
+                "art_fold_groups": {},
             })
         );
         assert_eq!(
             v.to_string(),
-            r#"{"art":{"open-mouth":"loose-lips"},"art_fold_guard":[],"oracle":{"flames":"fire","reanimate-copy":"copy-from-graveyard"},"oracle_fold_guard":[]}"#
+            r#"{"art":{"open-mouth":"loose-lips"},"art_fold_groups":{},"art_fold_guard":[],"oracle":{"flames":"fire","reanimate-copy":"copy-from-graveyard"},"oracle_fold_groups":{},"oracle_fold_guard":[]}"#
         );
     }
 
@@ -957,6 +1008,33 @@ mod tests {
         let data = build(&tags, TagKind::Oracle);
         assert_eq!(data.oracle_fold_guard, vec!["black-beard".to_owned()]);
         assert!(data.art_fold_guard.is_empty());
+    }
+
+    #[test]
+    fn spellings_two_tags_share_become_a_fold_group() {
+        // Scryfall answers the union: `art:black-beard` = `art:blackbeard` = black-beard ∪
+        // edward-teach, and `art:aura` = `art:au-ra` = aura ∪ au-ra (2026-11-13). An alias two
+        // tags claim is dropped from the alias map but still unions here.
+        let tags = vec![
+            tag_with_aliases("u1", "edward-teach", &[], &["Blackbeard"], json!([{"oracle_id": "o-1"}])),
+            tag("u2", "black-beard", &[], json!([{"oracle_id": "o-2"}])),
+            tag("u3", "aura", &[], json!([{"oracle_id": "o-3"}])),
+            tag("u4", "au-ra", &[], json!([{"oracle_id": "o-4"}])),
+            tag_with_aliases("u5", "fire", &[], &["blaze"], json!([{"oracle_id": "o-5"}])),
+            tag_with_aliases("u6", "flame", &[], &["blaze"], json!([{"oracle_id": "o-6"}])),
+            tag_with_aliases("u7", "sweeper", &[], &["boardwipe"], json!([{"oracle_id": "o-7"}])),
+        ];
+        let data = build(&tags, TagKind::Oracle);
+        let want: std::collections::BTreeMap<String, Vec<String>> = [
+            ("aura", vec!["au-ra", "aura"]),
+            ("blackbeard", vec!["black-beard", "edward-teach"]),
+            ("blaze", vec!["fire", "flame"]),
+        ]
+        .into_iter()
+        .map(|(k, v)| (k.to_owned(), v.into_iter().map(str::to_owned).collect()))
+        .collect();
+        assert_eq!(data.oracle_fold_groups, want);
+        assert!(!data.oracle_aliases.contains_key("blaze"), "the ambiguous alias stays out of the map");
     }
 
     #[test]
