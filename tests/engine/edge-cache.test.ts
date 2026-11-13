@@ -12,7 +12,7 @@ import {
 	readRoutingFilter,
 	routingFilterKeyFor,
 } from "../../src/engine/store-kv";
-import { readTagAliases, tagAliasesKeyFor } from "../../src/engine/tag-aliases";
+import { readTagAliases, tagAliasesEdgeUrl, tagAliasesKeyFor } from "../../src/engine/tag-aliases";
 import type { Env, StoreManifest } from "../../src/engine/types";
 
 const manifest: StoreManifest = {
@@ -299,7 +299,9 @@ describe("the per-build values every cold isolate reads", () => {
 		const c = fakeCaches();
 		c.install();
 		const key = tagAliasesKeyFor(build) as string;
-		c.entries.set(edgeCacheUrl(key), '{"oracle":{"a":"b"},"art":{}}');
+		c.entries.set(tagAliasesEdgeUrl(key), '{"oracle":{"a":"b"},"art":{}}');
+		// The pre-guard URL is never read: a map republished in place must not hide behind it.
+		c.entries.set(edgeCacheUrl(key), '{"oracle":{"a":"stale"},"art":{}}');
 		const { env, reads } = envAnswering(null);
 		const tables = await readTagAliases(env, build);
 		expect(tables?.oracle.get("a")).toBe("b");

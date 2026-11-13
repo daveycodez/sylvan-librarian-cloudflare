@@ -105,10 +105,16 @@ const existing = await kvGet(key);
 if (existing !== null) {
 	try {
 		const tables = parseTagAliasTables(existing);
-		console.log(
-			`Build ${manifest.built_at} already carries its alias map (${tables.oracle.size} oracle + ${tables.art.size} art) at ${key}.`,
-		);
-		process.exit(0);
+		// A map published before the fold guards existed parses, but leaves the punctuation-blind
+		// fallback off (`otag:board-wipe` stays a 404) until something republishes it. Do that here
+		// rather than leaving the fix to the next nightly.
+		if (tables.foldGuard) {
+			console.log(
+				`Build ${manifest.built_at} already carries its alias map (${tables.oracle.size} oracle + ${tables.art.size} art) at ${key}.`,
+			);
+			process.exit(0);
+		}
+		console.warn(`The alias map at ${key} predates the fold guards; republishing it.`);
 	} catch (err) {
 		console.warn(`The alias map at ${key} does not parse (${err}); republishing it.`);
 	}

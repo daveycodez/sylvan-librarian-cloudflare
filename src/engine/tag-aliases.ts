@@ -109,6 +109,18 @@ export function parseTagAliasTables(json: string): TagAliasTables {
 const TAG_ALIASES_CACHE_TTL = 300;
 /** The colo's Cache API copy of a PUBLISHED map: immutable per build, so a day only bounds lingering. */
 const TAG_ALIASES_EDGE_TTL_S = 86_400;
+/**
+ * Versions the colo Cache API copy's URL. The copy is keyed by build, so republishing a build's map
+ * in place (scripts/publish-tag-aliases.ts) is invisible for up to TAG_ALIASES_EDGE_TTL_S unless
+ * the URL moves. Bump it with any change to what a map carries: 2 = the fold guards
+ * (TagData::oracle_fold_guard), republished over the live build's guard-less map on 2026-11-13.
+ */
+const TAG_ALIASES_EDGE_SHAPE = 2;
+
+/** The colo Cache API URL a build's alias map is held under (see TAG_ALIASES_EDGE_SHAPE). */
+export function tagAliasesEdgeUrl(key: string): string {
+	return `${edgeCacheUrl(key)}?shape=${TAG_ALIASES_EDGE_SHAPE}`;
+}
 /** How long an isolate trusts "no map published for this build" before asking KV again. */
 export const ALIAS_MISS_RETRY_MS = 300_000;
 
@@ -119,7 +131,7 @@ export async function readTagAliases(env: Env, manifest: StoreManifest): Promise
 	// Through the colo's Cache API first (edge-cache.ts), like the routing filter: a metered KV read
 	// per cold isolate otherwise. A miss is never stored there, so the late-publish case above still
 	// resolves through KV's own short negative.
-	const bytes = await readThroughEdgeCache(edgeCacheUrl(key), TAG_ALIASES_EDGE_TTL_S, async () => {
+	const bytes = await readThroughEdgeCache(tagAliasesEdgeUrl(key), TAG_ALIASES_EDGE_TTL_S, async () => {
 		const json = await env.STORE_KV.get(key, { type: "text", cacheTtl: TAG_ALIASES_CACHE_TTL });
 		return json === null ? null : new TextEncoder().encode(json);
 	});
