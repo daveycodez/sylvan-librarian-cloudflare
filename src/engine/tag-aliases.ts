@@ -56,6 +56,9 @@ export function tagAliasesKeyFor(manifest: StoreManifest): string | null {
 export interface TagAliasesJson {
 	oracle: Record<string, string>;
 	art: Record<string, string>;
+	/** Declared slugs the punctuation-blind fallback leaves exact; absent on older builds. */
+	oracle_fold_guard?: string[];
+	art_fold_guard?: string[];
 }
 
 /**
@@ -77,7 +80,22 @@ export function parseTagAliasTables(json: string): TagAliasTables {
 		}
 		return out;
 	};
-	return { oracle: table("oracle"), art: table("art") };
+	// The fold guards (TagData::oracle_fold_guard) arrived after the maps did, so a map published
+	// before them parses with NO guard, which keeps the punctuation-blind fallback off for that
+	// build rather than running it unguarded. Both or neither: half a guard is a malformed map.
+	const guards = parsed as Record<string, unknown>;
+	const guard = (name: "oracle_fold_guard" | "art_fold_guard"): ReadonlySet<string> => {
+		const list = guards[name];
+		if (!Array.isArray(list) || !list.every((s) => typeof s === "string"))
+			throw new Error(`tag aliases: "${name}" is not a list of strings`);
+		return new Set(list as string[]);
+	};
+	const hasOracleGuard = "oracle_fold_guard" in guards;
+	if (hasOracleGuard !== "art_fold_guard" in guards)
+		throw new Error("tag aliases: carries one fold guard without the other");
+	const tables = { oracle: table("oracle"), art: table("art") };
+	if (!hasOracleGuard) return tables;
+	return { ...tables, foldGuard: { oracle: guard("oracle_fold_guard"), art: guard("art_fold_guard") } };
 }
 
 /**

@@ -1350,6 +1350,7 @@
 		"zheng-shang-chi": "shang-chi",
 		"zimone": "zimone-wola"
 	},
+	"art_fold_guard": ["black-beard"],
 	"oracle": {
 		"107-3f-x-card": "cr-107-3f-x-card",
 		"ability-counter": "keyword-counter",
@@ -2184,5 +2185,6 @@
 		"wrath-of-god": "sweeper",
 		"zombie-lord": "typal-zombie",
 		"zombify": "reanimate"
-	}
+	},
+	"oracle_fold_guard": []
 }

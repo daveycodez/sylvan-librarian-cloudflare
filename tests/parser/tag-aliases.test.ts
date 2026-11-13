@@ -144,3 +144,59 @@ describe("the tables reach the parse through withTagAliases", () => {
 		expect(getArtTagsComparisonKeys("flames")).toEqual(["flames"]);
 	});
 });
+
+describe("punctuation-blind fallback (Scryfall ignores punctuation in a tag value)", () => {
+	const oracle = (v: string, tables = FIXTURE) => getOracleTagsComparisonKeys(v, tables);
+	const art = (v: string, tables = FIXTURE) => getArtTagsComparisonKeys(v, tables);
+
+	test("a hyphenated spelling of an unhyphenated alias resolves", () => {
+		// api.scryfall.com 2026-11-13: otag:board-wipe = 952 = otag:sweeper. `boardwipe` is the
+		// listed alias; `board-wipe` is in neither dump, and it answered 404 here.
+		expect(oracle("board-wipe")).toEqual(["sweeper"]);
+		expect(oracle("board_wipe")).toEqual(["sweeper"]);
+		expect(oracle("Board Wipe")).toEqual(["sweeper"]);
+	});
+
+	test("an unhyphenated spelling of a spaced alias resolves", () => {
+		// The listed alias is "wrath of god" (slug `wrath-of-god`); Scryfall answers both.
+		expect(oracle("wrathofgod")).toEqual(["sweeper"]);
+		expect(oracle("massremoval")).toEqual(["sweeper"]);
+		expect(art("openmouth")).toEqual(["loose-lips"]);
+	});
+
+	test("a slug with an alias is reachable under any punctuation", () => {
+		expect(oracle("sw-eeper")).toEqual(["sweeper"]);
+	});
+
+	test("a guarded real slug is never redirected onto another tag's alias", () => {
+		// art `black-beard` folds to `blackbeard`, an alias of `edward-teach`.
+		expect(FIXTURE.foldGuard?.art.has("black-beard")).toBe(true);
+		expect(art("black-beard")).toEqual(["black-beard"]);
+		expect(art("blackbeard")).toEqual(["edward-teach"]);
+	});
+
+	test("a map published without guards keeps the fallback off", () => {
+		// Older builds' maps carry no guard; folding unguarded could redirect a real slug.
+		const legacy = { oracle: FIXTURE.oracle, art: FIXTURE.art };
+		expect(oracle("board-wipe", legacy)).toEqual(["board-wipe"]);
+		expect(oracle("boardwipe", legacy)).toEqual(["sweeper"]);
+	});
+
+	test("half a guard is a malformed map", () => {
+		expect(() => parseTagAliasTables('{"oracle":{},"art":{},"oracle_fold_guard":[]}')).toThrow();
+	});
+
+	for (const [name, map, keys, guard] of [
+		["oracle", FIXTURE.oracle, oracle, FIXTURE.foldGuard?.oracle],
+		["art", FIXTURE.art, art, FIXTURE.foldGuard?.art],
+	] as const) {
+		test(`${name}: every listed alias, alias target and guarded slug still resolves exactly`, () => {
+			// The fallback only runs on a miss, so it can never change an exact hit.
+			for (const [alias, slug] of map) {
+				expect(keys(alias)).toEqual([slug]);
+				expect(keys(slug)).toEqual([slug]);
+			}
+			for (const slug of guard ?? []) expect(keys(slug)).toEqual([slug]);
+		});
+	}
+});

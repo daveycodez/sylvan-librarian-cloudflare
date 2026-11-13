@@ -183,6 +183,12 @@ export function slugifyTag(val: string): string {
 export interface TagAliasTables {
 	readonly oracle: ReadonlyMap<string, string>;
 	readonly art: ReadonlyMap<string, string>;
+	/**
+	 * Declared slugs the punctuation-blind fallback must leave exact, per dump (see
+	 * `foldTagAlias`). ABSENT for a map published before the builder emitted them, and then the
+	 * fallback stays off: without the guard a real slug could fold onto another tag's alias.
+	 */
+	readonly foldGuard?: { readonly oracle: ReadonlySet<string>; readonly art: ReadonlySet<string> };
 }
 
 /** No aliases: every tag spelling is taken as the slug it is typed as. */
@@ -216,18 +222,74 @@ export function withTagAliases<T>(tables: TagAliasTables | undefined, fn: () => 
  * same row set. An unknown value passes through untouched, which is what keeps a plain slug — and
  * a typo — behaving exactly as before.
  */
-function resolveTagAlias(slug: string, aliases: ReadonlyMap<string, string>): string {
-	return aliases.get(slug) ?? slug;
+function resolveTagAlias(
+	slug: string,
+	aliases: ReadonlyMap<string, string>,
+	guard: ReadonlySet<string> | undefined,
+): string {
+	return aliases.get(slug) ?? (guard ? foldTagAlias(slug, aliases, guard) : undefined) ?? slug;
+}
+
+/** A slug with its hyphens removed. Must agree with `fold_tag` in engine/builder/src/tags.rs. */
+function foldTag(slug: string): string {
+	return slug.replaceAll("-", "");
+}
+
+/** Folded spelling -> canonical slug, per alias map; spellings two tags share are left out. */
+const foldedIndexes = new WeakMap<ReadonlyMap<string, string>, ReadonlyMap<string, string>>();
+
+/**
+ * The punctuation-blind retry, for a value that missed the alias map exactly.
+ *
+ * Scryfall ignores punctuation when it matches a tag: `otag:board-wipe`, `otag:board_wipe` and
+ * `otag:boardwipe` all find `sweeper` there (952 cards, measured 2026-11-13), though only
+ * `boardwipe` is a listed alias, and `otag:wrathofgod` finds it through the alias "wrath of god".
+ * Exact lookup misses every spelling but the listed one, so a miss is retried with its hyphens
+ * removed against an index of every alias key AND every alias target, folded the same way.
+ *
+ * The index is derived from the alias map on first use, so it ships nothing. Folding every slug
+ * would mean shipping every slug (~400KB), so a slug that has no alias still needs its real
+ * spelling: `otag:mana-rock` always works, `otag:manarock` only because Scryfall lists it.
+ *
+ * Two guards keep this from turning a correct query into a wrong one:
+ *   - a folded spelling two different tags share is dropped from the index, not guessed at;
+ *   - a declared slug whose folded spelling lands on ANOTHER tag (art `black-beard` vs the
+ *     `edward-teach` alias `blackbeard`) stays exact. The builder lists those, since only it sees
+ *     every slug (TagData::oracle_fold_guard).
+ */
+function foldTagAlias(
+	slug: string,
+	aliases: ReadonlyMap<string, string>,
+	guard: ReadonlySet<string>,
+): string | undefined {
+	if (guard.has(slug)) return undefined;
+	let index = foldedIndexes.get(aliases);
+	if (index === undefined) {
+		const built = new Map<string, string | null>();
+		const add = (key: string, target: string) => {
+			const prior = built.get(key);
+			built.set(key, prior === undefined || prior === target ? target : null);
+		};
+		for (const [alias, target] of aliases) {
+			add(foldTag(alias), target);
+			add(foldTag(target), target);
+		}
+		const targets = new Map<string, string>();
+		for (const [k, v] of built) if (v !== null) targets.set(k, v);
+		index = targets;
+		foldedIndexes.set(aliases, index);
+	}
+	return index.get(foldTag(slug));
 }
 
 /** get_oracle_tags_comparison_object(...).keys() */
 export function getOracleTagsComparisonKeys(val: string, tables: TagAliasTables = activeTagAliases): string[] {
-	return [resolveTagAlias(slugifyTag(val), tables.oracle)];
+	return [resolveTagAlias(slugifyTag(val), tables.oracle, tables.foldGuard?.oracle)];
 }
 
 /** get_art_tags_comparison_object(...).keys() */
 export function getArtTagsComparisonKeys(val: string, tables: TagAliasTables = activeTagAliases): string[] {
-	return [resolveTagAlias(slugifyTag(val), tables.art)];
+	return [resolveTagAlias(slugifyTag(val), tables.art, tables.foldGuard?.art)];
 }
 
 /** get_is_tags_comparison_object(...).keys() */

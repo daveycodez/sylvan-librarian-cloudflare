@@ -130,6 +130,21 @@ pub struct TagData {
     /// nothing guarantees an art alias means anything in oracle space, and merging them would let
     /// one dump's spelling silently answer for the other's.
     pub art_aliases: HashMap<String, String>,
+    /// Declared oracle slugs the query side must NOT fold, sorted.
+    ///
+    /// Scryfall ignores punctuation when it matches a tag — `otag:board-wipe`, `otag:board_wipe`
+    /// and `otag:boardwipe` all reach `sweeper` there, though only `boardwipe` is a listed alias.
+    /// The query side reproduces that by retrying a missed value with its hyphens removed against
+    /// the alias map folded the same way (`foldTagAlias` in src/parser/card-query-nodes.ts). It
+    /// derives that folded index from the alias map alone, so it costs nothing to ship — but the
+    /// map does not know every slug, and a REAL slug can fold onto someone else's alias: art
+    /// `black-beard` folds to `blackbeard`, an alias of `edward-teach`. Only this side sees every
+    /// declared slug, so it names those few here and the query side leaves them exact.
+    #[serde(default)]
+    pub oracle_fold_guard: Vec<String>,
+    /// The same, for the art dump.
+    #[serde(default)]
+    pub art_fold_guard: Vec<String>,
     /// slug → index, lazily (re)built by `intern` — not part of the snapshot.
     #[serde(skip)]
     index: HashMap<String, u32>,
@@ -171,7 +186,12 @@ impl TagData {
             entries.sort();
             Value::Object(entries.into_iter().map(|(a, s)| (a.clone(), Value::String(s.clone()))).collect())
         }
-        serde_json::json!({ "oracle": sorted(&self.oracle_aliases), "art": sorted(&self.art_aliases) })
+        serde_json::json!({
+            "oracle": sorted(&self.oracle_aliases),
+            "art": sorted(&self.art_aliases),
+            "oracle_fold_guard": self.oracle_fold_guard,
+            "art_fold_guard": self.art_fold_guard,
+        })
     }
 
     /// Build from plain id → slug-list maps (tests, memprobe's tags.json).
@@ -324,6 +344,31 @@ fn slugify_tag(val: &str) -> String {
         }
     }
     out
+}
+
+/// A tag value with its hyphens removed — the punctuation-blind spelling Scryfall matches on.
+/// Must agree with `foldTag` in src/parser/card-query-nodes.ts.
+fn fold_tag(slug: &str) -> String {
+    slug.chars().filter(|&c| c != '-').collect()
+}
+
+/// The declared slugs whose folded spelling lands on a DIFFERENT tag in the query side's folded
+/// alias index (built from every alias key and every alias target). Folding such a slug would
+/// redirect an exact, correct query, so the query side skips the fold for exactly these.
+/// See TagData::oracle_fold_guard.
+fn fold_guard(declared: &HashSet<String>, aliases: &HashMap<String, String>) -> Vec<String> {
+    let mut folded: HashMap<String, HashSet<&str>> = HashMap::new();
+    for (alias, slug) in aliases {
+        folded.entry(fold_tag(alias)).or_default().insert(slug);
+        folded.entry(fold_tag(slug)).or_default().insert(slug);
+    }
+    let mut guard: Vec<String> = declared
+        .iter()
+        .filter(|d| folded.get(&fold_tag(d)).is_some_and(|targets| targets.len() != 1 || !targets.contains(d.as_str())))
+        .cloned()
+        .collect();
+    guard.sort();
+    guard
 }
 
 /// The fields the import reads from one tag-dump record. Typed (rather than
@@ -541,6 +586,11 @@ impl TagAccumulator {
             }
             if dropped > 0 {
                 eprintln!("tags: dropping {dropped} ambiguous alias(es)");
+            }
+            let guard = fold_guard(&self.declared_slugs, aliases);
+            match kind {
+                TagKind::Oracle => data.oracle_fold_guard = guard,
+                TagKind::Art => data.art_fold_guard = guard,
             }
         }
 
@@ -831,9 +881,14 @@ mod tests {
             json!({
                 "oracle": {"flames": "fire", "reanimate-copy": "copy-from-graveyard"},
                 "art": {"open-mouth": "loose-lips"},
+                "oracle_fold_guard": [],
+                "art_fold_guard": [],
             })
         );
-        assert_eq!(v.to_string(), r#"{"art":{"open-mouth":"loose-lips"},"oracle":{"flames":"fire","reanimate-copy":"copy-from-graveyard"}}"#);
+        assert_eq!(
+            v.to_string(),
+            r#"{"art":{"open-mouth":"loose-lips"},"art_fold_guard":[],"oracle":{"flames":"fire","reanimate-copy":"copy-from-graveyard"},"oracle_fold_guard":[]}"#
+        );
     }
 
     #[test]
@@ -888,6 +943,20 @@ mod tests {
         acc.finish_into(TagKind::Oracle, &mut data);
         assert_eq!(data.oracle_aliases.get("blaze").map(String::as_str), Some("fire"));
         assert!(!data.oracle_aliases.contains_key("flames"), "retired alias must not survive");
+    }
+
+    #[test]
+    fn a_real_slug_that_folds_onto_another_tags_alias_is_guarded() {
+        // art `black-beard` folds to `blackbeard`, an alias of `edward-teach`: the query side's
+        // punctuation-blind retry would redirect an exact, correct query unless it is guarded.
+        let tags = vec![
+            tag_with_aliases("u1", "edward-teach", &[], &["Blackbeard"], json!([{"oracle_id": "o-1"}])),
+            tag("u2", "black-beard", &[], json!([{"oracle_id": "o-2"}])),
+            tag_with_aliases("u3", "sweeper", &[], &["boardwipe"], json!([{"oracle_id": "o-3"}])),
+        ];
+        let data = build(&tags, TagKind::Oracle);
+        assert_eq!(data.oracle_fold_guard, vec!["black-beard".to_owned()]);
+        assert!(data.art_fold_guard.is_empty());
     }
 
     #[test]
