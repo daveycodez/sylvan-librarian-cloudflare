@@ -3293,6 +3293,39 @@ impl FilterExpr {
         *self = FilterExpr::Or(vec![original, FilterExpr::PrintedTextMatch(pred)]);
     }
 
+    /// LOCAL PATCH (Cloudflare port): `!"…"` reads a CANONICAL printing's printed name in every
+    /// query — `!"Rhilex the Accursed"` with no language at all is om1/66 (Agent Venom) on
+    /// api.scryfall.com 2026-11-14, as `(!"Rhilex the Accursed" or !"Lightning Bolt")` holds it beside
+    /// Lightning Bolt's two cards. Grafted ONLY onto a leaf whose needle such a printed name settles
+    /// (`printed_exact` — the caller's scan of the few hundred canonical printings that print a name
+    /// their card does not have), so every other `!` query keeps its tree, its plans and its cost.
+    pub(crate) fn graft_canonical_printed_exact(&mut self, printed_exact: &dyn Fn(&str) -> bool) {
+        match self {
+            FilterExpr::And(children) | FilterExpr::Or(children) => {
+                for c in children.iter_mut() {
+                    c.graft_canonical_printed_exact(printed_exact);
+                }
+            }
+            FilterExpr::Not(inner) => inner.graft_canonical_printed_exact(printed_exact),
+            FilterExpr::ExactName(needle) if printed_exact(needle) => {
+                let pred = PrintedPred::NameExact(needle.clone());
+                let original = std::mem::replace(self, FilterExpr::True);
+                *self = FilterExpr::Or(vec![original, FilterExpr::PrintedTextMatch(pred)]);
+            }
+            _ => {}
+        }
+    }
+
+    /// Whether any leaf is an exact-name match — the only leaf `graft_canonical_printed_exact` grafts.
+    pub(crate) fn has_exact_name(&self) -> bool {
+        match self {
+            FilterExpr::ExactName(_) => true,
+            FilterExpr::And(children) | FilterExpr::Or(children) => children.iter().any(FilterExpr::has_exact_name),
+            FilterExpr::Not(inner) => inner.has_exact_name(),
+            _ => false,
+        }
+    }
+
     /// Graft the REVERSIBLE PRINTING's own answer onto a `name:` or `o:` leaf — but only when the
     /// answer differs between one of the 72 cards that have such a printing and that printing.
     ///

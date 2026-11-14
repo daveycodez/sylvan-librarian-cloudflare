@@ -2501,8 +2501,20 @@ export async function gzipBytes(bytes: Uint8Array): Promise<Uint8Array> {
  *      read the trailer is never sent one by a partition serving the store it reads; where a
  *      coordinator of the old build asks a partition of the new one, the packet is refused
  *      loudly (trailing bytes), for those `unique=art` queries alone.
+ *
+ *   97 (2026-11-14): A PRINTED NAME IS A ROUTING KEY. `!"…"` reads a printing's printed name — a
+ *      foreign one under `lang:`/include_multilingual, a canonical one always (`!"Rhilex the
+ *      Accursed"` is om1/66 on api.scryfall.com) — and the lone-name pin and the list restriction
+ *      place a `!` name by the routing filter's name keys, trusting a partition only when every
+ *      partition `!"x"` can match in emitted x (card-restriction.ts invariant a). Without them
+ *      `lang:de (!"Blitzschlag" or !"Feuerball")` asked Fireball's partition alone: 1 card of
+ *      Scryfall's 2. Both builders now emit each printing's printed name (transform.rs
+ *      `printed_name_routing_keys_of`: `ns:` canonical, `nw:` canonical extra, `nf:` foreign; ASCII
+ *      only, since the router refuses any other needle; none for a name its card already bears).
+ *      No archive or format change — the filter is rebuilt from the new keys, which only a rebuild
+ *      writes, hence the generation.
  */
-export const STORE_CONTENT_GENERATION = 96;
+export const STORE_CONTENT_GENERATION = 97;
 
 /**
  * Which per-build SIDE BLOBS — and which formats of them — the code publishing a store writes beside

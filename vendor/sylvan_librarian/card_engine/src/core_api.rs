@@ -5526,6 +5526,35 @@ mod tests {
         assert_eq!(printed_rows(&store, &o("schadenspunkte"), true).0, 1, "include_multilingual");
     }
 
+    /// `!"…"` reads a CANONICAL printing's printed name with no language at all — `!"Rhilex the
+    /// Accursed"` is om1/66 (Agent Venom) on api.scryfall.com — while a bare word still does not
+    /// (`Rhilex` is 404 there), and the card's own name answers as before.
+    #[test]
+    fn an_exact_name_reads_a_canonical_printed_name() {
+        let mut om1 = annex_row("Agent Venom", "oracle-venom", "venom-om1", "en", 100.0);
+        om1["printed_name"] = json!("Rhilex the Accursed");
+        om1["printed_name_folded"] = json!("rhilex the accursed");
+        let store = build_store(&[
+            annex_row("Agent Venom", "oracle-venom", "venom-spm", "en", 200.0),
+            om1,
+            annex_row("Lightning Bolt", "oracle-bolt", "bolt-en", "en", 200.0),
+        ])
+        .1;
+        let exact = |v: &str| json!({ "node_type": "ExactNameNode", "kwargs": { "value": v } });
+        let rows = |tree: &Value| {
+            let mut opts = opts_with("printing", false);
+            opts.fields = Some(vec!["printed_name".to_owned()]);
+            let out = store.query_value(tree, &opts).expect("query");
+            (out.total, out.rows.iter().map(|r| r["printed_name"].as_str().unwrap_or("").to_owned()).collect::<Vec<_>>())
+        };
+        assert_eq!(rows(&exact("rhilextheaccursed")), (1, vec!["Rhilex the Accursed".to_owned()]), "the printing that prints it");
+        assert_eq!(rows(&exact("agentvenom")).0, 2, "the card's own name, every printing");
+        let list = json!({ "node_type": "OrNode", "kwargs": { "operands": [exact("rhilextheaccursed"), exact("lightningbolt")] } });
+        assert_eq!(rows(&list).0, 2);
+        assert_eq!(rows(&term("card_name", "name", value("CollatedNameValueNode", "Rhilex"))).0, 0, "a bare word stays English");
+        assert_eq!(rows(&not_of(exact("rhilextheaccursed"))).0, 2, "negated, the printing leaves");
+    }
+
     /// A transform printing's printed TYPE LINE is its front face's — `t:Insekt lang:de` misses
     /// Delver of Secrets on api.scryfall.com, whose German back face is "Kreatur — Mensch, Insekt" —
     /// while its back face's printed name and text answer (`name:Insekten`, `o:fliegend`).

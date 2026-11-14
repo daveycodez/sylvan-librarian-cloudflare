@@ -22959,6 +22959,21 @@ fn bind_and_split_filter_value(
     if widened {
         let contains = filter_expr.required_lang_value() != Some("en");
         filter_expr.graft_printed_text(contains);
+    } else if filter_expr.has_exact_name() {
+        // The routed driver's one printed read: `!"…"` against the canonical printings that print a
+        // name their card does not have — collected once per such query, a few hundred strings.
+        let printed: Vec<&str> = (0..data.cards.len())
+            .flat_map(|cid| {
+                let card = &data.cards[cid];
+                canonical_printings(data, cid).iter().filter_map(move |p| {
+                    let folded = str_at(&data.strings, u32::from(p.printed_name_folded_id))?;
+                    (folded != folded_name(card, &data.strings)).then_some(folded)
+                })
+            })
+            .collect();
+        if !printed.is_empty() {
+            filter_expr.graft_canonical_printed_exact(&|needle| printed.iter().any(|f| filter::exact_name_matches(f, needle)));
+        }
     }
     filter_expr.bind_with(&data.coll_vocab, &data.coll_vocab_sorted, &data.artist_vocab, &data.artist_vocab_collated, &data.artist_entities, &data.mana_vocab, flavor_index, &data.strings);
     // The second half of binding, split out because `bind` predates the type-line index and is

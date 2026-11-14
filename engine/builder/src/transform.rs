@@ -4371,6 +4371,7 @@ pub fn routing_keys_of_row(row: &Value, out: &mut Vec<String>) {
         text("card_layout"),
         out,
     );
+    printed_name_routing_keys_of(text("printed_name_folded"), text("card_name_folded").unwrap_or(""), canonical, extra, out);
 }
 
 // ─── the routing filter's NAME keys (LOCAL PATCH, Cloudflare port) ───────────────
@@ -4529,6 +4530,44 @@ pub fn name_routing_keys_of(
     }
 }
 
+/// Append one printing's PRINTED-name routing keys (LOCAL PATCH, Cloudflare port, 2026-11-14).
+///
+/// `!"…"` reads a printing's printed name: a foreign one under `lang:`/`include_multilingual`
+/// (`!"Blitzschlag" lang:de` is Lightning Bolt on api.scryfall.com) and a canonical one in every
+/// query (`!"Rhilex the Accursed"` is om1/66, Agent Venom). The list restriction and the lone-name pin
+/// place a `!` name by these keys, and both trust a partition only if EVERY partition where `!"x"`
+/// can match emitted x (card-restriction.ts invariant a) — without them `lang:de (!"Blitzschlag" or
+/// !"Feuerball")` asked Fireball's partition alone and answered 1 card of Scryfall's 2.
+///
+/// The tier says what a key may be trusted for. A canonical, non-extra printing is matched by a
+/// gated search that is NOT widened, so its name is SERVED (`ns:`, invariant b); a canonical extra
+/// writes the extras' whole-name tier (`nw:`); a foreign printing writes the LOWEST extras tier
+/// (`nf:`) — never served, since only a widened query reaches it, where card-restriction.ts trusts a
+/// sole hint and nothing else; and the lowest rival, so `/cards/named?exact=` (which reads no
+/// printed name) still settles on the card that really bears an English name in another partition.
+///
+/// Left out: a printed name its card already answers to (4,468 foreign printings print the English
+/// name), and any the router cannot ask — `nameKey` refuses a non-ASCII needle, so a Japanese or
+/// Russian name would only grow the filter.
+pub fn printed_name_routing_keys_of(
+    printed_name_folded: Option<&str>,
+    card_name_folded: &str,
+    canonical: bool,
+    extra: bool,
+    out: &mut Vec<String>,
+) {
+    let Some(printed) = printed_name_folded.filter(|p| !p.is_empty() && *p != card_name_folded) else { return };
+    if !collate_name(printed).is_ascii() {
+        return;
+    }
+    let tier = match (canonical, extra) {
+        (true, false) => "ns:",
+        (true, true) => "nw:",
+        (false, _) => "nf:",
+    };
+    push_name_keys(printed, tier, tier, out);
+}
+
 /// Whether a routing key is a NAME key — the lines a publisher dedupes before emitting, since one
 /// card's name repeats on every printing of it (126,734 name lines, 44,492 distinct per batch).
 pub fn is_name_routing_key(key: &str) -> bool {
@@ -4622,6 +4661,9 @@ pub struct CorpusPassDraft {
     pub card_name_folded: String,
     #[serde(default)]
     pub flavor_name_folded: Option<String>,
+    /// The printed-name keys' input (printed_name_routing_keys_of).
+    #[serde(default)]
+    pub printed_name_folded: Option<String>,
     /// Only each face's `flavor_name` — the face-level flavor key's input; every other face field
     /// is skipped by the parser rather than built.
     #[serde(default)]
@@ -4693,6 +4735,7 @@ impl CorpusPassDraft {
             self.card_layout.as_deref(),
             out,
         );
+        printed_name_routing_keys_of(self.printed_name_folded.as_deref(), &self.card_name_folded, self.is_canonical, extra, out);
     }
 }
 
@@ -4942,6 +4985,33 @@ mod tests {
     /// deserialized exactly as `scores_add_drafts` deserializes it. A field renamed on one side
     /// would drop that side's keys with no error (`#[serde(default)]`), so this compares them over
     /// every fixture, canonical and not, served and extra.
+    /// A printed name a `!` search can match is keyed where its printing lives, on the tier that says
+    /// which searches reach it — and only when the router could ever ask it.
+    #[test]
+    fn printed_names_write_routing_keys_on_their_tier() {
+        let keys = |printed: Option<&str>, card: &str, canonical: bool, extra: bool| {
+            let mut out = Vec::new();
+            printed_name_routing_keys_of(printed, card, canonical, extra, &mut out);
+            out
+        };
+        // om1/66: a canonical English printing printed under another name — served.
+        assert_eq!(keys(Some("rhilex the accursed"), "agent venom", true, false), vec!["ns:rhilextheaccursed"]);
+        assert_eq!(keys(Some("rhilex the accursed"), "agent venom", true, true), vec!["nw:rhilextheaccursed"]);
+        // A foreign printing: the lowest extras tier, whole and halves.
+        assert_eq!(keys(Some("blitzschlag"), "lightning bolt", false, false), vec!["nf:blitzschlag"]);
+        assert_eq!(
+            keys(Some("geheimnisstoberer // insekten-scheusslichkeit"), "delver of secrets // insectile aberration", false, false),
+            vec!["nf:geheimnisstobererinsektenscheusslichkeit", "nf:geheimnisstoberer", "nf:insektenscheusslichkeit"]
+        );
+        // Nothing for a name its card already has, for a name the router cannot ask, or for none.
+        assert!(keys(Some("shock"), "shock", false, false).is_empty());
+        assert!(keys(Some("稲妻"), "lightning bolt", false, false).is_empty());
+        assert!(keys(None, "lightning bolt", true, false).is_empty());
+        for key in keys(Some("blitzschlag"), "lightning bolt", false, false) {
+            assert!(is_name_routing_key(&key), "{key} must dedupe as a name key");
+        }
+    }
+
     #[test]
     fn both_publishers_emit_the_same_routing_keys() {
         let mut compared = 0;
