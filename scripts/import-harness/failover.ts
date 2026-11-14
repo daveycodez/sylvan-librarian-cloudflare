@@ -61,6 +61,18 @@ const corpus = await buildCorpus(PRINTINGS, corpusDir);
 const server = serveDumps(corpus);
 const { ImportCoordinator } = await import("../../src/import-coordinator");
 const watchdog = await import("../../src/import-watchdog");
+
+/**
+ * The backstop cron with Scryfall's listing unreachable: it starts anyway, which is the coordinator
+ * behaviour these scenarios pin. The listing gate itself is tests/import/bulk-trigger.test.ts's.
+ */
+async function startNightly(env: Parameters<typeof watchdog.startNightlyImport>[0]): Promise<Response> {
+	const started = await watchdog.startNightlyImport(env, Date.now(), () =>
+		Promise.reject(new Error("harness: no listing")),
+	);
+	if (!started) throw new Error("the backstop cron started nothing");
+	return started;
+}
 const { MAX_DAY_ROWS_WRITTEN, MAX_RUN_ROWS_WRITTEN } = await import("../../src/import-budget");
 const { PUBLISHING_KEY } = await import("../../src/engine/store-kv");
 /** The coordinator's day-meter key prefix (import-coordinator.ts DAY_PREFIX). */
@@ -178,7 +190,7 @@ function check(ok: boolean, what: string): void {
 	const ns = namespace(kv, instances);
 	const env = { STORE_KV: kv, IMPORT_COORDINATOR: ns } as unknown as Parameters<typeof watchdog.runImportWatchdog>[0];
 
-	await watchdog.startNightlyImport(env);
+	await startNightly(env);
 	const a = ns.instanceFor(watchdog.LEGACY_COORDINATOR_NAME);
 	await a.drive((phase) => phase === "transform");
 	await a.drive((phase, n) => phase !== "transform" || n >= 2);
@@ -196,7 +208,7 @@ function check(ok: boolean, what: string): void {
 	const published = snapshot(kv);
 
 	// 2026-09-24: a second cron start minutes after the run published began a whole second import.
-	const dup = await watchdog.startNightlyImport(env);
+	const dup = await startNightly(env);
 	const dupBody = (await dup.json()) as { skipped?: string };
 	check(
 		dup.status === 200 && dupBody.skipped === "duplicate-cron" && a.runState() === "done",
@@ -218,7 +230,7 @@ function check(ok: boolean, what: string): void {
 	) as { startedAt?: string };
 	run.startedAt = new Date(Date.now() - 13 * 3_600_000).toISOString();
 	a.storage.db.run("UPDATE __harness_kv SET value = ? WHERE key = 'run'", [JSON.stringify(run)]);
-	const nextDay = await watchdog.startNightlyImport(env);
+	const nextDay = await startNightly(env);
 	check(
 		nextDay.status === 202 && a.runState() === "running" && (await a.storage.getAlarm()) !== null,
 		"a cron start 13 hours after the last run began starts a new run",
@@ -233,7 +245,7 @@ function check(ok: boolean, what: string): void {
 	const ns = namespace(kv, instances);
 	const env = { STORE_KV: kv, IMPORT_COORDINATOR: ns } as unknown as Parameters<typeof watchdog.runImportWatchdog>[0];
 
-	await watchdog.startNightlyImport(env);
+	await startNightly(env);
 	const old = ns.instanceFor(watchdog.LEGACY_COORDINATOR_NAME);
 	await old.drive((phase) => phase === "bucket");
 	await old.drive((phase, n) => phase !== "bucket" || n >= 1); // one bucket slice in, like 11:33:18
@@ -280,7 +292,7 @@ function check(ok: boolean, what: string): void {
 	);
 
 	// A cron start now goes to the replacement — and, its run having just finished, is a duplicate.
-	const nightly = await watchdog.startNightlyImport(env);
+	const nightly = await startNightly(env);
 	const body = (await nightly.json()) as { skipped?: string };
 	check(
 		body.skipped === "duplicate-cron" && fresh.runState() === "done" && (await fresh.storage.getAlarm()) === null,
@@ -311,7 +323,7 @@ function check(ok: boolean, what: string): void {
 	const ns = namespace(kv, instances);
 	const env = { STORE_KV: kv, IMPORT_COORDINATOR: ns } as unknown as Parameters<typeof watchdog.runImportWatchdog>[0];
 
-	await watchdog.startNightlyImport(env);
+	await startNightly(env);
 	const old = ns.instanceFor(watchdog.LEGACY_COORDINATOR_NAME);
 	await old.drive((phase) => phase === "bucket");
 	await old.drive((phase, n) => phase !== "bucket" || n >= 1);
@@ -521,13 +533,13 @@ async function seedTwoGenerations(
 	ns: ReturnType<typeof namespace>,
 	env: Parameters<typeof watchdog.runImportWatchdog>[0],
 ): Promise<{ g1: string; g2: string; a: Instance }> {
-	await watchdog.startNightlyImport(env);
+	await startNightly(env);
 	const a = ns.instanceFor(watchdog.LEGACY_COORDINATOR_NAME);
 	await a.drive();
 	const g1 = String((await manifestOf(kv)).built_at);
 	backdateRun(a);
 	await Bun.sleep(1_100); // built_at is in seconds: the next run's must differ
-	await watchdog.startNightlyImport(env);
+	await startNightly(env);
 	await a.drive();
 	const live = await manifestOf(kv);
 	const g2 = String(live.built_at);
@@ -616,7 +628,7 @@ async function deployPublish(
 	const watch = watchGenerations(kv);
 	const { g1, g2, a: old } = await seedTwoGenerations(kv, ns, env);
 
-	await watchdog.startNightlyImport(env);
+	await startNightly(env);
 	await old.drive((phase) => phase === "publish");
 	await old.drive((_phase, n) => n >= 1); // partition 0's chunk goes up
 	await old.drive((phase) => phase !== "publish"); // partition 0 completes
@@ -681,7 +693,7 @@ async function deployPublish(
 	const watch = watchGenerations(kv);
 	const { g1, g2, a } = await seedTwoGenerations(kv, ns, env);
 
-	await watchdog.startNightlyImport(env);
+	await startNightly(env);
 	await a.drive((phase) => phase === "publish");
 	await a.drive((_phase, n) => n >= 1);
 	const g3 = String(metaOf(a, "built_at"));
@@ -720,7 +732,7 @@ async function deployPublish(
 		PUBLISHING_KEY,
 		retention.encodeUploadLease({ built_at: "999", owner: retention.DEPLOY_LEASE_OWNER, epoch: fence?.at ?? 0 }),
 	);
-	await watchdog.startNightlyImport(env);
+	await startNightly(env);
 	await a.drive((phase) => phase === "routing");
 	const due = Date.now();
 	await a.drive((_phase, n) => n >= 1);
@@ -782,7 +794,7 @@ async function deployPublish(
 			firstKeyGenerations = generations(kv).filter((g) => g !== at);
 		}
 	};
-	await watchdog.startNightlyImport(env);
+	await startNightly(env);
 	await a.drive();
 	const g3 = String((await manifestOf(kv)).built_at);
 	check(
@@ -800,7 +812,7 @@ async function deployPublish(
 	await kv.put(FILLER, "x", { metadata: retention.kvBytesMetadata(retention.KV_GUARD_BYTES) });
 	backdateRun(a);
 	await Bun.sleep(1_100);
-	await watchdog.startNightlyImport(env);
+	await startNightly(env);
 	await a.drive();
 	const refused = String(metaOf(a, "built_at"));
 	check(
@@ -1012,7 +1024,7 @@ for (const variant of ["a", "b"] as const) {
 		if (g2GoneAt < 0 && keysOf(kv, g2).length === 0) g2GoneAt = n;
 		if (newManifestAt < 0 && key === storeKv.formatManifestKey(B) && op === "put") newManifestAt = n;
 	};
-	await watchdog.startNightlyImport(env);
+	await startNightly(env);
 	await a.drive();
 	const g5 = String((await manifestOf(kv)).built_at);
 	await readers.done();
@@ -1072,7 +1084,7 @@ for (const variant of ["a", "b"] as const) {
 		(await kv.get(storeKv.MANIFEST_KEY)) === (await kv.get(storeKv.formatManifestKey(R))),
 		"both keys hold the same manifest, and store:manifest was not rewritten",
 	);
-	await watchdog.startNightlyImport(env);
+	await startNightly(env);
 	await a.drive();
 	const g3 = String((await manifestOf(kv)).built_at);
 	await readers.done();
@@ -1087,10 +1099,56 @@ for (const variant of ["a", "b"] as const) {
 	);
 }
 
+// ── 10. Scryfall's refresh starts the import, once ──────────────────────────────
+{
+	console.log("\n10. the tick starts the import when Scryfall's dumps change — and tries each set of dumps once");
+	const kv = new FakeKV();
+	const instances = new Map<string, Instance>();
+	const ns = namespace(kv, instances);
+	const env = { STORE_KV: kv, IMPORT_COORDINATOR: ns } as unknown as Parameters<typeof watchdog.runImportWatchdog>[0];
+	const kinds = ["all_cards", "default_cards", "oracle_tags", "art_tags", "oracle_cards", "rulings"];
+	const listing = (atMs: number) => async () => ({
+		data: kinds.map((type) => ({ type, updated_at: new Date(atMs).toISOString() })),
+	});
+	const now = Date.now();
+
+	const first = await watchdog.runBulkRefresh(env, now, listing(now - 3_600_000), 200);
+	const a = ns.instanceFor(watchdog.LEGACY_COORDINATOR_NAME);
+	check(first.started && a.runState() === "running", `nothing published yet: the tick starts a run (${first.why})`);
+	const during = await watchdog.runBulkRefresh(env, now, listing(now - 3_600_000), 200);
+	check(!during.started && during.why.includes("in flight"), `a tick during the run starts nothing (${during.why})`);
+	await a.drive();
+	check(a.runState() === "done" && (await manifestOf(kv)).built_at !== undefined, "the run published");
+	const after = await watchdog.runBulkRefresh(env, now, listing(now - 3_600_000), 200);
+	check(!after.started && after.why.includes("has Scryfall's"), `the next tick finds the store current (${after.why})`);
+
+	// Dumps the store does not have, but mid-refresh: all_cards is still yesterday's.
+	const mixed = async () => ({
+		data: kinds.map((type) => ({
+			type,
+			updated_at: new Date(type === "all_cards" ? now - 86_400_000 : now + 60_000).toISOString(),
+		})),
+	});
+	const settling = await watchdog.runBulkRefresh(env, now + 2 * 60_000, mixed, 200);
+	check(!settling.started && settling.why.includes("mid-refresh"), `mid-refresh, it waits (${settling.why})`);
+
+	// A run that ends with the store still behind its dumps — every later tick must leave it be.
+	const future = now + 3_600_000;
+	const second = await watchdog.runBulkRefresh(env, future + 5 * 60_000, listing(future), 200);
+	check(second.started && a.runState() === "running", `the settled refresh starts a run (${second.why})`);
+	await a.drive();
+	const again = await watchdog.runBulkRefresh(env, future + 15 * 60_000, listing(future), 200);
+	check(
+		!again.started && again.why.includes("already tried") && a.runState() === "done",
+		`dumps this coordinator already tried are not re-run by the tick (${again.why})`,
+	);
+	// The backstop cron is the retry: tests/import/watchdog.test.ts pins that it asks the coordinator.
+}
+
 server.stop();
 if (failures.length > 0) {
 	console.error(`\nFAILED: ${failures.length} check(s)`);
 	process.exit(1);
 }
-console.log("\nOK — kick, failover, release, retention by role and the format-bump overlap all hold");
+console.log("\nOK — kick, failover, release, retention by role, the format-bump overlap and the bulk trigger all hold");
 process.exit(0);

@@ -43,6 +43,7 @@
  * still see the old pointer, and an older epoch must never make it retire itself.
  */
 
+import { BULK_REFRESH_REASON, bulkGate, fetchBulkListing } from "./import-bulk-trigger";
 import type { ImportCoordinator } from "./import-coordinator";
 
 /** The KV key naming the coordinator every trigger addresses. Absent means the original one. */
@@ -51,7 +52,11 @@ export const COORDINATOR_POINTER_KEY = "import:coordinator";
 /** The coordinator every deployment used before failover existed. Epoch 0: anything designated later outranks it. */
 export const LEGACY_COORDINATOR_NAME = "singleton";
 
-/** The nightly run's cron (wrangler.jsonc). Any cron that is not the watchdog's starts the nightly. */
+/**
+ * The backstop run's cron (wrangler.jsonc). Any cron that is not the watchdog's is this one. The
+ * import normally starts from the watchdog tick within minutes of Scryfall's refresh
+ * (src/import-bulk-trigger.ts); this one starts it only when the live store is still behind the dumps.
+ */
 export const NIGHTLY_CRON = "17 11 * * *";
 /** The watchdog's cron (wrangler.jsonc). */
 export const WATCHDOG_CRON = "*/10 * * * *";
@@ -246,6 +251,8 @@ export interface WatchdogEnv {
 	/** KV, read for the pointer on every tick; written on a failover and when a suspect mark is set or cleared. */
 	STORE_KV: WatchdogKV;
 	IMPORT_COORDINATOR: DurableObjectNamespace<ImportCoordinator>;
+	/** Test override for Scryfall's listing (the coordinator reads the same variable). */
+	SCRYFALL_BULK_URL?: string;
 }
 
 function coordinatorFor(env: WatchdogEnv, name: string): { fetch(input: string): Promise<Response> } {
@@ -254,8 +261,11 @@ function coordinatorFor(env: WatchdogEnv, name: string): { fetch(input: string):
 	};
 }
 
-function startUrl(reason: string, pointer: CoordinatorPointer): string {
+function startUrl(reason: string, pointer: CoordinatorPointer, bulkMs: number | null = null): string {
 	const params = new URLSearchParams({ reason, name: pointer.name, epoch: String(pointer.epoch) });
+	// The newest dump the trigger saw: the coordinator records it, so a run that failed on these
+	// dumps is not restarted by every tick after it.
+	if (bulkMs !== null) params.set("bulk", String(bulkMs));
 	return `https://coordinator/start-import?${params}`;
 }
 
@@ -273,10 +283,56 @@ async function within<T>(promise: Promise<T>, ms: number): Promise<T | "timeout"
 	}
 }
 
-/** The nightly trigger: start a run on whichever coordinator the pointer names. */
-export async function startNightlyImport(env: WatchdogEnv): Promise<Response> {
+/**
+ * The backstop cron: start a run on whichever coordinator the pointer names — unless the live store
+ * already holds Scryfall's newest dumps (the tick built it last night). When Scryfall or the
+ * manifest cannot be asked it starts anyway, as the nightly always did. Null when it started nothing.
+ */
+export async function startNightlyImport(
+	env: WatchdogEnv,
+	now: number = Date.now(),
+	fetchListing: () => Promise<unknown> = () => fetchBulkListing(env.SCRYFALL_BULK_URL),
+): Promise<Response | null> {
+	const gate = await bulkGate(env.STORE_KV, now, true, fetchListing);
+	if (gate.kind === "skip") {
+		console.log(`Nightly import not needed: ${gate.why}`);
+		return null;
+	}
 	const pointer = await readPointer(env.STORE_KV);
-	return coordinatorFor(env, pointer.name).fetch(startUrl("cron", pointer));
+	console.log(`Nightly import (backstop): ${gate.why}`);
+	return coordinatorFor(env, pointer.name).fetch(startUrl("cron", pointer, gate.bulkMs));
+}
+
+/**
+ * The tick's half of the trigger: start a run as soon as Scryfall's refresh has settled and the
+ * live store is behind it. Run after the watchdog, only when it changed nothing, and never toward a
+ * coordinator marked suspect. Returns why it did or did not start, for the log and the tests.
+ */
+export async function runBulkRefresh(
+	env: WatchdogEnv,
+	now: number = Date.now(),
+	fetchListing: () => Promise<unknown> = () => fetchBulkListing(env.SCRYFALL_BULK_URL),
+	timeoutMs: number = STATUS_TIMEOUT_MS,
+): Promise<{ started: boolean; why: string }> {
+	const pointer = await readPointer(env.STORE_KV);
+	if (pointer.suspectSince !== undefined) return { started: false, why: `${pointer.name} is suspect` };
+	const gate = await bulkGate(env.STORE_KV, now, false, fetchListing);
+	if (gate.kind === "skip") return { started: false, why: gate.why };
+	try {
+		const answer = await within(
+			coordinatorFor(env, pointer.name).fetch(startUrl(BULK_REFRESH_REASON, pointer, gate.bulkMs)),
+			timeoutMs,
+		);
+		if (answer === "timeout") return { started: false, why: `${pointer.name} did not answer the start` };
+		const body = (await answer.json().catch(() => ({}))) as { alreadyRunning?: boolean; skipped?: string };
+		if (body.alreadyRunning) return { started: false, why: "a run is already in flight" };
+		if (body.skipped) return { started: false, why: `the coordinator skipped it: ${body.skipped}` };
+		console.log(`Import started by Scryfall's refresh: ${gate.why}`);
+		return { started: true, why: gate.why };
+	} catch (err) {
+		console.warn(`Bulk trigger: start request to ${pointer.name} failed (${err}); asking again next tick`);
+		return { started: false, why: `start failed: ${err}` };
+	}
 }
 
 /**

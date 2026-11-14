@@ -4,6 +4,8 @@
 // mid-run and a real replacement run publishing, is `bun run harness:failover`.
 
 import { describe, expect, test } from "bun:test";
+import { formatManifestKey } from "../../src/engine/store-kv";
+import { DUMP_KINDS } from "../../src/import-phases";
 import {
 	COORDINATOR_POINTER_KEY,
 	type CoordinatorPointer,
@@ -15,6 +17,7 @@ import {
 	MAX_FAILOVERS_PER_DAY,
 	nextPointer,
 	readPointer,
+	runBulkRefresh,
 	runImportWatchdog,
 	STALL_MS,
 	SUSPECT_CONFIRM_MS,
@@ -341,8 +344,66 @@ describe("runImportWatchdog", () => {
 			[],
 			kv,
 		);
-		await startNightlyImport(envOf(kv, ns));
+		// Scryfall unreachable: the backstop starts anyway, as the nightly always did.
+		await startNightlyImport(envOf(kv, ns), NOW, () => Promise.reject(new Error("offline")));
 		expect(urls).toEqual(["?reason=cron&name=import-e&epoch=1234"]);
+	});
+
+	test("the backstop carries the newest dump's stamp, and skips a store that already has it", async () => {
+		const stamp = "2026-09-22T22:20:00Z";
+		const fresh = async () => ({ data: DUMP_KINDS.map((type) => ({ type, updated_at: stamp })) });
+		const kv = new MapKV();
+		const urls: string[] = [];
+		const ns = namespace(
+			{
+				singleton: async (_p, url) => {
+					urls.push(url.search);
+					return Response.json({ ok: true });
+				},
+			},
+			[],
+			kv,
+		);
+		await startNightlyImport(envOf(kv, ns), NOW, fresh);
+		expect(urls).toEqual([`?reason=cron&name=singleton&epoch=0&bulk=${Date.parse(stamp)}`]);
+
+		await kv.put(formatManifestKey(), JSON.stringify({ built_at: String(Date.parse(stamp) / 1000 + 600) }));
+		expect(await startNightlyImport(envOf(kv, ns), NOW, fresh)).toBeNull();
+		expect(urls.length).toBe(1);
+	});
+
+	test("the tick's trigger asks the pointer's coordinator — and never one marked suspect", async () => {
+		const fresh = async () => ({
+			data: DUMP_KINDS.map((type) => ({ type, updated_at: new Date(NOW - 60 * MIN).toISOString() })),
+		});
+		const kv = new MapKV();
+		const log: string[] = [];
+		const ns = namespace({ singleton: answers({ state: "done" }) }, log, kv);
+		const started = await runBulkRefresh(envOf(kv, ns), NOW, fresh, 20);
+		expect(started.started).toBe(true);
+		expect(log).toEqual(["singleton /start-import"]);
+
+		await suspectLegacy(kv);
+		log.length = 0;
+		const skipped = await runBulkRefresh(envOf(kv, ns), NOW, fresh, 20);
+		expect(skipped).toEqual({ started: false, why: "singleton is suspect" });
+		expect(log).toEqual([]);
+	});
+
+	test("the tick reports the coordinator's own refusals as not started", async () => {
+		const fresh = async () => ({
+			data: DUMP_KINDS.map((type) => ({ type, updated_at: new Date(NOW - 60 * MIN).toISOString() })),
+		});
+		const kv = new MapKV();
+		for (const [body, why] of [
+			[{ alreadyRunning: true }, "in flight"],
+			[{ skipped: "dumps already tried" }, "already tried"],
+		] as const) {
+			const ns = namespace({ singleton: async () => Response.json(body) }, [], kv);
+			const r = await runBulkRefresh(envOf(kv, ns), NOW, fresh, 20);
+			expect(r.started).toBe(false);
+			expect(r.why).toContain(why);
+		}
 	});
 });
 

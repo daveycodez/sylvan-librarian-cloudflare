@@ -176,9 +176,11 @@
 		{ "tag": "v4", "new_sqlite_classes": ["PlacementProbe"] }
 	],
 
-	// The nightly rebuild, after Scryfall's daily bulk-data refresh window, and the import watchdog (src/import-watchdog.ts), which replaces a
-	// coordinator the platform has wedged mid-run. Keep both strings in step with NIGHTLY_CRON and
-	// WATCHDOG_CRON there — scheduled() routes on the exact string.
+	// The import watchdog (src/import-watchdog.ts), which replaces a coordinator the platform has
+	// wedged mid-run and, every tick, starts the store rebuild once Scryfall's daily bulk refresh
+	// (~22:00-22:25 UTC) has settled (src/import-bulk-trigger.ts); and the 11:17 backstop rebuild,
+	// which runs only when the live store is still behind the dumps. Keep both strings in step with
+	// NIGHTLY_CRON and WATCHDOG_CRON there — scheduled() routes on the exact string.
 	"triggers": { "crons": ["17 11 * * *", "*/10 * * * *"] },
 
 

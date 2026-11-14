@@ -263,6 +263,7 @@ import {
 	STAGING_PEAK_BYTES_2026_09_25,
 	stagingBytesOf,
 } from "./import-budget";
+import { BULK_DATA_URL, BULK_REFRESH_REASON, scryfallUserAgent } from "./import-bulk-trigger";
 import {
 	artRepsFrom,
 	beginNight,
@@ -598,8 +599,6 @@ const IS_LISTS_MAX_ATTEMPTS = 2;
 /** How long one request of the refresh, or one KV call around it, may take before it counts as failed. */
 const IS_LISTS_IO_TIMEOUT_MS = 20_000;
 
-/** Overridable for tests and self-hosted mirrors (SCRYFALL_BULK_URL var). */
-const BULK_DATA_URL = "https://api.scryfall.com/bulk-data";
 /**
  * The API root the reference phase mirrors from (SCRYFALL_API_URL var).
  *
@@ -696,12 +695,7 @@ function joinLines(lineBufs: Uint8Array[], lineBytes: number): Uint8Array {
 	return joined;
 }
 
-/** `sylvan-librarian-worker/<YYYYMMDD>` — Scryfall rejects default UAs. */
-function userAgent(): string {
-	const d = new Date();
-	const stamp = `${d.getUTCFullYear()}${String(d.getUTCMonth() + 1).padStart(2, "0")}${String(d.getUTCDate()).padStart(2, "0")}`;
-	return `sylvan-librarian-worker/${stamp}`;
-}
+const userAgent = scryfallUserAgent;
 
 export class ImportCoordinator extends DurableObject<Env> {
 	/** Schema created once per instance — see ensureSchema. */
@@ -1005,10 +999,15 @@ export class ImportCoordinator extends DurableObject<Env> {
 		switch (url.pathname) {
 			case "/start-import": {
 				const epoch = Number(url.searchParams.get("epoch") ?? 0);
-				return this.startImport(url.searchParams.get("reason") ?? "unspecified", {
-					name: url.searchParams.get("name") ?? LEGACY_COORDINATOR_NAME,
-					epoch: Number.isFinite(epoch) && epoch > 0 ? epoch : 0,
-				});
+				const bulk = Number(url.searchParams.get("bulk") ?? Number.NaN);
+				return this.startImport(
+					url.searchParams.get("reason") ?? "unspecified",
+					{
+						name: url.searchParams.get("name") ?? LEGACY_COORDINATOR_NAME,
+						epoch: Number.isFinite(epoch) && epoch > 0 ? epoch : 0,
+					},
+					Number.isFinite(bulk) && bulk > 0 ? bulk : null,
+				);
 			}
 			case "/status":
 				return Response.json(await this.status());
@@ -1195,9 +1194,29 @@ export class ImportCoordinator extends DurableObject<Env> {
 		return (await this.storeGet<RunRecord>("run")) ?? { state: "idle" };
 	}
 
-	private async startImport(reason: string, self: { name: string; epoch: number }): Promise<Response> {
+	private async startImport(
+		reason: string,
+		self: { name: string; epoch: number },
+		/** The newest Scryfall dump the trigger saw (ms), or null when it could not ask. */
+		bulkMs: number | null = null,
+	): Promise<Response> {
 		this.ensureSchema();
 		const run = await this.getRun();
+		// The watchdog tick asks every ten minutes while the live store is behind Scryfall's dumps.
+		// It never restarts a run in flight (the watchdog's kick and failover own a stalled one), and
+		// never re-runs dumps this coordinator already tried: a run that FAILED on them is the
+		// backstop cron's to retry, once a day — not a fresh import every tick until midnight.
+		if (reason === BULK_REFRESH_REASON) {
+			if (run.state === "starting" || run.state === "running") {
+				return Response.json({ ok: true, alreadyRunning: true, run }, { status: 202 });
+			}
+			if (bulkMs !== null && this.triedDumps(bulkMs)) {
+				return Response.json(
+					{ ok: true, skipped: `dumps of ${new Date(bulkMs).toISOString()} already tried (run ${run.state})`, run },
+					{ status: 200 },
+				);
+			}
+		}
 		// A second cron start after today's run finished is a duplicate delivery, not a new day:
 		// 2026-09-24 on the free account, a start with no trace arrived ~4 minutes after the 11:17
 		// run published, and began a whole second import that wedged and cost three failovers.
@@ -1267,12 +1286,24 @@ export class ImportCoordinator extends DurableObject<Env> {
 			this.metaSet("coordinator_epoch", String(self.epoch));
 			// When this run began, for the deploy fence: a deploy that began later retires it.
 			this.metaSet("run_started_ms", String(Date.now()));
+			// Which dumps this run was started for — triedDumps' memory once it has ended.
+			if (bulkMs !== null) this.metaSet("bulk_attempted_ms", String(bulkMs));
 			this.beginPurge("reset");
 		});
 		await this.storePut("run", record);
 		await this.storePut("phase_attempts", 0);
 		await this.armAlarm(Date.now());
 		return Response.json({ ok: true, run: record }, { status: 202 });
+	}
+
+	/**
+	 * Whether the last run here was started for dumps at least as new as `bulkMs`, or read them:
+	 * `bulk_attempted_ms` is what its trigger saw, `source_updated_at` what its listing found.
+	 */
+	private triedDumps(bulkMs: number): boolean {
+		const attempted = Number(this.metaGet("bulk_attempted_ms") ?? Number.NaN);
+		const listed = Date.parse(this.metaGet("source_updated_at") ?? "");
+		return (Number.isFinite(attempted) && attempted >= bulkMs) || (Number.isFinite(listed) && listed >= bulkMs);
 	}
 
 	// ── alarm chain ────────────────────────────────────────────────────────────

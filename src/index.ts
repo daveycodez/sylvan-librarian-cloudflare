@@ -25,7 +25,7 @@ import type { Engine, Env } from "./engine/types";
 import { EngineUnavailableError } from "./engine/types";
 import { manifestPoolShardCap } from "./import-budget";
 import { ImportCoordinator } from "./import-coordinator";
-import { runImportWatchdog, startNightlyImport, WATCHDOG_CRON } from "./import-watchdog";
+import { runBulkRefresh, runImportWatchdog, startNightlyImport, WATCHDOG_CRON } from "./import-watchdog";
 import { checkSearchParamLengths, QueryBudgetExceeded } from "./parser";
 import { resolveAction, routes, SCRYFALL_SURFACE_ROUTES } from "./routes";
 import { adminUnauthorized, isAdminPath } from "./routes/admin";
@@ -441,13 +441,16 @@ export default class SylvanLibrarian extends WorkerEntrypoint<Env> {
 		}
 	}
 
-	// Two crons (wrangler.jsonc triggers.crons). The watchdog's checks the nightly run and replaces
-	// a coordinator the platform has wedged (src/import-watchdog.ts); every other one is the nightly
-	// store rebuild, started on whichever coordinator the watchdog's pointer names. The coordinator
-	// serializes runs; a run already in flight makes the nightly a no-op.
+	// Two crons (wrangler.jsonc triggers.crons). The watchdog's checks the import run and replaces
+	// a coordinator the platform has wedged (src/import-watchdog.ts), then — when it changed nothing —
+	// starts the store rebuild once Scryfall's daily refresh has settled (src/import-bulk-trigger.ts).
+	// The other cron is the backstop rebuild, which runs only if the live store is still behind the
+	// dumps. The coordinator serializes runs; a run already in flight makes either a no-op.
 	override async scheduled(controller: ScheduledController): Promise<void> {
 		if (controller.cron === WATCHDOG_CRON) {
-			this.ctx.waitUntil(runImportWatchdog(this.env));
+			this.ctx.waitUntil(
+				runImportWatchdog(this.env).then((action) => (action.kind === "none" ? runBulkRefresh(this.env) : undefined)),
+			);
 			// c1's one-time colo-era sweep: nothing at all unless RETIRED_ENGINE_SWEEP is set.
 			this.ctx.waitUntil(runRetiredEngineSweep(this.env));
 			return;

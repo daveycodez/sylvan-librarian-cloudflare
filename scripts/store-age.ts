@@ -58,6 +58,7 @@ import {
 	routingFilterKey,
 	STORE_CONTENT_GENERATION,
 } from "../src/engine/store-kv";
+import { type BulkStamps, bulkStamps, judgeStore } from "../src/import-bulk-trigger";
 import { describeNote, type IsListsNote } from "../src/import-is-lists";
 import { kvName } from "./project-config";
 import { readArchiveFormatVersion } from "./wasm-provenance";
@@ -73,14 +74,15 @@ const BULK_DATA_URL = process.env.SCRYFALL_BULK_URL ?? "https://api.scryfall.com
 const DUMP_KINDS = ["all_cards", "default_cards", "oracle_tags", "art_tags"];
 
 /**
- * When Scryfall last regenerated the dumps this store is built from, as unix
- * seconds — or null if upstream could not be asked.
+ * When Scryfall last regenerated the dumps this store is built from — the newest
+ * and the oldest of them, so a refresh still in progress can be told apart from
+ * a finished one — or null if upstream could not be asked.
  *
  * Null deliberately means "unknown", not "unchanged": the caller falls back to
  * the age backstop rather than skipping an import on a guess. A deploy that
  * cannot reach Scryfall is not evidence that Scryfall stood still.
  */
-async function upstreamUpdatedAt(): Promise<number | null> {
+async function upstreamUpdatedAt(): Promise<BulkStamps | null> {
 	try {
 		const res = await fetch(BULK_DATA_URL, {
 			// Scryfall rejects default UAs; mirror the Worker's convention.
@@ -91,16 +93,12 @@ async function upstreamUpdatedAt(): Promise<number | null> {
 			console.error(`store-age: ${BULK_DATA_URL} answered ${res.status} — falling back to the age backstop.`);
 			return null;
 		}
-		const listing = (await res.json()) as { data?: { type?: string; updated_at?: string }[] };
-		const stamps = (listing.data ?? [])
-			.filter((r) => r.type && DUMP_KINDS.includes(r.type))
-			.map((r) => Date.parse(r.updated_at ?? ""))
-			.filter((n) => Number.isFinite(n));
-		if (stamps.length === 0) {
-			console.error("store-age: /bulk-data listed no updated_at for the dumps we read — using the age backstop.");
+		const stamps = bulkStamps(await res.json(), DUMP_KINDS);
+		if (stamps === null) {
+			console.error("store-age: /bulk-data listed no updated_at for some dump we read — using the age backstop.");
 			return null;
 		}
-		return Math.floor(Math.max(...stamps) / 1000);
+		return stamps;
 	} catch (err) {
 		console.error(`store-age: could not reach Scryfall (${err}) — falling back to the age backstop.`);
 		return null;
@@ -393,19 +391,33 @@ if (ageMs > MAX_AGE_HOURS * 3600_000) {
 
 // The real freshness test. Scryfall regenerates its dumps roughly daily; a
 // store built after the newest one already contains everything upstream has.
+//
+// NOT MID-REFRESH. Scryfall regenerates the dumps one after another over ~25 minutes, and a build
+// in that window mixes days: the 2026-11-13 22:12 UTC push rebuilt with that night's default_cards
+// and the PREVIOUS night's all_cards (replaced at 22:22), so Nauctis — added at 14:22 — stayed
+// missing through a rebuild. A store that is behind a refresh still in progress is kept (exit 0):
+// the Worker's own trigger (src/import-bulk-trigger.ts) rebuilds within ten minutes of it settling.
+// Only this check defers; a format, generation or feature mismatch above still forces the build.
 const upstream = await upstreamUpdatedAt();
-if (upstream !== null && builtAt < upstream) {
-	console.error(
-		`store-age: Scryfall refreshed its dumps ${ago(Date.now() - upstream * 1000)} ` +
-			`(${new Date(upstream * 1000).toISOString()}), after this store was built — rebuilding.`,
-	);
-	process.exit(1);
-}
 if (upstream !== null) {
-	console.error(
-		`store-age: Scryfall's newest dump is from ${new Date(upstream * 1000).toISOString()}, ` +
-			"already in the live store — no rebuild needed.",
-	);
+	const verdict = judgeStore(upstream, builtAt * 1000, Date.now());
+	if (verdict.kind === "stale") {
+		console.error(
+			`store-age: Scryfall refreshed its dumps ${ago(Date.now() - upstream.newestMs)} ` +
+				`(${new Date(upstream.newestMs).toISOString()}), after this store was built — rebuilding.`,
+		);
+		process.exit(1);
+	}
+	if (verdict.kind === "settling") {
+		console.error(
+			`store-age: ${verdict.why}. Keeping the live store; the Worker's bulk trigger rebuilds once the refresh settles.`,
+		);
+	} else {
+		console.error(
+			`store-age: Scryfall's newest dump is from ${new Date(upstream.newestMs).toISOString()}, ` +
+				"already in the live store — no rebuild needed.",
+		);
+	}
 }
 
 // The other date a store has: the `is:` lists it was tagged from (the eight that are Scryfall's own
