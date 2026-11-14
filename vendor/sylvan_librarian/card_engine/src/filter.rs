@@ -3872,7 +3872,7 @@ impl FilterExpr {
     }
 
     /// A language every match MUST carry, when the filter pins one: a `LangMatch` that is the
-    /// whole filter or a direct conjunct of a top-level `And`. Conjuncts only — under `Or` or
+    /// whole filter or a conjunct of a top-level `And`, at any depth of nested `And`s. Conjuncts only — under `Or` or
     /// `Not` a language constrains nothing on its own, and several conjuncts can only tighten,
     /// so answering with the FIRST is a sound (superset) narrowing either way. `lang:any`
     /// requires nothing.
@@ -3883,8 +3883,13 @@ impl FilterExpr {
                 _ => None,
             }
         }
+        // THROUGH NESTED Ands (LOCAL PATCH, Cloudflare port): the router sends `AND(<the user's
+        // tree>, NOT is:extra, NOT is:variation)`, so `lang:ja t:goblin` arrives with its language
+        // one And down — where a direct-conjunct test never saw it, every `lang:` search verified
+        // the whole corpus instead of the language's cards, and `graft_printed_text` read `Rhilex
+        // lang:en` as unpinned. A conjunct of a conjunct still constrains every match.
         match self {
-            FilterExpr::And(children) => children.iter().find_map(leaf),
+            FilterExpr::And(children) => children.iter().find_map(FilterExpr::required_lang_value),
             other => leaf(other),
         }
     }
@@ -5472,6 +5477,15 @@ fn printed_lower(
     if top.is_none() && !p.printed_faces.iter().any(|f| face_id(f) != super::NONE_STR) {
         return false;
     }
+    // THE TYPE LINE IS THE FRONT FACE'S: on api.scryfall.com 2026-11-14 `!"Delver of Secrets"
+    // t:Kreatur lang:de` is 1 and `t:Insekt` (the back face's "Kreatur — Mensch, Insekt") 404, and
+    // `t:gobelin lang:fr` leaves out Fable of the Mirror-Breaker and Invasion of Mercadia, whose
+    // goblins are their back faces — while the back face's NAME and TEXT do answer
+    // (`name:Insekten`, `o:fliegend`).
+    let faces = match field {
+        PrintedField::TypeLine => &p.printed_faces[..p.printed_faces.len().min(1)],
+        PrintedField::Name | PrintedField::Text => &p.printed_faces[..],
+    };
     PRINTED_BUF.with(|buf| {
         let mut buf = buf.borrow_mut();
         buf.clear();
@@ -5483,7 +5497,7 @@ fn printed_lower(
         match top {
             Some(s) => push(s),
             None => {
-                for (i, f) in p.printed_faces.iter().enumerate() {
+                for (i, f) in faces.iter().enumerate() {
                     if i > 0 {
                         push(sep);
                     }

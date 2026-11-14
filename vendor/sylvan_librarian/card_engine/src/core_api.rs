@@ -5471,7 +5471,10 @@ mod tests {
         assert_eq!(printed_rows(&store, &and_of(vec![word(), lang_filter("fr")]), false).0, 0);
         assert_eq!(printed_rows(&store, &and_of(vec![word(), lang_filter("any")]), false).0, 1);
         // `lang:en` keeps a contains term English: `Rhilex lang:en` is 404 where `lang:any` is om1/66.
+        // Also one And down, the shape the router sends (the user's tree beside its gates).
         assert_eq!(printed_rows(&store, &and_of(vec![word(), lang_filter("en")]), false).0, 0);
+        let nested_en = and_of(vec![and_of(vec![word(), lang_filter("en")]), not_of(term("card_name", "name", value("CollatedNameValueNode", "zzz")))]);
+        assert_eq!(printed_rows(&store, &nested_en, false).0, 0, "lang:en one And down");
         // Negated, the printing that prints it leaves: the English and Japanese rows stay.
         let (total, rows) = printed_rows(&store, &and_of(vec![not_of(word()), lang_filter("any"), term("card_name", "name", value("CollatedNameValueNode", "bolt"))]), false);
         assert_eq!(total, 2);
@@ -5521,6 +5524,35 @@ mod tests {
         assert_eq!(printed_rows(&store, &de(o("3 schadenspunkte zu")), false).0, 1);
         assert_eq!(printed_rows(&store, &de(not_of(o("schadenspunkte"))), false).0, 0);
         assert_eq!(printed_rows(&store, &o("schadenspunkte"), true).0, 1, "include_multilingual");
+    }
+
+    /// A transform printing's printed TYPE LINE is its front face's — `t:Insekt lang:de` misses
+    /// Delver of Secrets on api.scryfall.com, whose German back face is "Kreatur — Mensch, Insekt" —
+    /// while its back face's printed name and text answer (`name:Insekten`, `o:fliegend`).
+    #[test]
+    fn a_printed_type_line_reads_the_front_face_only() {
+        let face = |name: &str, type_line: &str| json!({ "name": name, "type_line": type_line, "oracle_text": "x", "colors": ["U"] });
+        let printed = |name: &str, type_line: &str, text: &str| json!({ "printed_name": name, "printed_type_line": type_line, "printed_text": text });
+        let mut en = annex_row("Delver of Secrets // Insectile Aberration", "oracle-delver", "delver-en", "en", 200.0);
+        en["card_layout"] = json!("transform");
+        en["card_faces"] = json!([face("Delver of Secrets", "Creature — Human Wizard"), face("Insectile Aberration", "Creature — Human Insect")]);
+        let mut de = en.clone();
+        de["scryfall_id"] = json!("delver-de");
+        de["card_compat_blob"] = json!({ "lang": "de" });
+        de["is_canonical"] = json!(false);
+        de["prefer_score"] = json!(100.0);
+        de["printed_name_folded"] = json!("geheimnisstoberer // insekten-scheusslichkeit");
+        de["card_faces"][0].as_object_mut().unwrap().extend(printed("Geheimnisstöberer", "Kreatur — Mensch, Zauberer", "Schaue dir die oberste Karte an.").as_object().unwrap().clone());
+        de["card_faces"][1].as_object_mut().unwrap().extend(printed("Insekten-Scheußlichkeit", "Kreatur — Mensch, Insekt", "Fliegend").as_object().unwrap().clone());
+        let store = build_store(&[en, de]).1;
+        let de_q = |leaf: Value| and_of(vec![leaf, lang_filter("de")]);
+        let t = |v: &str| term("card_subtypes", "t", json!([v]));
+        assert_eq!(printed_rows(&store, &de_q(t("Zauberer")), false).0, 1, "the front face's type line");
+        assert_eq!(printed_rows(&store, &de_q(t("Kreatur — Mensch, Insekt")), false).0, 0, "not the back face's");
+        let o = |v: &str| term("oracle_text", "o", value("StringValueNode", v));
+        assert_eq!(printed_rows(&store, &de_q(o("fliegend")), false).0, 1, "the back face's text");
+        let name = term("card_name", "name", value("CollatedNameValueNode", "Insekten"));
+        assert_eq!(printed_rows(&store, &de_q(name), false).0, 1, "the back face's name");
     }
 
     /// An `oracleid:<uuid>` filter-tree leaf, the shape the parser emits for `oracle_id`.
