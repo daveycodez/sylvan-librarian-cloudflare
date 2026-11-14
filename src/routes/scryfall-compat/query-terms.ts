@@ -1232,55 +1232,46 @@ const SCRYFALL_FORMATS: ReadonlySet<string> = new Set([
 ]);
 
 /**
- * `lang:`/`language:` — every spelling measured as honored, plus `any`.
+ * `lang:`/`language:` — every spelling measured as honored, plus `any`, each to the code the store
+ * carries in `lang` (and `in:` reads), which is what the term is respelled to.
  *
  * Scryfall is generous here (`zh`, `jp`, `sp`, `kr`, `cn`, `tw`, `cs`, `ru-ru`, `pt-br` and the
  * full English names all resolve) and still rejects `zz`, `po` and the ambiguous `chinese`. The
- * set is the measured boundary; a spelling missing from it is ignored-and-warned, which is what
+ * map is the measured boundary; a spelling missing from it is ignored-and-warned, which is what
  * this port did to `lang:zz` and is no worse than the empty 404 it used to answer for all of them.
+ *
+ * RESPELLED, because the engine compares the code: until 2026-11-14 every spelling here was
+ * honored without a warning and then matched nothing, since no printing's `lang` is `jp`. Measured
+ * on api.scryfall.com that day with `t:goblin c:r` (zhs 362, zht 229, ja 447, de 442, ko 147):
+ * `lang:jp`/`japanese` 447, `german` 442, `kr`/`korean` 147, `cs`/`zh`/`cn`/`chinesesimplified`/
+ * `"simplified chinese"` 362, `tw`/`chinesetraditional`/`"traditional chinese"` 229, `ru-ru` 222,
+ * `pt-br` 372; and `quenya`, `"ancient greek"`, `hebrew`, `latin`, `greek`, `arabic`, `sanskrit`
+ * and `phyrexian` each answer without a warning (`lang:quenya` alone is Sol Ring and The One Ring,
+ * `lang:"ancient greek"` the three grc cards).
  */
-const SCRYFALL_LANGUAGES: ReadonlySet<string> = new Set([
-	"any",
-	"en",
-	"es",
-	"fr",
-	"de",
-	"it",
-	"pt",
-	"ja",
-	"ko",
-	"ru",
-	"zhs",
-	"zht",
-	"he",
-	"la",
-	"grc",
-	"ar",
-	"sa",
-	"ph",
-	"qya",
-	"cs",
-	"zh",
-	"jp",
-	"sp",
-	"kr",
-	"cn",
-	"tw",
-	"ru-ru",
-	"pt-br",
-	"english",
-	"spanish",
-	"french",
-	"german",
-	"italian",
-	"portuguese",
-	"japanese",
-	"korean",
-	"russian",
-	"phyrexian",
-	"chinesesimplified",
-	"chinesetraditional",
-]);
+const SCRYFALL_LANGUAGES: ReadonlyMap<string, string> = new Map(
+	Object.entries({
+		any: ["any"],
+		en: ["en", "english"],
+		es: ["es", "sp", "spanish"],
+		fr: ["fr", "french"],
+		de: ["de", "german"],
+		it: ["it", "italian"],
+		pt: ["pt", "pt-br", "portuguese"],
+		ja: ["ja", "jp", "japanese"],
+		ko: ["ko", "kr", "korean"],
+		ru: ["ru", "ru-ru", "russian"],
+		zhs: ["zhs", "cs", "zh", "cn", "chinesesimplified", "simplified chinese"],
+		zht: ["zht", "ct", "tw", "chinesetraditional", "traditional chinese"],
+		he: ["he", "hebrew"],
+		la: ["la", "latin"],
+		grc: ["grc", "greek", "ancient greek"],
+		ar: ["ar", "arabic"],
+		sa: ["sa", "sanskrit"],
+		ph: ["ph", "phyrexian"],
+		qya: ["qya", "quenya"],
+	}).flatMap(([code, spellings]) => spellings.map((spelling): [string, string] => [spelling, code])),
+);
 
 /** `r:`/`rarity:` — Scryfall's rarity words and their single-letter forms. */
 const SCRYFALL_RARITIES: ReadonlySet<string> = new Set([
@@ -4427,8 +4418,10 @@ function classifyLeaf(term: string, context: TermPolicyContext = {}): LeafVerdic
 	if (FORMAT_KEYWORDS.has(keyword) && !SCRYFALL_FORMATS.has(loweredValue)) {
 		return { keep: false, reason: `Unknown game format \u201c${loweredValue}\u201d` };
 	}
-	if (LANGUAGE_KEYWORDS.has(keyword) && !SCRYFALL_LANGUAGES.has(loweredValue)) {
-		return { keep: false, reason: `Unknown language \`${loweredValue}\`` };
+	if (LANGUAGE_KEYWORDS.has(keyword)) {
+		const code = SCRYFALL_LANGUAGES.get(loweredValue);
+		if (code === undefined) return { keep: false, reason: `Unknown language \`${loweredValue}\`` };
+		if (code !== loweredValue) return { keep: true, text: `${match[1]}${match[2]}${op}${code}` };
 	}
 	// `st:` and `frame:` read a closed vocabulary — see SCRYFALL_SET_TYPES and SCRYFALL_FRAMES. A
 	// value outside it is ignored with its own sentence; one inside it under another spelling is
@@ -4525,6 +4518,13 @@ function classifyLeaf(term: string, context: TermPolicyContext = {}): LeafVerdic
 	// `in:zendikar`, `in:"the list"`, `in:dar`: the set's code, as above — see IN_KEYWORDS. Equality
 	// only reaches here; a value that names no set is left to be the word it is.
 	if (IN_KEYWORDS.has(keyword) && !isRegexLiteral(rawValue)) {
+		// A LANGUAGE is named as `lang:` names one: `in:jp`, `in:japanese` and `in:ja` are each 81
+		// for `t:goblin c:r cmc=1` on api.scryfall.com (2026-11-14), `in:cs`/`cn`/`zh` `in:zhs`'s 66,
+		// `in:tw` 45, `in:german` 79 — where the engine, comparing the code, answered 404.
+		const language = SCRYFALL_LANGUAGES.get(loweredValue);
+		if (language !== undefined && language !== "any" && language !== loweredValue) {
+			return { keep: true, text: `${match[1]}${match[2]}${op}${language}` };
+		}
 		const code = setNameCode(value);
 		if (code !== null) return { keep: true, text: `${match[1]}${match[2]}${op}${code}` };
 	}

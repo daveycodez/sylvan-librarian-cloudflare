@@ -767,6 +767,33 @@ describe("values a known keyword cannot take", () => {
 		}
 	});
 
+	test("a language's other spellings are respelled to the code the store carries — lang: and in:", () => {
+		// Measured 2026-11-14: each answers its code's count on api.scryfall.com; the engine
+		// compares the code, so the spelling alone matched nothing here.
+		const cases: [string, string][] = [
+			["lang:jp t:goblin", "lang:ja t:goblin"],
+			["lang:Japanese t:goblin", "lang:ja t:goblin"],
+			["language:german", "language:de"],
+			["lang:cs", "lang:zhs"],
+			["lang:tw", "lang:zht"],
+			['lang:"simplified chinese"', "lang:zhs"],
+			['lang:"ancient greek"', "lang:grc"],
+			["lang:quenya", "lang:qya"],
+			["lang:pt-br", "lang:pt"],
+			["-lang:kr t:goblin", "-lang:ko t:goblin"],
+			["in:jp t:goblin", "in:ja t:goblin"],
+			["in:korean", "in:ko"],
+			["-in:cn", "-in:zhs"],
+		];
+		for (const [query, expected] of cases) {
+			const result = scryfallTermPolicy(query);
+			expect(result.warnings).toEqual([]);
+			expect(result.query).toBe(expected);
+		}
+		// The codes themselves, and `any`, are left as typed.
+		for (const query of ["lang:ja", "lang:any", "in:ja", "in:any"]) expect(scryfallTermPolicy(query).query).toBe(query);
+	});
+
 	test("rarity — the full stop is INSIDE the quotes, which is Scryfall's", () => {
 		expect(scryfallTermPolicy("r:notarare e:khm").warnings).toEqual([
 			"Invalid expression \u201cr:notarare\u201d was ignored. Unknown rarity \u201cnotarare.\u201d",

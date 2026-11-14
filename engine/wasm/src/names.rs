@@ -201,13 +201,20 @@ pub fn autocomplete(names: &NameList, prefix: &str, limit: usize, include_extras
 ///
 /// EXACT, not merely a superset, for every canonical row space (see `NameQuery::card_matches`): the
 /// partitions named are exactly those whose gather would return a row, so an empty answer IS the
-/// search's 404. With `include_multilingual` the class read is every printing, a superset.
+/// search's 404. With `include_multilingual` it is None: the engines read printed names there.
 pub fn search_partitions(
     names: &NameList,
     query: &NameQuery,
     multilingual: bool,
 ) -> Option<Result<Vec<u16>, card_engine::EngineError>> {
     if names.format() < 2 {
+        return None;
+    }
+    // A MULTILINGUAL name search also reads every printing's printed name (card_engine
+    // `graft_printed_text`), which the names blob does not carry: `Blitzschlag&include_multilingual=true`
+    // is Lightning Bolt on api.scryfall.com, and a scan of English names alone named no partition —
+    // the search's 404 before any engine ran. Every partition answers it instead.
+    if multilingual {
         return None;
     }
     let bit = query.class_bit(multilingual);
@@ -1033,7 +1040,8 @@ mod tests {
 
     /// THE SEARCH DIFFERENTIAL: for every name-only tree, every gate combination and both row
     /// spaces, the partitions the index names are EXACTLY the partitions whose own query returns a
-    /// row (a superset under include_multilingual) — at partition counts 1, 3 and 7.
+    /// row — at partition counts 1, 3 and 7. Under include_multilingual it names none (None: ask
+    /// every partition), since the engines read printed names there.
     #[test]
     fn the_index_names_exactly_the_partitions_a_name_search_answers_from() {
         let rows = index_corpus();
@@ -1048,14 +1056,16 @@ mod tests {
                     for multilingual in [false, true] {
                         let tree = gated(&tree, extra, variation);
                         let query = card_engine::NameQuery::of(&tree).expect("a name-only tree");
-                        let got = search_partitions(&names, &query, multilingual).expect("format 2").expect("no budget");
                         let opts = card_engine::QueryOptions { include_multilingual: multilingual, ..Default::default() };
                         let truth: Vec<u16> = (0..k as u16)
                             .filter(|&p| parts[p as usize].0.query_value(&tree, &opts).expect("query").total > 0)
                             .collect();
                         if multilingual {
-                            assert!(truth.iter().all(|p| got.contains(p)), "k={k} {tree} ml: {got:?} misses {truth:?}");
+                            // A multilingual name search reads printed names the blob does not
+                            // carry: the router declines and every partition answers.
+                            assert!(search_partitions(&names, &query, multilingual).is_none(), "k={k} {tree} ml");
                         } else {
+                            let got = search_partitions(&names, &query, multilingual).expect("format 2").expect("no budget");
                             assert_eq!(got, truth, "k={k} extra={extra} variation={variation} {tree}");
                         }
                         checked += 1;

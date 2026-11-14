@@ -127,6 +127,8 @@ pub(crate) fn has_printing_varying_leaf(f: &FilterExpr) -> bool {
         // ...and so are the printed name (Printing.printed_name_folded_id) and the flavor name
         // (Printing.flavor_name_id, or a PrintingFace's).
         FilterExpr::PrintedNamePresent | FilterExpr::FlavorNameIn { .. } | FilterExpr::FlavorNamePresent => true,
+        // ...and its printed-language text (multilingual queries only; see graft_printed_text).
+        FilterExpr::PrintedTextMatch(_) => true,
         // ...and `lore:`'s printing half: the flavor text, the flavor name, the faces of its own.
         FilterExpr::LorePrinting { .. } | FilterExpr::PrintsOwnFaces | FilterExpr::PrintsOwnIn { .. } | FilterExpr::FaceStatCmpFalse { .. } => true,
         // ...and the cheapest codes, and the `new:rarity` bit.
@@ -525,6 +527,8 @@ fn estimate_leaf(f: &FilterExpr, indexes: &Archived<CardIndexes>, n_cards: u32, 
         // keyed by NAME, so presence is a field read on the printing (and its faces), and it
         // widens like `is:localizedname` does.
         FilterExpr::PrintedNamePresent
+        // A printed-text read has no index either, and is grafted only in a widened query.
+        | FilterExpr::PrintedTextMatch(_)
         | FilterExpr::FlavorNamePresent
         | FilterExpr::SingleSet
         | FilterExpr::VanillaFace

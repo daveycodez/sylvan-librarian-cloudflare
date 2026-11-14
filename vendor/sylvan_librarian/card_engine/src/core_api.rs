@@ -5393,6 +5393,136 @@ mod tests {
         assert_eq!(out.total, 0);
     }
 
+    // ─── Printed text in a multilingual query (LOCAL PATCH, Cloudflare port) ─────────────────
+
+    /// Lightning Bolt in English, German and Japanese; Advance Scout in English and French. The
+    /// foreign rows carry printed names, a printed type line and printed text, as Scryfall's do.
+    fn printed_text_store() -> BufferStore {
+        let mut bolt_de = annex_row("Lightning Bolt", "oracle-bolt", "bolt-de", "de", 100.0);
+        bolt_de["is_canonical"] = json!(false);
+        bolt_de["printed_name"] = json!("Blitzschlag");
+        bolt_de["printed_name_folded"] = json!("blitzschlag");
+        bolt_de["printed_type_line"] = json!("Spontanzauber");
+        bolt_de["printed_text"] = json!("Blitzschlag fügt einem Ziel deiner Wahl 3 Schadenspunkte zu.");
+        let mut bolt_ja = annex_row("Lightning Bolt", "oracle-bolt", "bolt-ja", "ja", 90.0);
+        bolt_ja["is_canonical"] = json!(false);
+        bolt_ja["printed_name"] = json!("稲妻");
+        bolt_ja["printed_name_folded"] = json!("稲妻");
+        let mut scout_fr = annex_row("Advance Scout", "oracle-scout", "scout-fr", "fr", 100.0);
+        scout_fr["is_canonical"] = json!(false);
+        scout_fr["printed_name"] = json!("Éclaireur avancé");
+        scout_fr["printed_name_folded"] = json!("eclaireur avance");
+        scout_fr["printed_type_line"] = json!("Créature : humain et soldat");
+        build_store(&[
+            annex_row("Lightning Bolt", "oracle-bolt", "bolt-en", "en", 200.0),
+            bolt_de,
+            bolt_ja,
+            annex_row("Advance Scout", "oracle-scout", "scout-en", "en", 200.0),
+            scout_fr,
+        ])
+        .1
+    }
+
+    /// `<attr>:<value>` with the rhs node the parser writes for it.
+    fn term(attr: &str, original: &str, rhs: Value) -> Value {
+        json!({
+            "node_type": "CardBinaryOperatorNode",
+            "kwargs": {
+                "lhs": { "node_type": "CardAttributeNode", "kwargs": { "attribute_name": attr, "original_attribute": original } },
+                "op": ":",
+                "rhs": rhs,
+            }
+        })
+    }
+    fn value(node: &str, v: &str) -> Value {
+        json!({ "node_type": node, "kwargs": { "value": v } })
+    }
+    fn and_of(operands: Vec<Value>) -> Value {
+        json!({ "node_type": "AndNode", "kwargs": { "operands": operands } })
+    }
+    fn not_of(operand: Value) -> Value {
+        json!({ "node_type": "NotNode", "kwargs": { "operand": operand } })
+    }
+
+    /// (total, [(name, lang)]) of a `unique=prints` query.
+    fn printed_rows(store: &BufferStore, tree: &Value, multilingual: bool) -> (usize, Vec<(String, String)>) {
+        let mut opts = opts_with("printing", multilingual);
+        opts.fields = Some(vec!["name".to_owned(), "lang".to_owned()]);
+        let out = store.query_value(tree, &opts).expect("query");
+        let rows = out
+            .rows
+            .iter()
+            .map(|r| (r["name"].as_str().unwrap_or("").to_owned(), r["lang"].as_str().unwrap_or("").to_owned()))
+            .collect();
+        (out.total, rows)
+    }
+
+    /// A bare word reads the printed name under `lang:`/`include_multilingual`, and only there —
+    /// `Blitzschlag lang:de` is Lightning Bolt on api.scryfall.com, bare `Blitzschlag` is 404, and a
+    /// language whose printing does not print the word matches nothing.
+    #[test]
+    fn a_multilingual_name_word_reads_the_printed_name() {
+        let store = printed_text_store();
+        let word = || term("card_name", "name", value("CollatedNameValueNode", "Blitzschlag"));
+        let bolt_de = vec![("Lightning Bolt".to_owned(), "de".to_owned())];
+        assert_eq!(printed_rows(&store, &and_of(vec![word(), lang_filter("de")]), false), (1, bolt_de.clone()));
+        assert_eq!(printed_rows(&store, &word(), false).0, 0, "bare: the English rows print no such name");
+        assert_eq!(printed_rows(&store, &word(), true), (1, bolt_de), "include_multilingual");
+        assert_eq!(printed_rows(&store, &and_of(vec![word(), lang_filter("fr")]), false).0, 0);
+        assert_eq!(printed_rows(&store, &and_of(vec![word(), lang_filter("any")]), false).0, 1);
+        // `lang:en` keeps a contains term English: `Rhilex lang:en` is 404 where `lang:any` is om1/66.
+        assert_eq!(printed_rows(&store, &and_of(vec![word(), lang_filter("en")]), false).0, 0);
+        // Negated, the printing that prints it leaves: the English and Japanese rows stay.
+        let (total, rows) = printed_rows(&store, &and_of(vec![not_of(word()), lang_filter("any"), term("card_name", "name", value("CollatedNameValueNode", "bolt"))]), false);
+        assert_eq!(total, 2);
+        assert!(rows.iter().all(|(_, lang)| lang != "de"), "{rows:?}");
+        // The English name still answers beside it, in the same language.
+        let english = term("card_name", "name", value("CollatedNameValueNode", "lightning"));
+        assert_eq!(printed_rows(&store, &and_of(vec![english, lang_filter("de")]), false).0, 1);
+        // CJK, collated like any other word.
+        let ja = term("card_name", "name", value("CollatedNameValueNode", "稲妻"));
+        assert_eq!(printed_rows(&store, &and_of(vec![ja, lang_filter("ja")]), false).1, vec![("Lightning Bolt".to_owned(), "ja".to_owned())]);
+    }
+
+    /// The other name forms keep their English rules on the printed name: the quoted literal and
+    /// the regex keep accents (`name:"éclaireur"` 30, `name:"eclaireur"` 8 under `lang:fr`), a bare
+    /// word folds them (38), and `!"…"` folds and collates (`!"Eclaireur avance"` is Advance Scout).
+    #[test]
+    fn printed_names_keep_each_name_forms_folding() {
+        let store = printed_text_store();
+        let fr = |leaf: Value| and_of(vec![leaf, lang_filter("fr")]);
+        let quoted = |v: &str| term("card_name", "name", value("StringValueNode", v));
+        assert_eq!(printed_rows(&store, &fr(quoted("Éclaireur")), false).0, 1);
+        assert_eq!(printed_rows(&store, &fr(quoted("Eclaireur")), false).0, 0, "a quoted literal keeps its accents");
+        assert_eq!(printed_rows(&store, &fr(term("card_name", "name", value("CollatedNameValueNode", "Eclair"))), false).0, 1);
+        assert_eq!(printed_rows(&store, &fr(term("card_name", "name", value("RegexValueNode", "^éclaireur"))), false).0, 1);
+        assert_eq!(printed_rows(&store, &fr(term("card_name", "name", value("RegexValueNode", "^eclaireur"))), false).0, 0);
+        let exact = |v: &str| json!({ "node_type": "ExactNameNode", "kwargs": { "value": v } });
+        assert_eq!(printed_rows(&store, &fr(exact("eclaireuravance")), false).0, 1);
+        assert_eq!(printed_rows(&store, &fr(exact("eclaireur")), false).0, 0, "exact means the whole name");
+        assert_eq!(printed_rows(&store, &exact("eclaireuravance"), false).0, 0, "no language: English rows only");
+    }
+
+    /// `t:` and `o:` read the printed type line and rules text the same way: `t:Kreatur lang:de`
+    /// is 14,573 on api.scryfall.com, `o:schaden lang:de t:goblin` 152.
+    #[test]
+    fn multilingual_type_and_text_terms_read_the_printed_text() {
+        let store = printed_text_store();
+        let de = |leaf: Value| and_of(vec![leaf, lang_filter("de")]);
+        let t = |v: &str| term("card_subtypes", "t", json!([v]));
+        assert_eq!(printed_rows(&store, &de(t("Spontanzauber")), false).0, 1);
+        assert_eq!(printed_rows(&store, &de(t("instant")), false).0, 1, "the English type line still answers");
+        assert_eq!(printed_rows(&store, &t("Spontanzauber"), false).0, 0, "bare: English rows only");
+        assert_eq!(printed_rows(&store, &and_of(vec![t("soldat"), lang_filter("fr")]), false).0, 1);
+        let t_re = term("card_types", "t", value("RegexValueNode", "^spontan"));
+        assert_eq!(printed_rows(&store, &de(t_re), false).0, 1);
+        let o = |v: &str| term("oracle_text", "o", value("StringValueNode", v));
+        assert_eq!(printed_rows(&store, &de(o("schadenspunkte")), false).0, 1);
+        assert_eq!(printed_rows(&store, &de(o("3 schadenspunkte zu")), false).0, 1);
+        assert_eq!(printed_rows(&store, &de(not_of(o("schadenspunkte"))), false).0, 0);
+        assert_eq!(printed_rows(&store, &o("schadenspunkte"), true).0, 1, "include_multilingual");
+    }
+
     /// An `oracleid:<uuid>` filter-tree leaf, the shape the parser emits for `oracle_id`.
     fn oracle_id_filter(value: &str) -> Value {
         json!({

@@ -1756,6 +1756,13 @@ pub(crate) enum FilterExpr {
     /// Its presence WIDENS the query — see `widens_to_annex`, and the count that proves it.
     PrintedNamePresent,
 
+    /// LOCAL PATCH (Cloudflare port): a name, `t:` or `o:` term read against the PRINTING's own
+    /// printed-language text — its `printed_name`, `printed_type_line` or `printed_text` — beside
+    /// the card's English one. Grafted by [`FilterExpr::graft_printed_text`] in a multilingual
+    /// query only; see there for the measurements and the scope. Two-valued: a printing that
+    /// prints no such text answers False, so `-Blitzschlag lang:de` keeps it.
+    PrintedTextMatch(PrintedPred),
+
     /// `is:flavorname` — and `has:flavorname` — a PRINTING that carries a flavor name, Scryfall's
     /// alternate SOLD-AS name (the Godzilla series, the Secret Lair crossovers). The presence twin
     /// of `FlavorNameIn`: that leaf asks whether the flavor name satisfies a `name:` needle, this
@@ -2272,6 +2279,14 @@ pub(crate) fn verify_cost_tier(f: &FilterExpr) -> u32 {
         // Unbound only (see tri()): a lowercasing scan of the type line, the same tier as any
         // other per-card text scan.
         FilterExpr::TypeLineContains { .. } | FilterExpr::TextContains { .. } => TEXT_SCAN_NS100,
+        // A printed-text read: a scan of one string on the printing, or a regex over it.
+        FilterExpr::PrintedTextMatch(
+            PrintedPred::NameRegex(regex) | PrintedPred::TypeRegex(regex) | PrintedPred::TextRegex(regex),
+        ) if regex.is_backtracking() => REGEX_BACKTRACK_NS100,
+        FilterExpr::PrintedTextMatch(
+            PrintedPred::NameRegex(regex) | PrintedPred::TypeRegex(regex) | PrintedPred::TextRegex(regex),
+        ) => regex_tier(regex.as_str()),
+        FilterExpr::PrintedTextMatch(_) => TEXT_SCAN_NS100,
         // Two bits of a field already on the printing, and a price compare when the plain price
         // is the cheapest.
         FilterExpr::Cheapest { .. } => MASK_COMPARE_NS100,
@@ -2562,8 +2577,8 @@ fn leaf_compares_printing_field(f: &FilterExpr) -> bool {
         // ...and so are its marketplace ids and its security stamp (CompatFields).
         FilterExpr::ExternalIdMatch { .. } | FilterExpr::StampMatch { .. } => true,
         // The printed name is a per-printing fact (Printing.printed_name_folded_id) — an English
-        // row and its Japanese sibling answer differently.
-        FilterExpr::PrintedNamePresent => true,
+        // row and its Japanese sibling answer differently. So is every printed text.
+        FilterExpr::PrintedNamePresent | FilterExpr::PrintedTextMatch(_) => true,
         // A flavor name is printed on the PRINTING; two printings of one card differ on it, which
         // is the whole reason `name:croft` returns 2 of Command Tower's 112 — and the same reason
         // `is:flavorname` matches Command Tower's sld/1864 row and none of its other 111.
@@ -3221,6 +3236,61 @@ impl FilterExpr {
             }
             _ => {}
         }
+    }
+
+    /// LOCAL PATCH (Cloudflare port): in a MULTILINGUAL query, let a name, `t:` or `o:` term also
+    /// read the printing's own printed-language text: `leaf → Or(leaf, PrintedTextMatch)`.
+    ///
+    /// Measured on api.scryfall.com 2026-11-14. Under `lang:de`, `Blitzschlag` is 2 cards (Lightning
+    /// Bolt, Rhystic Lightning — "Rhystischer Blitzschlag"), `!"Blitzschlag"` 1, `name:Blitzschlag` 2,
+    /// `t:Kreatur` 14,573, `o:schaden t:goblin` 152 and `t:/^kreatur/ t:goblin` 369; `稲妻 lang:ja`
+    /// is 76 and `Éclair lang:fr` 172. The English name still answers beside it (`lightning bolt
+    /// lang:de` is 2), and each term reads either text on its own (`Lightning Blitzschlag lang:de`
+    /// is 2). Bare, the same words are 404 — the printing class a plain search reads has no foreign
+    /// rows — which is why this runs only for the widened driver, whose every row is verified
+    /// against the whole filter: the English path's plans and indexes never see the new leaf.
+    ///
+    /// `lang:en` READS NO PRINTED TEXT for a contains or regex term: `Rhilex lang:en` is 404 while
+    /// `Rhilex lang:any` and `Rhilex&include_multilingual=true` are om1/66, an ENGLISH printing that
+    /// prints "Rhilex the Accursed" over Agent Venom. `contains` is false then; `!"…"` grafts in
+    /// every widened query. (`!"Rhilex the Accursed"` with no language at all is that printing on
+    /// Scryfall too; the routed driver does not graft, and the name-only partition router would
+    /// answer it before an engine ran — not done, ~182 English printings print such a name.)
+    ///
+    /// Not grafted: `fo:` (404 above), and a regex or word carrying the `~` self-reference.
+    pub(crate) fn graft_printed_text(&mut self, contains: bool) {
+        let pred = match self {
+            FilterExpr::And(children) | FilterExpr::Or(children) => {
+                for c in children.iter_mut() {
+                    c.graft_printed_text(contains);
+                }
+                return;
+            }
+            FilterExpr::Not(inner) => {
+                inner.graft_printed_text(contains);
+                return;
+            }
+            FilterExpr::ExactName(needle) => PrintedPred::NameExact(needle.clone()),
+            _ if !contains => return,
+            FilterExpr::TextContains { field: TextSearchField::NameCollated, word } => PrintedPred::NameCollated(word.clone()),
+            FilterExpr::TextContains { field: TextSearchField::NameLower, word } => PrintedPred::NameLower(word.clone()),
+            FilterExpr::TextRegex { field: TextField::NameLower, regex } if !regex.has_self_reference() => {
+                PrintedPred::NameRegex(regex.clone())
+            }
+            FilterExpr::TypeLineContains { needle, whole_word } => {
+                PrintedPred::TypeContains { needle: needle.clone(), whole_word: *whole_word }
+            }
+            FilterExpr::TextRegex { field: TextField::TypeLine, regex } => PrintedPred::TypeRegex(regex.clone()),
+            FilterExpr::TextContains { field: TextSearchField::OracleTextLower, word } if !word.contains('~') => {
+                PrintedPred::TextContains(word.clone())
+            }
+            FilterExpr::TextRegex { field: TextField::OracleTextLower, regex } if !regex.has_self_reference() => {
+                PrintedPred::TextRegex(regex.clone())
+            }
+            _ => return,
+        };
+        let original = std::mem::replace(self, FilterExpr::True);
+        *self = FilterExpr::Or(vec![original, FilterExpr::PrintedTextMatch(pred)]);
     }
 
     /// Graft the REVERSIBLE PRINTING's own answer onto a `name:` or `o:` leaf — but only when the
@@ -3925,6 +3995,11 @@ impl FilterExpr {
             FilterExpr::PrintedNamePresent => {
                 let Some(p) = printing else { return Tri::PrintingDep };
                 tri_bool(p.printed_name_folded_id != super::NONE_STR)
+            }
+
+            FilterExpr::PrintedTextMatch(pred) => {
+                let Some(p) = printing else { return Tri::PrintingDep };
+                tri_bool(pred.matches(card, p, strings))
             }
 
             FilterExpr::FlavorNameIn { ids, face_keys } => {
@@ -5326,6 +5401,142 @@ fn build_binary(kw: &Value) -> Result<FilterExpr, String> {
 /// ORACLE names alone (see `core_api::name_key_tier` and the route's own note) — the two
 /// surfaces share a rule shape, not a scope, and conflating them would widen a route Scryfall keeps
 /// narrow.
+/// LOCAL PATCH (Cloudflare port): what a [`FilterExpr::PrintedTextMatch`] asks of a printing's
+/// printed text, one arm per term shape it is grafted beside — each the same comparison the
+/// English leaf makes, on the printed string.
+#[derive(Clone)]
+pub(crate) enum PrintedPred {
+    /// A bare word (`name:word`): the COLLATED printed name — folded, every non-alphanumeric gone —
+    /// contains the word, which the parser already collated. `éclaireur` is 38 on api.scryfall.com
+    /// under `lang:fr`, `name:"éclaireur"`'s 30 plus `name:"eclaireur"`'s 8.
+    NameCollated(String),
+    /// `name:"…"`: the lowercased printed name, accents KEPT, contains the literal — the 30 and
+    /// the 8 above, apart.
+    NameLower(String),
+    /// `name:/…/`: over the lowercased printed name, accents kept (`/éclaireur/` is the 30 again).
+    NameRegex(CompiledRegex),
+    /// `!"…"`: the folded printed name, or one half of a two-part one, collates to the needle —
+    /// `!"Eclaireur avance" lang:fr` is Advance Scout, as `!"Éclaireur avancé"` is.
+    NameExact(String),
+    /// `t:word`: the printed type line, lowercased and `æ`-folded like the English column.
+    TypeContains { needle: String, whole_word: bool },
+    /// `t:/…/` over the same string.
+    TypeRegex(CompiledRegex),
+    /// `o:word`: the printed rules text, per face. Not `fo:` — `fo:schaden lang:de t:goblin` is
+    /// 404 where `o:schaden` is 152.
+    TextContains(String),
+    /// `o:/…/` over the same text, per face.
+    TextRegex(CompiledRegex),
+}
+
+/// Which printed field a [`PrintedPred`] reads.
+#[derive(Clone, Copy)]
+enum PrintedField {
+    Name,
+    TypeLine,
+    Text,
+}
+
+thread_local! {
+    /// The printed string a [`PrintedPred`] compares, rebuilt per printing without allocating: the
+    /// widened driver asks it of every row a multilingual term reaches (~540k under `lang:any`).
+    static PRINTED_BUF: std::cell::RefCell<String> = const { std::cell::RefCell::new(String::new()) };
+}
+
+/// Run `test` over the printing's printed `field` as Scryfall shows it, LOWERCASED (and `æ`-folded
+/// when `fold_ae`, as the English type line and rules text are): the top-level value, else the
+/// faces' joined by `sep`. A NAME face Scryfall left unlocalized reads its English name — the
+/// importer's rule for `printed_name_folded`, so a prepare-layout printing still has a whole name;
+/// a type line or text face it left out reads empty, since the English leaf beside this one already
+/// answers for the English text. False when no face prints the field at all.
+fn printed_lower(
+    card: &AOracleCard,
+    p: &APrinting,
+    strings: &AStrings,
+    field: PrintedField,
+    sep: &str,
+    fold_ae: bool,
+    test: impl FnOnce(&str) -> bool,
+) -> bool {
+    let top = match field {
+        PrintedField::Name => p.printed_name_id,
+        PrintedField::TypeLine => p.printed_type_line_id,
+        PrintedField::Text => p.printed_text_id,
+    };
+    let face_id = |f: &Archived<super::PrintedFaceText>| match field {
+        PrintedField::Name => u32::from(f.printed_name_id),
+        PrintedField::TypeLine => u32::from(f.printed_type_line_id),
+        PrintedField::Text => u32::from(f.printed_text_id),
+    };
+    let top = str_at(strings, u32::from(top));
+    if top.is_none() && !p.printed_faces.iter().any(|f| face_id(f) != super::NONE_STR) {
+        return false;
+    }
+    PRINTED_BUF.with(|buf| {
+        let mut buf = buf.borrow_mut();
+        buf.clear();
+        let mut push = |s: &str| {
+            for c in s.chars().flat_map(char::to_lowercase) {
+                if fold_ae && c == 'æ' { buf.push_str("ae") } else { buf.push(c) }
+            }
+        };
+        match top {
+            Some(s) => push(s),
+            None => {
+                for (i, f) in p.printed_faces.iter().enumerate() {
+                    if i > 0 {
+                        push(sep);
+                    }
+                    push(str_at(strings, face_id(f)).unwrap_or_else(|| match field {
+                        PrintedField::Name => {
+                            card.faces.get(i).and_then(|o| str_at(strings, u32::from(o.card_name_id))).unwrap_or("")
+                        }
+                        PrintedField::TypeLine | PrintedField::Text => "",
+                    }));
+                }
+            }
+        }
+        test(&buf)
+    })
+}
+
+thread_local! {
+    /// The collated printed name, rebuilt per printing without allocating.
+    static COLLATED_PRINTED: std::cell::RefCell<String> = const { std::cell::RefCell::new(String::new()) };
+}
+
+impl PrintedPred {
+    fn matches(&self, card: &AOracleCard, p: &APrinting, strings: &AStrings) -> bool {
+        let folded = || str_at(strings, u32::from(p.printed_name_folded_id));
+        let read = |field, sep, fold_ae, test: &dyn Fn(&str) -> bool| printed_lower(card, p, strings, field, sep, fold_ae, test);
+        match self {
+            PrintedPred::NameCollated(word) => folded().is_some_and(|f| {
+                COLLATED_PRINTED.with(|buf| {
+                    let mut buf = buf.borrow_mut();
+                    buf.clear();
+                    buf.extend(f.chars().filter(|c| c.is_alphanumeric()));
+                    buf.contains(word.as_str())
+                })
+            }),
+            PrintedPred::NameExact(needle) => folded().is_some_and(|f| exact_name_matches(f, needle)),
+            PrintedPred::NameLower(word) => read(PrintedField::Name, " // ", false, &|s| s.contains(word.as_str())),
+            PrintedPred::NameRegex(regex) => read(PrintedField::Name, " // ", false, &|s| regex.is_match(s)),
+            PrintedPred::TypeContains { needle, whole_word } => {
+                read(PrintedField::TypeLine, " // ", true, &|s| type_line_hit(s, needle, *whole_word))
+            }
+            PrintedPred::TypeRegex(regex) => {
+                read(PrintedField::TypeLine, " // ", true, &|s| regex_matches_face_split(regex, TextField::TypeLine, s))
+            }
+            PrintedPred::TextContains(word) => read(PrintedField::Text, FACE_TEXT_SEPARATOR, true, &|s| {
+                contains_per_face(word, TextSearchField::OracleTextLower, s)
+            }),
+            PrintedPred::TextRegex(regex) => read(PrintedField::Text, FACE_TEXT_SEPARATOR, true, &|s| {
+                regex_matches_face_split(regex, TextField::OracleTextLower, s)
+            }),
+        }
+    }
+}
+
 pub(crate) fn exact_name_matches(stored: &str, needle: &str) -> bool {
     if crate::collate_name(stored) == needle {
         return true;

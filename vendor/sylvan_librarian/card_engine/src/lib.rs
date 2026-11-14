@@ -22951,7 +22951,15 @@ fn bind_and_split_filter_value(
     let mut filter_expr = build_filter(json_val).map_err(map_build_filter_err_engine)?;
     // Decided on the tree as built: the three widening leaves exist before `bind` (which only
     // resolves their ids), and it has to be known before the flavor arms run.
-    let flavor_index = if include_multilingual || filter_expr.widens_to_annex() { None } else { Some(&data.indexes.flavor) };
+    let widened = include_multilingual || filter_expr.widens_to_annex();
+    let flavor_index = if widened { None } else { Some(&data.indexes.flavor) };
+    // LOCAL PATCH (Cloudflare port): a multilingual query's name, `t:` and `o:` terms read each
+    // printing's printed text too — before any binder, so each sees the original leaf inside the
+    // graft's Or and binds it as before. `lang:en` keeps contains and regex terms English.
+    if widened {
+        let contains = filter_expr.required_lang_value() != Some("en");
+        filter_expr.graft_printed_text(contains);
+    }
     filter_expr.bind_with(&data.coll_vocab, &data.coll_vocab_sorted, &data.artist_vocab, &data.artist_vocab_collated, &data.artist_entities, &data.mana_vocab, flavor_index, &data.strings);
     // The second half of binding, split out because `bind` predates the type-line index and is
     // called from a dozen benches and tests that never build one. THE TWO BELONG TOGETHER: every
