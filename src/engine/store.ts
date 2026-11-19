@@ -320,6 +320,12 @@ export interface LoadContext {
 	 * it loudly rather than serving 1/N of the corpus as the whole store.
 	 */
 	partition?: number;
+	/**
+	 * The build (`built_at`) the CALLER that woke this object is pinned to (store-vouch.ts). A
+	 * recorded manifest of that same build is loaded without the KV check; anything else is checked
+	 * against KV as before.
+	 */
+	vouchedBuiltAt?: string;
 }
 
 /** `[engine-wnam] ` for logs, or an empty prefix outside a Durable Object. */
@@ -1368,6 +1374,8 @@ async function loadStore(env: Env, ctx?: LoadContext, known?: StoreManifest, fen
 	// The record's store, fed from the object's own cache while KV's manifest was in flight (see
 	// speculativeLocalFeed) — installed below only if the check that follows names the same store.
 	let early: EarlyFeed | null = null;
+	// The record was loaded on the caller's word, with no KV read (store-vouch.ts).
+	let vouched = false;
 	if (!manifest && ctx?.storage) {
 		const pushed = readLiveManifest(ctx.storage) as StoreManifest | null;
 		if (pushed?.store_bytes) {
@@ -1383,7 +1391,14 @@ async function loadStore(env: Env, ctx?: LoadContext, known?: StoreManifest, fen
 			// is the answer instead.
 			const pushedSource =
 				pushed.format_version === ARCHIVE_FORMAT_VERSION ? tryArchiveOfManifest(pushed, ctx.partition) : null;
-			if (pushedSource) {
+			if (pushedSource && ctx.vouchedBuiltAt !== undefined && String(pushed.built_at) === ctx.vouchedBuiltAt) {
+				// THE CALLER VOUCHES (store-vouch.ts): the router that woke this object is pinned to
+				// this very build, by a manifest it read through the same KV key within the last
+				// minutes — the answer the read below would give, without the metered read. Same
+				// build, so the same manifest and this partition's same chunk family.
+				manifest = pushed;
+				vouched = true;
+			} else if (pushedSource) {
 				// PER-PARTITION: the comparison is between THIS PARTITION's chunk-family keys under
 				// each manifest, not the manifests' top-level keys — a v2 store_key is a stem
 				// holding no chunks, so comparing stems would miss a republished partition.
@@ -1568,6 +1583,16 @@ async function loadStore(env: Env, ctx?: LoadContext, known?: StoreManifest, fen
 		// or KV could not be read; either way there is nothing better to load, and the next wake
 		// asks again. A tee'd cache copy of the failed load is discarded, never committed.
 		if (compressedMode && cached) fetch.invalidate();
+		if (vouched && ctx) {
+			// The record the caller vouched for does not load. KV was never asked on this wake, so
+			// ask it now: the same load without the vouch, which checks the record as it always did.
+			console.warn(
+				`${tag(ctx)}the recorded manifest ${source.storeKey}, loaded on the caller's vouch, did not load (${err}); ` +
+					"checking it against KV",
+			);
+			const { vouchedBuiltAt: _unvouched, ...checked } = ctx;
+			return loadStore(env, checked, undefined, fence);
+		}
 		if (fallback && ctx?.storage) {
 			// The newer record's chunks are gone after all (a publish that was rolled back, or
 			// retired before this object ever woke): KV's manifest was right. Correct the record
@@ -1635,7 +1660,8 @@ async function loadStore(env: Env, ctx?: LoadContext, known?: StoreManifest, fen
 		`${tag(ctx)}store loaded from ${cached ? `local cache (${format})` : "KV"}: ${source.storeKey} (${source.cardCount} cards, ` +
 			`${source.storeBytes} bytes${!cached && source.gzipBytes ? ` from ${source.gzipBytes} gzipped` : ""}, ` +
 			`built ${manifest.built_at}) after ${Date.now() - started}ms of I/O wait` +
-			`${fed ? " (decoded while KV's manifest was read)" : ""}, from ${pieces} pieces in ${blocks} blocks ` +
+			`${fed ? " (decoded while KV's manifest was read)" : ""}${vouched ? " (manifest vouched by the caller, no KV read)" : ""}, ` +
+			`from ${pieces} pieces in ${blocks} blocks ` +
 			`(linear memory ${(w.linearMemoryBytes() / 1048576).toFixed(1)}MB); ${isolate.text}`,
 	);
 	return engine;

@@ -187,6 +187,7 @@ import {
 	RULINGS_META_KEY,
 	type RulingRow,
 	type RulingsMeta,
+	rulingsBucketHashes,
 	rulingsBucketKey,
 	rulingsBucketOf,
 	rulingsCurrentPrefix,
@@ -5301,12 +5302,19 @@ export class ImportCoordinator extends DurableObject<Env> {
 		const total = Number(
 			this.sqlAll<{ n: number }>("SELECT COALESCE(SUM(rulings), 0) AS n FROM rulings_buckets")[0]?.n ?? 0,
 		);
+		// What each bucket holds, so a reader names its colo copy by content and a publish that
+		// rewrote nothing invalidates nothing (rulings-kv.ts `bucket_hashes`). Every bucket's hash is
+		// on record by now: the slices above wrote or confirmed all of them.
+		const bucketHashes = rulingsBucketHashes(
+			this.sqlAll<{ hash: string }>("SELECT hash FROM rulings_buckets ORDER BY bucket").map((row) => String(row.hash)),
+		);
 		const meta: RulingsMeta = {
 			format_version: RULINGS_FORMAT_VERSION,
 			content_generation: RULINGS_CONTENT_GENERATION,
 			bucket_count: RULINGS_BUCKET_COUNT,
 			built_at: this.metaGet("built_at") ?? "",
 			ruling_count: total,
+			...(bucketHashes === undefined ? {} : { bucket_hashes: bucketHashes }),
 		};
 		await this.putJson(RULINGS_META_KEY, meta);
 		await this.pruneOldKeys(RULINGS_KEY_PREFIX, rulingsCurrentPrefix(), "rulings");

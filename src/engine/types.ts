@@ -53,6 +53,13 @@ export interface EngineSearchOptions {
 	 * Carried opaquely like `namesBuild`.
 	 */
 	gatherPartitions?: { build: string; partitions: number[] };
+	/**
+	 * The build (`built_at`) a gather's ROUTER vouched for (store-vouch.ts), passed on by the
+	 * coordinator to its sibling partitions so a sibling this gather wakes loads its recorded store
+	 * without its own KV read when the record names this build. Set by the coordinator only, from
+	 * what its caller reported — never from its own record. Carried opaquely like `namesBuild`.
+	 */
+	vouchedBuild?: string;
 }
 
 export interface EngineSearchResult {

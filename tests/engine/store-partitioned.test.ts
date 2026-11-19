@@ -957,6 +957,65 @@ describe("a pushed record NEWER than KV's colo-cached manifest", () => {
 	});
 });
 
+describe("a wake whose caller vouches for the recorded build reads no manifest from KV", () => {
+	// store-vouch.ts: the router that wakes an object is pinned to a manifest it read through the
+	// same KV key, and says which build that is. A record of that build is loaded on that word —
+	// 32,177 of DeckGen's 70,774 KV reads on 2026-11-16 were this check, one per wake.
+
+	test("the record's build, vouched: its store loads and KV's manifest is never read", async () => {
+		const pub = await publishV2("410");
+		const storage = fakeStorage();
+		const cache = await import("../../src/engine/store-cache");
+		cache.recordLiveManifest(storage, pub.manifest);
+		const kv = fakeEnv(pub.entries);
+		const label = "engine-vouched-p0";
+		const engine = await store.getEngine(kv.env, { ...ctxFor(label, 0, storage), vouchedBuiltAt: "410" });
+		expect(instanceFor(label).loaded).toEqual(pub.raw[0] as Uint8Array);
+		expect(await engine.cardCount()).toBe(7);
+		expect(kv.reads).not.toContain(MANIFEST_READ);
+		expect((cache.readLiveManifest(storage) as StoreManifest).built_at).toBe("410");
+	});
+
+	test("a vouch for ANOTHER build, or none, is the KV check exactly as before", async () => {
+		const cache = await import("../../src/engine/store-cache");
+		// The router has moved on to 412; the record still says 411, whose chunks are gone.
+		const stale = await publishV2("411");
+		const live = await publishV2("412");
+		const storage = fakeStorage();
+		cache.recordLiveManifest(storage, stale.manifest);
+		const kv = fakeEnv(live.entries);
+		const label = "engine-vouched-other-p0";
+		await store.getEngine(kv.env, { ...ctxFor(label, 0, storage), vouchedBuiltAt: "412" });
+		expect(kv.reads).toContain(MANIFEST_READ);
+		expect(instanceFor(label).loaded).toEqual(live.raw[0] as Uint8Array);
+		expect((cache.readLiveManifest(storage) as StoreManifest).built_at).toBe("412");
+
+		const agreed = await publishV2("413");
+		const plain = fakeStorage();
+		cache.recordLiveManifest(plain, agreed.manifest);
+		const unvouched = fakeEnv(agreed.entries);
+		await store.getEngine(unvouched.env, ctxFor("engine-unvouched-p0", 0, plain));
+		expect(unvouched.reads).toContain(MANIFEST_READ);
+	});
+
+	test("a vouched record whose chunks are gone is checked against KV after all, and the live build loads", async () => {
+		const cache = await import("../../src/engine/store-cache");
+		// Router and record agree on 414 (a router up to three minutes behind a publish nobody
+		// notified this object of), but 414's chunks were retired: KV holds only 415.
+		const gone = await publishV2("414");
+		const live = await publishV2("415");
+		const storage = fakeStorage();
+		cache.recordLiveManifest(storage, gone.manifest);
+		const kv = fakeEnv(live.entries);
+		const label = "engine-vouched-gone-p0";
+		const engine = await store.getEngine(kv.env, { ...ctxFor(label, 0, storage), vouchedBuiltAt: "414" });
+		expect(kv.reads).toContain(MANIFEST_READ);
+		expect(instanceFor(label).loaded).toEqual(live.raw[0] as Uint8Array);
+		expect(await engine.cardCount()).toBe(7);
+		expect((cache.readLiveManifest(storage) as StoreManifest).built_at).toBe("415");
+	});
+});
+
 describe("a wake decodes its local copy while KV's manifest is read", () => {
 	// The record check reads KV's manifest on every wake of a told object — I/O, ~37ms of the
 	// object's clock at p50 on paid wnam (2026-10-23) — and the decode after it is CPU. The read

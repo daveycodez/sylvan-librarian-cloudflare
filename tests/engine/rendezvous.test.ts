@@ -90,6 +90,9 @@ const collectionPacketArgs: unknown[][] = [];
 let holdersAnswer: Record<string, number[]> | null = null;
 const holdersAsked: string[][] = [];
 
+/** store-vouch.ts: the load context of every getEngine call, for what the caller vouched. */
+const engineContexts: { vouchedBuiltAt?: string }[] = [];
+
 /** x56: the engine labels the fake isolate holds — the `holds=` of a slow gather's line. */
 let residentLabels: string[] = [];
 
@@ -118,7 +121,8 @@ mock.module("../../src/engine/store", () => ({
 		holdersAsked.push(foldeds);
 		return holdersAnswer === null ? null : { builtAt: "1", holders: foldeds.map((f) => holdersAnswer?.[f] ?? []) };
 	},
-	getEngine: async () => {
+	getEngine: async (_env: unknown, ctx: { vouchedBuiltAt?: string }) => {
+		engineContexts.push(ctx);
 		const g = gatherStore;
 		if (g && !g.loaded) {
 			g.events.push("own:load-start");
@@ -189,6 +193,16 @@ type Do = {
 function makeDo(): Do {
 	return new SearchEngine({ waitUntil: () => {} } as never, {} as never) as unknown as Do;
 }
+
+test("an instrumented call hands its caller's vouch to the load, and folds the same width", async () => {
+	const { vouchingWidth } = await import("../../src/engine/store-vouch");
+	engineContexts.length = 0;
+	const engine = makeDo();
+	expect((await engine.searchCardsAsObjects({ limit: 1 }, vouchingWidth(3, "1794954927"))).shards).toBe(3);
+	expect(engineContexts.at(-1)?.vouchedBuiltAt).toBe("1794954927");
+	await makeDo().searchCardsAsObjects({ limit: 1 }, 3);
+	expect(engineContexts.at(-1)?.vouchedBuiltAt).toBeUndefined();
+});
 
 /** One search, returning the announcement it carries back. */
 async function report(engine: Do, width?: number): Promise<number> {
@@ -521,6 +535,9 @@ describe("a cold gather wakes every partition at once", () => {
 		): Promise<{ totalCards: number; cardsBytes: Uint8Array; acquireMs: number }>;
 	};
 
+	/** What each sibling `searchKeys` was told the gather's router vouched for (store-vouch.ts). */
+	const siblingVouches: (string | undefined)[] = [];
+
 	function coldGather(siblingAcquireMs: number) {
 		let finishOwnLoad = () => {};
 		const events: string[] = [];
@@ -540,8 +557,9 @@ describe("a cold gather wakes every partition at once", () => {
 			},
 		};
 		const sibling = {
-			async searchKeys(_opts: unknown, inline: number) {
+			async searchKeys(opts: { vouchedBuild?: string }, inline: number) {
 				events.push("p1:searchKeys");
+				siblingVouches.push(opts.vouchedBuild);
 				// The sibling is asked while the coordinator is still loading; let that load finish
 				// only now, so the order is observable.
 				finishOwnLoad();
@@ -586,6 +604,24 @@ describe("a cold gather wakes every partition at once", () => {
 
 	afterEach(() => {
 		gatherStore = null;
+	});
+
+	test("the router's vouch reaches the coordinator's own load and every sibling it wakes — and only the router's", async () => {
+		const { vouchingWidth } = await import("../../src/engine/store-vouch");
+		siblingVouches.length = 0;
+		engineContexts.length = 0;
+		await coldGather(0).engine.gatherSearchAsJson(OPTS, "rows", vouchingWidth(1, "7"));
+		expect(siblingVouches).toEqual(["7"]);
+		expect(engineContexts.map((c) => c.vouchedBuiltAt)).toContain("7");
+
+		// A bare width vouches for nothing, whatever the options claim: the coordinator passes on
+		// what ITS caller reported, never a field that merely arrived.
+		gatherStore = null;
+		siblingVouches.length = 0;
+		engineContexts.length = 0;
+		await coldGather(0).engine.gatherSearchAsJson({ ...OPTS, vouchedBuild: "7" }, "rows", 1);
+		expect(siblingVouches).toEqual([undefined]);
+		expect(engineContexts.every((c) => c.vouchedBuiltAt === undefined)).toBe(true);
 	});
 
 	test("siblings are asked before the coordinator's own store has loaded", async () => {
@@ -2058,7 +2094,7 @@ describe("an abandoned object gives its storage back only when nobody is calling
 		expect(body).toContain("await this.ctx.storage.deleteAll();");
 		expect(body).not.toContain("this.releaseAbandoned(");
 		// And every serving call is what marks the object as in use.
-		const acquire = src.slice(src.indexOf("private async engine(): Promise<Engine> {"));
+		const acquire = src.slice(src.indexOf("private async engine(vouched?: string): Promise<Engine> {"));
 		expect(acquire.slice(0, 120)).toContain("lastServedAt.set(this.label, Date.now());");
 	});
 });

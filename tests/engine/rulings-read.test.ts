@@ -9,6 +9,8 @@ import { edgeCacheUrl } from "../../src/engine/edge-cache";
 import {
 	currentRulingsVersion,
 	RULINGS_BUCKET_COUNT,
+	RULINGS_BUCKET_HASH_CHARS,
+	RULINGS_CONTENT_EDGE_TTL_S,
 	RULINGS_CONTENT_GENERATION,
 	RULINGS_EDGE_TTL_S,
 	RULINGS_FORMAT_VERSION,
@@ -20,6 +22,7 @@ import {
 	RULINGS_VERSION_MEMO_MS,
 	type RulingsMeta,
 	readRulingsBucket,
+	rulingsBucketHashes,
 	rulingsBucketKey,
 	rulingsPublishVersion,
 } from "../../src/engine/rulings-kv";
@@ -224,6 +227,118 @@ describe("readRulingsBucket through the colo cache", () => {
 		at(RULINGS_VERSION_CHECK_S);
 		// Its bucket memo still holds night-1 under the OLD name; the new name is a memo miss.
 		expect(text(await readRulingsBucket(kv, BUCKET))).toBe("night-2");
+	});
+});
+
+describe("a meta that says what each bucket holds names copies by content", () => {
+	// Since 2026-11-18 the publishers record every bucket's hash in the meta. The import runs after
+	// each of Scryfall's two daily refreshes, and naming copies by `built_at` threw every colo's
+	// copy of every bucket away on each one — for rulings that had not changed in days.
+
+	/** 256 distinct full-length hashes; `changed` buckets get another. */
+	const hashesOf = (changed: number[] = []) =>
+		Array.from({ length: RULINGS_BUCKET_COUNT }, (_, b) =>
+			`${b.toString(16).padStart(4, "0")}${changed.includes(b) ? "ffff" : "0000"}`.padEnd(64, "a"),
+		);
+	const hashed = (builtAt: string, changed: number[] = [], rulingCount = 7): RulingsMeta => ({
+		...meta(builtAt, rulingCount),
+		bucket_hashes: rulingsBucketHashes(hashesOf(changed)) as string,
+	});
+	const contentCopy = (changed: number[] = []) =>
+		copyName(`${G}-h${hashesOf(changed)[BUCKET]?.slice(0, RULINGS_BUCKET_HASH_CHARS)}`);
+
+	test("the hashes are one string of every bucket's prefix, or nothing at all", () => {
+		const all = rulingsBucketHashes(hashesOf()) as string;
+		expect(all.length).toBe(RULINGS_BUCKET_COUNT * RULINGS_BUCKET_HASH_CHARS);
+		expect(all.slice(BUCKET * RULINGS_BUCKET_HASH_CHARS, (BUCKET + 1) * RULINGS_BUCKET_HASH_CHARS)).toBe(
+			"001f0000aaaa",
+		);
+		expect(rulingsBucketHashes(hashesOf().slice(1))).toBeUndefined();
+		expect(rulingsBucketHashes(hashesOf().map((h, b) => (b === 3 ? "zz" : h)))).toBeUndefined();
+	});
+
+	test("the version is the content's: another build of the same bytes is the same version", () => {
+		expect(rulingsPublishVersion(hashed("100"))).toBe(rulingsPublishVersion(hashed("200")));
+		expect(rulingsPublishVersion(hashed("100"))).not.toBe(rulingsPublishVersion(hashed("100", [3])));
+		expect(rulingsPublishVersion(hashed("100"))).toStartWith(`${G}-c`);
+		// Malformed hashes are no hashes: named by the publish, as before.
+		expect(rulingsPublishVersion({ ...meta("100"), bucket_hashes: "abc" })).toBe(`${G}-100-7`);
+	});
+
+	test("a publish that rewrote nothing costs no bucket read, and keeps the colo's `since`", async () => {
+		const entries = installCaches();
+		at(0);
+		const ns = namespace();
+		ns.publish("night-1", hashed("100"));
+		await readRulingsBucket(ns.isolate(), BUCKET);
+		at(RULINGS_SETTLE_S + RULINGS_UNSETTLED_EDGE_TTL_S);
+		await readRulingsBucket(ns.isolate(), BUCKET); // the settled copy, kept a week
+		expect(entries.get(contentCopy())?.maxAge).toBe(RULINGS_CONTENT_EDGE_TTL_S);
+		const before = bucketGets(ns.gets);
+
+		// Twelve hours on, the import republishes the same bytes under a new built_at.
+		at(1800);
+		ns.publish("night-1", hashed("200"));
+		for (const seconds of [RULINGS_VERSION_CHECK_S, 2 * RULINGS_VERSION_CHECK_S, 20 * 3_600]) {
+			at(seconds);
+			expect(text(await readRulingsBucket(ns.isolate(), BUCKET))).toBe("night-1");
+		}
+		expect(bucketGets(ns.gets)).toBe(before);
+		expect((await currentRulingsVersion(ns.isolate()))?.since).toBe(T0);
+	});
+
+	test("a publish that rewrote ANOTHER bucket leaves this one's copy alone", async () => {
+		installCaches();
+		at(0);
+		const ns = namespace();
+		ns.publish("night-1", hashed("100"));
+		await readRulingsBucket(ns.isolate(), BUCKET);
+		at(RULINGS_SETTLE_S + RULINGS_UNSETTLED_EDGE_TTL_S);
+		await readRulingsBucket(ns.isolate(), BUCKET);
+		const before = bucketGets(ns.gets);
+
+		at(1800);
+		ns.publish("night-1", hashed("200", [BUCKET + 1], 9));
+		at(RULINGS_VERSION_CHECK_S);
+		// The set's version moved (a new settle window opens), but this bucket's name did not.
+		expect(text(await readRulingsBucket(ns.isolate(), BUCKET))).toBe("night-1");
+		expect(bucketGets(ns.gets)).toBe(before);
+		expect((await currentRulingsVersion(ns.isolate()))?.since).toBe(T0 + RULINGS_VERSION_CHECK_S * 1000);
+	});
+
+	test("a publish that rewrote THIS bucket is a miss once the colo sees it, with its own settle window", async () => {
+		const entries = installCaches();
+		at(0);
+		const ns = namespace();
+		ns.publish("night-1", hashed("100"));
+		await readRulingsBucket(ns.isolate(), BUCKET);
+		at(RULINGS_SETTLE_S + RULINGS_UNSETTLED_EDGE_TTL_S);
+		await readRulingsBucket(ns.isolate(), BUCKET);
+		const before = bucketGets(ns.gets);
+
+		at(1800);
+		ns.publish("night-2", hashed("200", [BUCKET], 9));
+		at(RULINGS_VERSION_CHECK_S - 1);
+		expect(text(await readRulingsBucket(ns.isolate(), BUCKET))).toBe("night-1");
+		at(RULINGS_VERSION_CHECK_S);
+		expect(text(await readRulingsBucket(ns.isolate(), BUCKET))).toBe("night-2");
+		expect(bucketGets(ns.gets)).toBe(before + 1);
+		expect(entries.get(contentCopy([BUCKET]))?.maxAge).toBe(RULINGS_UNSETTLED_EDGE_TTL_S);
+		at(RULINGS_VERSION_CHECK_S + RULINGS_SETTLE_S + RULINGS_UNSETTLED_EDGE_TTL_S);
+		await readRulingsBucket(ns.isolate(), BUCKET);
+		expect(entries.get(contentCopy([BUCKET]))?.maxAge).toBe(RULINGS_CONTENT_EDGE_TTL_S);
+	});
+
+	test("a meta without hashes after one with them is named by the publish again", async () => {
+		const entries = installCaches();
+		at(0);
+		const ns = namespace();
+		ns.publish("night-1", hashed("100"));
+		await readRulingsBucket(ns.isolate(), BUCKET);
+		ns.publish("night-2", meta("200"));
+		at(RULINGS_VERSION_CHECK_S);
+		expect(text(await readRulingsBucket(ns.isolate(), BUCKET))).toBe("night-2");
+		expect(entries.has(copyName(`${G}-200-7`))).toBe(true);
 	});
 });
 

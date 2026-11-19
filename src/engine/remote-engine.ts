@@ -10,6 +10,7 @@ import {
 	reportEngineLoad,
 	reportEngineRate,
 } from "./shard-controller";
+import { vouchingWidth } from "./store-vouch";
 import type {
 	CollectionBatch,
 	CollectionBatchAnswer,
@@ -905,7 +906,19 @@ export class RemoteEngine implements Engine {
 		 * Absent means never hedge nor fail over — the warm ping
 		 * for a newly opened shard, whose whole point is waking THIS object, is built without one. */
 		private readonly hedge?: EngineHedge,
+		/**
+		 * The build (`built_at`) of the manifest this request is pinned to. Every instrumented call
+		 * carries it in the fraction of the width it reports (store-vouch.ts), so an object the call
+		 * wakes loads its recorded store without a KV read when the record names this build. Absent
+		 * (tests, tooling): calls report the bare width, as before.
+		 */
+		private readonly vouchedBuiltAt?: string,
 	) {}
+
+	/** The width to report on a call, vouching for this request's build (store-vouch.ts). */
+	private reported(width: number | undefined): number | undefined {
+		return vouchingWidth(width, this.vouchedBuiltAt);
+	}
 
 	/** Swap in a fresh stub before a retry (see `connect`). */
 	private readonly reconnect = (): void => {
@@ -928,8 +941,10 @@ export class RemoteEngine implements Engine {
 	): Promise<{ value: T; from: HedgeWinner }> {
 		const hedge = this.hedge;
 		return hedgedCall(
-			(abandoned) => withRetry(() => call(this.stub, currentShardWidth(this.region)), this.reconnect, abandoned),
-			hedge ? () => unwrap(call(hedge.connect(), undefined)) : null,
+			(abandoned) =>
+				withRetry(() => call(this.stub, this.reported(currentShardWidth(this.region))), this.reconnect, abandoned),
+			// No width of this region's — and with a vouch, the 1 an absent width already reads as.
+			hedge ? () => unwrap(call(hedge.connect(), this.reported(undefined))) : null,
 			{ region: this.region, hedgeRegion: hedge?.region ?? "", partition: hedge?.partition ?? -1, method },
 		);
 	}
@@ -1024,14 +1039,15 @@ export class RemoteEngine implements Engine {
 	): Promise<Response> {
 		// The hedge's body reports NO width, for the reason `read` gives: this region's fan-out must not
 		// be folded into the neighbour's rendezvous.
-		const bodyWith = (shards: number | undefined, sheddable = false) =>
+		const bodyWith = (width: number | undefined, sheddable = false) =>
 			JSON.stringify({
 				call,
 				opts,
 				baseUrl,
 				envelope,
 				cache,
-				shards,
+				// With this request's build in its fraction (store-vouch.ts), on every copy of the call.
+				shards: this.reported(width),
 				...(pinnedPartitionCount === undefined ? {} : { pinnedPartitionCount }),
 				...(sheddable ? { sheddable: true } : {}),
 			});

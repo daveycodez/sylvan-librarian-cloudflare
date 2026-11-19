@@ -109,6 +109,53 @@ export interface RulingsMeta {
 	built_at: string;
 	/** Rulings across all buckets, the dump's exact repeats included (see `encodeRulingsBucket`). */
 	ruling_count: number;
+	/**
+	 * What each bucket HOLDS: the first RULINGS_BUCKET_HASH_CHARS hex characters of every bucket's
+	 * SHA-256, in bucket order, as one string (`rulingsBucketHashes`). A reader names its colo copy of
+	 * a bucket by that bucket's own hash, so a publish that rewrote nothing invalidates nothing — and
+	 * one that rewrote three buckets, three. Absent on a set published before 2026-11-18, which is
+	 * named by `built_at` as before (see `rulingsPublishVersion`).
+	 */
+	bucket_hashes?: string;
+}
+
+/** Hex characters of a bucket's SHA-256 kept in the meta: 48 bits, compared only against the same bucket's last. */
+export const RULINGS_BUCKET_HASH_CHARS = 12;
+
+/**
+ * The meta's `bucket_hashes` from every bucket's full SHA-256 hex, in bucket order — or undefined
+ * when that is not exactly one usable hash per bucket (a publisher then writes none, and readers
+ * name the set by `built_at`).
+ */
+export function rulingsBucketHashes(hashes: readonly string[]): string | undefined {
+	if (hashes.length !== RULINGS_BUCKET_COUNT) return undefined;
+	const short = hashes.map((h) => h.slice(0, RULINGS_BUCKET_HASH_CHARS).toLowerCase());
+	return short.every((h) => h.length === RULINGS_BUCKET_HASH_CHARS && /^[0-9a-f]+$/.test(h))
+		? short.join("")
+		: undefined;
+}
+
+/** A meta's `bucket_hashes` when it is well formed for this reader's bucket count, else null. */
+function usableBucketHashes(value: unknown): string | null {
+	return typeof value === "string" &&
+		value.length === RULINGS_BUCKET_COUNT * RULINGS_BUCKET_HASH_CHARS &&
+		/^[0-9a-f]+$/.test(value)
+		? value
+		: null;
+}
+
+/** A short, stable digest of a string (cyrb53) — a NAME for the hashes as a set, nothing more. */
+function digest53(text: string): string {
+	let h1 = 0xdeadbeef;
+	let h2 = 0x41c6ce57;
+	for (let i = 0; i < text.length; i++) {
+		const c = text.charCodeAt(i);
+		h1 = Math.imul(h1 ^ c, 2654435761);
+		h2 = Math.imul(h2 ^ c, 1597334677);
+	}
+	h1 = Math.imul(h1 ^ (h1 >>> 16), 2246822507) ^ Math.imul(h2 ^ (h2 >>> 13), 3266489909);
+	h2 = Math.imul(h2 ^ (h2 >>> 16), 2246822507) ^ Math.imul(h1 ^ (h1 >>> 13), 3266489909);
+	return (4294967296 * (2097151 & h2) + (h1 >>> 0)).toString(36);
 }
 
 /** One row of the rulings bulk file, after upstream's `_valid_rulings` filter. */
@@ -237,6 +284,18 @@ export function rulingsSlice(bucket: Uint8Array, oracleId: string): Uint8Array |
 //
 // No usable meta — none published, a layout this reader does not key, an unreadable value, or a
 // failed read — means the read is exactly today's: KV through the isolate memo, no colo copy.
+//
+// NAMED BY CONTENT SINCE 2026-11-18. The version above was the publish's `built_at`, which moves on
+// EVERY publish — and the import began running after each of Scryfall's two daily refreshes on
+// 2026-11-14, so every colo's copy of every bucket was thrown away twice a day while the rulings
+// themselves had not changed in days (79,706 on seven runs in a row). Measured on DeckGen at equal
+// traffic (205k and 207k Worker requests, 55k and 58k of them rulings): KV reads outside engine
+// wakes were 24.0k on 11-13 and 36.5k on 11-17. The meta now also carries each bucket's content
+// hash (`bucket_hashes`), and a copy is named `<bucket key>@<that bucket's hash>`: a publish that
+// rewrote nothing changes no name, and one that rewrote three buckets changes three. The SET's
+// version — what the settle window and `since` hang on — is a digest of all the hashes, so it too
+// moves only when some bucket did. Everything above holds term for term with "a publish" read as
+// "a publish that changed a bucket"; a meta without hashes is named by `built_at` as before.
 
 /** How often a colo re-reads `rulings:meta` to learn of a new publish, seconds. */
 export const RULINGS_VERSION_CHECK_S = 3_600;
@@ -244,8 +303,14 @@ export const RULINGS_VERSION_CHECK_S = 3_600;
 export const RULINGS_VERSION_MEMO_MS = 60_000;
 /** How long after a colo first sees a version its bucket fills are kept only briefly, seconds. */
 export const RULINGS_SETTLE_S = 300;
-/** A settled bucket copy's life in the colo cache, seconds. Versions move nightly; longer buys nothing. */
+/** A settled bucket copy's life in the colo cache when it is named by `built_at`, seconds: that name moves every publish. */
 export const RULINGS_EDGE_TTL_S = 86_400;
+/**
+ * ...and when it is named by the bucket's own content hash: a week. Such a copy can only ever be the
+ * bytes it is named for, so its life is bounded by the colo's eviction, not by a publish — and at a
+ * day, every (colo, bucket) pair in use was re-read from KV daily for bytes that had not changed.
+ */
+export const RULINGS_CONTENT_EDGE_TTL_S = 7 * 86_400;
 /** A bucket copy filled inside the settle window, seconds. */
 export const RULINGS_UNSETTLED_EDGE_TTL_S = 60;
 /** KV's own cacheTtl on the versioned path's reads: its minimum, since the colo cache is what saves the reads. */
@@ -259,9 +324,10 @@ export const RULINGS_SEEN_URL = edgeCacheUrl(`${RULINGS_META_KEY}#seen`);
  * The publish version a meta names, or null when it does not describe the buckets this reader
  * reads (another layout or bucket count) or cannot tell one publish from another.
  *
- * `built_at` is what moves: the nightly records its build's, the deploy seed its own clock. The
- * content generation and the ruling count ride along so a republish that somehow kept `built_at`
- * but changed what it wrote still reads as new.
+ * With `bucket_hashes` it is the CONTENT's name — a digest of every bucket's hash — so two
+ * publishes of the same bytes are one version. Without them `built_at` is what moves: the nightly
+ * records its build's, the deploy seed its own clock; the content generation and the ruling count
+ * ride along so a republish that somehow kept `built_at` but changed what it wrote still reads as new.
  */
 export function rulingsPublishVersion(meta: unknown): string | null {
 	if (typeof meta !== "object" || meta === null) return null;
@@ -269,7 +335,15 @@ export function rulingsPublishVersion(meta: unknown): string | null {
 	if (m.format_version !== RULINGS_FORMAT_VERSION || m.bucket_count !== RULINGS_BUCKET_COUNT) return null;
 	if (typeof m.built_at !== "string" || m.built_at === "") return null;
 	if (typeof m.ruling_count !== "number") return null;
+	const hashes = usableBucketHashes(m.bucket_hashes);
+	if (hashes !== null) return `g${m.content_generation ?? 0}-c${digest53(hashes)}`;
 	return `g${m.content_generation ?? 0}-${m.built_at}-${m.ruling_count}`;
+}
+
+/** The name a colo copy of `bucket` goes by under a meta with hashes: the generation and the bucket's own hash. */
+function bucketContentName(generation: number, hashes: string, bucket: number): string {
+	const at = bucket * RULINGS_BUCKET_HASH_CHARS;
+	return `g${generation}-h${hashes.slice(at, at + RULINGS_BUCKET_HASH_CHARS)}`;
 }
 
 /** What the colo remembers about the meta; epoch ms throughout. */
@@ -280,6 +354,8 @@ interface RulingsSeen {
 	since: number;
 	/** When this colo last asked KV. */
 	checked: number;
+	/** The meta's per-bucket content names, when it carries hashes: `<generation>` and `bucket_hashes`. */
+	content?: { generation: number; hashes: string };
 }
 
 function parseSeen(bytes: Uint8Array | null): RulingsSeen | null {
@@ -290,7 +366,13 @@ function parseSeen(bytes: Uint8Array | null): RulingsSeen | null {
 			(seen.version === null || typeof seen.version === "string") &&
 			Number.isFinite(seen.since) &&
 			Number.isFinite(seen.checked);
-		return ok ? seen : null;
+		if (!ok) return null;
+		// A record whose content names are malformed is read as carrying none: named by version.
+		const hashes = usableBucketHashes(seen.content?.hashes);
+		const { content: _content, ...plain } = seen;
+		return hashes !== null && Number.isInteger(seen.content?.generation)
+			? { ...plain, content: { generation: seen.content?.generation as number, hashes } }
+			: plain;
 	} catch {
 		return null;
 	}
@@ -310,7 +392,7 @@ export function forgetRulingsVersion(kv: KVNamespace): void {
 export async function currentRulingsVersion(
 	kv: KVNamespace,
 	defer?: (p: Promise<unknown>) => void,
-): Promise<{ version: string; since: number } | null> {
+): Promise<{ version: string; since: number; content?: { generation: number; hashes: string } } | null> {
 	const now = Date.now();
 	const memo = seenMemo.get(kv);
 	let seen = memo && now - memo.at < RULINGS_VERSION_MEMO_MS ? memo.seen : null;
@@ -319,7 +401,8 @@ export async function currentRulingsVersion(
 		if (seen === null) return null;
 		seenMemo.set(kv, { at: now, seen });
 	}
-	return seen.version === null ? null : { version: seen.version, since: seen.since };
+	if (seen.version === null) return null;
+	return { version: seen.version, since: seen.since, ...(seen.content ? { content: seen.content } : {}) };
 }
 
 /** The colo's record while fresh, else a new one from KV — null only when the KV read failed. */
@@ -349,8 +432,15 @@ async function seenByColo(
 	if (text !== null && version === null) {
 		console.warn(`Rulings: ${RULINGS_META_KEY} names no version this reader keys; reading buckets as before`);
 	}
+	const hashes = version === null ? null : usableBucketHashes((meta as Partial<RulingsMeta>).bucket_hashes);
+	const generation = (meta as Partial<RulingsMeta> | null)?.content_generation ?? 0;
 	// `since` survives a check that finds the same version — that is what the long-lived record is for.
-	const seen = { version, since: colo !== null && colo.version === version ? colo.since : now, checked: now };
+	const seen: RulingsSeen = {
+		version,
+		since: colo !== null && colo.version === version ? colo.since : now,
+		checked: now,
+		...(hashes !== null ? { content: { generation, hashes } } : {}),
+	};
 	await putEdgeCache(RULINGS_SEEN_URL, new TextEncoder().encode(JSON.stringify(seen)), RULINGS_SEEN_TTL_S, defer);
 	return seen;
 }
@@ -368,9 +458,13 @@ export async function readRulingsBucket(
 	const published = await currentRulingsVersion(kv, defer);
 	if (published === null) return readKvBytesMemo(kv, key);
 	const settled = Date.now() - published.since >= RULINGS_SETTLE_S * 1000;
+	// Named by the bucket's own content when the meta says what that is, else by the publish.
+	const content = published.content;
+	const name = content ? bucketContentName(content.generation, content.hashes, bucket) : published.version;
+	const life = content ? RULINGS_CONTENT_EDGE_TTL_S : RULINGS_EDGE_TTL_S;
 	return readKvBytesMemo(kv, key, {
-		edgeKey: `${key}@${published.version}`,
-		edgeTtl: settled ? RULINGS_EDGE_TTL_S : RULINGS_UNSETTLED_EDGE_TTL_S,
+		edgeKey: `${key}@${name}`,
+		edgeTtl: settled ? life : RULINGS_UNSETTLED_EDGE_TTL_S,
 		cacheTtl: RULINGS_KV_CACHE_TTL_S,
 		defer,
 	});

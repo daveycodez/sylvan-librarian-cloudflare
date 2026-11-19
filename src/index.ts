@@ -180,6 +180,9 @@ async function resolveEngine(
 							partition,
 							connect: () => placeEngineStub(env, hedgeRegion, 0, partition, hedgeGeneration, manifest.placement),
 						},
+				// The build this request is pinned to rides every call, so an object the call wakes
+				// loads its recorded store without a KV read of its own (store-vouch.ts).
+				String(manifest.built_at ?? ""),
 			),
 		manifest,
 		// The stale-modulus retry (Decision 3b): re-read the one manifest key.

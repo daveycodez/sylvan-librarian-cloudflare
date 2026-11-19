@@ -112,6 +112,7 @@ import {
 } from "./store";
 import { readLiveManifest, recordLiveManifest } from "./store-cache";
 import { isPartitionedManifest, manifestServableBy, readManifest } from "./store-kv";
+import { vouchedBuildOf } from "./store-vouch";
 import type {
 	CollectionBatch,
 	CollectionLocated,
@@ -231,6 +232,17 @@ function rethrowForRpc(err: unknown): never {
 		throw new Error(`${STALE_MODULUS_MARKER}:${err.message}`);
 	}
 	throw err;
+}
+
+/**
+ * A gather's options carrying the build its router vouched for (store-vouch.ts), so the siblings the
+ * gather wakes need no KV read of their own. The router's word only — an `opts` that arrives already
+ * carrying one is not trusted over the width's fraction, which is what the caller itself sent.
+ */
+function vouchedOpts(opts: EngineSearchOptions, reportedShards: unknown): EngineSearchOptions {
+	const { vouchedBuild: _theirs, ...plain } = opts;
+	const build = vouchedBuildOf(reportedShards);
+	return build === undefined ? plain : { ...plain, vouchedBuild: build };
 }
 
 export class SearchEngine extends DurableObject<Env> {
@@ -475,7 +487,7 @@ export class SearchEngine extends DurableObject<Env> {
 			result =
 				body.call === "cards2"
 					? await this.instrumentedGather(body.shards, () =>
-							this.gatherScryfallSearchLocal(body.opts, body.baseUrl ?? ""),
+							this.gatherScryfallSearchLocal(vouchedOpts(body.opts, body.shards), body.baseUrl ?? ""),
 						)
 					: await this.instrumented(body.shards, (engine) => {
 							this.assertPinnedModulus(body.pinnedPartitionCount ?? body.pinned);
@@ -565,7 +577,9 @@ export class SearchEngine extends DurableObject<Env> {
 			// mostly CPU, which no timer here sees, or a delay before this line ran at all.
 			const woke = tryGetLoadedEngine(this.label) === null;
 			const acquireStart = Date.now();
-			const engine = await this.engine();
+			// The width's fraction is the build the caller is pinned to (store-vouch.ts): a wake
+			// whose record names it loads without a KV read.
+			const engine = await this.engine(vouchedBuildOf(reportedShards));
 			const acquireMs = Date.now() - acquireStart;
 			try {
 				const reply = { ...(await run(engine)), acquireMs, load, rate, ...meet };
@@ -1004,7 +1018,8 @@ export class SearchEngine extends DurableObject<Env> {
 		// Date.now() advances only across I/O in Workers, which is what a load spends; a warm
 		// object reports 0.
 		const acquireStart = Date.now();
-		await this.engine();
+		// What the gather's router vouched, passed on by its coordinator (store-vouch.ts).
+		await this.engine(opts.vouchedBuild);
 		const acquireMs = Date.now() - acquireStart;
 		const ops = gatherOps(this.label);
 		if (!ops) rethrowForRpc(new EngineUnavailableError(`${this.label} acquired an engine but holds no store`));
@@ -1682,8 +1697,9 @@ export class SearchEngine extends DurableObject<Env> {
 		opts: EngineSearchOptions,
 		reportedShards?: number,
 	): Promise<EngineSearchResult & SearchTelemetry> {
+		const vouched = vouchedOpts(opts, reportedShards);
 		return this.instrumentedGather(reportedShards, async () => {
-			const page = await this.gatherRun(opts, ROWS_GATHER);
+			const page = await this.gatherRun(vouched, ROWS_GATHER);
 			return { totalCards: page.total, cards: parseSlots(page.slots), acquireMs: page.acquireMs };
 		});
 	}
@@ -1699,10 +1715,11 @@ export class SearchEngine extends DurableObject<Env> {
 		shape: ResultShape,
 		reportedShards?: number,
 	): Promise<EngineSerializedResult & SearchTelemetry> {
+		const vouched = vouchedOpts(opts, reportedShards);
 		return this.instrumentedGather(reportedShards, async () => {
 			if (shape === "columnar") {
 				const keys = columnKeys(opts.fields);
-				const page = await this.gatherRun(opts, columnsGather(keys));
+				const page = await this.gatherRun(vouched, columnsGather(keys));
 				return {
 					totalCards: page.total,
 					cardsBytes: assembleColumnar(keys, page.slots),
@@ -1710,7 +1727,7 @@ export class SearchEngine extends DurableObject<Env> {
 					acquireMs: page.acquireMs,
 				};
 			}
-			const page = await this.gatherRun(opts, ROWS_GATHER);
+			const page = await this.gatherRun(vouched, ROWS_GATHER);
 			return {
 				totalCards: page.total,
 				cardsBytes: joinJsonArray(page.slots),
@@ -1726,7 +1743,9 @@ export class SearchEngine extends DurableObject<Env> {
 		baseUrl: string,
 		reportedShards?: number,
 	): Promise<EngineSerializedResult & SearchTelemetry> {
-		return this.instrumentedGather(reportedShards, () => this.gatherScryfallSearchLocal(opts, baseUrl));
+		return this.instrumentedGather(reportedShards, () =>
+			this.gatherScryfallSearchLocal(vouchedOpts(opts, reportedShards), baseUrl),
+		);
 	}
 
 	/**
@@ -2029,7 +2048,8 @@ export class SearchEngine extends DurableObject<Env> {
 		};
 	}
 
-	private async engine(): Promise<Engine> {
+	/** `vouched`: the build the caller is pinned to, when it said (store-vouch.ts) — read only by a load. */
+	private async engine(vouched?: string): Promise<Engine> {
 		lastServedAt.set(this.label, Date.now());
 		try {
 			// x100: whether THIS call is the one that finds the object without a store, for the load
@@ -2038,7 +2058,11 @@ export class SearchEngine extends DurableObject<Env> {
 			// getEngine is single-flighted and returns immediately when this
 			// isolate already holds the store; otherwise it streams the store in
 			// from KV (one immutable, colo-cached read per chunk — normally one per partition).
-			const engine = await getEngine(this.env, this.loadContext());
+			const context = this.loadContext();
+			const engine = await getEngine(
+				this.env,
+				vouched === undefined ? context : { ...context, vouchedBuiltAt: vouched },
+			);
 			if (cold && !countedLoads.has(engine)) {
 				countedLoads.add(engine);
 				noteHealth(this.ctx.storage, { load: true });

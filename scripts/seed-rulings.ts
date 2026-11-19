@@ -21,6 +21,7 @@
 // nightly import pays on a first publish and why this is a deliberate step rather than part of
 // every deploy.
 
+import { createHash } from "node:crypto";
 import { unlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -36,6 +37,7 @@ import {
 	RULINGS_META_KEY,
 	type RulingRow,
 	type RulingsMeta,
+	rulingsBucketHashes,
 	rulingsBucketKey,
 	rulingsBucketOf,
 	rulingsCurrentPrefix,
@@ -106,10 +108,14 @@ if (lines > 0 && usable < 0.8 * lines) {
 
 const decoder = new TextDecoder("utf-8", { fatal: true, ignoreBOM: false });
 const entries: { key: string; value: string }[] = [];
+// Each bucket's SHA-256, as the nightly records it (stepRulings): the meta names every bucket's
+// content by it, so this seed and a nightly that writes the same bytes publish the same names.
+const hashes: string[] = [];
 let rulings = 0;
 for (let bucket = 0; bucket < RULINGS_BUCKET_COUNT; bucket++) {
 	const { bytes, rulingCount } = encodeRulingsBucket(byBucket.get(bucket) ?? []);
 	rulings += rulingCount;
+	hashes.push(createHash("sha256").update(bytes).digest("hex"));
 	// Decoded strictly: a bucket that is not valid UTF-8 would go through bulk put's string path
 	// and land mangled, and this is where that has to be caught rather than at a request.
 	entries.push({ key: rulingsBucketKey(bucket), value: decoder.decode(bytes) });
@@ -120,6 +126,7 @@ const meta: RulingsMeta = {
 	bucket_count: RULINGS_BUCKET_COUNT,
 	built_at: String(Math.floor(Date.now() / 1000)),
 	ruling_count: rulings,
+	...(rulingsBucketHashes(hashes) === undefined ? {} : { bucket_hashes: rulingsBucketHashes(hashes) }),
 };
 // Last in the file, as it is last in the phase: it is what tells the next import the set is really
 // in KV, so it must not describe buckets that did not land.
