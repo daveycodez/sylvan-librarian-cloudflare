@@ -316,6 +316,11 @@ bun scripts/seed-remote-kv.ts store-build
 #    on the skip path above — the pairs come from this build, so a deploy that skips the import
 #    leaves the index to the nightly's `oracle_index` phase (which diffs against the same meta, so
 #    whichever runs second writes only the buckets that moved).
+# The deploy path has no purge of its own (only the Worker can issue one), so the answers cached
+# from the store this one replaced would be served for up to sixteen hours. Ask the Worker.
+bun scripts/request-cache-purge.ts --remote "a deploy published a store" \
+    || echo "!!! Cache purge not requested — answers cached from the previous store age out over sixteen hours."
+
 echo "==> Publishing the oracle index to KV..."
 bun scripts/seed-oracle-index.ts store-build \
     || echo "!!! Oracle index not published — /cards/:id/rulings asks the engine until the nightly import."

@@ -265,6 +265,7 @@ import {
 	stagingBytesOf,
 } from "./import-budget";
 import { BULK_DATA_URL, BULK_REFRESH_REASON, scryfallUserAgent } from "./import-bulk-trigger";
+import { dumpStoredBytes, releaseProblems } from "./import-dump-guard";
 import {
 	artRepsFrom,
 	beginNight,
@@ -2097,6 +2098,26 @@ export class ImportCoordinator extends DurableObject<Env> {
 			.filter((r) => r.type && (kinds as readonly string[]).includes(r.type))
 			.map((r) => Date.parse(r.updated_at ?? ""))
 			.filter((n) => Number.isFinite(n));
+		// AN EMPTY OR SHORT RELEASE IS SKIPPED (import-dump-guard.ts): before anything is staged, every
+		// dump this run reads must clear its size floor. On 2026-11-19 Scryfall published oracle_tags
+		// as 20 bytes of nothing and this run built and published a store without a single oracle tag
+		// over one that was fine. Fatal, not retried: the bytes will not change under the same listing,
+		// the live store stays, and the next refresh starts a run of its own.
+		const uris = new Map<DumpKind, string>();
+		for (const kind of kinds) {
+			const uri = records.find((r) => r.type === kind)?.jsonl_download_uri;
+			if (uri) uris.set(kind, uri);
+		}
+		// IMPORT_DUMP_FLOORS=off is the import harness's: its corpus is a few thousand cards, under
+		// every floor by design. Unset in production, on both accounts.
+		const enforced = (this.env as { IMPORT_DUMP_FLOORS?: string }).IMPORT_DUMP_FLOORS !== "off";
+		const problems = enforced ? await releaseProblems(uris, (uri) => dumpStoredBytes(uri, userAgent())) : [];
+		if (problems.length > 0) {
+			throw new FatalImportError(
+				`Scryfall's bulk release looks empty or cut short — ${problems.join("; ")}. ` +
+					"Skipping this release: the live store stays, and the next refresh is imported if it is whole",
+			);
+		}
 		this.ctx.storage.transactionSync(() => {
 			if (stamps.length > 0) {
 				this.metaSet("source_updated_at", new Date(Math.max(...stamps)).toISOString());

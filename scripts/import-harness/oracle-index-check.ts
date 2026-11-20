@@ -53,6 +53,8 @@ function builderEnv(serverUrl: string, ceilingBytes: number): Record<string, str
 	const env: Record<string, string> = {};
 	for (const [k, v] of Object.entries(process.env)) if (v !== undefined && k !== "SYLVAN_BULK_DIR") env[k] = v;
 	env.SCRYFALL_BULK_URL = `${serverUrl}/bulk-data`;
+	// The harness corpus is a few thousand cards — under every size floor by design (bulk.rs DUMP_MIN_BYTES).
+	env.IMPORT_DUMP_FLOORS = "off";
 	env.SYLVAN_PARTITION_CEILING_BYTES = String(ceilingBytes);
 	return env;
 }

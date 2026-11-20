@@ -284,6 +284,7 @@ function makeEnv(kv: FakeKV, baseUrl: string) {
 	return {
 		STORE_KV: kv,
 		SCRYFALL_BULK_URL: `${baseUrl}/bulk-data`,
+		IMPORT_DUMP_FLOORS: "off",
 		SCRYFALL_API_URL: baseUrl,
 		IMPORT_PARTITION_CEILING_BYTES: "",
 		PLACEMENT_PROBE: fakeProbes(),

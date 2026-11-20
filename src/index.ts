@@ -4,6 +4,7 @@
 
 import { WorkerEntrypoint } from "cloudflare:workers";
 import { BUILD_COMMIT } from "./build-info.gen";
+import { runPurgeRequest } from "./cache-purge-request";
 import { engineName, placeEngineStub } from "./engine/engine-namespace";
 import { oracleTagPartitionsSoon } from "./engine/oracle-tag-partitions";
 import {
@@ -454,6 +455,8 @@ export default class SylvanLibrarian extends WorkerEntrypoint<Env> {
 			this.ctx.waitUntil(
 				runImportWatchdog(this.env).then((action) => (action.kind === "none" ? runBulkRefresh(this.env) : undefined)),
 			);
+			// A deploy-path publish asks for the purge it cannot issue itself (cache-purge-request.ts).
+			this.ctx.waitUntil(runPurgeRequest(this.env.STORE_KV, () => this.purgeCache()));
 			// c1's one-time colo-era sweep: nothing at all unless RETIRED_ENGINE_SWEEP is set.
 			this.ctx.waitUntil(runRetiredEngineSweep(this.env));
 			return;

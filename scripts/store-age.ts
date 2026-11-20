@@ -59,7 +59,9 @@ import {
 	STORE_CONTENT_GENERATION,
 } from "../src/engine/store-kv";
 import { type BulkStamps, bulkStamps, judgeStore } from "../src/import-bulk-trigger";
+import { DUMP_MIN_BYTES, dumpStoredBytes, releaseProblems } from "../src/import-dump-guard";
 import { describeNote, type IsListsNote } from "../src/import-is-lists";
+import type { DumpKind } from "../src/import-phases";
 import { kvName } from "./project-config";
 import { readArchiveFormatVersion } from "./wasm-provenance";
 import { wranglerArgv } from "./wrangler-cmd";
@@ -82,6 +84,9 @@ const DUMP_KINDS = ["all_cards", "default_cards", "oracle_tags", "art_tags"];
  * the age backstop rather than skipping an import on a guess. A deploy that
  * cannot reach Scryfall is not evidence that Scryfall stood still.
  */
+/** Each dump's download address in the last listing read — for the release check below. */
+const upstreamUris = new Map<DumpKind, string>();
+
 async function upstreamUpdatedAt(): Promise<BulkStamps | null> {
 	try {
 		const res = await fetch(BULK_DATA_URL, {
@@ -93,7 +98,13 @@ async function upstreamUpdatedAt(): Promise<BulkStamps | null> {
 			console.error(`store-age: ${BULK_DATA_URL} answered ${res.status} — falling back to the age backstop.`);
 			return null;
 		}
-		const stamps = bulkStamps(await res.json(), DUMP_KINDS);
+		const listing = (await res.json()) as { data?: { type?: string; jsonl_download_uri?: string }[] };
+		for (const record of listing.data ?? []) {
+			if (record.type && record.jsonl_download_uri && record.type in DUMP_MIN_BYTES) {
+				upstreamUris.set(record.type as DumpKind, record.jsonl_download_uri);
+			}
+		}
+		const stamps = bulkStamps(listing, DUMP_KINDS);
 		if (stamps === null) {
 			console.error("store-age: /bulk-data listed no updated_at for some dump we read — using the age backstop.");
 			return null;
@@ -401,14 +412,25 @@ if (ageMs > MAX_AGE_HOURS * 3600_000) {
 const upstream = await upstreamUpdatedAt();
 if (upstream !== null) {
 	const verdict = judgeStore(upstream, builtAt * 1000, Date.now());
-	if (verdict.kind === "stale") {
+	// AN EMPTY OR SHORT RELEASE IS NO REASON TO REBUILD (src/import-dump-guard.ts): on 2026-11-19
+	// Scryfall published oracle_tags as 20 bytes of nothing, and a store built from that release has
+	// no card carrying an oracle tag. The live store is kept; the next whole release rebuilds it.
+	const problems =
+		verdict.kind === "stale"
+			? await releaseProblems(upstreamUris, (uri) => dumpStoredBytes(uri, "sylvan-librarian-deploy/1.0"))
+			: [];
+	if (verdict.kind === "stale" && problems.length > 0) {
+		console.error(
+			`store-age: Scryfall refreshed its dumps ${ago(Date.now() - upstream.newestMs)}, but the release looks ` +
+				`empty or cut short — ${problems.join("; ")}. Keeping the live store; the next whole release rebuilds it.`,
+		);
+	} else if (verdict.kind === "stale") {
 		console.error(
 			`store-age: Scryfall refreshed its dumps ${ago(Date.now() - upstream.newestMs)} ` +
 				`(${new Date(upstream.newestMs).toISOString()}), after this store was built — rebuilding.`,
 		);
 		process.exit(1);
-	}
-	if (verdict.kind === "settling") {
+	} else if (verdict.kind === "settling") {
 		console.error(
 			`store-age: ${verdict.why}. Keeping the live store; the Worker's bulk trigger rebuilds once the refresh settles.`,
 		);

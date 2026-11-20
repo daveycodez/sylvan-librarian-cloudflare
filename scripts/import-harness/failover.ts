@@ -91,6 +91,7 @@ class Instance {
 		const env = {
 			STORE_KV: kv,
 			SCRYFALL_BULK_URL: `${server.url}/bulk-data`,
+			IMPORT_DUMP_FLOORS: "off",
 			SCRYFALL_API_URL: server.url,
 			IMPORT_PARTITION_CEILING_BYTES: String(PARTITION_CEILING_BYTES),
 		};

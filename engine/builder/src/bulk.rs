@@ -117,6 +117,44 @@ fn civil_from_days(z: i64) -> (i64, u32, u32) {
     (if m <= 2 { y + 1 } else { y }, m, d)
 }
 
+/// The least a dump's gzipped length may be, bytes — the SAME table as the nightly import's
+/// (src/import-dump-guard.ts `DUMP_MIN_BYTES`, where the measurements and the 2026-11-19 outage are
+/// written down; tests/import/dump-guard.test.ts pins the two together). A Scryfall release that
+/// arrives empty or cut short is refused before a byte of it is parsed: that night's oracle_tags
+/// dump was 20 bytes of nothing, and a store built from it has no card carrying an oracle tag.
+pub const DUMP_MIN_BYTES: &[(&str, u64)] = &[
+    ("all_cards", 200_000_000),
+    ("default_cards", 40_000_000),
+    ("oracle_cards", 12_000_000),
+    ("art_tags", 6_000_000),
+    ("oracle_tags", 3_000_000),
+    ("rulings", 2_500_000),
+];
+
+/// Refuse a dump whose stored length is under its floor. A length the source does not state, or a
+/// kind with no floor, is not a refusal — the check is for a release that is visibly wrong.
+///
+/// `IMPORT_DUMP_FLOORS=off` (the same switch the nightly reads) is the import harness's: its corpus
+/// is a few thousand cards, under every floor by design. Unset in Workers Builds.
+fn refuse_short_dump(kind: &str, stored_bytes: Option<u64>, source: &str) -> Result<(), BulkError> {
+    if std::env::var("IMPORT_DUMP_FLOORS").as_deref() == Ok("off") {
+        return Ok(());
+    }
+    short_dump_problem(kind, stored_bytes, source)
+}
+
+/// [`refuse_short_dump`] without the environment switch — the rule itself, and what the test pins.
+fn short_dump_problem(kind: &str, stored_bytes: Option<u64>, source: &str) -> Result<(), BulkError> {
+    let Some(bytes) = stored_bytes else { return Ok(()) };
+    match DUMP_MIN_BYTES.iter().find(|(k, _)| *k == kind) {
+        Some((_, floor)) if bytes < *floor => Err(BulkError::Format(format!(
+            "Scryfall's bulk release looks empty or cut short — {kind} is {bytes} bytes, under its {floor}-byte floor ({source}). \
+             Refusing to build a store from it"
+        ))),
+        _ => Ok(()),
+    }
+}
+
 pub struct BulkClient {
     http: reqwest::blocking::Client,
 }
@@ -189,11 +227,14 @@ impl BulkClient {
         if let Some(path) = local_bulk_path(kind) {
             eprintln!("  SYLVAN_BULK_DIR: streaming {kind} from {}", path.display());
             let file = std::fs::File::open(&path)?;
+            refuse_short_dump(kind, file.metadata().ok().map(|m| m.len()), &path.display().to_string())?;
             let reader = gunzip_if_needed(Box::new(file))?;
             return Ok(JsonlStream::new(BufReader::with_capacity(1 << 16, reader)));
         }
         let uri = self.jsonl_download_uri(kind)?;
         let resp = self.get_with_retry(&uri)?;
+        // The stored (gzipped) length, when the server states one — see `DUMP_MIN_BYTES`.
+        refuse_short_dump(kind, resp.content_length(), &uri)?;
         let reader = gunzip_if_needed(Box::new(resp))?;
         Ok(JsonlStream::new(BufReader::with_capacity(1 << 16, reader)))
     }
@@ -376,6 +417,19 @@ impl<R: BufRead> Iterator for JsonlStream<R> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// An empty or short release is refused; a whole one, an unstated length and an unknown kind are not.
+    #[test]
+    fn a_short_dump_is_refused_before_it_is_read() {
+        // 2026-11-19: oracle-tags-20261119220030.jsonl.gz was 20 bytes.
+        let err = short_dump_problem("oracle_tags", Some(20), "x").unwrap_err().to_string();
+        assert!(err.contains("oracle_tags is 20 bytes") && err.contains("3000000-byte floor"), "{err}");
+        assert!(short_dump_problem("oracle_tags", Some(6_125_719), "x").is_ok());
+        assert!(short_dump_problem("all_cards", Some(199_999_999), "x").is_err());
+        assert!(short_dump_problem("all_cards", Some(407_877_582), "x").is_ok());
+        assert!(short_dump_problem("oracle_tags", None, "x").is_ok());
+        assert!(short_dump_problem("unique_artwork", Some(0), "x").is_ok());
+    }
     use flate2::Compression;
     use flate2::write::GzEncoder;
     use std::io::Write;
