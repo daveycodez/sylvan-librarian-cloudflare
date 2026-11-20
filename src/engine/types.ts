@@ -920,6 +920,13 @@ export interface StoreManifest {
 	 */
 	otags_key?: string;
 	otags_bytes?: number;
+	/**
+	 * How many aliases each table of this build's tag alias map holds — a count of what the tag
+	 * dumps gave it, written by both publishers for the next publish to be compared against
+	 * (publish-gate.ts): an empty oracle_tags dump left 0 here. Absent on stores published before
+	 * 2026-11-20, which gate nothing on it.
+	 */
+	tag_alias_counts?: { oracle: number; art: number };
 
 	// ── Blocks the nightly decides and every later publish carries forward ─────
 	//

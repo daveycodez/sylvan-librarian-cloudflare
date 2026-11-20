@@ -75,7 +75,7 @@ async function resolveEngine(
 	request: Request,
 	env: Env,
 	ctx: ExecutionContext,
-	source: { tag: string },
+	source: { tag: string; store?: string },
 ): Promise<Engine> {
 	// The manifest comes FIRST (memoised per isolate, so this costs no extra read): it carries g1's
 	// placement block, and the region an engine request goes to is the hint AFTER its alias — sam's
@@ -109,6 +109,9 @@ async function resolveEngine(
 	);
 	const shard = pickShard(region, maxShards);
 	source.tag = `do-${engineName(region, shard, undefined, generation).slice("engine-".length)}`;
+	// Which STORE this request is pinned to — `x-sylvan-store`, what scripts/canary.ts reads to say
+	// "this store has not been rebuilt for a day" when imports are being skipped or failing.
+	if (manifest.built_at) source.store = String(manifest.built_at);
 
 	// ── Partitioned serving (plan B5) ───────────────────────────────────────────
 	//
@@ -212,7 +215,8 @@ const DISALLOWED_QUERY_ARGS = new Set(["falcon_response", "request_host"]);
 interface DispatchRecord {
 	route: string;
 	stages: RequestStages | null;
-	engine: { tag: string };
+	/** `store`: the build (`built_at`, epoch seconds) of the manifest this request was pinned to. */
+	engine: { tag: string; store?: string };
 }
 
 async function handle(request: Request, env: Env, ctx: ExecutionContext, record: DispatchRecord): Promise<Response> {
@@ -324,6 +328,7 @@ async function handle(request: Request, env: Env, ctx: ExecutionContext, record:
 	const finish = (response: Response): Response => {
 		const out = securityHeaders(response);
 		if (engineSource.tag) out.headers.set("x-sylvan-engine", engineSource.tag);
+		if (engineSource.store) out.headers.set("x-sylvan-store", engineSource.store);
 		if (rateLimitOutcome.tag) out.headers.set("x-sylvan-rl", rateLimitOutcome.tag);
 		// Which build answered. A cached response replays the build that produced it,
 		// which is the point: the smoke test asks with a nonce and waits for THIS commit.

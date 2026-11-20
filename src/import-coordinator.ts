@@ -149,6 +149,7 @@ import {
 } from "./engine/placement-policy";
 import { probeHints } from "./engine/placement-probe";
 import { encodePrintedNames, writePrintedNames } from "./engine/printed-names";
+import { publishRegressions, shrinkRefusal, tagAliasCounts } from "./engine/publish-gate";
 import {
 	CATALOG_NAMES,
 	catalogKey,
@@ -4481,6 +4482,8 @@ export class ImportCoordinator extends DurableObject<Env> {
 		// tags phase predates the export (a deploy landed mid-run); that build serves alias
 		// spellings as plain slugs until the next run, and the Worker says so in its log.
 		const tagAliasesJson = this.metaGet("tag_aliases");
+		const aliasCounts = tagAliasCounts(tagAliasesJson);
+		if (aliasCounts) manifest.tag_alias_counts = aliasCounts;
 		await this.fenceBeforeWrite();
 		if (tagAliasesJson) {
 			await writeTagAliases(this.env, formatVersion, builtAt, tagAliasesJson);
@@ -4517,6 +4520,14 @@ export class ImportCoordinator extends DurableObject<Env> {
 		// read the live manifest once, decide from it and tonight's measurements, write them in. The same read
 		// names the rollback role (previous_built_at) — the family this manifest replaces.
 		const previous = await this.liveManifestJson();
+		// THE STORE MUST NOT HAVE SHRUNK (publish-gate.ts): the last look before the commit point at
+		// what this run built, against what is live. On 2026-11-19 a run that read an empty tag dump
+		// wrote its manifest here without one. Fatal: the live manifest keeps serving, and the family
+		// this run uploaded is retired by the next sweep like any other run's orphan.
+		const shrunk = publishRegressions(manifest, previous);
+		if (shrunk.length > 0 && (this.env as { ALLOW_STORE_SHRINK?: string }).ALLOW_STORE_SHRINK !== "1") {
+			throw new FatalImportError(`publish: ${shrinkRefusal(manifest.store_key, shrunk)}`);
+		}
 		const placement = await this.placementGate(manifest, previous);
 		if (placement) manifest.placement = placement;
 		manifest.cache = await this.cacheGate(manifest, previous);

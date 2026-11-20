@@ -148,5 +148,10 @@ jobs:
             [[ "${ok[$origin]}" -ge 3 ]] || echo "::error::$origin is not serving commit $SHA with cards 25 minutes after the push"
           done
           exit 1
+      # `lightning bolt` answering is not the corpus being whole: on 2026-11-19 it answered all
+      # night while every `otag:` search was 404. The canary asks tags, types, a foreign language,
+      # the KV-only routes and the store's age (scripts/canary.ts; canary.yml runs it on a schedule).
+      - name: the deployed mirror answers the canary on both accounts
+        run: bun scripts/canary.ts
       - name: the served pages point at the committed assets
         run: bun scripts/verify-deploy.ts

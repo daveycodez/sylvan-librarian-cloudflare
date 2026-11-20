@@ -50,6 +50,7 @@ import { cardNamesKey } from "../src/engine/card-names";
 import { kvBytesMetadata, replacedManifest, withPreviousBuiltAt } from "../src/engine/kv-retention";
 import { oracleTagsKey } from "../src/engine/oracle-tag-partitions";
 import { printedNamesKey } from "../src/engine/printed-names";
+import { publishRegressions, shrinkRefusal, tagAliasCounts } from "../src/engine/publish-gate";
 import {
 	ARCHIVE_FORMAT_VERSION,
 	CARRIED_MANIFEST_BLOCKS,
@@ -394,6 +395,17 @@ if (live.failed) {
 const replaced = replacedManifest(live.published, ARCHIVE_FORMAT_VERSION);
 // The manifest this one replaces becomes the ROLLBACK role (previous_built_at) — read BEFORE the
 // put, so it names yesterday's build and not a second copy of this one.
+// THE STORE MUST NOT HAVE SHRUNK (src/engine/publish-gate.ts): the same last look the nightly takes.
+// A deploy that would publish a store with fewer cards or tags than the live one fails here, with
+// the live manifest untouched. (Everything uploaded above is this build's own family, which the
+// next publish's retention retires.)
+const aliasCounts = tagAliasCounts(readFileSync(aliasesPath, "utf8"));
+if (aliasCounts) manifest.tag_alias_counts = aliasCounts;
+const shrunk = publishRegressions(manifest, replaced);
+if (shrunk.length > 0 && process.env.ALLOW_STORE_SHRINK !== "1") {
+	console.error(shrinkRefusal(manifest.store_key, shrunk));
+	process.exit(1);
+}
 const published = withPreviousBuiltAt(carryManifestBlocks(manifest, replaced), replaced);
 const carried = CARRIED_MANIFEST_BLOCKS.filter((b) => (published as Record<string, unknown>)[b] !== undefined);
 if (carried.length) console.log(`  carried forward from the live manifest: ${carried.join(", ")}`);

@@ -1,0 +1,32 @@
+# Every thirty minutes: is production ANSWERING like the corpus it is supposed to hold?
+#
+# The store is rebuilt by the Worker's own import, twice a day, with no commit and so no CI run
+# behind it. On 2026-11-19 one of those imports published a store with no oracle tags and every
+# `otag:` search answered 404 for four and a half hours before a person noticed. scripts/canary.ts
+# asks the questions that would have gone red within the half hour (tag searches against floors
+# and against api.scryfall.com, the KV-only routes, the store's age), and a red scheduled run is
+# the notification: GitHub mails the workflow's owner when a scheduled workflow fails.
+#
+# The same script runs after every deploy (ci.yml `smoke`). A dozen requests per account, per run.
+name: canary
+on:
+  schedule:
+    - cron: "13,43 * * * *"
+    # Four times a day the store's AGE can fail the run too (--stale): a store nobody has rebuilt
+    # for thirty hours means imports are being skipped or failing.
+    - cron: "28 1,7,13,19 * * *"
+  workflow_dispatch:
+permissions: { contents: read }
+concurrency:
+  group: canary
+  cancel-in-progress: false
+jobs:
+  production:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with: { bun-version: 1.4.0 }
+      - name: both accounts answer the canary searches, the KV routes, and hold a fresh store
+        run: bun scripts/canary.ts ${{ github.event.schedule == '28 1,7,13,19 * * *' && '--stale' || '' }}
